@@ -1,0 +1,8 @@
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
