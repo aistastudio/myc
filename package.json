@@ -27,5 +27,6 @@
     "test": "bun test",
     "reindex:vectors": "bun run scripts/reindex-vectors.ts",
     "bench:separation": "bun run packages/embed/src/bench-separation.ts"
-  }
+  },
+  "license": "MIT"
 }

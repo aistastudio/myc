@@ -147,8 +147,9 @@ git config merge.myc-oplog.driver "myc merge-driver %O %A %B %L %P"
 
 ## License
 
-Not chosen yet — there is no `LICENSE` file, and the decision belongs to the
-project owner.
+MIT — see [`LICENSE`](LICENSE). Chosen for the lowest possible friction for
+anyone embedding or forking this; every runtime dependency (Bun, ONNX Runtime,
+sqlite-vec) is permissive too.
 
 ---
 

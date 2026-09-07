@@ -77,6 +77,27 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
+/**
+ * SPDX-идентификатор по тексту лицензии. Узнаём только то, что можем узнать
+ * НАДЁЖНО, по характерным строкам самих текстов; всё остальное — отказ с
+ * просьбой указать идентификатор явно. Угадывать лицензию нельзя: ошибка
+ * здесь — это неверное заявление о правах, а не косметика.
+ */
+function detectLicense(text: string): string | undefined {
+  const t = text.toLowerCase();
+  const explicit = /^\s*license:\s*([a-z0-9.\-+]+)\s*$/im.exec(text);
+  if (explicit !== null) return explicit[1];
+  if (t.includes("apache license") && t.includes("version 2.0")) return "Apache-2.0";
+  if (t.includes("permission is hereby granted, free of charge")) return "MIT";
+  if (t.includes("gnu general public license") && t.includes("version 3")) return "GPL-3.0-only";
+  if (t.includes("mozilla public license") && t.includes("2.0")) return "MPL-2.0";
+  if (t.includes("business source license")) return "BUSL-1.1";
+  if (t.includes("redistribution and use in source and binary forms")) {
+    return t.includes("neither the name") ? "BSD-3-Clause" : "BSD-2-Clause";
+  }
+  return undefined;
+}
+
 async function main(): Promise<void> {
   const cliPkg = JSON.parse(
     await readFile(join(ROOT, "packages/cli/package.json"), "utf8"),
@@ -147,11 +168,30 @@ async function main(): Promise<void> {
     dependencies: { "sqlite-vec": "0.1.9" },
     // Node в списке нет СОЗНАТЕЛЬНО: myc работает только на Bun (bun:sqlite),
     // и bin/myc.js отказывает под Node с объяснением.
+    // Ссылки на репозиторий: без них страница пакета в npm не связана с
+    // исходниками, и «откуда это взялось» приходится искать поиском.
+    repository: { type: "git", url: "git+https://github.com/aistastudio/myc.git" },
+    homepage: "https://github.com/aistastudio/myc#readme",
+    bugs: { url: "https://github.com/aistastudio/myc/issues" },
     keywords: ["memory", "agents", "tasks", "cli", "bun", "sqlite", "rag"],
     files: ["bin", "dist", "vendor", "README.md", "LICENSE"],
     publishConfig: { access: "public" },
   } as Record<string, unknown>;
-  if (await exists(join(ROOT, "LICENSE"))) manifest["license"] = "MIT";
+  // Идентификатор лицензии ЧИТАЕТСЯ из файла, а не назначается. Раньше здесь
+  // стояло `manifest["license"] = "MIT"` при одном лишь наличии файла: положи
+  // владелец Apache-2.0 — npm объявил бы MIT, и страница пакета врала бы о
+  // правах. Это ровно тот класс ошибки, который дороже отсутствия поля.
+  if (await exists(join(ROOT, "LICENSE"))) {
+    const text = await readFile(join(ROOT, "LICENSE"), "utf8");
+    const spdx = detectLicense(text);
+    if (spdx === undefined) {
+      throw new Error(
+        "LICENSE есть, но какая именно — не распознано. Укажите SPDX-идентификатор " +
+          'полем "license" в корневом package.json (например "MIT" или "Apache-2.0").',
+      );
+    }
+    manifest["license"] = spdx;
+  }
 
   await writeFile(join(OUT, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
