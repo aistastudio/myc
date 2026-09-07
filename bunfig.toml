@@ -1,0 +1,6 @@
+[install]
+peer = true
+
+[test]
+root = "."
+preload = ["./packages/store-sqlite/src/runtime-preload.ts"]

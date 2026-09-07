@@ -1,0 +1,19 @@
+{
+  "name": "@myc/retrieval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@myc/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@myc/store-sqlite": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@myc/embed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./model-id": "./src/model-id.ts",
+    "./fingerprint": "./src/fingerprint.ts"
+  },
+  "dependencies": {
+    "@myc/core": "workspace:*",
+    "onnxruntime-web": "1.20.1"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "1.20.1"
+  }
+}

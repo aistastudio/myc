@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>myc viz</title>
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%236f5cf0'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="dot"></span><b>myc</b> viz</div>
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-tab="graph" aria-selected="true">Граф</button>
+    <button class="tab" data-tab="ready" aria-selected="false">Очередь</button>
+    <button class="tab" data-tab="board" aria-selected="false">Доска</button>
+    <button class="tab" data-tab="kb" aria-selected="false">База знаний</button>
+    <button class="tab" data-tab="timeline" aria-selected="false">Таймлайн</button>
+    <button class="tab" data-tab="routing" aria-selected="false">Роутинг</button>
+    <button class="tab" data-tab="bootstrap" aria-selected="false">Бутстрап</button>
+    <button class="tab" data-tab="health" aria-selected="false">Здоровье</button>
+  </nav>
+  <div class="bar-right">
+    <span class="ro" title="просмотрщик открыл базу только на чтение">read-only</span>
+    <span class="meta" id="boot">—</span>
+    <button class="theme" id="theme" title="тема: авто / светлая / тёмная">авто</button>
+  </div>
+</header>
+
+<main>
+  <!-- ГРАФ -->
+  <section class="panel" id="panel-graph">
+    <div class="graph-wrap">
+      <canvas id="canvas"></canvas>
+      <div class="overlay-tl">
+        <div class="chip" id="graph-stat">—</div>
+        <div class="chip" id="graph-layout">лэйаут: —</div>
+      </div>
+      <div class="overlay-bl" id="legend"></div>
+      <div class="hint" id="graph-hint">колесо — зум, перетаскивание — панорама, клик по узлу — карточка</div>
+      <div class="tooltip" id="tooltip" hidden></div>
+      <aside class="node-card" id="node-card" hidden></aside>
+      <div class="empty" id="graph-empty" hidden></div>
+    </div>
+    <div class="graph-controls">
+      <input class="search" id="graph-search" type="search" placeholder="поиск по id и заголовку" autocomplete="off">
+      <button id="graph-fit">вписать</button>
+      <button id="graph-relayout">пересчитать лэйаут</button>
+      <label class="toggle"><input type="checkbox" id="graph-edges" checked> рёбра</label>
+      <label class="toggle"><input type="checkbox" id="graph-labels"> подписи</label>
+    </div>
+  </section>
+
+  <!-- ОЧЕРЕДЬ -->
+  <section class="panel" id="panel-ready" hidden>
+    <div class="head">
+      <h2>Очередь ready</h2>
+      <div class="sub" id="ready-sub">—</div>
+    </div>
+    <div class="task-new" id="task-new"></div>
+    <div class="formula" id="ready-formula"></div>
+    <div class="rows" id="ready-rows"></div>
+    <div class="empty" id="ready-empty" hidden></div>
+  </section>
+
+  <!-- ДОСКА -->
+  <section class="panel" id="panel-board" hidden>
+    <div class="head">
+      <h2>Доска задач</h2>
+      <div class="sub" id="board-sub">—</div>
+    </div>
+    <div class="board-cols" id="board-cols"></div>
+  </section>
+
+  <!-- БАЗА ЗНАНИЙ -->
+  <section class="panel" id="panel-kb" hidden>
+    <div class="head">
+      <h2>База знаний</h2>
+      <div class="sub" id="kb-sub">—</div>
+    </div>
+    <div class="task-new" id="kb-new"></div>
+    <div class="kb-filters" id="kb-filters"></div>
+    <div class="rows" id="kb-rows"></div>
+    <div class="kb-footer" id="kb-footer"></div>
+    <div class="empty" id="kb-empty" hidden></div>
+  </section>
+
+  <!-- ТАЙМЛАЙН -->
+  <section class="panel" id="panel-timeline" hidden>
+    <div class="head">
+      <h2>Таймлайн оплога</h2>
+      <div class="sub" id="timeline-sub">—</div>
+    </div>
+    <div class="spark" id="timeline-spark"></div>
+    <div class="rows" id="timeline-rows"></div>
+    <div class="empty" id="timeline-empty" hidden></div>
+  </section>
+
+  <!-- РОУТИНГ -->
+  <section class="panel" id="panel-routing" hidden>
+    <div class="head">
+      <h2>Роутинг: модель × класс задачи</h2>
+      <div class="sub" id="routing-sub">—</div>
+    </div>
+    <div class="cards" id="routing-degraded"></div>
+    <div class="routing-classes" id="routing-classes"></div>
+    <div class="empty" id="routing-empty" hidden></div>
+  </section>
+
+  <!-- БУТСТРАП -->
+  <section class="panel bootstrap-panel" id="panel-bootstrap" hidden>
+    <div class="head">
+      <h2>Бутстрап: обязательный контекст запуска агента</h2>
+      <div class="sub" id="bootstrap-sub">—</div>
+    </div>
+    <div class="bootstrap-body">
+      <div class="bootstrap-cut" id="bootstrap-cut" hidden></div>
+      <pre class="bootstrap-preview" id="bootstrap-preview">—</pre>
+      <h3>Ручные блоки</h3>
+      <div class="task-new" id="bootstrap-new"></div>
+      <div class="bootstrap-blocks" id="bootstrap-blocks"></div>
+      <div class="empty" id="bootstrap-empty" hidden></div>
+      <div class="bootstrap-history" id="bootstrap-history" hidden></div>
+    </div>
+  </section>
+
+  <!-- ЗДОРОВЬЕ -->
+  <section class="panel" id="panel-health" hidden>
+    <div class="head">
+      <h2>Здоровье</h2>
+      <div class="sub" id="health-sub">—</div>
+    </div>
+    <div class="cards" id="health-cards"></div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+<div class="modal" id="board-modal" hidden>
+  <div class="modal-box">
+    <h3 id="board-modal-title">—</h3>
+    <div class="modal-released" id="board-modal-released"></div>
+    <input class="modal-reason" id="board-modal-reason" type="text" placeholder="причина — её прочитают следующие сессии">
+    <div class="modal-actions">
+      <button class="rbtn primary" id="board-modal-confirm">подтвердить</button>
+      <button class="rbtn" id="board-modal-cancel">не надо</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

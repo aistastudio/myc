@@ -1,0 +1,7 @@
+# myc (S42): локальные файлы — не идут в git
+# оплог, meta.json, .gitattributes и workspace.toml коммитятся как есть
+myc.db
+myc.db-wal
+myc.db-shm
+myc.db-journal
+projections/

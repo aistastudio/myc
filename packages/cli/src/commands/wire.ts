@@ -1,0 +1,835 @@
+/**
+ * `myc wire` / `myc unwire` — установка хуков без порчи чужих файлов
+ * (§6.4–6.7, решение D10).
+ *
+ * Это не косметика. Один испорченный `CLAUDE.md` — и инструмент удаляют
+ * вместе с памятью, которую он успел набрать. Поэтому здесь ровно пять
+ * правил, и каждое из них проверяется тестом:
+ *
+ * 1. Целиком myc пишет ТОЛЬКО свои файлы: helper, skill, плагин.
+ * 2. Чужие JSON-конфиги мержатся точечно: читаем, добавляем свои узлы, пишем
+ *    обратно с сохранённым порядком ключей и отступом. Перед записью — `.bak`.
+ * 3. Конфликт (чужой хук на том же событии) — вопрос, а не молчаливая победа:
+ *    без `--hook-mode` не записывается НИЧЕГО, ни одного файла.
+ * 4. `CLAUDE.md` не трогается никогда; `AGENTS.md` — только блок между
+ *    маркерами и только с `--agents-md`. `statusLine` не занимаем.
+ * 5. Повторный `wire` идемпотентен: те же файлы, байт в байт.
+ *
+ * Всё записанное попадает в журнал `.myc/wire.json` вместе с хешем файла на
+ * момент записи — `myc unwire` снимает только то, что поставил, и только если
+ * файл с тех пор не изменился.
+ */
+
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { ExitCode } from "../exit.ts";
+import type { FlagSpec } from "../flags.ts";
+import type { Command, CommandContext, CommandFailure, Registry } from "../registry.ts";
+import { flagStr } from "./store.ts";
+import {
+  AGENTS_END,
+  AGENTS_START,
+  agentsBlock,
+  claudeHelper,
+  codexNotify,
+  HOOK_SPECS,
+  opencodePlugin,
+  skillMd,
+  type HookEvent,
+  type HookSpec,
+} from "../hooks/templates.ts";
+
+export const WIRE_JOURNAL = "wire.json";
+const BAK_SUFFIX = ".myc.bak";
+const HELPER_MARK = "myc-hooks.mjs";
+const MYC_PERMISSION = "Bash(myc:*)";
+const TOML_NOTIFY_START = "# myc:notify:start";
+const TOML_NOTIFY_END = "# myc:notify:end";
+const TOML_MCP_START = "# myc:mcp:start";
+const TOML_MCP_END = "# myc:mcp:end";
+
+type AgentName = "claude" | "codex" | "opencode";
+const ALL_AGENTS: readonly AgentName[] = ["claude", "codex", "opencode"];
+type HookMode = "append" | "replace" | "skip";
+
+// ---------------------------------------------------------------------------
+// План: что и как будет записано
+// ---------------------------------------------------------------------------
+
+type ActionKind = "new" | "rewrite" | "merge" | "unchanged";
+
+interface Action {
+  readonly path: string;
+  readonly kind: ActionKind;
+  readonly detail: string;
+  readonly content: string;
+  /** Узлы конфига, которые мы считаем своими — для журнала и `unwire`. */
+  readonly nodes: readonly string[];
+  /** Существующий файл перед записью копируется в `<file>.myc.bak`. */
+  readonly backup: boolean;
+}
+
+interface Conflict {
+  readonly path: string;
+  readonly node: string;
+  readonly command: string;
+}
+
+interface Plan {
+  readonly actions: Action[];
+  readonly conflicts: Conflict[];
+  readonly untouched: string[];
+  readonly notes: string[];
+}
+
+function emptyPlan(): Plan {
+  return { actions: [], conflicts: [], untouched: [], notes: [] };
+}
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+function fileText(path: string): string | null {
+  try {
+    return existsSync(path) ? readFileSync(path, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Файл целиком наш (helper, skill, плагин): пишем как есть, но не зря. */
+function planOwnFile(plan: Plan, root: string, rel: string, content: string): void {
+  const abs = join(root, rel);
+  const current = fileText(abs);
+  if (current === content) {
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "уже актуален", content, nodes: [], backup: false });
+    return;
+  }
+  plan.actions.push({
+    path: rel,
+    kind: current === null ? "new" : "rewrite",
+    detail: `${(Buffer.byteLength(content, "utf8") / 1024).toFixed(1)} КБ`,
+    content,
+    nodes: [],
+    backup: current !== null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// JSON: merge, а не запись
+// ---------------------------------------------------------------------------
+
+interface JsonSource {
+  readonly exists: boolean;
+  readonly value: Record<string, unknown>;
+  readonly indent: string;
+  /** Файл есть, но не разбирается: писать в него нельзя ни при каких условиях. */
+  readonly broken: boolean;
+}
+
+function readJsonSource(path: string): JsonSource {
+  const text = fileText(path);
+  if (text === null) return { exists: false, value: {}, indent: "  ", broken: false };
+  const indentMatch = /\n([ \t]+)"/.exec(text);
+  const indent = indentMatch?.[1] ?? "  ";
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { exists: true, value: {}, indent, broken: true };
+    }
+    return { exists: true, value: parsed as Record<string, unknown>, indent, broken: false };
+  } catch {
+    return { exists: true, value: {}, indent, broken: true };
+  }
+}
+
+function serializeJson(value: unknown, indent: string): string {
+  return `${JSON.stringify(value, null, indent)}\n`;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+/** Наша ли это запись хука — узнаём по имени helper-файла в команде. */
+function isOurHookEntry(entry: unknown): boolean {
+  const hooks = asArray(asRecord(entry)["hooks"]);
+  return hooks.some((h) => {
+    const cmd = asRecord(h)["command"];
+    return typeof cmd === "string" && cmd.includes(HELPER_MARK);
+  });
+}
+
+function foreignCommand(entry: unknown): string | null {
+  const hooks = asArray(asRecord(entry)["hooks"]);
+  for (const h of hooks) {
+    const cmd = asRecord(h)["command"];
+    if (typeof cmd === "string" && !cmd.includes(HELPER_MARK)) return cmd;
+  }
+  return null;
+}
+
+function hookEntry(spec: HookSpec): Record<string, unknown> {
+  const command = `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/myc-hooks.mjs" ${spec.event}`;
+  const entry: Record<string, unknown> = {
+    ...(spec.matcher !== undefined ? { matcher: spec.matcher } : {}),
+    hooks: [{ type: "command", command, timeout: spec.timeoutMs }],
+  };
+  return entry;
+}
+
+interface SettingsPlan {
+  readonly nodes: string[];
+  readonly conflicts: Conflict[];
+  readonly value: Record<string, unknown>;
+}
+
+/**
+ * Точечный merge `.claude/settings.json`. Меняются ровно три вещи: массивы
+ * `hooks.<Event>`, куда добавляется НАША запись, и `permissions.allow`.
+ * Всё остальное — включая `statusLine` — не читается и не пишется.
+ */
+function mergeClaudeSettings(
+  source: JsonSource,
+  specs: readonly HookSpec[],
+  mode: HookMode | undefined,
+  relPath: string,
+): SettingsPlan {
+  const value: Record<string, unknown> = { ...source.value };
+  const hooks = asRecord(value["hooks"]);
+  const nodes: string[] = [];
+  const conflicts: Conflict[] = [];
+
+  for (const spec of specs) {
+    const event = spec.claudeEvent;
+    const existing = asArray(hooks[event]);
+    const foreign = existing.filter((e) => !isOurHookEntry(e));
+    const node = `hooks.${event}`;
+
+    if (foreign.length > 0 && mode === undefined) {
+      conflicts.push({ path: relPath, node, command: foreignCommand(foreign[0]) ?? "(неизвестна)" });
+      continue;
+    }
+    if (foreign.length > 0 && mode === "skip") continue;
+
+    const kept = mode === "replace" ? [] : foreign;
+    hooks[event] = [...kept, hookEntry(spec)];
+    nodes.push(node);
+  }
+
+  if (conflicts.length > 0) return { nodes, conflicts, value };
+
+  if (nodes.length > 0) value["hooks"] = hooks;
+
+  const permissions = asRecord(value["permissions"]);
+  const allow = asArray(permissions["allow"]);
+  if (!allow.some((a) => a === MYC_PERMISSION)) {
+    permissions["allow"] = [...allow, MYC_PERMISSION];
+    value["permissions"] = permissions;
+    nodes.push(`permissions.allow[${MYC_PERMISSION}]`);
+  }
+
+  return { nodes, conflicts, value };
+}
+
+function planJsonMerge(
+  plan: Plan,
+  root: string,
+  rel: string,
+  merge: (source: JsonSource) => SettingsPlan,
+): void {
+  const abs = join(root, rel);
+  const source = readJsonSource(abs);
+  if (source.broken) {
+    plan.conflicts.push({ path: rel, node: "(файл)", command: "не разбирается как JSON" });
+    return;
+  }
+  const merged = merge(source);
+  plan.conflicts.push(...merged.conflicts);
+  if (merged.conflicts.length > 0) return;
+
+  // Мы мержим через JSON.parse/stringify: порядок ключей и отступ сохраняются,
+  // но однострочные объекты разворачиваются. Молчать об этом нельзя — файл
+  // чужой. Проверка честная: прогоняем исходник через ту же пару функций и
+  // сравниваем с оригиналом.
+  const original = fileText(abs);
+  if (original !== null && serializeJson(source.value, source.indent) !== original) {
+    plan.notes.push(`${rel}: переформатируется (перенос переносов строк), содержимое сохраняется; копия — ${rel}${BAK_SUFFIX}`);
+  }
+
+  const content = serializeJson(merged.value, source.indent);
+  const current = fileText(abs);
+  if (current === content) {
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "уже актуален", content, nodes: merged.nodes, backup: false });
+    return;
+  }
+  plan.actions.push({
+    path: rel,
+    kind: source.exists ? "merge" : "new",
+    detail: merged.nodes.length > 0 ? `+${merged.nodes.length} узла: ${merged.nodes.join(", ")}` : "без изменений узлов",
+    content,
+    nodes: merged.nodes,
+    backup: source.exists,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Текстовые файлы с маркерами: AGENTS.md и config.toml
+// ---------------------------------------------------------------------------
+
+/**
+ * Замена блока между маркерами. Всё вне маркеров сохраняется байт в байт —
+ * это единственный способ трогать чужой markdown, не ломая доверие (D10).
+ */
+function replaceBlock(text: string, start: string, end: string, block: string): string {
+  const from = text.indexOf(start);
+  const to = text.indexOf(end);
+  if (from === -1 || to === -1 || to < from) {
+    const sep = text.length === 0 || text.endsWith("\n\n") ? "" : text.endsWith("\n") ? "\n" : "\n\n";
+    return `${text}${sep}${block}\n`;
+  }
+  return `${text.slice(0, from)}${block}${text.slice(to + end.length)}`;
+}
+
+function hasBlock(text: string, start: string, end: string): boolean {
+  const from = text.indexOf(start);
+  return from !== -1 && text.indexOf(end) > from;
+}
+
+function removeBlock(text: string, start: string, end: string): string {
+  const from = text.indexOf(start);
+  const to = text.indexOf(end);
+  if (from === -1 || to === -1 || to < from) return text;
+  return `${text.slice(0, from).replace(/\n+$/, "\n")}${text.slice(to + end.length).replace(/^\n+/, "")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Планы по агентам
+// ---------------------------------------------------------------------------
+
+interface WireOptions {
+  readonly root: string;
+  readonly events: readonly HookEvent[];
+  readonly hookOutput: "json" | "text";
+  readonly mode: HookMode | undefined;
+  readonly agentsMd: boolean;
+  readonly mycBin: MycBinChoice;
+}
+
+/**
+ * Как записать команду myc в конфиг MCP.
+ *
+ * Порядок ТОТ ЖЕ, что у BIN_LOOKUP в hooks/templates.ts, и это не совпадение:
+ * если хук возьмёт сборку из dist, а MCP — глобальную из PATH, в одной сессии
+ * будут работать две разные версии myc, молча и с расходящимся поведением.
+ *
+ * Раньше здесь стояло безусловное "myc". При разработке из исходников, где
+ * глобальной установки нет, MCP-сервер не поднимался вовсе: «Executable not
+ * found in $PATH: myc», и инструменты myc были недоступны всю сессию.
+ *
+ * Найденное в репозитории пишется ОТНОСИТЕЛЬНЫМ путём: .mcp.json общий для
+ * команды, и домашнему пути одного разработчика там не место.
+ */
+export interface MycBinChoice {
+  readonly command: string;
+  /** Откуда взято: env | repo | home | path — для отчёта wire. */
+  readonly source: "env" | "repo" | "home" | "path" | "none";
+}
+
+export function resolveMycBin(
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (p: string) => boolean = existsSync,
+): MycBinChoice {
+  const fromEnv = env.MYC_BIN;
+  if (fromEnv !== undefined && fromEnv.length > 0 && exists(fromEnv)) {
+    return { command: fromEnv, source: "env" };
+  }
+  for (const rel of ["node_modules/.bin/myc", "dist/myc", ".myc/bin/myc"]) {
+    if (exists(join(root, rel))) return { command: `./${rel}`, source: "repo" };
+  }
+  const home = join(env.HOME ?? "", ".myc/bin/myc");
+  if ((env.HOME ?? "").length > 0 && exists(home)) return { command: home, source: "home" };
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (dir.length > 0 && exists(join(dir, "myc"))) return { command: "myc", source: "path" };
+  }
+  return { command: "myc", source: "none" };
+}
+
+function planClaude(plan: Plan, o: WireOptions): void {
+  const specs = HOOK_SPECS.filter((s) => o.events.includes(s.event));
+  planOwnFile(plan, o.root, ".claude/helpers/myc-hooks.mjs", claudeHelper({ events: o.events, hookOutput: o.hookOutput }));
+  planOwnFile(plan, o.root, ".claude/skills/myc/SKILL.md", skillMd());
+  planJsonMerge(plan, o.root, ".claude/settings.json", (source) =>
+    mergeClaudeSettings(source, specs, o.mode, ".claude/settings.json"),
+  );
+  planJsonMerge(plan, o.root, ".mcp.json", (source) => {
+    const value = { ...source.value };
+    const servers = asRecord(value["mcpServers"]);
+    servers["myc"] = { command: o.mycBin.command, args: ["mcp", "--profile", "agent"] };
+    value["mcpServers"] = servers;
+    return { nodes: ["mcpServers.myc"], conflicts: [], value };
+  });
+  plan.untouched.push("CLAUDE.md", ".claude/settings.json:statusLine");
+}
+
+function planCodex(plan: Plan, o: WireOptions): void {
+  planOwnFile(plan, o.root, ".codex/myc-notify.mjs", codexNotify({ events: o.events, hookOutput: o.hookOutput }));
+
+  const rel = ".codex/config.toml";
+  const abs = join(o.root, rel);
+  const current = fileText(abs) ?? "";
+  const mcpBlock = [
+    TOML_MCP_START,
+    "[mcp_servers.myc]",
+    'command = "myc"',
+    'args    = ["mcp", "--profile", "agent"]',
+    "startup_timeout_sec = 10",
+    TOML_MCP_END,
+  ].join("\n");
+  const notifyBlock = [TOML_NOTIFY_START, 'notify = ["node", ".codex/myc-notify.mjs"]', TOML_NOTIFY_END].join("\n");
+
+  const nodes: string[] = [];
+  let next = current;
+
+  // Таблица безопасна в конце файла; чужая [mcp_servers.myc] вне маркеров —
+  // конфликт, потому что переписать её значило бы отобрать чужой сервер.
+  if (!hasBlock(next, TOML_MCP_START, TOML_MCP_END) && /^\s*\[mcp_servers\.myc\]/m.test(next)) {
+    plan.conflicts.push({ path: rel, node: "[mcp_servers.myc]", command: "секция уже есть вне маркеров myc" });
+  } else {
+    next = replaceBlock(next, TOML_MCP_START, TOML_MCP_END, mcpBlock);
+    nodes.push("[mcp_servers.myc]");
+  }
+
+  // notify — ключ верхнего уровня, и в TOML он обязан стоять ДО первой
+  // таблицы, иначе попадёт внутрь неё. Поэтому свой блок кладём в начало.
+  const hasForeignNotify = /^\s*notify\s*=/m.test(removeBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END));
+  if (hasForeignNotify) {
+    plan.notes.push(`${rel}: свой notify уже настроен — не трогаем; добавь ".codex/myc-notify.mjs" вручную, если нужен эпизод у Codex`);
+  } else if (hasBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END)) {
+    next = replaceBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END, notifyBlock);
+    nodes.push("notify");
+  } else {
+    next = `${notifyBlock}\n${next.length > 0 && !next.startsWith("\n") ? "\n" : ""}${next}`;
+    nodes.push("notify");
+  }
+
+  if (plan.conflicts.some((c) => c.path === rel)) return;
+  if (next === current) {
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "уже актуален", content: next, nodes, backup: false });
+    return;
+  }
+  plan.actions.push({
+    path: rel,
+    kind: current.length === 0 ? "new" : "merge",
+    detail: `+${nodes.length} узла: ${nodes.join(", ")}`,
+    content: next,
+    nodes,
+    backup: current.length > 0,
+  });
+}
+
+function planOpencode(plan: Plan, o: WireOptions): void {
+  planOwnFile(plan, o.root, ".opencode/plugin/myc.ts", opencodePlugin({ events: o.events, hookOutput: o.hookOutput }));
+  planJsonMerge(plan, o.root, "opencode.json", (source) => {
+    const value = { ...source.value };
+    if (!source.exists) value["$schema"] = "https://opencode.ai/config.json";
+    const mcp = asRecord(value["mcp"]);
+    mcp["myc"] = { type: "local", command: ["myc", "mcp", "--profile", "agent"], enabled: true };
+    value["mcp"] = mcp;
+    return { nodes: ["mcp.myc"], conflicts: [], value };
+  });
+}
+
+function planAgentsMd(plan: Plan, o: WireOptions): void {
+  const rel = "AGENTS.md";
+  const abs = join(o.root, rel);
+  const current = fileText(abs);
+  if (!o.agentsMd) {
+    plan.untouched.push(`${rel} (нужен --agents-md)`);
+    return;
+  }
+  const next = replaceBlock(current ?? "", AGENTS_START, AGENTS_END, agentsBlock());
+  if (current === next) {
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "блок уже на месте", content: next, nodes: ["myc-block"], backup: false });
+    return;
+  }
+  plan.actions.push({
+    path: rel,
+    kind: current === null ? "new" : "merge",
+    detail: "блок между маркерами myc:start/myc:end",
+    content: next,
+    nodes: ["myc-block"],
+    backup: current !== null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Журнал
+// ---------------------------------------------------------------------------
+
+interface JournalEntry {
+  readonly path: string;
+  readonly kind: ActionKind;
+  readonly nodes: readonly string[];
+  /** Хеш файла на момент записи: изменился — `unwire` не трогает файл. */
+  readonly hash: string;
+}
+
+interface Journal {
+  readonly v: 1;
+  readonly written_at: number;
+  readonly agents: readonly string[];
+  readonly entries: readonly JournalEntry[];
+}
+
+function journalPath(root: string, ctx: CommandContext): string {
+  const db = ctx.globals.db;
+  const dir = db !== undefined ? dirname(resolve(db)) : join(root, ".myc");
+  return join(dir, WIRE_JOURNAL);
+}
+
+function applyAction(root: string, action: Action): void {
+  const abs = join(root, action.path);
+  if (action.kind === "unchanged") return;
+  mkdirSync(dirname(abs), { recursive: true });
+  if (action.backup && existsSync(abs)) copyFileSync(abs, `${abs}${BAK_SUFFIX}`);
+  writeFileSync(abs, action.content);
+}
+
+// ---------------------------------------------------------------------------
+// Команда
+// ---------------------------------------------------------------------------
+
+const WIRE_FLAGS: readonly FlagSpec[] = [
+  { name: "agents", value: "string", description: "claude,codex,opencode (default: all three)" },
+  { name: "dry-run", description: "print every file and change, write nothing" },
+  { name: "agents-md", description: "also insert the myc block into AGENTS.md (opt-in)" },
+  { name: "hook-mode", value: "string", description: "append|replace|skip — what to do when a foreign hook is already there" },
+  { name: "hook-output", value: "string", description: "json|text — how the rescue packet reaches the agent (default json)" },
+];
+
+export interface WireData {
+  readonly root: string;
+  readonly agents: readonly string[];
+  readonly events: readonly string[];
+  readonly skipped_events: readonly { event: string; reason: string }[];
+  readonly actions: readonly { path: string; action: ActionKind; detail: string }[];
+  readonly untouched: readonly string[];
+  readonly notes: readonly string[];
+  readonly dry_run: boolean;
+  readonly changed: number;
+  readonly journal: string | null;
+}
+
+function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
+  return { ok: false, code, msg, exit, hint };
+}
+
+function parseAgents(raw: string | undefined): AgentName[] | null {
+  if (raw === undefined) return [...ALL_AGENTS];
+  const out: AgentName[] = [];
+  for (const part of raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)) {
+    if (!(ALL_AGENTS as readonly string[]).includes(part)) return null;
+    out.push(part as AgentName);
+  }
+  return out.length > 0 ? out : null;
+}
+
+export function createWireCommand(registry: Registry): Command {
+  return {
+    name: "wire",
+    summary: "install myc hooks for Claude Code, Codex and opencode without touching foreign files",
+    flags: WIRE_FLAGS,
+    help:
+      "Writes only its own files in full (helper, skill, plugin); JSON configs are merged node by " +
+      "node with a .myc.bak alongside. CLAUDE.md is never touched and AGENTS.md only with " +
+      "--agents-md. A foreign hook on the same event is a conflict: nothing is written until " +
+      "--hook-mode says what to do. Running wire twice changes nothing.",
+    handler: (ctx) => {
+      const root = resolve(ctx.globals.directory ?? process.cwd());
+      const agents = parseAgents(flagStr(ctx, "agents"));
+      if (agents === null) {
+        return failure("usage.invalid", `--agents принимает ${ALL_AGENTS.join(", ")}`, ExitCode.USAGE);
+      }
+
+      const modeRaw = flagStr(ctx, "hook-mode");
+      if (modeRaw !== undefined && !["append", "replace", "skip"].includes(modeRaw)) {
+        return failure("usage.invalid", `--hook-mode принимает append, replace, skip`, ExitCode.USAGE);
+      }
+      const mode = modeRaw as HookMode | undefined;
+
+      const outRaw = flagStr(ctx, "hook-output") ?? "json";
+      if (outRaw !== "json" && outRaw !== "text") {
+        return failure("usage.invalid", "--hook-output принимает json или text", ExitCode.USAGE);
+      }
+
+      // Хук на команду, которой в этой сборке нет, — обещание, которое некому
+      // исполнить. Ставим только то, что реально отработает (И2).
+      const available: HookEvent[] = [];
+      const skipped: { event: string; reason: string }[] = [];
+      for (const spec of HOOK_SPECS) {
+        if (registry.hasTop(spec.command)) available.push(spec.event);
+        else skipped.push({ event: spec.event, reason: `команды \`myc ${spec.command}\` нет в этой сборке` });
+      }
+      if (!available.includes("pre-compact")) {
+        return failure(
+          "precond.missing_command",
+          "нет команды `myc absorb-session` — pre-compact поставить не на что",
+          ExitCode.PRECOND,
+        );
+      }
+
+      const mycBin = resolveMycBin(root);
+      const options: WireOptions = {
+        root,
+        events: available,
+        hookOutput: outRaw,
+        mode,
+        agentsMd: ctx.flags["agents-md"] === true,
+        mycBin,
+      };
+
+      const plan = emptyPlan();
+      if (agents.includes("claude")) planClaude(plan, options);
+      if (agents.includes("codex")) planCodex(plan, options);
+      if (agents.includes("opencode")) planOpencode(plan, options);
+      planAgentsMd(plan, options);
+
+      if (plan.conflicts.length > 0) {
+        const lines = plan.conflicts.map((c) => `  ${c.path} → ${c.node}: ${c.command}`);
+        return failure(
+          "conflict.foreign_hook",
+          [
+            "чужие узлы на месте наших, ничего не записано:",
+            ...lines,
+            "",
+            "  --hook-mode append   добавить myc-хук вторым в тот же массив (рекомендую)",
+            "  --hook-mode replace  заменить (будет .myc.bak)",
+            "  --hook-mode skip     не ставить этот хук (myc потеряет контекст при сжатии)",
+          ].join("\n"),
+          ExitCode.CONFLICT,
+          "myc wire --hook-mode append",
+        );
+      }
+
+      const dryRun = ctx.flags["dry-run"] === true;
+      const changed = plan.actions.filter((a) => a.kind !== "unchanged").length;
+      let journal: string | null = null;
+
+      if (!dryRun) {
+        for (const action of plan.actions) applyAction(root, action);
+        // В журнал идут ВСЕ файлы плана, включая неизменённые: журнал
+        // описывает установленное состояние, а не разницу последнего запуска.
+        // Иначе второй (идемпотентный) `wire` вычёркивал бы из него наши
+        // собственные файлы, и `unwire` оставлял бы их на диске навсегда.
+        const entries: JournalEntry[] = plan.actions.map((a) => ({
+          path: a.path,
+          kind: a.kind,
+          nodes: a.nodes,
+          hash: sha256(a.content),
+        }));
+        const jPath = journalPath(root, ctx);
+        try {
+          mkdirSync(dirname(jPath), { recursive: true });
+          const doc: Journal = { v: 1, written_at: Date.now(), agents, entries };
+          writeFileSync(jPath, `${JSON.stringify(doc, null, 2)}\n`);
+          journal = relative(root, jPath);
+        } catch (e) {
+          ctx.warn(
+            "degraded.journal",
+            `журнал ${jPath} не записан (${e instanceof Error ? e.message : String(e)}): myc unwire не сможет снять хуки`,
+          );
+        }
+      }
+
+      for (const skip of skipped) {
+        ctx.warn("degraded.hook_missing", `хук ${skip.event} не поставлен: ${skip.reason}`);
+      }
+
+      // Конфиг записан, но команду в нём запустить нечем: MCP-сервер молча не
+      // поднимется, и агент останется без инструментов myc на всю сессию.
+      // Молчать здесь нельзя (И2) — сказать надо в момент wire, а не через час.
+      if (mycBin.source === "none" && agents.includes("claude")) {
+        ctx.warn(
+          "degraded.bin_unresolved",
+          "исполняемый myc не найден: ни MYC_BIN, ни node_modules/.bin/myc, ни dist/myc, " +
+            "ни .myc/bin/myc, ни ~/.myc/bin/myc, ни PATH. В .mcp.json записано 'myc' — " +
+            "MCP-сервер не поднимется, пока myc не появится в PATH или в MYC_BIN",
+        );
+      }
+
+      const data: WireData = {
+        root,
+        agents,
+        events: options.events,
+        skipped_events: skipped,
+        actions: plan.actions.map((a) => ({ path: a.path, action: a.kind, detail: a.detail })),
+        untouched: plan.untouched,
+        notes: plan.notes,
+        dry_run: dryRun,
+        changed,
+        journal,
+      };
+      return { ok: true, data };
+    },
+    renderHuman: (data) => {
+      const d = data as WireData;
+      const verb = d.dry_run ? "записал бы:" : "записано:";
+      const lines: string[] = [verb];
+      const width = Math.max(...d.actions.map((a) => a.path.length), 10);
+      for (const a of d.actions) {
+        lines.push(`  ${a.action.padEnd(9)} ${a.path.padEnd(width)}  ${a.detail}`);
+      }
+      if (d.untouched.length > 0) lines.push(`не тронуто: ${d.untouched.join(", ")}`);
+      for (const note of d.notes) lines.push(`! ${note}`);
+      if (d.journal !== null) lines.push(`журнал: ${d.journal} (для myc unwire)`);
+      if (d.dry_run) lines.push("ничего не записано (--dry-run)");
+      else if (d.changed === 0) lines.push("всё уже на месте, файлы не тронуты");
+      return `${lines.join("\n")}\n`;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// unwire
+// ---------------------------------------------------------------------------
+
+export interface UnwireData {
+  readonly removed: readonly string[];
+  readonly kept: readonly { path: string; reason: string }[];
+  readonly dry_run: boolean;
+}
+
+/**
+ * Снимает наши узлы из JSON-конфига, не трогая чужие. Свои узнаём по тем же
+ * признакам, по которым ставили: имя helper-файла в команде хука и ключ `myc`
+ * в списках серверов. Ключ журнала здесь не нужен — он уже сделал свою работу,
+ * подтвердив, что файл с момента записи не менялся.
+ */
+function stripJsonNodes(value: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...value };
+  const hooks = asRecord(out["hooks"]);
+  let hooksTouched = false;
+  for (const key of Object.keys(hooks)) {
+    const rest = asArray(hooks[key]).filter((e) => !isOurHookEntry(e));
+    hooksTouched = true;
+    if (rest.length === 0) delete hooks[key];
+    else hooks[key] = rest;
+  }
+  if (hooksTouched) {
+    if (Object.keys(hooks).length === 0) delete out["hooks"];
+    else out["hooks"] = hooks;
+  }
+  const permissions = asRecord(out["permissions"]);
+  if (Array.isArray(permissions["allow"])) {
+    const allow = (permissions["allow"] as unknown[]).filter((a) => a !== MYC_PERMISSION);
+    if (allow.length === 0) delete permissions["allow"];
+    else permissions["allow"] = allow;
+    if (Object.keys(permissions).length === 0) delete out["permissions"];
+    else out["permissions"] = permissions;
+  }
+  const servers = asRecord(out["mcpServers"]);
+  if (servers["myc"] !== undefined) {
+    delete servers["myc"];
+    if (Object.keys(servers).length === 0) delete out["mcpServers"];
+    else out["mcpServers"] = servers;
+  }
+  const mcp = asRecord(out["mcp"]);
+  if (mcp["myc"] !== undefined) {
+    delete mcp["myc"];
+    if (Object.keys(mcp).length === 0) delete out["mcp"];
+    else out["mcp"] = mcp;
+  }
+  return out;
+}
+
+export function createUnwireCommand(): Command {
+  return {
+    name: "unwire",
+    summary: "remove exactly what `myc wire` installed, by the .myc/wire.json journal",
+    flags: [{ name: "dry-run", description: "print what would be removed, change nothing" }],
+    help:
+      "Files changed after we wrote them are left alone and reported: a journal hash mismatch " +
+      "means a human edited the file, and removing our node blind would be the same trust " +
+      "breach as writing it blind.",
+    handler: (ctx) => {
+      const root = resolve(ctx.globals.directory ?? process.cwd());
+      const jPath = journalPath(root, ctx);
+      const raw = fileText(jPath);
+      if (raw === null) {
+        return failure("notfound.journal", `нет журнала ${jPath}: снимать нечего`, ExitCode.NOTFOUND, "myc wire");
+      }
+      let journal: Journal;
+      try {
+        journal = JSON.parse(raw) as Journal;
+      } catch (e) {
+        return failure("io.read", `журнал не разбирается: ${e instanceof Error ? e.message : String(e)}`, ExitCode.ERR);
+      }
+
+      const dryRun = ctx.flags["dry-run"] === true;
+      const removed: string[] = [];
+      const kept: { path: string; reason: string }[] = [];
+
+      for (const entry of journal.entries) {
+        const abs = join(root, entry.path);
+        const current = fileText(abs);
+        if (current === null) {
+          kept.push({ path: entry.path, reason: "файла уже нет" });
+          continue;
+        }
+        if (sha256(current) !== entry.hash) {
+          kept.push({ path: entry.path, reason: "изменён после нас — не трогаю" });
+          continue;
+        }
+        if (entry.nodes.length === 0) {
+          if (!dryRun) rmSync(abs, { force: true });
+          removed.push(entry.path);
+          continue;
+        }
+        if (entry.path.endsWith(".md")) {
+          const next = removeBlock(current, AGENTS_START, AGENTS_END);
+          if (!dryRun) writeFileSync(abs, next);
+          removed.push(`${entry.path} (блок myc)`);
+          continue;
+        }
+        if (entry.path.endsWith(".toml")) {
+          let next = removeBlock(current, TOML_NOTIFY_START, TOML_NOTIFY_END);
+          next = removeBlock(next, TOML_MCP_START, TOML_MCP_END);
+          if (!dryRun) writeFileSync(abs, next);
+          removed.push(`${entry.path} (блоки myc)`);
+          continue;
+        }
+        const source = readJsonSource(abs);
+        if (source.broken) {
+          kept.push({ path: entry.path, reason: "не разбирается как JSON" });
+          continue;
+        }
+        const next = serializeJson(stripJsonNodes(source.value), source.indent);
+        if (!dryRun) writeFileSync(abs, next);
+        removed.push(`${entry.path} (${entry.nodes.join(", ")})`);
+      }
+
+      if (!dryRun && kept.length === 0) rmSync(jPath, { force: true });
+
+      const data: UnwireData = { removed, kept, dry_run: dryRun };
+      return { ok: true, data };
+    },
+    renderHuman: (data) => {
+      const d = data as UnwireData;
+      const lines = [d.dry_run ? "снял бы:" : "снято:"];
+      for (const r of d.removed) lines.push(`  - ${r}`);
+      for (const k of d.kept) lines.push(`  ! ${k.path}: ${k.reason}`);
+      if (d.removed.length === 0) lines.push("  (нечего снимать)");
+      return `${lines.join("\n")}\n`;
+    },
+  };
+}

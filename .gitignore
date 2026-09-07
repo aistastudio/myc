@@ -1,8 +1,33 @@
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 
+# Bun / TypeScript build outputs
+node_modules/
+dist/
+*.tsbuildinfo
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Backup files left by tooling (myc wire, editors, ad-hoc saves)
+*.bak
+*.myc.bak
+
+# myc runtime state that isn't the oplog: local caches, session/db files,
+# hook bookkeeping. .myc/workspace.toml and .myc/graph are NOT listed here —
+# they're committed on purpose (S42, S60).
+.myc/wire.json
+.myc/hooks.json
+.myc/bootstrap.cache.json
+.myc/projections/
+
+# graft — локальные помощники с путями конкретной машины, генерируются `graft init`
+/.claude/helpers/graft-*.cjs
+
+# .claude/ создаётся командой `myc wire` под конкретную машину и набор
+# инструментов: хуки ссылаются на локальные пути, а settings.json смешивает
+# наши хуки с чужими. Клон получает его своим `myc wire`, а не из репозитория.
+/.claude/

@@ -1,0 +1,302 @@
+[
+  {
+    "repo": "memory",
+    "root": "<repo>",
+    "rel": "bench/absorb-calibrate.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-apps-sdk",
+    "root": "<repo2>/cherry-apps-sdk",
+    "rel": "example/eslint.config.js",
+    "lang": "js"
+  },
+  {
+    "repo": "cherry-bots-sdk",
+    "root": "<repo2>/cherry-bots-sdk",
+    "rel": "example/src/handlers/blink.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-desktop",
+    "root": "<repo2>/cherry-desktop",
+    "rel": "frontend/app/layout.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "cherry-developer-portal",
+    "root": "<repo2>/cherry-developer-portal",
+    "rel": "e2e/admin.spec.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-embed-sdk",
+    "root": "<repo2>/cherry-embed-sdk",
+    "rel": "example/app-trusted/server.js",
+    "lang": "js"
+  },
+  {
+    "repo": "cherry-miniapp-sdk",
+    "root": "<repo2>/cherry-miniapp-sdk",
+    "rel": "example/server.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-mobile",
+    "root": "<repo2>/cherry-mobile",
+    "rel": "App.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "collector",
+    "root": "<repo2>/collector",
+    "rel": "backend/src/api/analytics/analytics.controller.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "messaging-server",
+    "root": "<repo2>/messaging-server",
+    "rel": "admin/postcss.config.js",
+    "lang": "js"
+  },
+  {
+    "repo": "miniapp-pachinko",
+    "root": "<repo2>/miniapp-pachinko",
+    "rel": "apps/api/scripts/aim-jackpot.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "miniapp-sol-reclaim",
+    "root": "<repo2>/miniapp-sol-reclaim",
+    "rel": "apps/api/scripts/backfill-firestore.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "miniapp-swap",
+    "root": "<repo2>/miniapp-swap",
+    "rel": "apps/api/src/config.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "xplace-proxy",
+    "root": "<repo2>/xplace-proxy",
+    "rel": "src/index.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "memory",
+    "root": "<repo>",
+    "rel": "bench/defs-accuracy.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-apps-sdk",
+    "root": "<repo2>/cherry-apps-sdk",
+    "rel": "example/src/__tests__/server.spec.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-bots-sdk",
+    "root": "<repo2>/cherry-bots-sdk",
+    "rel": "example/src/handlers/bot-hosted-blink.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-desktop",
+    "root": "<repo2>/cherry-desktop",
+    "rel": "frontend/app/page.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "cherry-developer-portal",
+    "root": "<repo2>/cherry-developer-portal",
+    "rel": "e2e/fake-wallet.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-embed-sdk",
+    "root": "<repo2>/cherry-embed-sdk",
+    "rel": "example/app-trusted+wallet/server.js",
+    "lang": "js"
+  },
+  {
+    "repo": "cherry-miniapp-sdk",
+    "root": "<repo2>/cherry-miniapp-sdk",
+    "rel": "example/src/App.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "cherry-mobile",
+    "root": "<repo2>/cherry-mobile",
+    "rel": "app.config.js",
+    "lang": "js"
+  },
+  {
+    "repo": "collector",
+    "root": "<repo2>/collector",
+    "rel": "backend/src/api/analytics/analytics.module.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "messaging-server",
+    "root": "<repo2>/messaging-server",
+    "rel": "admin/src/App.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "miniapp-pachinko",
+    "root": "<repo2>/miniapp-pachinko",
+    "rel": "apps/api/scripts/devnet-e2e.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "miniapp-sol-reclaim",
+    "root": "<repo2>/miniapp-sol-reclaim",
+    "rel": "apps/api/scripts/backfill-mongo-from-firestore.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "miniapp-swap",
+    "root": "<repo2>/miniapp-swap",
+    "rel": "apps/api/src/domain/referralFee.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "memory",
+    "root": "<repo>",
+    "rel": "bench/defs-fixtures/adversarial.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-apps-sdk",
+    "root": "<repo2>/cherry-apps-sdk",
+    "rel": "example/src/config.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-bots-sdk",
+    "root": "<repo2>/cherry-bots-sdk",
+    "rel": "example/src/handlers/dm.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-desktop",
+    "root": "<repo2>/cherry-desktop",
+    "rel": "frontend/next.config.js",
+    "lang": "js"
+  },
+  {
+    "repo": "cherry-developer-portal",
+    "root": "<repo2>/cherry-developer-portal",
+    "rel": "e2e/global-setup.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-embed-sdk",
+    "root": "<repo2>/cherry-embed-sdk",
+    "rel": "example/host-identity/server.js",
+    "lang": "js"
+  },
+  {
+    "repo": "cherry-miniapp-sdk",
+    "root": "<repo2>/cherry-miniapp-sdk",
+    "rel": "example/src/StandaloneView.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "cherry-mobile",
+    "root": "<repo2>/cherry-mobile",
+    "rel": "babel.config.js",
+    "lang": "js"
+  },
+  {
+    "repo": "collector",
+    "root": "<repo2>/collector",
+    "rel": "backend/src/api/analytics/analytics.service.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "messaging-server",
+    "root": "<repo2>/messaging-server",
+    "rel": "admin/src/api/apps.client.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "miniapp-pachinko",
+    "root": "<repo2>/miniapp-pachinko",
+    "rel": "apps/api/scripts/earnings.js",
+    "lang": "js"
+  },
+  {
+    "repo": "miniapp-sol-reclaim",
+    "root": "<repo2>/miniapp-sol-reclaim",
+    "rel": "apps/api/scripts/backfill-stats.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "miniapp-swap",
+    "root": "<repo2>/miniapp-swap",
+    "rel": "apps/api/src/domain/swaps.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "memory",
+    "root": "<repo>",
+    "rel": "packages/anchors/src/index.test.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-apps-sdk",
+    "root": "<repo2>/cherry-apps-sdk",
+    "rel": "example/src/debug-fetch.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-bots-sdk",
+    "root": "<repo2>/cherry-bots-sdk",
+    "rel": "example/src/handlers/group.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-desktop",
+    "root": "<repo2>/cherry-desktop",
+    "rel": "frontend/platforms/desktop/DesktopDeepLink.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-developer-portal",
+    "root": "<repo2>/cherry-developer-portal",
+    "rel": "e2e/miniapp-binding.spec.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "cherry-embed-sdk",
+    "root": "<repo2>/cherry-embed-sdk",
+    "rel": "example/react-native/App.bundled.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "cherry-miniapp-sdk",
+    "root": "<repo2>/cherry-miniapp-sdk",
+    "rel": "example/src/main.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "cherry-mobile",
+    "root": "<repo2>/cherry-mobile",
+    "rel": "components/HapticTab.tsx",
+    "lang": "tsx"
+  },
+  {
+    "repo": "collector",
+    "root": "<repo2>/collector",
+    "rel": "backend/src/api/analytics/dto/retention.dto.ts",
+    "lang": "ts"
+  },
+  {
+    "repo": "messaging-server",
+    "root": "<repo2>/messaging-server",
+    "rel": "admin/src/api/audit.client.ts",
+    "lang": "ts"
+  }
+]

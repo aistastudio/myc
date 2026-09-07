@@ -1,0 +1,7 @@
+# myc workspace config — commit this file (per-machine settings go in local.toml)
+slug = "memory"
+
+# Бюджет myc bootstrap. Умолчание 2000 не вмещает закреплённые правила проекта
+# (их сейчас пять), и первым вытесняется [auto:graft] — самый нужный агенту блок.
+[bootstrap]
+budget = 3000

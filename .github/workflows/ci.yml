@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install
+        run: bun install
+
+      - name: typecheck
+        run: bun run typecheck
+
+      - name: test
+        run: bun test
+
+      - name: deps-check
+        run: bun run deps-check
+
+      - name: build
+        run: bun run build
+
+      # Бюджеты латентности (И1): prime p99<30мс, чтение<3мс, гибридный
+      # поиск<25мс/100k, запись<5мс, холодный старт<60мс. Плюс регрессия
+      # p95 > 15% относительно bench/baseline.json. Раннер не самоуправляемый
+      # (self-hosted с фиксированным железом из docs/design/02 недоступен
+      # в этом репозитории), но тип раннера один и тот же на каждом прогоне —
+      # абсолютные бюджеты это не портит, шум сглаживается прогревом и медианой
+      # внутри скрипта; регрессионный порог 15% умышленно не 5-7%, чтобы не
+      # флапать от дрожания GitHub-раннера (см. scripts/bench-latency.ts).
+      - name: bench:latency (бюджеты И1 + регрессия к baseline)
+        run: bun run bench:latency

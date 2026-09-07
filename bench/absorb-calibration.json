@@ -1,0 +1,246 @@
+{
+  "generated_at": "2026-09-04T13:48:46.399Z",
+  "model": "local:onnx-wasm:multilingual-e5-small-q8:384:l2",
+  "db": "<repo>/.myc/myc.db",
+  "pairs": 68,
+  "thresholds": {
+    "dup_cos": 0.99,
+    "dup_jac": 0.7,
+    "cand_cos": 0.845,
+    "cand_jac": 0.2,
+    "dup_jac_noembed": 0.9,
+    "cand_jac_noembed": 0.2,
+    "max_related": 3
+  },
+  "matrix": {
+    "duplicate": {
+      "duplicate": 14,
+      "update": 0,
+      "contradiction": 0,
+      "related": 0,
+      "new": 0
+    },
+    "update": {
+      "duplicate": 0,
+      "update": 13,
+      "contradiction": 0,
+      "related": 0,
+      "new": 0
+    },
+    "contradiction": {
+      "duplicate": 0,
+      "update": 0,
+      "contradiction": 13,
+      "related": 0,
+      "new": 0
+    },
+    "related": {
+      "duplicate": 0,
+      "update": 0,
+      "contradiction": 0,
+      "related": 12,
+      "new": 2
+    },
+    "new": {
+      "duplicate": 0,
+      "update": 0,
+      "contradiction": 0,
+      "related": 2,
+      "new": 12
+    }
+  },
+  "accuracy": 0.9411764705882353,
+  "macro_f1": 0.9428571428571428,
+  "false_duplicate": 0,
+  "false_duplicate_rate": 0,
+  "false_update": 0,
+  "per_class": {
+    "duplicate": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "support": 14
+    },
+    "update": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "support": 13
+    },
+    "contradiction": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "support": 13
+    },
+    "related": {
+      "precision": 0.8571428571428571,
+      "recall": 0.8571428571428571,
+      "f1": 0.8571428571428571,
+      "support": 14
+    },
+    "new": {
+      "precision": 0.8571428571428571,
+      "recall": 0.8571428571428571,
+      "f1": 0.8571428571428571,
+      "support": 14
+    }
+  },
+  "distribution": {
+    "duplicate": {
+      "cos": {
+        "n": 14,
+        "min": 0.9754849661240373,
+        "p25": 0.9907321805332328,
+        "median": 0.9954633213222477,
+        "p75": 0.9968877676956633,
+        "max": 1
+      },
+      "jac": {
+        "n": 14,
+        "min": 0.7025495750708215,
+        "p25": 0.950482532253885,
+        "median": 0.9841510903426791,
+        "p75": 1,
+        "max": 1
+      }
+    },
+    "update": {
+      "cos": {
+        "n": 13,
+        "min": 0.9588363595434546,
+        "p25": 0.9755144133165802,
+        "median": 0.9821391702849694,
+        "p75": 0.9874969028387852,
+        "max": 0.9919224144526159
+      },
+      "jac": {
+        "n": 13,
+        "min": 0.49044585987261147,
+        "p25": 0.6083333333333333,
+        "median": 0.668235294117647,
+        "p75": 0.6957671957671958,
+        "max": 0.9
+      }
+    },
+    "contradiction": {
+      "cos": {
+        "n": 13,
+        "min": 0.9235723580503851,
+        "p25": 0.9644979858800974,
+        "median": 0.9728234484449282,
+        "p75": 0.9781689214764326,
+        "max": 0.9919757605655779
+      },
+      "jac": {
+        "n": 13,
+        "min": 0.2848297213622291,
+        "p25": 0.45498783454987834,
+        "median": 0.5344827586206896,
+        "p75": 0.6968503937007874,
+        "max": 0.9638989169675091
+      }
+    },
+    "related": {
+      "cos": {
+        "n": 14,
+        "min": 0.8389665216900201,
+        "p25": 0.849860968917026,
+        "median": 0.8611217376656886,
+        "p75": 0.8832676285801583,
+        "max": 0.9199819112321272
+      },
+      "jac": {
+        "n": 14,
+        "min": 0.060669456066945605,
+        "p25": 0.09369327073552426,
+        "median": 0.13864743559026946,
+        "p75": 0.15535908174344656,
+        "max": 0.21861471861471862
+      }
+    },
+    "new": {
+      "cos": {
+        "n": 14,
+        "min": 0.7650328691856239,
+        "p25": 0.8018106195735875,
+        "median": 0.8191725046290586,
+        "p75": 0.8350478644362511,
+        "max": 0.8554105225603161
+      },
+      "jac": {
+        "n": 14,
+        "min": 0.027777777777777776,
+        "p25": 0.04421232722524875,
+        "median": 0.06881375398359657,
+        "p75": 0.08271777003484321,
+        "max": 0.12056737588652482
+      }
+    }
+  },
+  "quantization": {
+    "n": 68,
+    "mean": 6.671122870610179e-05,
+    "max": 0.00030879177394849133
+  },
+  "plateau": {
+    "dup_cos": {
+      "from": 0.9,
+      "to": 0.99
+    },
+    "dup_jac": {
+      "from": 0.5,
+      "to": 0.7
+    },
+    "cand_cos": {
+      "from": 0.845,
+      "to": 0.845
+    },
+    "cand_jac": {
+      "from": 0.2,
+      "to": 0.6
+    }
+  },
+  "lexical": {
+    "matrix": {
+      "duplicate": {
+        "duplicate": 11,
+        "update": 0,
+        "contradiction": 0,
+        "related": 3,
+        "new": 0
+      },
+      "update": {
+        "duplicate": 0,
+        "update": 0,
+        "contradiction": 0,
+        "related": 13,
+        "new": 0
+      },
+      "contradiction": {
+        "duplicate": 0,
+        "update": 0,
+        "contradiction": 0,
+        "related": 13,
+        "new": 0
+      },
+      "related": {
+        "duplicate": 0,
+        "update": 0,
+        "contradiction": 0,
+        "related": 2,
+        "new": 12
+      },
+      "new": {
+        "duplicate": 0,
+        "update": 0,
+        "contradiction": 0,
+        "related": 0,
+        "new": 14
+      }
+    },
+    "accuracy": 0.39705882352941174,
+    "false_duplicate": 0,
+    "false_update": 0
+  }
+}

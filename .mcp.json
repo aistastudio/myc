@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "graft": {
+      "command": "graft",
+      "args": [
+        "mcp"
+      ]
+    },
+    "myc": {
+      "command": "./dist/myc",
+      "args": [
+        "mcp",
+        "--profile",
+        "agent"
+      ]
+    }
+  }
+}

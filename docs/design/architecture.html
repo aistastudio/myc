@@ -1,0 +1,814 @@
+<title>Архитектура myc</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400;12..96,75..100,600;12..96,75..100,800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --paper:      #F3F4F1;
+    --surface:    #FBFBF9;
+    --sunk:       #EAECE7;
+    --ink:        #191D18;
+    --ink-soft:   #4A5148;
+    --ink-faint:  #767D73;
+    --rule:       #D6D9D2;
+    --rule-soft:  #E3E5E0;
+    --accent:     #9A6018;
+    --accent-ink: #7A4A10;
+    --accent-wash:#F0E5D4;
+    --violet:     #55496B;
+    --danger:     #8C3A2E;
+
+    --s1: #6E4210;
+    --s2: #9A6018;
+    --s3: #BC8438;
+    --s4: #D6AA6E;
+    --s5: #E8CCA2;
+
+    --measure: 66ch;
+    --fd: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif;
+    --fb: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --fm: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #14170F;
+      --surface:    #1C1F18;
+      --sunk:       #232720;
+      --ink:        #E8EAE3;
+      --ink-soft:   #B0B5A9;
+      --ink-faint:  #838A7C;
+      --rule:       #333828;
+      --rule-soft:  #282D22;
+      --accent:     #D9A257;
+      --accent-ink: #EDBE7C;
+      --accent-wash:#2B2517;
+      --violet:     #A99AC4;
+      --danger:     #D98070;
+
+      --s1: #8A5C1E;
+      --s2: #B07C2C;
+      --s3: #C99A4E;
+      --s4: #DDB87C;
+      --s5: #EDD6AC;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #14170F;
+    --surface:    #1C1F18;
+    --sunk:       #232720;
+    --ink:        #E8EAE3;
+    --ink-soft:   #B0B5A9;
+    --ink-faint:  #838A7C;
+    --rule:       #333828;
+    --rule-soft:  #282D22;
+    --accent:     #D9A257;
+    --accent-ink: #EDBE7C;
+    --accent-wash:#2B2517;
+    --violet:     #A99AC4;
+    --danger:     #D98070;
+
+    --s1: #8A5C1E;
+    --s2: #B07C2C;
+    --s3: #C99A4E;
+    --s4: #DDB87C;
+    --s5: #EDD6AC;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--fb);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 28px 96px;
+    display: grid;
+    grid-template-columns: 186px minmax(0, 1fr);
+    gap: 0 56px;
+    align-items: start;
+  }
+
+  /* ---------- masthead ---------- */
+  .mast {
+    grid-column: 1 / -1;
+    border-bottom: 2px solid var(--ink);
+    padding: 52px 0 26px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 28px;
+    align-items: end;
+  }
+  .wordmark {
+    font-family: var(--fd);
+    font-variation-settings: "wdth" 88, "opsz" 96;
+    font-weight: 800;
+    font-size: clamp(52px, 9vw, 92px);
+    line-height: 0.86;
+    letter-spacing: -0.035em;
+    margin: 0 0 14px;
+  }
+  .wordmark span { color: var(--accent); }
+  .lede {
+    font-size: 20px;
+    line-height: 1.45;
+    max-width: 34ch;
+    margin: 0;
+    color: var(--ink-soft);
+    text-wrap: balance;
+  }
+  .stamp {
+    font-family: var(--fm);
+    font-size: 11.5px;
+    line-height: 1.9;
+    color: var(--ink-faint);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .stamp b { color: var(--ink); font-weight: 500; }
+
+  /* ---------- nav rail ---------- */
+  .rail {
+    position: sticky;
+    top: 0;
+    padding: 34px 0;
+    font-family: var(--fm);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .rail ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+  .rail a {
+    color: var(--ink-faint);
+    text-decoration: none;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 4px;
+  }
+  .rail a:hover, .rail a:focus-visible { color: var(--accent); }
+  .rail a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .rail .n { color: var(--rule); }
+  .rail a:hover .n { color: var(--accent); }
+
+  /* ---------- flow ---------- */
+  .flow { padding-top: 34px; min-width: 0; }
+  section { padding: 0 0 62px; }
+  h2 {
+    font-family: var(--fd);
+    font-variation-settings: "wdth" 82, "opsz" 40;
+    font-weight: 700;
+    font-size: 30px;
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .eyebrow {
+    font-family: var(--fm);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  .dek {
+    max-width: var(--measure);
+    color: var(--ink-soft);
+    margin: 0 0 26px;
+  }
+  p { max-width: var(--measure); margin: 0 0 16px; }
+  strong { font-weight: 600; color: var(--ink); }
+  code {
+    font-family: var(--fm);
+    font-size: 0.855em;
+    background: var(--sunk);
+    padding: 0.1em 0.34em;
+    border-radius: 2px;
+  }
+
+  /* ---------- source ledger ---------- */
+  .ledger { display: grid; gap: 0; border-top: 1px solid var(--rule); }
+  .ledger .row {
+    display: grid;
+    grid-template-columns: 158px minmax(0, 1fr);
+    gap: 8px 22px;
+    padding: 15px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: baseline;
+  }
+  .ledger .who {
+    font-family: var(--fm);
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .ledger .who i {
+    display: block;
+    font-style: normal;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 3px;
+  }
+  .ledger .gap { color: var(--ink-soft); font-size: 16px; }
+
+  /* ---------- invariants ---------- */
+  .inv { display: grid; gap: 2px; }
+  .inv article {
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 22px;
+    padding: 22px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .inv .tag {
+    font-family: var(--fm);
+    font-size: 12px;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    padding-top: 4px;
+  }
+  .inv h3 {
+    font-family: var(--fd);
+    font-variation-settings: "wdth" 88;
+    font-weight: 600;
+    font-size: 19px;
+    line-height: 1.3;
+    margin: 0 0 8px;
+  }
+  .inv p { margin: 0; font-size: 16.5px; }
+
+  /* ---------- stack ---------- */
+  .stack { display: grid; gap: 3px; margin: 0 0 20px; }
+  .band {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+    padding: 13px 16px;
+    background: var(--surface);
+    border-left: 3px solid var(--rule);
+  }
+  .band.core   { border-left-color: var(--accent); background: var(--accent-wash); }
+  .band.store  { border-left-color: var(--violet); }
+  .band .what { font-size: 15.5px; line-height: 1.4; }
+  .band .what b { font-weight: 600; }
+  .band .from {
+    font-family: var(--fm);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* ---------- chart ---------- */
+  .chart { margin: 4px 0 10px; }
+  .barwrap { margin: 0 0 26px; }
+  .barhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    margin: 0 0 7px;
+    font-family: var(--fm);
+    font-size: 12px;
+  }
+  .barhead .name { color: var(--ink); }
+  .barhead .budget { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .track {
+    position: relative;
+    height: 30px;
+    background: var(--sunk);
+    border-radius: 2px;
+  }
+  .bar { display: flex; height: 100%; border-radius: 2px; overflow: hidden; }
+  .seg { height: 100%; }
+  .marker {
+    position: absolute;
+    top: -5px;
+    bottom: -5px;
+    width: 0;
+    border-left: 2px dashed var(--ink);
+  }
+  .marker span {
+    position: absolute;
+    left: 6px;
+    top: -2px;
+    font-family: var(--fm);
+    font-size: 10.5px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .axis {
+    position: relative;
+    height: 20px;
+    margin-top: 6px;
+    border-top: 1px solid var(--rule);
+  }
+  .tick {
+    position: absolute;
+    top: 0;
+    font-family: var(--fm);
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    transform: translateX(-50%);
+    font-variant-numeric: tabular-nums;
+  }
+  .tick::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -5px;
+    height: 4px;
+    border-left: 1px solid var(--rule);
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    margin: 14px 0 0;
+    font-family: var(--fm);
+    font-size: 11.5px;
+    color: var(--ink-soft);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i {
+    width: 11px; height: 11px; border-radius: 2px;
+    display: inline-block; flex: none;
+  }
+  .legend b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  /* ---------- lanes ---------- */
+  .lanes { display: grid; gap: 2px; }
+  .lane {
+    padding: 20px 0;
+    border-top: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: 22px;
+  }
+  .lane .meta { font-family: var(--fm); font-size: 11.5px; line-height: 1.6; }
+  .lane .meta .id { color: var(--accent); display: block; }
+  .lane .meta .by { color: var(--ink-faint); }
+  .lane h3 {
+    font-family: var(--fd);
+    font-variation-settings: "wdth" 88;
+    font-weight: 600;
+    font-size: 18px;
+    margin: 0 0 10px;
+    line-height: 1.3;
+  }
+  .lane ul { margin: 0; padding: 0 0 0 1.05em; }
+  .lane li { margin: 0 0 7px; font-size: 16.5px; }
+  .lane li::marker { color: var(--accent); }
+
+  /* ---------- tables ---------- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 12px 18px 12px 0; }
+  thead th {
+    font-family: var(--fm);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 400;
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 8px;
+  }
+  tbody tr { border-bottom: 1px solid var(--rule-soft); }
+  tbody td:first-child { font-family: var(--fm); font-size: 13px; white-space: nowrap; }
+  .no { color: var(--ink-faint); }
+  .yes { color: var(--ink); }
+
+  /* ---------- roadmap ---------- */
+  .road { display: grid; gap: 0; border-top: 1px solid var(--rule); }
+  .road .m {
+    display: grid;
+    grid-template-columns: 54px 190px minmax(0, 1fr);
+    gap: 20px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: baseline;
+  }
+  .road .k { font-family: var(--fm); font-size: 13px; color: var(--accent); }
+  .road .t { font-size: 16px; font-weight: 600; }
+  .road .c { font-size: 15.5px; color: var(--ink-soft); }
+  .road .m.gated .k { color: var(--ink-faint); }
+
+  /* ---------- decisions ---------- */
+  .asks { display: grid; gap: 2px; }
+  .ask {
+    border-top: 1px solid var(--rule);
+    padding: 20px 0;
+  }
+  .ask h3 {
+    font-family: var(--fd);
+    font-variation-settings: "wdth" 88;
+    font-weight: 600;
+    font-size: 18px;
+    margin: 0 0 8px;
+  }
+  .ask .opts {
+    font-family: var(--fm);
+    font-size: 12px;
+    color: var(--ink-faint);
+    margin: 0 0 10px;
+  }
+  .ask .rec {
+    border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 15px;
+    margin: 0;
+    font-size: 16px;
+  }
+  .ask .rec b { color: var(--accent-ink); font-weight: 600; }
+
+  footer {
+    grid-column: 1 / -1;
+    border-top: 2px solid var(--ink);
+    padding: 22px 0 0;
+    font-family: var(--fm);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    justify-content: space-between;
+  }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 20px 72px; }
+    .rail { display: none; }
+    .mast { grid-template-columns: minmax(0, 1fr); align-items: start; }
+    .stamp { text-align: left; }
+    .lane, .inv article, .road .m, .ledger .row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .road .m { gap: 4px; }
+    .band { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .band .from { text-align: left; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="shell">
+
+  <header class="mast">
+    <div>
+      <h1 class="wordmark">my<span>c</span></h1>
+      <p class="lede">Слой задач, памяти и связей для ИИ‑агентов. Один граф вместо пяти разрозненных хранилищ.</p>
+    </div>
+    <div class="stamp">
+      Bun + TypeScript<br>
+      SQLite <b>embedded</b> · PostgreSQL <b>server</b><br>
+      CLI · MCP · HTTP · Web<br>
+      эмбеддинги локальные, $0 по умолчанию
+    </div>
+  </header>
+
+  <nav class="rail" aria-label="Разделы">
+    <ol>
+      <li><a href="#thesis"><span class="n">01</span><span>Тезис</span></a></li>
+      <li><a href="#inv"><span class="n">02</span><span>Инварианты</span></a></li>
+      <li><a href="#stack"><span class="n">03</span><span>Топология</span></a></li>
+      <li><a href="#budget"><span class="n">04</span><span>Бюджеты</span></a></li>
+      <li><a href="#lanes"><span class="n">05</span><span>Подсистемы</span></a></li>
+      <li><a href="#diverge"><span class="n">06</span><span>Расхождения</span></a></li>
+      <li><a href="#road"><span class="n">07</span><span>Дорожная карта</span></a></li>
+      <li><a href="#asks"><span class="n">08</span><span>Нужно решение</span></a></li>
+    </ol>
+  </nav>
+
+  <main class="flow">
+
+    <section id="thesis">
+      <p class="eyebrow">01 · Тезис</p>
+      <h2>Пять инструментов держат пять кусков одной задачи — и не знают друг о друге</h2>
+      <p class="dek">Главная потеря сегодня не в том, что какого‑то слоя нет. В том, что слои не связаны: агент каждый раз заново склеивает «что делать» ↔ «что мы про это знаем» ↔ «где это в коде» — и платит за склейку контекстом, временем и деньгами.</p>
+
+      <div class="ledger">
+        <div class="row">
+          <div class="who">beads<i>задачи</i></div>
+          <div class="gap">Граф задач с зависимостями. Не знает, какая память объясняет задачу.</div>
+        </div>
+        <div class="row">
+          <div class="who">memora<i>память</i></div>
+          <div class="gap">Граф фактов и решений. Не знает, к какой задаче и какому коду относится.</div>
+        </div>
+        <div class="row">
+          <div class="who">TencentDB<i>слои, ACL</i></div>
+          <div class="gap">Слои памяти L0–L3 и управление доступом. Не знает про работу и код проекта.</div>
+        </div>
+        <div class="row">
+          <div class="who">graft<i>код</i></div>
+          <div class="gap">Граф символов, детерминированный и бесплатный. Не знает, какие решения принимались про этот символ.</div>
+        </div>
+        <div class="row">
+          <div class="who">socraticode<i>поиск</i></div>
+          <div class="gap">Гибридный семантический индекс кода. Не знает про исходы работы.</div>
+        </div>
+      </div>
+
+      <p style="margin-top:26px"><strong>myc — один граф, один ретривал и четыре проекции над ними:</strong> задачи, память, якоря кода, телеметрия роя. Связь между проекциями не интеграция, а первичный факт схемы.</p>
+      <p>Четвёртая проекция замыкает петлю, которой нет ни у одного источника: myc видит и постановку задачи, и её исход, и цену исхода — а значит может отвечать, кому отдать следующую такую задачу.</p>
+    </section>
+
+    <section id="inv">
+      <p class="eyebrow">02 · Инварианты</p>
+      <h2>Три ограничения с правом вето на любую фичу</h2>
+      <p class="dek">Не пожелания. Каждое из них уже отклонило по одному решению в этом дизайне.</p>
+
+      <div class="inv">
+        <article>
+          <div class="tag">И1</div>
+          <div>
+            <h3>Скорость — ограничение, а не оптимизация</h3>
+            <p>myc стоит в горячем пути агента и вызывается десятки раз за сессию. В горячем пути запрещены сеть, вызовы LLM и полные пересчёты индексов. Запись всегда дешёвая: факт попадает в append‑only оплог одним синхронным шагом, всё дорогое делает фоновый дистиллятор.</p>
+          </div>
+        </article>
+        <article>
+          <div class="tag">И2</div>
+          <div>
+            <h3>$0 и офлайн по умолчанию, деградация — громкая</h3>
+            <p>Без единого API‑ключа myc работает полностью. Обратная сторона: никакого молчаливого фолбэка. У memora при недоступности эмбеддингов происходит тихий переход на TF‑IDF, и хранилище наполняется мешками ключевых слов, продолжая выглядеть здоровым. У нас деградация пишется в поле самой строки узла — её видно запросом, а не только в диагностике.</p>
+          </div>
+        </article>
+        <article>
+          <div class="tag">И3</div>
+          <div>
+            <h3>Мы не переписываем graft и socraticode</h3>
+            <p>Код‑интеллект — чужая решённая задача. myc хранит якоря <code>repo + path + span + blob_hash + crux</code> и ловит их протухание, а тяжёлый разбор делегирует. Идея graft «crux хранится текстом, а не номерами строк, чтобы пережить рефакторинг» перенесена на наши якоря.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="stack">
+      <p class="eyebrow">03 · Топология</p>
+      <h2>Один бинарь, два режима, семь слоёв</h2>
+      <p class="dek">Embedded — библиотека внутри процесса CLI и MCP, SQLite в <code>.myc/</code>, без демона; это дефолт, и это то, что обязано быть быстрым. Server — Postgres, воркспейсы, ACL, общие приоры роутинга; клиенты те же.</p>
+
+      <div class="stack">
+        <div class="band">
+          <div class="what"><b>Поверхности</b> — CLI · MCP (7/11/16 инструментов по профилю) · HTTP · Web</div>
+          <div class="from">memora — профили</div>
+        </div>
+        <div class="band">
+          <div class="what"><b>Проекции</b> — задачи · память · якоря кода · телеметрия роя</div>
+          <div class="from">beads · memora</div>
+        </div>
+        <div class="band core">
+          <div class="what"><b>Единый граф</b> — узлы + 11 типов рёбер + слои L0–L3</div>
+          <div class="from">TencentDB — слои</div>
+        </div>
+        <div class="band core">
+          <div class="what"><b>Ретривал</b> — FTS/BM25 + векторы + граф → RRF → бюджет</div>
+          <div class="from">socraticode — RRF</div>
+        </div>
+        <div class="band">
+          <div class="what"><b>Оплог</b> — append‑only → материализованные проекции</div>
+          <div class="from">своё</div>
+        </div>
+        <div class="band store">
+          <div class="what"><b>Хранилище</b> — SQLite + FTS5 + sqlite‑vec  │  PostgreSQL + pgvector</div>
+          <div class="from">граница ≈ 100k узлов</div>
+        </div>
+        <div class="band">
+          <div class="what"><b>Фон</b> — дистиллятор · graft‑адаптер · LLM‑провайдеры (опц.)</div>
+          <div class="from">graft</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="budget">
+      <p class="eyebrow">04 · Бюджеты</p>
+      <h2>На что уходят миллисекунды</h2>
+      <p class="dek">Верхние границы по стадиям. Бюджеты проверяются в CI: регрессия p95 больше 15 % ломает сборку — иначе через полгода myc окажется медленнее grep, и агенты перестанут его звать.</p>
+
+      <div class="chart">
+        <div class="barwrap">
+          <div class="barhead">
+            <span class="name">Гибридный поиск по 100k узлов</span>
+            <span class="budget">23 из 25 мс</span>
+          </div>
+          <div class="track">
+            <div class="bar">
+              <div class="seg" style="width:13.33%; background:var(--s1)"></div>
+              <div class="seg" style="width:6.67%;  background:var(--s2)"></div>
+              <div class="seg" style="width:11.67%; background:var(--s3)"></div>
+              <div class="seg" style="width:1.67%;  background:var(--s4)"></div>
+              <div class="seg" style="width:5.00%;  background:var(--s5)"></div>
+            </div>
+            <div class="marker" style="left:41.67%"><span>бюджет 25</span></div>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--s1)"></i>int8‑скан <b>8</b></span>
+            <span><i style="background:var(--s2)"></i>FTS5 <b>4</b></span>
+            <span><i style="background:var(--s3)"></i>эмбеддинг запроса <b>7</b></span>
+            <span><i style="background:var(--s4)"></i>rerank float32 <b>1</b></span>
+            <span><i style="background:var(--s5)"></i>обход графа <b>3</b></span>
+          </div>
+        </div>
+
+        <div class="barwrap">
+          <div class="barhead">
+            <span class="name">Холодный старт <code>myc prime</code></span>
+            <span class="budget">48 из 60 мс</span>
+          </div>
+          <div class="track">
+            <div class="bar">
+              <div class="seg" style="width:25.00%; background:var(--s1)"></div>
+              <div class="seg" style="width:30.00%; background:var(--s2)"></div>
+              <div class="seg" style="width:6.67%;  background:var(--s3)"></div>
+              <div class="seg" style="width:13.33%; background:var(--s4)"></div>
+              <div class="seg" style="width:5.00%;  background:var(--s5)"></div>
+            </div>
+            <div class="marker" style="left:100%"><span>бюджет 60</span></div>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--s1)"></i>exec <b>15</b></span>
+            <span><i style="background:var(--s2)"></i>старт JSC <b>18</b></span>
+            <span><i style="background:var(--s3)"></i>открытие SQLite <b>4</b></span>
+            <span><i style="background:var(--s4)"></i>запросы <b>8</b></span>
+            <span><i style="background:var(--s5)"></i>рендер <b>3</b></span>
+          </div>
+          <div class="axis" aria-hidden="true">
+            <span class="tick" style="left:0%">0</span>
+            <span class="tick" style="left:16.67%">10</span>
+            <span class="tick" style="left:33.33%">20</span>
+            <span class="tick" style="left:50%">30</span>
+            <span class="tick" style="left:66.67%">40</span>
+            <span class="tick" style="left:83.33%">50</span>
+            <span class="tick" style="left:100%">60 мс</span>
+          </div>
+        </div>
+      </div>
+
+      <p><code>prime</code> не трогает эмбеддинги вообще — только детерминированные запросы и кеш дайджестов. Самая горячая команда не должна зависеть от самой дорогой подсистемы.</p>
+      <p>Запись — четыре insert’а в одной транзакции, 2–4 мс. Всё тяжёлое уходит в очередь батчами по 50 с чекпойнтами. Демон существует, но остаётся опцией: если он не поднят, CLI откатывается в one‑shot за 5 мс.</p>
+    </section>
+
+    <section id="lanes">
+      <p class="eyebrow">05 · Подсистемы</p>
+      <h2>Что решено в каждом лейне</h2>
+      <p class="dek">Четыре лейна проектировались параллельно разными моделями и оставили 40 вопросов на границах; координаторские решения по стыкам зафиксированы отдельно.</p>
+
+      <div class="lanes">
+        <div class="lane">
+          <div class="meta"><span class="id">L1</span><span class="by">ядро данных<br>1801 строка</span></div>
+          <div>
+            <h3>Одна таблица узлов, оплог на гибридных часах</h3>
+            <ul>
+              <li>Все горячие запросы кросс‑kind, поэтому <code>nodes</code> с дискриминатором, а не таблица на тип: иначе каждый поиск — <code>UNION ALL</code> по девяти таблицам с девятью FTS‑ и вектор‑сканами.</li>
+              <li>ID — 12 символов Crockford base32. Иерархический дотовый путь сделан <em>вычисляемым ярлыком</em>: у beads он хранимый, но это безопасно только под cell‑merge Dolt’а, которого у нас нет.</li>
+              <li>Добавлен 11‑й тип ребра <code>contradicts</code>: в absorb‑конвейере memora класс «противоречие» есть, а связи для него нет.</li>
+              <li>Claim — CAS одним <code>UPDATE</code> с lease и epoch. Нет окна между чтением и записью.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="meta"><span class="id">L2</span><span class="by">ретривал<br>kimi k3</span></div>
+          <div>
+            <h3>Один SQL round‑trip на весь гибридный поиск</h3>
+            <ul>
+              <li>FTS5 BM25 + плотные векторы + граф на 1–2 хопа сливаются RRF (k=60) за один проход, с фильтрацией ACL <em>внутри</em> CTE источников — до ранжирования, а не после.</li>
+              <li>Две ступени точности: int8‑скан, затем float32‑переранжирование топ‑200.</li>
+              <li>bge‑small INT8, 384 измерения, ONNX внутри бинаря. Эмбеддинг запроса 4–7 мс.</li>
+              <li>Инвалидация кешей по <code>oplog.seq</code> за ~50 мкс — вместо файловых локов socraticode.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="meta"><span class="id">L3</span><span class="by">поверхности<br>3051 строка</span></div>
+          <div>
+            <h3>Вывод для модели, а не для человека</h3>
+            <ul>
+              <li>Плотный колоночный текст без рамок и ANSI: вывод читает LLM, рамки — чистые потери токенов. 7 MCP‑инструментов в профиле агента против 43 у memora, которые платятся в каждой сессии.</li>
+              <li><code>PreCompact</code> — обязательный хук, а не бонус: компакт единственный момент, когда контекст теряется гарантированно. Сырой эпизод пишется первым за 6 мс.</li>
+              <li>graft физически не может стоять в горячем пути: минимум 40 мс против бюджета 25. Только фон и явные команды.</li>
+              <li>Инъекция памяти в proxy идёт строго после статического префикса промпта — иначе ломается prompt caching провайдера, и это дороже пользы от памяти.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="meta"><span class="id">L4</span><span class="by">рой<br>fable 5.1</span></div>
+          <div>
+            <h3>Байесовские счётчики, а не обучение вслепую</h3>
+            <ul>
+              <li>Рука бандита — <code>(модель, усилия) × класс задачи</code>, где класс — закрытый enum из 28 значений: общие приоры команды требуют стабильного ключа, а кластеры по эмбеддингам нестабильны между репозиториями.</li>
+              <li>Томпсон‑семплинг с полом исследования 5 % — защита от петли невыбора: модель, которую перестали выбирать, иначе останется плохой навсегда.</li>
+              <li>Каскад «сначала дёшево, потом дорого» окупается только при <code>p&nbsp;&gt;&nbsp;0.93</code>: без автоверификации эскалация дороже прямого запуска сильной модели.</li>
+              <li>Пропенсити логируется на каждое решение — без этого офлайн‑оценка экономии нечестна, роутер сам выбирает себе задачи.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="diverge">
+      <p class="eyebrow">06 · Расхождения</p>
+      <h2>Где мы осознанно спорим с источниками</h2>
+      <p class="dek">Копировать решение вместе с его причиной можно только там, где причина сохраняется. В девяти местах она не сохранилась.</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>Источник</th><th>Он делает</th><th>Мы делаем</th><th>Почему</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>beads</td><td class="no">хранимый иерархический ID</td><td class="yes">вычисляемый ярлык</td><td>хранимый безопасен только под cell‑merge Dolt’а</td></tr>
+            <tr><td>beads</td><td class="no">Dolt как движок</td><td class="yes">SQLite/Postgres + оплог</td><td>отдельная СУБД — слишком дорогая зависимость для утилиты в горячем пути</td></tr>
+            <tr><td>memora</td><td class="no">тихий фолбэк на TF‑IDF</td><td class="yes">деградация в строке узла</td><td>молчаливая порча базы хуже отказа</td></tr>
+            <tr><td>memora</td><td class="no">«противоречие» без ребра</td><td class="yes">тип ребра <code>contradicts</code></td><td>иначе классу absorb некуда писаться</td></tr>
+            <tr><td>memora</td><td class="no">43 инструмента всегда</td><td class="yes">7 / 11 / 16 по профилю</td><td>описания инструментов — налог на каждую сессию</td></tr>
+            <tr><td>TencentDB</td><td class="no">proxy как основной путь</td><td class="yes">proxy выключен по умолчанию</td><td>через него течёт весь трафик, и наивная инъекция ломает кеш промпта</td></tr>
+            <tr><td>socraticode</td><td class="no">Qdrant как зависимость</td><td class="yes">вектор внутри БД</td><td>лишний сервис в пути установки</td></tr>
+            <tr><td>socraticode</td><td class="no">файловые локи</td><td class="yes">монотонный <code>oplog.seq</code></td><td>дешевле и без мусора при падении процесса</td></tr>
+            <tr><td>graft</td><td class="no">свой код‑граф</td><td class="yes">якоря + адаптер</td><td>чужая решённая задача</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="road">
+      <p class="eyebrow">07 · Дорожная карта</p>
+      <h2>M0–M2 полезны сами по себе</h2>
+      <p class="dek">Всё после M3 имеет смысл, только если первые три вехи действительно быстрые. Четыре подсистемы в одном продукте — классический способ не выпустить ничего, поэтому границы жёсткие.</p>
+
+      <div class="road">
+        <div class="m">
+          <div class="k">M0</div><div class="t">Ядро и задачи</div>
+          <div class="c">оплог, граф, SQLite, <code>ready</code>, атомарный claim, CLI, MCP — myc полностью заменяет beads в реальном проекте</div>
+        </div>
+        <div class="m">
+          <div class="k">M1</div><div class="t">Память</div>
+          <div class="c">absorb, FTS‑поиск, <code>prime</code>, хук <code>PreCompact</code> — сессия переживает компакт без потери решений</div>
+        </div>
+        <div class="m">
+          <div class="k">M2</div><div class="t">Семантика</div>
+          <div class="c">локальные эмбеддинги, гибридный ретривал, RRF — поиск по смыслу в 25 мс на 100k узлов</div>
+        </div>
+        <div class="m gated">
+          <div class="k">M3</div><div class="t">Код</div>
+          <div class="c">якоря, детект протухания, адаптер graft — «покажи решения про этот символ» в обе стороны</div>
+        </div>
+        <div class="m gated">
+          <div class="k">M4</div><div class="t">Команда</div>
+          <div class="c">сервер, Postgres, ACL, контейнеры, веб — два человека и четыре агента на общей базе</div>
+        </div>
+        <div class="m gated">
+          <div class="k">M5</div><div class="t">Рой</div>
+          <div class="c">телеметрия, приоры, <code>myc route</code> — офлайн‑оценка на пропенсити показывает экономию</div>
+        </div>
+        <div class="m gated">
+          <div class="k">M6</div><div class="t">Дистилляция</div>
+          <div class="c">подъём L1→L2→L3, skills, proxy — <code>prime</code> даёт контекст проекта без ручной работы</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="asks">
+      <p class="eyebrow">08 · Нужно решение</p>
+      <h2>Три вопроса, где выбор продуктовый</h2>
+      <p class="dek">Дизайн собран под рекомендованный вариант и работает при любом из них.</p>
+
+      <div class="asks">
+        <div class="ask">
+          <h3>Контрольная группа роутера</h3>
+          <p class="opts">10 % постоянно · 10 % первые 90 дней, затем 3 % · только на пилоте</p>
+          <p class="rec"><b>10 % первые 90 дней, затем 3 %.</b> Осознанная плата за доказуемость: без контроля любое «стало дешевле» объясняется тем, что роутер сам выбирал себе задачи полегче.</p>
+        </div>
+        <div class="ask">
+          <h3>Уровень усилий — в ключе руки бандита или поправкой</h3>
+          <p class="opts">в ключе: 504 руки, точнее на больших данных · поправкой: 168 рук, учится втрое быстрее</p>
+          <p class="rec"><b>Начать с 504</b> и через 30 дней пилота измерить долю рук со слабой статистикой. Схлопнуть в поправку дешевле, чем разворачивать обратно.</p>
+        </div>
+        <div class="ask">
+          <h3>Автозахват L0</h3>
+          <p class="opts">писать весь диалог автоматически · только явно</p>
+          <p class="rec"><b>Только явно.</b> Автозахват — это транскрипты с чужими секретами и чужим кодом на диске рядом с git. Редакция секретов снижает риск, но не отменяет его, а хук <code>PreCompact</code> и так ловит главный момент потери контекста.</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <span>Обзор. Источник истины — <code>docs/design/</code>: бриф, четыре лейн‑документа, ARCHITECTURE.md</span>
+    <span>480 КБ спецификаций · 4 модели · 23 решения по стыкам</span>
+  </footer>
+
+</div>

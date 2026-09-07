@@ -1,0 +1,208 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "myc",
+      "devDependencies": {
+        "@myc/core": "workspace:*",
+        "@myc/embed": "workspace:*",
+        "@myc/retrieval": "workspace:*",
+        "@myc/store-sqlite": "workspace:*",
+        "bun-types": "^1.3.0",
+        "typescript": "^5.7.0",
+      },
+    },
+    "packages/anchors": {
+      "name": "@myc/anchors",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+    },
+    "packages/cli": {
+      "name": "@myc/cli",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/code-intel": "workspace:*",
+        "@myc/core": "workspace:*",
+        "@myc/embed": "workspace:*",
+        "@myc/mcp": "workspace:*",
+        "@myc/retrieval": "workspace:*",
+        "@myc/store-sqlite": "workspace:*",
+        "@myc/swarm": "workspace:*",
+        "@myc/web": "workspace:*",
+      },
+    },
+    "packages/code-intel": {
+      "name": "@myc/code-intel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+        "@myc/store-sqlite": "workspace:*",
+      },
+    },
+    "packages/core": {
+      "name": "@myc/core",
+      "version": "0.0.0",
+    },
+    "packages/distiller": {
+      "name": "@myc/distiller",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+    },
+    "packages/embed": {
+      "name": "@myc/embed",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+        "onnxruntime-web": "1.20.1",
+      },
+      "optionalDependencies": {
+        "onnxruntime-node": "1.20.1",
+      },
+    },
+    "packages/mcp": {
+      "name": "@myc/mcp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/cli": "workspace:*",
+        "@myc/core": "workspace:*",
+        "@myc/store-sqlite": "workspace:*",
+      },
+    },
+    "packages/retrieval": {
+      "name": "@myc/retrieval",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@myc/store-sqlite": "workspace:*",
+      },
+    },
+    "packages/server": {
+      "name": "@myc/server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+    },
+    "packages/store-postgres": {
+      "name": "@myc/store-postgres",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+    },
+    "packages/store-sqlite": {
+      "name": "@myc/store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+    },
+    "packages/swarm": {
+      "name": "@myc/swarm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/core": "workspace:*",
+      },
+    },
+    "packages/web": {
+      "name": "@myc/web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@myc/cli": "workspace:*",
+        "@myc/core": "workspace:*",
+        "@myc/swarm": "workspace:*",
+      },
+      "devDependencies": {
+        "@myc/store-sqlite": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
+
+    "@myc/anchors": ["@myc/anchors@workspace:packages/anchors"],
+
+    "@myc/cli": ["@myc/cli@workspace:packages/cli"],
+
+    "@myc/code-intel": ["@myc/code-intel@workspace:packages/code-intel"],
+
+    "@myc/core": ["@myc/core@workspace:packages/core"],
+
+    "@myc/distiller": ["@myc/distiller@workspace:packages/distiller"],
+
+    "@myc/embed": ["@myc/embed@workspace:packages/embed"],
+
+    "@myc/mcp": ["@myc/mcp@workspace:packages/mcp"],
+
+    "@myc/retrieval": ["@myc/retrieval@workspace:packages/retrieval"],
+
+    "@myc/server": ["@myc/server@workspace:packages/server"],
+
+    "@myc/store-postgres": ["@myc/store-postgres@workspace:packages/store-postgres"],
+
+    "@myc/store-sqlite": ["@myc/store-sqlite@workspace:packages/store-sqlite"],
+
+    "@myc/swarm": ["@myc/swarm@workspace:packages/swarm"],
+
+    "@myc/web": ["@myc/web@workspace:packages/web"],
+
+    "@protobufjs/aspromise": ["@protobufjs/aspromise@1.1.2", "", {}, "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="],
+
+    "@protobufjs/base64": ["@protobufjs/base64@1.1.2", "", {}, "sha512-AZkcAA5vnN/v4PDqKyMR5lx7hZttPDgClv83E//FMNhR2TMcLUhfRUBHCmSl0oi9zMgDDqRUJkSxO3wm85+XLg=="],
+
+    "@protobufjs/codegen": ["@protobufjs/codegen@2.0.5", "", {}, "sha512-zgXFLzW3Ap33e6d0Wlj4MGIm6Ce8O89n/apUaGNB/jx+hw+ruWEp7EwGUshdLKVRCxZW12fp9r40E1mQrf/34g=="],
+
+    "@protobufjs/eventemitter": ["@protobufjs/eventemitter@1.1.1", "", {}, "sha512-vW1GmwMZNnL+gMRaovlh9yZX74kc+TTU3FObkkurpMaRtBfLP3ldjS9KQWlwZgraRE0+dheEEoAxdzcJQ8eXZg=="],
+
+    "@protobufjs/fetch": ["@protobufjs/fetch@1.1.1", "", { "dependencies": { "@protobufjs/aspromise": "^1.1.1" } }, "sha512-GpptLrs57adMSuHi3VNj0mAF8dwh36LMaYF6XyJ6JMWlVsc+t42tm1HSEDmOs3A8fC9yyeisgLhsTVQokOZ0zw=="],
+
+    "@protobufjs/float": ["@protobufjs/float@1.0.2", "", {}, "sha512-Ddb+kVXlXst9d+R9PfTIxh1EdNkgoRe5tOX6t01f1lYWOvJnSPDBlG241QLzcyPdoNTsblLUdujGSE4RzrTZGQ=="],
+
+    "@protobufjs/path": ["@protobufjs/path@1.1.2", "", {}, "sha512-6JOcJ5Tm08dOHAbdR3GrvP+yUUfkjG5ePsHYczMFLq3ZmMkAD98cDgcT2iA1lJ9NVwFd4tH/iSSoe44YWkltEA=="],
+
+    "@protobufjs/pool": ["@protobufjs/pool@1.1.0", "", {}, "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw=="],
+
+    "@protobufjs/utf8": ["@protobufjs/utf8@1.1.2", "", {}, "sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug=="],
+
+    "@types/node": ["@types/node@26.4.1", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-k97ENvZWtvA6yqz5/FS6a7duDgOPEeOQOc2iKS/nY6mX6qJUKtLnWzQS+Xj6tXweyj6ZcTAK2Qecetnvi9nCLA=="],
+
+    "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+
+    "chownr": ["chownr@3.0.0", "", {}, "sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g=="],
+
+    "flatbuffers": ["flatbuffers@1.12.0", "", {}, "sha512-c7CZADjRcl6j0PlvFy0ZqXQ67qSEZfrVPynmnL+2zPc+NtMvrF8Y0QceMo7QqnSPc7+uWjUIAbvCQ5WIKlMVdQ=="],
+
+    "guid-typescript": ["guid-typescript@1.0.9", "", {}, "sha512-Y8T4vYhEfwJOTbouREvG+3XDsjr8E3kIr7uf+JZ0BYloFsttiHU0WfvANVsR7TxNUJa/WpCnw/Ino/p+DeBhBQ=="],
+
+    "long": ["long@5.3.2", "", {}, "sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA=="],
+
+    "minipass": ["minipass@7.1.3", "", {}, "sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A=="],
+
+    "minizlib": ["minizlib@3.1.0", "", { "dependencies": { "minipass": "^7.1.2" } }, "sha512-KZxYo1BUkWD2TVFLr0MQoM8vUUigWD3LlD83a/75BqC+4qE0Hb1Vo5v1FgcfaNXvfXzr+5EhQ6ing/CaBijTlw=="],
+
+    "onnxruntime-common": ["onnxruntime-common@1.20.1", "", {}, "sha512-YiU0s0IzYYC+gWvqD1HzLc46Du1sXpSiwzKb63PACIJr6LfL27VsXSXQvt68EzD3V0D5Bc0vyJTjmMxp0ylQiw=="],
+
+    "onnxruntime-node": ["onnxruntime-node@1.20.1", "", { "dependencies": { "onnxruntime-common": "1.20.1", "tar": "^7.0.1" }, "os": [ "linux", "win32", "darwin", ] }, "sha512-di/I4HDXRw+FLgq+TyHmQEDd3cEp9iFFZm0r4uJ1Wd7b/WE1VXtKWo8yemex347c6GNF/3Pv86ZfPhIWxORr0w=="],
+
+    "onnxruntime-web": ["onnxruntime-web@1.20.1", "", { "dependencies": { "flatbuffers": "^1.12.0", "guid-typescript": "^1.0.9", "long": "^5.2.3", "onnxruntime-common": "1.20.1", "platform": "^1.3.6", "protobufjs": "^7.2.4" } }, "sha512-TePF6XVpLL1rWVMIl5Y9ACBQcyCNFThZON/jgElNd9Txb73CIEGlklhYR3UEr1cp5r0rbGI6nDwwrs79g7WjoA=="],
+
+    "platform": ["platform@1.3.6", "", {}, "sha512-fnWVljUchTro6RiCFvCXBbNhJc2NijN7oIQxbwsyL0buWJPG85v81ehlHI9fXrJsMNgTofEoWIQeClKpgxFLrg=="],
+
+    "protobufjs": ["protobufjs@7.6.6", "", { "dependencies": { "@protobufjs/aspromise": "^1.1.2", "@protobufjs/base64": "^1.1.2", "@protobufjs/codegen": "^2.0.5", "@protobufjs/eventemitter": "^1.1.1", "@protobufjs/fetch": "^1.1.1", "@protobufjs/float": "^1.0.2", "@protobufjs/path": "^1.1.2", "@protobufjs/pool": "^1.1.0", "@protobufjs/utf8": "^1.1.1", "@types/node": ">=13.7.0", "long": "^5.3.2" } }, "sha512-dYDWdjSl5RNb7SgPxGQcRU+GtvP7s2fpkrY0r432PcOIaZ0/rBcxEZnQN67iJhFuQiVw754JDoPruPCNdGsbjg=="],
+
+    "tar": ["tar@7.5.22", "", { "dependencies": { "@isaacs/fs-minipass": "^4.0.0", "chownr": "^3.0.0", "minipass": "^7.1.2", "minizlib": "^3.1.0", "yallist": "^5.0.0" } }, "sha512-MFO/QzvtAOmJbkhOaCTvbGcFN9L9b+JunIsDwaKljSOdcLMea3NJ1k9Usz/rjdfSXTq4dfzfeS7W4p4YOAAHeA=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
+
+    "yallist": ["yallist@5.0.0", "", {}, "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw=="],
+  }
+}

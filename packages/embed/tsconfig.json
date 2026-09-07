@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "paths": {
+      "onnxruntime-web/wasm": [
+        "./node_modules/onnxruntime-web/dist/ort.wasm.min.mjs"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

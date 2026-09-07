@@ -1,0 +1,19 @@
+{
+  "name": "@myc/code-intel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./defs": "./src/defs.ts",
+    "./code-index": "./src/code_index.ts"
+  },
+  "dependencies": {
+    "@myc/core": "workspace:*",
+    "@myc/store-sqlite": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

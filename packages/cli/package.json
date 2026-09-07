@@ -1,0 +1,23 @@
+{
+  "name": "@myc/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@myc/code-intel": "workspace:*",
+    "@myc/core": "workspace:*",
+    "@myc/embed": "workspace:*",
+    "@myc/mcp": "workspace:*",
+    "@myc/retrieval": "workspace:*",
+    "@myc/store-sqlite": "workspace:*",
+    "@myc/swarm": "workspace:*",
+    "@myc/web": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
