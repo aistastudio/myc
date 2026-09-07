@@ -17,18 +17,26 @@ import { spawnSync } from "node:child_process";
 
 if (typeof process.versions.bun !== "string" && !bunOnPath()) {
   process.stderr.write(
-    [
-      "",
-      "  ┌─ @myc/cli установлен, но запускаться пока не будет ────────────┐",
-      "  │ myc работает только на Bun (хранилище на bun:sqlite).          │",
-      "  │ Bun в системе не найден.                                       │",
-      "  │                                                                │",
-      "  │   curl -fsSL https://bun.sh/install | bash                     │",
-      "  │                                                                │",
-      "  │ После этого: myc --version                                     │",
-      "  └────────────────────────────────────────────────────────────────┘",
-      "",
-    ].join("\n"),
+    // Рамка собирается по ширине самой длинной строки, а не подгоняется
+    // руками: после переименования пакета `@myc/cli` -> `@aistastudio/myc`
+    // верхняя граница разъехалась, и это первое, что видит человек без Bun.
+    (() => {
+      const title = "@aistastudio/myc установлен, но запускаться пока не будет";
+      const body = [
+        "myc работает только на Bun (хранилище на bun:sqlite).",
+        "Bun в системе не найден.",
+        "",
+        "  curl -fsSL https://bun.sh/install | bash",
+        "",
+        "После этого: myc --version",
+      ];
+      const w = Math.max(title.length + 3, ...body.map((l) => l.length)) + 1;
+      const top = `  ┌─ ${title} ${"─".repeat(Math.max(0, w - title.length - 2))}┐`;
+      const mid = body.map((l) => `  │ ${l.padEnd(w)}│`);
+      const bot = `  └${"─".repeat(w + 1)}┘`;
+      return ["", top, ...mid, bot, ""].join("\n");
+    })(),
+
   );
 }
 

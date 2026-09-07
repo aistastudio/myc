@@ -28,5 +28,8 @@
     "reindex:vectors": "bun run scripts/reindex-vectors.ts",
     "bench:separation": "bun run packages/embed/src/bench-separation.ts"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@aistastudio/myc": "^0.1.0"
+  }
 }

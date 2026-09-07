@@ -1,5 +1,14 @@
 import { randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import {
+  EMPTY_LAUNCH,
+  isEmptyLaunch,
+  type DispatchSource,
+  type LaunchContext,
+  type LinkSource,
+  type PidSource,
+  type ProcState,
+} from "./launch.ts";
 import { RosterError, type Effort, type Harness } from "./roster.ts";
 import { isTaskClass, type TaskClass } from "./taskclass.ts";
 
@@ -122,6 +131,12 @@ export interface StartAttemptInput extends TokenUsage {
   readonly startedAt?: number;
   readonly source?: string;
   readonly note?: string;
+  /**
+   * Контекст запуска. Пишется В ТОЙ ЖЕ транзакции, что и сама попытка:
+   * попытки без строки запуска быть можно (ретроспектива), а попытки
+   * с ПОЛОВИНОЙ записанного запуска — нет.
+   */
+  readonly run?: RunInput;
 }
 
 export interface FinishAttemptInput extends TokenUsage {
@@ -280,6 +295,101 @@ interface PriceRow {
   usd_per_m_cache_write: number;
 }
 
+// ---------------------------------------------------------------------------
+// Запуск попытки: сессия, диспетчер, процесс
+// ---------------------------------------------------------------------------
+
+export interface RunInput {
+  readonly launch: LaunchContext;
+  /** Файл стенограммы, если он известен ТОЧНО, а не найден перебором. */
+  readonly transcriptPath?: string | null;
+  /** HEAD на момент старта — база для «какие файлы тронуты». */
+  readonly gitHead?: string | null;
+  readonly procState?: ProcState;
+}
+
+export interface RunRecord {
+  readonly attemptId: string;
+  readonly sessionId: string | null;
+  readonly sessionSource: LinkSource;
+  readonly transcriptPath: string | null;
+  readonly dispatchId: string | null;
+  readonly dispatchSource: DispatchSource;
+  readonly runId: string | null;
+  readonly terminal: string | null;
+  readonly paneKey: string | null;
+  readonly agentPid: number | null;
+  readonly pidSource: PidSource;
+  readonly harnessBuild: string | null;
+  readonly procState: ProcState;
+  readonly procCheckedAt: number | null;
+  readonly procExitedAt: number | null;
+  readonly gitHead: string | null;
+  readonly filesTouched: readonly string[] | null;
+  readonly recordedAt: number;
+}
+
+interface RunRow {
+  attempt_id: string;
+  session_id: string | null;
+  session_source: string;
+  transcript_path: string | null;
+  dispatch_id: string | null;
+  dispatch_source: string;
+  run_id: string | null;
+  terminal: string | null;
+  pane_key: string | null;
+  agent_pid: number | null;
+  pid_source: string;
+  harness_build: string | null;
+  proc_state: string;
+  proc_checked_at: number | null;
+  proc_exited_at: number | null;
+  git_head: string | null;
+  files_touched: string | null;
+  recorded_at: number;
+}
+
+function parseFiles(raw: string | null): readonly string[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((f): f is string => typeof f === "string");
+  } catch {
+    return null;
+  }
+}
+
+export function toRun(row: RunRow): RunRecord {
+  return {
+    attemptId: row.attempt_id,
+    sessionId: row.session_id,
+    sessionSource: row.session_source as LinkSource,
+    transcriptPath: row.transcript_path,
+    dispatchId: row.dispatch_id,
+    dispatchSource: row.dispatch_source as DispatchSource,
+    runId: row.run_id,
+    terminal: row.terminal,
+    paneKey: row.pane_key,
+    agentPid: row.agent_pid,
+    pidSource: row.pid_source as PidSource,
+    harnessBuild: row.harness_build,
+    procState: row.proc_state as ProcState,
+    procCheckedAt: row.proc_checked_at,
+    procExitedAt: row.proc_exited_at,
+    gitHead: row.git_head,
+    filesTouched: parseFiles(row.files_touched),
+    recordedAt: row.recorded_at,
+  };
+}
+
+/** Попытка вместе со своим запуском — то, что читает `myc attempt list --live`. */
+export interface AttemptWithRun {
+  readonly attempt: AttemptRecord;
+  readonly run: RunRecord | undefined;
+}
+
 export class Attribution {
   readonly #db: Database;
   readonly #now: () => number;
@@ -356,8 +466,143 @@ export class Attribution {
           input.source ?? "cli",
           input.note ?? null,
         );
+      // В ТОЙ ЖЕ транзакции. Попытка, открытая без своей строки запуска
+      // из-за отказа на второй вставке, — это ровно та потеря связи с
+      // сессией, ради которой всё писалось: расход опять пришлось бы
+      // искать перебором стенограмм.
+      if (input.run !== undefined) this.#insertRun(attemptId, startedAt, input.run);
     });
     return this.getAttempt(attemptId)!;
+  }
+
+  /**
+   * Строка запуска. Пустой контекст НЕ пишется: строка из одних NULL
+   * говорит «мы записали» там, где не записано ничего, а `--live` показал
+   * бы её как известную. Нечего сказать — молчим и это видно по
+   * отсутствию строки.
+   */
+  #insertRun(attemptId: string, recordedAt: number, run: RunInput): void {
+    const c = run.launch;
+    if (isEmptyLaunch(c) && run.gitHead == null && run.transcriptPath == null) return;
+    const procState: ProcState =
+      run.procState ?? (c.agentPid === null ? "unknown" : "running");
+    this.#db
+      .query(
+        `INSERT INTO swarm_attempt_run
+           (attempt_id, session_id, session_source, transcript_path, dispatch_id,
+            dispatch_source, run_id, terminal, pane_key, agent_pid, pid_source,
+            harness_build, proc_state, proc_checked_at, git_head, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
+      )
+      .run(
+        attemptId,
+        c.sessionId,
+        c.sessionSource,
+        run.transcriptPath ?? null,
+        c.dispatchId,
+        c.dispatchSource,
+        c.runId,
+        c.terminal,
+        c.paneKey,
+        c.agentPid,
+        c.pidSource,
+        c.harnessBuild,
+        procState,
+        c.agentPid === null ? null : recordedAt,
+        run.gitHead ?? null,
+        recordedAt,
+      );
+  }
+
+  /**
+   * Дописать запуск к уже открытой попытке: поздняя привязка (сессию
+   * нашли перебором) и достройка ретроспективной попытки. Пишет только
+   * НАЗВАННЫЕ поля — COALESCE тут был бы неправ: явный null «сессия
+   * неизвестна» должен уметь стереть неверную привязку.
+   */
+  attachRun(attemptId: string, run: RunInput): RunRecord {
+    const now = this.#now();
+    this.#writeTx(() => {
+      const exists = this.#db
+        .query("SELECT attempt_id FROM swarm_attempt WHERE attempt_id = ?1")
+        .get(attemptId);
+      if (exists === null) {
+        throw new AttributionError(
+          "notfound.attempt",
+          `попытка "${attemptId}" не найдена`,
+        );
+      }
+      const had = this.#db
+        .query("SELECT attempt_id FROM swarm_attempt_run WHERE attempt_id = ?1")
+        .get(attemptId);
+      if (had !== null) {
+        this.#db.query("DELETE FROM swarm_attempt_run WHERE attempt_id = ?1").run(attemptId);
+      }
+      this.#insertRun(attemptId, now, run);
+    });
+    return this.getRun(attemptId)!;
+  }
+
+  getRun(attemptId: string): RunRecord | undefined {
+    const row = this.#db
+      .query("SELECT * FROM swarm_attempt_run WHERE attempt_id = ?1")
+      .get(attemptId) as RunRow | null;
+    return row === null ? undefined : toRun(row);
+  }
+
+  /**
+   * Чья это сессия. Обратный вопрос к записи — он же замена перебору
+   * файлов: расход считается по стенограмме, названной попыткой, а не по
+   * той, где нашлась строка брифа.
+   */
+  attemptsBySession(sessionId: string): RunRecord[] {
+    const rows = this.#db
+      .query("SELECT * FROM swarm_attempt_run WHERE session_id = ?1")
+      .all(sessionId) as RunRow[];
+    return rows.map(toRun);
+  }
+
+  /**
+   * Наблюдение за процессом. ТОЛЬКО в сторону exited: воскрешать запись
+   * нельзя — pid переиспользуются, и «был мёртв, стал жив» означало бы,
+   * что мы приняли чужой процесс за свой. Возвращает true, если запись
+   * действительно изменилась.
+   */
+  markExited(attemptId: string, at: number = this.#now()): boolean {
+    return (
+      this.#writeTx(
+        () =>
+          this.#db
+            .query(
+              `UPDATE swarm_attempt_run
+                  SET proc_state = 'exited', proc_exited_at = COALESCE(proc_exited_at, ?2),
+                      proc_checked_at = ?2
+                WHERE attempt_id = ?1 AND proc_state <> 'exited'`,
+            )
+            .run(attemptId, at).changes,
+      ) > 0
+    );
+  }
+
+  /** Отметить, что процесс видели живым: обновляет только время проверки. */
+  markSeen(attemptId: string, at: number = this.#now()): void {
+    this.#writeTx(() => {
+      this.#db
+        .query(
+          `UPDATE swarm_attempt_run SET proc_checked_at = ?2
+            WHERE attempt_id = ?1 AND proc_state = 'running'`,
+        )
+        .run(attemptId, at);
+    });
+  }
+
+  /** Тронутые файлы попытки: считает их не этот пакет, а вызывающий. */
+  recordFilesTouched(attemptId: string, files: readonly string[]): void {
+    this.#writeTx(() => {
+      this.#db
+        .query("UPDATE swarm_attempt_run SET files_touched = ?2 WHERE attempt_id = ?1")
+        .run(attemptId, JSON.stringify([...files]));
+    });
   }
 
   /**
@@ -483,6 +728,63 @@ export class Attribution {
       )
       .all(...params) as AttemptRow[];
     return rows.map(toAttempt);
+  }
+
+  /**
+   * Попытки вместе со строкой запуска. Одним запросом, LEFT JOIN: ответ
+   * «что сейчас живо» обязан быть ОДНОЙ командой, а не списком попыток
+   * плюс запрос запуска на каждую.
+   *
+   * Порядок — по времени старта по возрастанию: первым идёт то, что
+   * висит дольше всех. Это и есть ответ на «сколько висит».
+   */
+  listWithRuns(
+    options: {
+      taskId?: string;
+      modelId?: string;
+      open?: boolean;
+      withRun?: boolean;
+      since?: number;
+      limit?: number;
+    } = {},
+  ): AttemptWithRun[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (options.taskId !== undefined) {
+      params.push(options.taskId);
+      where.push(`a.task_id = ?${params.length}`);
+    }
+    if (options.modelId !== undefined) {
+      params.push(options.modelId);
+      where.push(`a.model_id = ?${params.length}`);
+    }
+    if (options.open === true) where.push("a.finished_at IS NULL");
+    if (options.withRun === true) where.push("r.attempt_id IS NOT NULL");
+    if (options.since !== undefined) {
+      params.push(options.since);
+      where.push(`a.started_at >= ?${params.length}`);
+    }
+    params.push(options.limit ?? 200);
+    const rows = this.#db
+      .query(
+        `SELECT a.*, r.attempt_id AS r_attempt_id, r.session_id, r.session_source,
+                r.transcript_path, r.dispatch_id, r.dispatch_source, r.run_id,
+                r.terminal, r.pane_key, r.agent_pid, r.pid_source, r.harness_build,
+                r.proc_state, r.proc_checked_at, r.proc_exited_at, r.git_head,
+                r.files_touched, r.recorded_at
+           FROM swarm_attempt a
+           LEFT JOIN swarm_attempt_run r ON r.attempt_id = a.attempt_id
+          ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+          ORDER BY a.started_at ASC LIMIT ?${params.length}`,
+      )
+      .all(...params) as Array<AttemptRow & Partial<RunRow> & { r_attempt_id: string | null }>;
+    return rows.map((row) => ({
+      attempt: toAttempt(row),
+      run:
+        row.r_attempt_id === null || row.r_attempt_id === undefined
+          ? undefined
+          : toRun({ ...(row as unknown as RunRow), attempt_id: row.r_attempt_id }),
+    }));
   }
 
   /**
