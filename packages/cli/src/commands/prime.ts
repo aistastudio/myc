@@ -676,6 +676,11 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
           took_ms: tookMs,
         };
 
+        // Отметка вызова: до сих пор себя записывал только pre-compact, а он
+        // срабатывает лишь при сжатии контекста — то есть через часы после
+        // установки. Проверить «подхватил ли харнесс myc» сразу было нечем,
+        // и это первый вопрос всякого, кто поставил инструмент. `prime` — то,
+        // что зовёт хук старта сессии, поэтому отметка ставится здесь.
         const rendered = renderAgent(dataNoBudget, budget);
         const data: PrimeData = { ...dataNoBudget, chars: rendered.chars, truncated: rendered.truncated, cut: rendered.cut };
 

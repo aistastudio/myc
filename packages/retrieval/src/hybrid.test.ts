@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateId, type DbDriver } from "@myc/core";
 import { migration001Init, openSqlite, type SqliteDriver } from "@myc/store-sqlite";
+import { expectWithinBudget, measure, report } from "@myc/bench";
 import type { FtsCaller } from "./fts.ts";
 import type { VectorSearchOutcome, VectorSearchParams } from "./vector.ts";
 import {
@@ -1195,33 +1196,87 @@ describe("эксперимент myc-dze.3 — якоря против пере�
     for (const t of TOPICS) expect(isAnchorToken(t.anchor)).toBe(true);
   });
 
-  test("ОТЧЁТ: recall@10, доля вектора, время — по видам запросов", () => {
-    const ANCHOR_WEIGHTS = [0.0, 0.25, 1.0];
-    const REPEATS = 15;
-    const lines: string[] = [];
-    const anchorIdx = queries.map((q, i) => (q.kind === "anchor" ? i : -1)).filter((i) => i >= 0);
-    const paraIdx = queries.map((q, i) => (q.kind === "paraphrase" ? i : -1)).filter((i) => i >= 0);
-    const pickBy = (st: RunStats, idx: readonly number[]) => idx.map((i) => st.per[i]!);
+  const ANCHOR_WEIGHTS = [0.0, 0.25, 1.0];
+  /**
+   * Сколько раз прогоняется каждый запрос. На ИСХОДЫ (нашлось / подключился ли
+   * вектор) повторы не влияют вовсе — `runMode` заполняет `per` только на
+   * первом проходе; повторы нужны исключительно распределению ВРЕМЕНИ в
+   * отчётной таблице. Поэтому утверждения гоняются с одним повтором и
+   * укладываются в обычный лимит, а отчёт — с пятнадцатью и со своим.
+   */
+  const REPORT_REPEATS = 15;
 
-    const collected: {
-      w: number;
-      corpusSize: number;
-      auto: RunStats;
-      always: RunStats;
-      never: RunStats;
-    }[] = [];
+  const anchorIdx = queries.map((q, i) => (q.kind === "anchor" ? i : -1)).filter((i) => i >= 0);
+  const paraIdx = queries.map((q, i) => (q.kind === "paraphrase" ? i : -1)).filter((i) => i >= 0);
+  const pickBy = (st: RunStats, idx: readonly number[]) => idx.map((i) => st.per[i]!);
 
+  interface Collected {
+    w: number;
+    corpusSize: number;
+    auto: RunStats;
+    always: RunStats;
+    never: RunStats;
+  }
+
+  function collect(repeats: number): Collected[] {
+    const out: Collected[] = [];
     for (const w of ANCHOR_WEIGHTS) {
       const corpus = buildCorpus(w);
-      collected.push({
+      out.push({
         w,
         corpusSize: corpus.vectors.size,
-        auto: runMode(corpus, queries, "auto", w, REPEATS),
-        always: runMode(corpus, queries, "always", w, REPEATS),
-        never: runMode(corpus, queries, "never", w, REPEATS),
+        auto: runMode(corpus, queries, "auto", w, repeats),
+        always: runMode(corpus, queries, "always", w, repeats),
+        never: runMode(corpus, queries, "never", w, repeats),
       });
       corpus.db.close();
     }
+    return out;
+  }
+
+  /**
+   * УТВЕРЖДЕНИЯ. Отделены от отчёта не из аккуратности, а потому что отчёт
+   * падал по таймауту: 7.06–7.46 с при лимите 5 с, причём с graphMaxHops=0 и
+   * =2 одинаково — то есть тест сообщал о загрузке машины, а не о коде
+   * (memory-ws31ztqgh43c). Печать таблицы не имеет права ронять сборку;
+   * проверять выводы эксперимента — имеет, и здесь это делается за один
+   * повтор вместо пятнадцати.
+   */
+  test("выводы myc-dze.3: условный режим не теряет recall и дешевле обязательного", () => {
+    const collected = collect(1);
+    const mid = collected[1]!; // anchorWeight = 0.25 — ожидаемая реальность
+    const shareAnchor = share(pickBy(mid.auto, anchorIdx), (o) => o.usedVector);
+    const sharePara = share(pickBy(mid.auto, paraIdx), (o) => o.usedVector);
+
+    for (const c of collected) {
+      const rAlways = share(c.always.per, (o) => o.found);
+      const rAuto = share(c.auto.per, (o) => o.found);
+      // условный режим не теряет recall относительно обязательного
+      expect(rAuto).toBeGreaterThanOrEqual(rAlways - 1e-9);
+      // и не дороже него
+      expect(share(c.auto.per, (o) => o.usedVector)).toBeLessThanOrEqual(
+        share(c.always.per, (o) => o.usedVector),
+      );
+    }
+    // главный вывод: на перефразировках вектор нужен, на якорях — почти никогда
+    expect(sharePara).toBeGreaterThan(shareAnchor);
+    expect(sharePara).toBeGreaterThan(0.9);
+    expect(shareAnchor).toBeLessThan(0.25);
+    // без вектора перефразировки не находятся вовсе, якорные — находятся
+    expect(share(pickBy(mid.never, paraIdx), (o) => o.found)).toBeLessThan(0.1);
+    expect(share(pickBy(mid.never, anchorIdx), (o) => o.found)).toBeGreaterThan(0.8);
+  });
+
+  /**
+   * ОТЧЁТ. Ничего не утверждает — печатает таблицы, ради которых эксперимент
+   * и ставился. Лимит 120 с назван честно: это НЕ бюджет и не проверка, а
+   * потолок «что-то зациклилось». Измеренная цена — 7.1–7.5 с на тёплой
+   * машине под общим прогоном.
+   */
+  test("ОТЧЁТ: recall@10, доля вектора, время — по видам запросов", () => {
+    const REPEATS = REPORT_REPEATS;
+    const lines: string[] = [];
+    const collected = collect(REPEATS);
     const mid = collected[1]!; // anchorWeight = 0.25 — ожидаемая реальность
 
     lines.push("");
@@ -1324,26 +1379,8 @@ describe("эксперимент myc-dze.3 — якоря против пере�
     lines.push("   того, что перефразировки вектор всё-таки требуют.");
     lines.push("");
     console.log(lines.join("\n"));
-
-    // --- утверждения --------------------------------------------------------
-    for (const c of collected) {
-      const rAlways = share(c.always.per, (o) => o.found);
-      const rAuto = share(c.auto.per, (o) => o.found);
-      // условный режим не теряет recall относительно обязательного
-      expect(rAuto).toBeGreaterThanOrEqual(rAlways - 1e-9);
-      // и не дороже него
-      expect(share(c.auto.per, (o) => o.usedVector)).toBeLessThanOrEqual(
-        share(c.always.per, (o) => o.usedVector),
-      );
-    }
-    // главный вывод: на перефразировках вектор нужен, на якорях — почти никогда
-    expect(sharePara).toBeGreaterThan(shareAnchor);
-    expect(sharePara).toBeGreaterThan(0.9);
-    expect(shareAnchor).toBeLessThan(0.25);
-    // без вектора перефразировки не находятся вовсе, якорные — находятся
-    expect(share(pickBy(mid.never, paraIdx), (o) => o.found)).toBeLessThan(0.1);
-    expect(share(pickBy(mid.never, anchorIdx), (o) => o.found)).toBeGreaterThan(0.8);
-  });
+    // Утверждений здесь нет намеренно — они в тесте выше и стоят один повтор.
+  }, 120_000);
 
   test("mode_used не врёт ни в одном из 44 запросов", () => {
     const corpus = buildCorpus(0.25);
@@ -1446,37 +1483,32 @@ describe("hybridSearch perf @ 100k узлов", () => {
     db.database.exec("COMMIT");
 
     const caller: FtsCaller = { ownerId: "", teamId: "t1", agentId: "", principals: [] };
-    const samples: number[] = [];
-    for (let i = 0; i < 200; i++) {
-      const t0 = performance.now();
-      const res = hybridSearch(db, {
+    const once = () =>
+      hybridSearch(db, {
         text: "needle",
         scopes: ["target", "s1", "s2", "s3"],
         caller,
         limit: 12,
         vectorMode: "never",
       });
-      samples.push(performance.now() - t0);
-      if (i === 0) {
-        expect(res.hits.length).toBeGreaterThan(0);
-        expect(res.mode_used.roundTrips).toBe(1);
-      }
-    }
-    samples.sort((a, b) => a - b);
-    const p50 = samples[Math.floor(0.5 * samples.length)]!;
-    const p95 = samples[Math.floor(0.95 * samples.length)]!;
-    console.log(
-      `[hybrid perf @ 100k, лексический путь] p50=${p50.toFixed(3)}ms p95=${p95.toFixed(3)}ms ` +
-        `(бюджет И1 на весь гибридный поиск — 25 мс)`,
-    );
-    // Порог не подогнан под замер: если путь вылезет за бюджет, тест упадёт с
-    // фактическими числами в выводе выше, а не молча зазеленеет.
-    expect(p95).toBeLessThan(25);
-    // Отдельный сторож против регрессии планировщика. Замеренное значение
-    // ~0.9 мс; порог 5 мс с большим запасом, но он ловит ровно ту поломку,
-    // которая уже случалась: без CROSS JOIN-подсказок SQLite заходил со
-    // стороны nodes/edges и путь стоил 4.7 мс вместо 0.8.
-    expect(p95).toBeLessThan(5);
+    const first = once();
+    expect(first.hits.length).toBeGreaterThan(0);
+    expect(first.mode_used.roundTrips).toBe(1);
+
+    // Порог 5 мс — не бюджет И1 (тот 25 мс на весь гибридный поиск), а сторож
+    // против регрессии планировщика: без CROSS JOIN-подсказок SQLite заходил
+    // со стороны nodes/edges и путь стоил 4.7 мс вместо 0.8. Абсолют
+    // проверяется только при годных условиях замера (@myc/bench (packages/bench/src/index.ts)):
+    // запас всего ×2 от наблюдаемых p95, а стенное время зависит от загрузки
+    // машины — это ровно тот класс, что дал три ложные тревоги за день
+    // (memory-ws31ztqgh43c).
+    const m = measure("hybrid perf @ 100k, лексический путь", () => void once(), {
+      warmup: 20,
+      iters: 200,
+      budgetMs: 5,
+    });
+    report(m, "бюджет И1 на весь гибридный поиск — 25 мс");
+    expectWithinBudget(m);
     db.close();
   }, 60_000);
 });

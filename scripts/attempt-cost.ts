@@ -1,10 +1,26 @@
 /**
  * Какая сессия работала над задачей и во что она обошлась.
  *
- * Связь «задача → сессия» даёт сам бриф: он начинается строкой
- * `Задача myc: <id>`, и она попадает в первое сообщение сессии. Сессия
- * координатора содержит ту же строку (он бриф писал), поэтому исключается
- * по своему uuid — его передают в --self.
+ * ЭТО ЗАПАСНОЙ ПУТЬ, а не основной. С memory-v3f81y9vfrq0 связь попытки с
+ * сессией ЗАПИСЫВАЕТСЯ при `myc attempt start` (uuid берётся из
+ * окружения процесса, `CLAUDE_CODE_SESSION_ID`), и расход считается по
+ * записанному — `myc attempt finish` и `myc close --verdict` делают это
+ * сами, без перебора файлов. Скрипт нужен там, где записи нет: попытка
+ * заведена задним числом или агент не звал `attempt start`.
+ *
+ * ПОЧЕМУ ЗАПАСНОЙ. Связь «задача → сессия» здесь ВЫВОДИТСЯ из брифа: он
+ * начинается строкой `Задача myc: <id>`, и она попадает в первое
+ * сообщение сессии. Бриф пишет человек — и стоит написать иначе, связь
+ * молча теряется: 2026-09-07 так и вышло для двух агентов из шести.
+ * Поэтому найденное надо ЗАПИСАТЬ, и записать честно:
+ *
+ *   myc attempt link --task <id> --session <uuid> --found
+ *
+ * `--found` помечает источник как 'search' — угаданное остаётся отличимым
+ * от записанного, и отчёт может об этом спросить.
+ *
+ * Сессия координатора содержит ту же строку (он бриф писал), поэтому
+ * исключается по своему uuid — его передают в --self.
  *
  * Разбор живёт не здесь, а в packages/swarm/src/transcript.ts (импорт по
  * пути: @myc/swarm в корневые node_modules не слинкован):
@@ -66,8 +82,8 @@ if (import.meta.main) {
       `${c.sessionId}  ${c.startedAt?.slice(11, 19)}–${c.endedAt?.slice(11, 19)}  ` +
         `ответов ${c.responses} (записей ${c.usageRecords})  ` +
         `in ${c.tokensIn}  out ${c.tokensOut}  кеш ${c.tokensCacheRead}/${c.tokensCacheWrite}\n` +
-        `  myc attempt finish --task ${taskId} --verdict <accepted|rework|rejected>` +
-        ` --from-session ${c.sessionId}\n`,
+        `  myc attempt link --task ${taskId} --session ${c.sessionId} --found\n` +
+        `  myc attempt finish --task ${taskId} --verdict <accepted|rework|rejected>\n`,
     );
   }
   process.exit(failed ? 1 : 0);

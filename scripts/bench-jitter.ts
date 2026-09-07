@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Калибровка порога годности условий (JITTER_MAX в scripts/bench-guard.ts).
+ * Калибровка порога годности условий (JITTER_MAX в @myc/bench (packages/bench/src/index.ts)).
  *
  * Мерит ровно то, что мерит эталон внутри `measure`: чисто процессорную
  * работу заданной длительности, много раз, и печатает дрожание p99/p50 —
@@ -14,7 +14,7 @@
  */
 
 import { cpus, loadavg } from "node:os";
-import { summarize, unitCostNs } from "./bench-guard.ts";
+import { summarize, unitCostNs } from "@myc/bench";
 
 let sink = 0;
 function spin(units: number): void {

@@ -20,6 +20,7 @@ import type { FlagSpec } from "../flags.ts";
 import {
   attemptFailure,
   caveatArgs,
+  recordedSpend,
   resolveModelId,
   swarmOn,
   taskClassOf,
@@ -1062,6 +1063,8 @@ interface AttributionData {
   quality?: number;
   cost_usd?: number | null;
   cost_basis?: string | null;
+  /** Откуда взят расход: flags | transcript | recorded | none. */
+  spend_via?: string;
   skipped?: string;
 }
 
@@ -1257,11 +1260,15 @@ function applyAttribution(
             source: "close",
             ...tokens,
           }).attemptId;
+    // Расход по ЗАПИСАННОЙ сессии попытки, если координатор не назвал
+    // числа руками. Ради этого запись и заводилась: закрытие остаётся
+    // одним флагом, а ось цены перестаёт быть пустой.
+    const spend = recordedSpend(ctx, swarm.attribution, attemptId, { tokens });
     const done = swarm.attribution.finishAttempt(attemptId, {
       verdict,
       caveats,
       retries: typeof retriesFlag === "number" ? retriesFlag : undefined,
-      ...tokens,
+      ...spend.tokens,
     });
     return {
       recorded: true,
@@ -1273,6 +1280,7 @@ function applyAttribution(
       quality: done.quality ?? 0,
       cost_usd: done.costUsd,
       cost_basis: done.costBasis,
+      spend_via: spend.via,
     };
   } catch (e) {
     return attemptFailure(e);

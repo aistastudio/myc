@@ -295,6 +295,8 @@ describe("схема", () => {
       { version: 3, name: "swarm_attempt" },
       { version: 4, name: "swarm_attempt_task" },
       { version: 5, name: "swarm_attempt_arm" },
+      { version: 6, name: "swarm_attempt_run" },
+      { version: 7, name: "swarm_attempt_run_session" },
     ]);
   });
 

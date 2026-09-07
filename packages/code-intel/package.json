@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./defs": "./src/defs.ts",
-    "./code-index": "./src/code_index.ts"
+    "./code-index": "./src/code_index.ts",
+    "./anchors": "./src/anchors.ts"
   },
   "dependencies": {
     "@myc/core": "workspace:*",

@@ -13,10 +13,14 @@
  * шестнадцать запросов подряд стоят заметную долю бюджета независимо от
  * размера баз.
  *
- * Тест проверяет три вещи, и третья важнее первых двух:
- *   1. с потолком по умолчанию p99 укладывается в бюджет;
- *   2. без потолка (мутация «опрашиваем все») цена ЗАМЕТНО выше — иначе
- *      потолок был бы бессмысленной сложностью;
+ * Тест проверяет три вещи, и первая — самая слабая:
+ *   1. с потолком по умолчанию p99 укладывается в бюджет. Стенное время
+ *      зависит от загрузки машины (в общем прогоне этот замер давал p99 11.6
+ *      мс при бюджете 18 — запас 1.56×), поэтому абсолют проверяется только
+ *      при годных условиях замера — методика в @myc/bench (packages/bench/src/index.ts);
+ *   2. без потолка (соперник «опрашиваем все») цена ЗАМЕТНО выше — иначе
+ *      потолок был бы бессмысленной сложностью. Обе половины меряются
+ *      ЧЕРЕДУЯСЬ, в одном процессе: отношение переживает нагрузку;
  *   3. под потолком выдача РЕАЛЬНО неполна и это названо в mode_used —
  *      иначе первые два пункта мерили бы честный полный опрос.
  */
@@ -27,6 +31,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateId, type Layer } from "@myc/core";
 import { migrate, migrations, openSqlite, type SqliteDriver } from "@myc/store-sqlite";
+import {
+  expectAheadOfRival,
+  expectWithinBudget,
+  measureAsync,
+  report,
+} from "@myc/bench";
 import type { FtsCaller } from "./fts.ts";
 import {
   DEFAULT_MAX_SOURCES,
@@ -86,39 +96,31 @@ function percentile(sorted: readonly number[], p: number): number {
   return sorted[Math.max(0, Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1))]!;
 }
 
-async function measure(
-  cap: number,
-  iters = 60,
-): Promise<{ p50: number; p95: number; p99: number; queried: number }> {
-  const run = () =>
-    federatedSearch({
-      text: QUERY,
-      caller: CALLER,
-      limit: 12,
-      vectorMode: "never",
-      sources,
-      maxSources: cap,
-      // Дедлайн снят: здесь мерится ЦЕНА, а не защита от неё. Со включённым
-      // дедлайном замер «без потолка» показывал бы не стоимость шестнадцати
-      // источников, а работу самого предохранителя.
-      deadlineMs: Number.MAX_SAFE_INTEGER,
-    });
-  for (let i = 0; i < 8; i++) await run();
+const run = (cap: number) =>
+  federatedSearch({
+    text: QUERY,
+    caller: CALLER,
+    limit: 12,
+    vectorMode: "never",
+    sources,
+    maxSources: cap,
+    // Дедлайн снят: здесь мерится ЦЕНА, а не защита от неё. Со включённым
+    // дедлайном замер «без потолка» показывал бы не стоимость шестнадцати
+    // источников, а работу самого предохранителя.
+    deadlineMs: Number.MAX_SAFE_INTEGER,
+  });
+
+/** Простой замер для справочной строки отчёта (один источник). */
+async function measure(cap: number, iters = 30): Promise<{ p50: number }> {
+  for (let i = 0; i < 8; i++) await run(cap);
   const samples: number[] = [];
-  let queried = 0;
   for (let i = 0; i < iters; i++) {
     const t0 = performance.now();
-    const r = await run();
+    await run(cap);
     samples.push(performance.now() - t0);
-    queried = r.mode_used.queried;
   }
   samples.sort((a, b) => a - b);
-  return {
-    p50: percentile(samples, 50),
-    p95: percentile(samples, 95),
-    p99: percentile(samples, 99),
-    queried,
-  };
+  return { p50: percentile(samples, 50) };
 }
 
 beforeAll(async () => {
@@ -156,25 +158,34 @@ test(
   "потолок по умолчанию укладывается в бюджет recall на 100k узлов в 16 воркспейсах",
   async () => {
     const one = await measure(1);
-    const capped = await measure(DEFAULT_MAX_SOURCES);
-    const all = await measure(WORKSPACES);
-
-    console.log(
-      `[R3 federation @${TOTAL_NODES} узлов / ${WORKSPACES} воркспейсов, по ${PER_WS} в каждом]\n` +
-        `  1 источник   p50=${one.p50.toFixed(2)} p95=${one.p95.toFixed(2)} p99=${one.p99.toFixed(2)} мс\n` +
-        `  ${DEFAULT_MAX_SOURCES} источников  p50=${capped.p50.toFixed(2)} p95=${capped.p95.toFixed(2)} p99=${capped.p99.toFixed(2)} мс  (потолок по умолчанию)\n` +
-        `  ${WORKSPACES} источников p50=${all.p50.toFixed(2)} p95=${all.p95.toFixed(2)} p99=${all.p99.toFixed(2)} мс  (мутация: потолка нет)\n` +
-        `  цена источника ≈ ${((all.p50 - one.p50) / (WORKSPACES - 1)).toFixed(2)} мс`,
+    let queried = 0;
+    const m = await measureAsync(
+      `R3 federation @${TOTAL_NODES} узлов / ${WORKSPACES} воркспейсов, потолок ${DEFAULT_MAX_SOURCES}`,
+      async () => {
+        queried = (await run(DEFAULT_MAX_SOURCES)).mode_used.queried;
+      },
+      {
+        warmup: 8,
+        iters: 25,
+        budgetMs: FEDERATION_BUDGET_MS,
+        rival: async () => void (await run(WORKSPACES)),
+        rivalLabel: `потолка нет, опрашиваются все ${WORKSPACES}`,
+      },
+    );
+    report(
+      m,
+      `1 источник p50=${one.p50.toFixed(2)} мс · цена источника ≈ ` +
+        `${(((m.rival?.p50 ?? 0) - one.p50) / (WORKSPACES - 1)).toFixed(2)} мс`,
     );
 
-    expect(capped.queried).toBe(DEFAULT_MAX_SOURCES);
-    expect(capped.p99).toBeLessThan(FEDERATION_BUDGET_MS);
-    expect(capped.p99).toBeLessThan(RECALL_BUDGET_MS);
-
+    expect(queried).toBe(DEFAULT_MAX_SOURCES);
     // Потолок обязан ЭКОНОМИТЬ, иначе он — сложность без причины. Порог мягкий
-    // (10%): доказывается направление и порядок, а не конкретное число на
-    // конкретной машине.
-    expect(all.p50).toBeGreaterThan(capped.p50 * 1.1);
+    // (×1.1): доказывается направление и порядок, а не конкретное число на
+    // конкретной машине. Зато он ОБЯЗАТЕЛЕН при любой загрузке — в отличие от
+    // абсолютного бюджета ниже, который её и мерил бы вместо кода.
+    expectAheadOfRival(m, 1.1);
+    expectWithinBudget(m);
+    expect(FEDERATION_BUDGET_MS).toBeLessThan(RECALL_BUDGET_MS);
   },
   300_000,
 );

@@ -10,9 +10,15 @@
  * дороже всего: без индекса ix_nodes_prime_reach (миграция 006) SQLite обязан
  * ходить в строку таблицы за каждой отсеиваемой.
  *
- * Тест проверяет две вещи, и вторая важнее первой:
- *   1. p99 запроса укладывается в бюджет с запасом;
- *   2. план запроса ИСПОЛЬЗУЕТ ix_nodes_prime_reach и не сканирует таблицу —
+ * Тест проверяет три вещи, и первая — самая слабая:
+ *   1. p99 запроса укладывается в бюджет с запасом. Стенное время зависит от
+ *      загрузки машины, поэтому этот пункт проверяется только при годных
+ *      условиях замера (методика — @myc/bench (packages/bench/src/index.ts));
+ *   2. запрос ОПЕРЕЖАЕТ соперника — тот же текст, но на старом коротком
+ *      ix_nodes_prime, где трёх колонок охвата нет и выражения json_extract
+ *      приходится считать по строке таблицы. Оба меряются чередуясь, в одном
+ *      процессе: отношение переживает нагрузку, абсолют — нет;
+ *   3. план запроса ИСПОЛЬЗУЕТ ix_nodes_prime_reach и не сканирует таблицу —
  *      потеря индекса даёт замедление, которое на тёплой машине можно и не
  *      заметить, а на большой базе оно и есть регрессия.
  */
@@ -23,6 +29,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
+import {
+  expectAheadOfRival,
+  expectCostAtMost,
+  expectWithinBudget,
+  measure,
+  report,
+} from "@myc/bench";
 import { primeQueries } from "./prime.ts";
 
 const N = 100_000;
@@ -43,6 +56,17 @@ const PRIME_BUDGET_MS = 30;
  * колонок индекса и не краснеет от дрожания тёплой машины (запас 2.4×).
  */
 const DIGEST_BUDGET_MS = 3;
+/**
+ * Во сколько раз здоровый запрос обязан опережать соперника (тот же текст на
+ * коротком ix_nodes_prime). Измерено:
+ *   здоровый, машина свободна   ×4.37 / ×4.44 / ×4.48
+ *   здоровый, 20 занятых ядер   ×4.35  (p50 1.22 против 5.30 мс)
+ *   МУТАЦИЯ «колонки охвата ушли из индекса», 20 занятых ядер — ×1.71
+ *   (p50 3.14 против 5.38 мс; мутация задела только скан, счётчики остались
+ *   здоровыми — и порог поймал даже такую половинчатую).
+ * Порог 2.0 лежит между 4.35 и 1.71.
+ */
+const MIN_SLOWDOWN = 2.0;
 
 let dir: string;
 let db: Database;
@@ -91,11 +115,6 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function percentile(sorted: readonly number[], p: number): number {
-  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-  return sorted[Math.max(0, idx)]!;
-}
-
 test("план дайджеста использует ix_nodes_prime_reach и не сканирует таблицу", () => {
   const plan = db
     .query<{ detail: string }, [string, number, string]>(
@@ -115,26 +134,37 @@ test(`дайджест с фильтром охвата укладывается
     primeQueries.prime_reach_counts.sql,
   );
 
-  // Прогрев отбрасывается: первый прогон платит за подготовку и страницы.
-  for (let i = 0; i < 30; i++) {
-    q.all(SCOPE, 60, OWN);
-    counts.all(SCOPE, OWN);
-  }
-  const samples: number[] = [];
-  for (let i = 0; i < 200; i++) {
-    const t0 = performance.now();
-    q.all(SCOPE, 60, OWN);
-    counts.all(SCOPE, OWN);
-    samples.push(performance.now() - t0);
-  }
-  samples.sort((a, b) => a - b);
-  const p50 = percentile(samples, 50);
-  const p99 = percentile(samples, 99);
-  console.log(
-    `[S58 prime digest @${N}, 97% чужих сессий] p50=${p50.toFixed(3)}ms p99=${p99.toFixed(3)}ms`,
+  // Соперник: тот же текст запроса на старом коротком индексе — так выглядит
+  // «колонки охвата ушли из индекса». Меряется чередуясь со здоровым.
+  const rivalQ = db.query<Record<string, unknown>, [string, number, string]>(
+    primeQueries.prime_digest_scan.sql.replace("ix_nodes_prime_reach", "ix_nodes_prime"),
   );
-  expect(p99).toBeLessThan(DIGEST_BUDGET_MS);
-  expect(p99).toBeLessThan(PRIME_BUDGET_MS);
+  const rivalCounts = db.query<Record<string, unknown>, [string, string]>(
+    primeQueries.prime_reach_counts.sql.replace("ix_nodes_prime_reach", "ix_nodes_prime"),
+  );
+
+  const m = measure(
+    `S58 prime digest @${N}, 97% чужих сессий`,
+    () => {
+      q.all(SCOPE, 60, OWN);
+      counts.all(SCOPE, OWN);
+    },
+    {
+      warmup: 30,
+      iters: 100,
+      budgetMs: DIGEST_BUDGET_MS,
+      rival: () => {
+        rivalQ.all(SCOPE, 60, OWN);
+        rivalCounts.all(SCOPE, OWN);
+      },
+      rivalLabel: "короткий ix_nodes_prime, охват считается по строке таблицы",
+    },
+  );
+  report(m);
+  expectAheadOfRival(m, MIN_SLOWDOWN);
+  expectWithinBudget(m);
+  // Подбюджет дайджеста обязан оставаться ниже бюджета команды целиком.
+  expect(DIGEST_BUDGET_MS).toBeLessThan(PRIME_BUDGET_MS);
 
   // Фильтр обязан РАБОТАТЬ, а не просто быть быстрым: своё пусто, чужого
   // отсеяно много. Иначе замер относился бы к запросу без отсева.
@@ -142,7 +172,9 @@ test(`дайджест с фильтром охвата укладывается
   expect(rows.length).toBeGreaterThan(0);
   const hidden = counts.get(SCOPE, OWN) as { hidden: number };
   expect(hidden.hidden).toBeGreaterThan(1000);
-});
+  // 120 с — потолок «что-то зациклилось», а не бюджет: см. комментарий у
+  // такого же лимита в ready.repo-latency.test.ts.
+}, 120_000);
 
 /**
  * Охват РЕПОЗИТОРИЯ (S59) в памяти — отдельный стенд: `json_extract(attrs,
@@ -192,6 +224,23 @@ describe("охват репозитория в памяти (S59)", () => {
   // без покрывающего индекса (аналог ix_nodes_ready_repo, миграция 007, но
   // для памяти его пока нет) смысла нет — он покажет ту же цену.
   const REPO_DIGEST_BUDGET_MS = 8;
+  /**
+   * Потолок ОТНОСИТЕЛЬНОЙ цены фильтра репозитория. У этого пути нет индекса,
+   * который можно было бы потерять, — значит нет и деградировавшего близнеца,
+   * с которым его сравнивать (замер: тот же запрос на коротком
+   * ix_nodes_prime стоит ×1.03, то есть индекс охвата здесь ни при чём).
+   * Поэтому эталон — ТОТ ЖЕ дайджест без фильтра репозитория на том же
+   * стенде: утверждение «фильтр стоит не больше чем в K раз дороже дайджеста
+   * без него» и есть то, ради чего заводился абсолютный порог, только
+   * измеренное отношением и потому не зависящее от загрузки машины.
+   * Измерено (медиана трёх прогонов в каждом): ×6.21 / ×6.30 / ×6.35 / ×6.39
+   * / ×6.45 при 4.01–4.36 мс против 0.62–0.69 мс. Разброс 4 %, причём ×6.21
+   * и ×6.39 сняты при 20 занятых ядрах и дрожании эталона ×11.9–13.7:
+   * отношение нагрузку не замечает. МУТАЦИЯ «фильтр стал стоить два скана
+   * вместо одного» под той же нагрузкой дала ×9.33 и порог покраснел.
+   * Порог 8 стоит между 6.45 и 9.33 — он ловит рост цены фильтра на четверть.
+   */
+  const REPO_MAX_COST_RATIO = 8;
 
   test(`дайджест с фильтром репозитория укладывается в бюджет (${REPO_DIGEST_BUDGET_MS} мс)`, () => {
     const q = repoDb.query<Record<string, unknown>, [string, number, string, string]>(
@@ -200,30 +249,41 @@ describe("охват репозитория в памяти (S59)", () => {
     const counts = repoDb.query<Record<string, unknown>, [string, string]>(
       primeQueries.prime_repo_counts.sql,
     );
-    for (let i = 0; i < 30; i++) {
-      q.all(SCOPE, 60, OWN, TARGET);
-      counts.all(SCOPE, TARGET);
-    }
-    const samples: number[] = [];
-    for (let i = 0; i < 200; i++) {
-      const t0 = performance.now();
-      q.all(SCOPE, 60, OWN, TARGET);
-      counts.all(SCOPE, TARGET);
-      samples.push(performance.now() - t0);
-    }
-    samples.sort((a, b) => a - b);
-    const p50 = percentile(samples, 50);
-    const p99 = percentile(samples, 99);
-    console.log(
-      `[S59 prime digest @${N}, ${REPOS} репозиториев] p50=${p50.toFixed(3)}ms p99=${p99.toFixed(3)}ms`,
+    // Эталон: тот же дайджест на том же стенде, но БЕЗ фильтра репозитория —
+    // ровно та работа, к которой фильтр добавляется.
+    const baseQ = repoDb.query<Record<string, unknown>, [string, number, string]>(
+      primeQueries.prime_digest_scan.sql,
     );
-    expect(p99).toBeLessThan(REPO_DIGEST_BUDGET_MS);
-    expect(p99).toBeLessThan(PRIME_BUDGET_MS);
+    const baseCounts = repoDb.query<Record<string, unknown>, [string, string]>(
+      primeQueries.prime_reach_counts.sql,
+    );
+    const m = measure(
+      `S59 prime digest @${N}, ${REPOS} репозиториев`,
+      () => {
+        q.all(SCOPE, 60, OWN, TARGET);
+        counts.all(SCOPE, TARGET);
+      },
+      {
+        warmup: 30,
+        iters: 80,
+        budgetMs: REPO_DIGEST_BUDGET_MS,
+        rival: () => {
+          baseQ.all(SCOPE, 60, OWN);
+          baseCounts.all(SCOPE, OWN);
+        },
+        rivalLabel: "тот же дайджест без фильтра репозитория",
+      },
+    );
+    report(m);
+    expectCostAtMost(m, REPO_MAX_COST_RATIO);
+    expectWithinBudget(m);
+    // Подбюджет дайджеста обязан оставаться ниже бюджета команды целиком.
+  expect(DIGEST_BUDGET_MS).toBeLessThan(PRIME_BUDGET_MS);
 
     // Фильтр обязан реально отсеивать: TARGET видит 1/REPOS своих.
     const rows = q.all(SCOPE, 60, OWN, TARGET);
     expect(rows.length).toBeGreaterThan(0);
     const hidden = counts.get(SCOPE, TARGET) as { repo_hidden: number };
     expect(hidden.repo_hidden).toBeGreaterThan(1000);
-  });
+  }, 120_000);
 });

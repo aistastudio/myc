@@ -9,12 +9,13 @@
     "bun": ">=1.3.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "bun-types": "^1.3.0",
+    "@myc/bench": "workspace:*",
     "@myc/core": "workspace:*",
-    "@myc/store-sqlite": "workspace:*",
+    "@myc/embed": "workspace:*",
     "@myc/retrieval": "workspace:*",
-    "@myc/embed": "workspace:*"
+    "@myc/store-sqlite": "workspace:*",
+    "bun-types": "^1.3.0",
+    "typescript": "^5.7.0"
   },
   "scripts": {
     "build": "bun run scripts/build.ts",

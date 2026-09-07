@@ -15,7 +15,12 @@ import { migrate, migrations } from "@myc/store-sqlite";
 import { ExitCode } from "../exit.ts";
 import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
-import { createAttemptCommand, createReportCommand } from "./attempt.ts";
+import {
+  createAttemptCommand,
+  createReportCommand,
+  inertProbe,
+  realAttemptDeps,
+} from "./attempt.ts";
 import { createModelCommand } from "./roster.ts";
 import { createCloseCommand, createTaskCommand, createClaimCommand } from "./tasks.ts";
 
@@ -37,8 +42,11 @@ beforeEach(async () => {
   registry.register(createClaimCommand());
   registry.register(createCloseCommand());
   registry.register(createModelCommand());
-  registry.register(createAttemptCommand());
-  registry.register(createReportCommand());
+  // Проба ИНЕРТНАЯ: иначе `attempt start` в тесте записал бы сессию и pid
+  // того агента, который запустил тест, и сходился бы только у него.
+  const deps = { ...realAttemptDeps, probe: inertProbe };
+  registry.register(createAttemptCommand(deps));
+  registry.register(createReportCommand(deps));
 });
 
 afterEach(() => {

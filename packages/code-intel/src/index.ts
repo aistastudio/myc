@@ -163,3 +163,4 @@ export interface CodeIntel {
 }
 
 export * from "./select.ts";
+export * from "./anchors.ts";

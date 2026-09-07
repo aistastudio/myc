@@ -10,6 +10,7 @@
     "@myc/core": "workspace:*"
   },
   "devDependencies": {
+    "@myc/bench": "workspace:*",
     "@myc/store-sqlite": "workspace:*"
   },
   "scripts": {

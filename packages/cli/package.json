@@ -19,5 +19,8 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@myc/bench": "workspace:*"
   }
 }

@@ -52,7 +52,13 @@ import {
   ensureSwarmSchema,
   findSessionTranscript,
   HARNESSES,
+  isAlive,
   isTaskClass,
+  launchContext,
+  LIVE_STATE_MEANING,
+  liveStateOf,
+  overrideLaunch,
+  pidAlive,
   readTranscriptUsage,
   Roster,
   RosterError,
@@ -60,9 +66,13 @@ import {
   TranscriptError,
   VERDICTS,
   type AttemptRecord,
+  type AttemptWithRun,
   type Caveat,
   type ClassAnswer,
   type CompareReport,
+  type LaunchContext,
+  type LiveState,
+  type RunRecord,
   type TranscriptUsage,
 } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
@@ -90,11 +100,37 @@ export interface SwarmHandle {
   close(): void;
 }
 
+/**
+ * Всё, что этот файл знает о МИРЕ ЗА ПРЕДЕЛАМИ БАЗЫ: окружение процесса,
+ * живость pid, оркестратор, git. Собрано в одну инъекцию по двум причинам.
+ *
+ * Первая — проверяемость: «запуск записан» и «осиротевшее видно» обязаны
+ * проверяться тестом, а не глазами на живой машине.
+ *
+ * Вторая важнее. Здесь проходит ГРАНИЦА ОТВЕТСТВЕННОСТИ: myc ведёт запись
+ * и имеет право только СМОТРЕТЬ на процессы (сигнал 0 по записанному pid)
+ * и СПРАШИВАТЬ оркестратор о его собственных записях. Ни одного способа
+ * снять процесс в этом интерфейсе нет и не должно появиться: снимает тот,
+ * кто запускал. Отдельный тип делает это правило видимым, а не устным.
+ */
+export interface LaunchProbe {
+  env(): Readonly<Record<string, string | undefined>>;
+  /** null = pid не записан, спрашивать нечего. */
+  alive(pid: number | null): boolean | null;
+  /** Диспетчер по терминалу — из записей оркестратора, не поиском по ps. */
+  dispatchOf(terminal: string): { dispatchId: string; runId: string | null } | null;
+  gitHead(cwd: string): string | null;
+  /** Файлы, изменившиеся с указанного коммита, включая неотслеживаемые. */
+  filesTouched(cwd: string, sinceHead: string): readonly string[] | null;
+  now(): number;
+}
+
 export interface AttemptDeps {
   /** Только таблицы роя: `report`/`attempt finish` графа L1 не касаются. */
-  openSwarm(ctx: CommandContext): SwarmHandle | CommandFailure;
+  openSwarm(ctx: CommandContext, now: () => number): SwarmHandle | CommandFailure;
   /** Граф L1: нужен там, где класс задачи считается из самой задачи. */
   readonly store: StoreDeps;
+  readonly probe: LaunchProbe;
 }
 
 export function dbPathOf(ctx: CommandContext): string {
@@ -102,8 +138,16 @@ export function dbPathOf(ctx: CommandContext): string {
   return ctx.globals.db ?? join(dir, ".myc", "myc.db");
 }
 
-/** Открытие повторяет дисциплину roster.ts: STORE_PRAGMAS, без vec0. */
-export function openSwarmAt(dbPath: string): SwarmHandle | CommandFailure {
+/**
+ * Открытие повторяет дисциплину roster.ts: STORE_PRAGMAS, без vec0.
+ * Часы приходят снаружи и они ОДНИ на команду: время попытки и время
+ * наблюдения за процессом обязаны быть одной шкалой, иначе «сколько
+ * висит» — разность двух разных часов.
+ */
+export function openSwarmAt(
+  dbPath: string,
+  now: () => number = Date.now,
+): SwarmHandle | CommandFailure {
   if (!existsSync(dbPath)) {
     return {
       ok: false,
@@ -118,15 +162,89 @@ export function openSwarmAt(dbPath: string): SwarmHandle | CommandFailure {
   ensureSwarmSchema(db);
   return {
     db,
-    roster: new Roster(db),
-    attribution: new Attribution(db),
+    roster: new Roster(db, now),
+    attribution: new Attribution(db, now),
     close: () => db.close(),
   };
 }
 
-const realDeps: AttemptDeps = {
-  openSwarm: (ctx) => openSwarmAt(dbPathOf(ctx)),
+/** Короткий вызов чужого бинаря: не нашёлся или упал — null, не отказ. */
+function capture(cmd: string[], cwd: string, timeoutMs: number): string | null {
+  try {
+    const r = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "ignore", timeout: timeoutMs });
+    if (r.exitCode !== 0) return null;
+    const out = r.stdout.toString().trim();
+    return out === "" ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Диспетчер по терминалу. `worker-list --json` — единственная команда
+ * оркестратора, где ctx_* стоит рядом с term_*; pid, токенов и стоимости
+ * там нет (проверено 2026-09-07: 30 различных ключей, ни одного
+ * token/cost/usage/pid). 174 мс на вызов — это путь ЗАПИСИ, один раз на
+ * попытку, и он не обязателен: не ответил — связь просто не записана.
+ */
+export const realProbe: LaunchProbe = {
+  env: () => process.env,
+  alive: (pid) => pidAlive(pid),
+  dispatchOf: (terminal) => {
+    const raw = capture(["orca", "orchestration", "worker-list", "--json"], process.cwd(), 5000);
+    if (raw === null) return null;
+    try {
+      const parsed = JSON.parse(raw) as {
+        result?: { workers?: Array<Record<string, unknown>> };
+      };
+      const hit = (parsed.result?.workers ?? []).find(
+        (w) => w["agentTerminalHandle"] === terminal,
+      );
+      if (hit === undefined) return null;
+      const dispatchId = hit["dispatchId"];
+      if (typeof dispatchId !== "string") return null;
+      const runId = hit["runId"];
+      return { dispatchId, runId: typeof runId === "string" ? runId : null };
+    } catch {
+      return null;
+    }
+  },
+  gitHead: (cwd) => capture(["git", "rev-parse", "HEAD"], cwd, 3000),
+  filesTouched: (cwd, sinceHead) => {
+    const changed = capture(["git", "diff", "--name-only", sinceHead], cwd, 5000);
+    const untracked = capture(
+      ["git", "ls-files", "--others", "--exclude-standard"],
+      cwd,
+      5000,
+    );
+    if (changed === null && untracked === null) return null;
+    const all = [...(changed ?? "").split("\n"), ...(untracked ?? "").split("\n")]
+      .map((l) => l.trim())
+      .filter((l) => l !== "");
+    return [...new Set(all)].sort();
+  },
+  now: () => Date.now(),
+};
+
+export const realAttemptDeps: AttemptDeps = {
+  openSwarm: (ctx, now) => openSwarmAt(dbPathOf(ctx), now),
   store: realStoreDeps,
+  probe: realProbe,
+};
+
+/**
+ * Проба, которая ничего не знает о мире. Нужна тестам и всякому вызову,
+ * которому нельзя ни спрашивать оркестратор, ни читать чужое окружение:
+ * без неё тест `attempt start` записал бы сессию ТОГО АГЕНТА, который
+ * запустил тест, и зелёный тест ничего бы не значил.
+ */
+export const inertProbe: LaunchProbe = {
+  env: () => ({}),
+  alive: () => null,
+  dispatchOf: () => null,
+  gitHead: () => null,
+  filesTouched: () => null,
+  now: () => Date.now(),
 };
 
 function usage(code: string, msg: string, hint?: string): CommandFailure {
@@ -376,7 +494,17 @@ interface NodeLike {
   readonly attrs: Readonly<Record<string, JsonValue>>;
 }
 
-/** Пути якорей: заявленные в attrs и связанные таблицей anchors. */
+/**
+ * Пути якорей: заявленные в `attrs` и связанные ребром `touches`.
+ *
+ * ЗАПРОС ИДЁТ ЧЕРЕЗ РЕБРО, А НЕ ПО `anchors.node_id = <id задачи>`. Якорь —
+ * это ОТДЕЛЬНЫЙ узел `kind='anchor'` (первичный ключ `anchors.node_id`
+ * допускает ровно одну строку на узел, то есть узел и есть якорь), а задача
+ * связана с ним ребром `touches`; ровно так его читает и `ready`
+ * (ANCHOR_SUBQ). Пока здесь стояло `WHERE node_id = <id задачи>`, выборка не
+ * находила НИ ОДНОГО привязанного якоря, и `scope` класса задачи оставался
+ * `unknown` у всех задач разом — а роутинг считается по классу.
+ */
 export function anchorPathsOf(node: NodeLike, db: Database, nodeId: string): string[] {
   const paths: string[] = [];
   const declared = node.attrs["anchors"];
@@ -388,7 +516,11 @@ export function anchorPathsOf(node: NodeLike, db: Database, nodeId: string): str
     }
   }
   const bound = db
-    .query("SELECT path FROM anchors WHERE node_id = ?1")
+    .query(
+      `SELECT a.path AS path
+         FROM edges e JOIN anchors a ON a.node_id = e.dst
+        WHERE e.src = ?1 AND e.type = 'touches' AND e.deleted_at IS NULL`,
+    )
     .all(nodeId) as Array<{ path: string }>;
   for (const row of bound) paths.push(row.path);
   return paths;
@@ -434,6 +566,150 @@ export function attemptView(a: AttemptRecord): Record<string, unknown> {
     source: a.source,
     note: a.note,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Запуск: что записывается в момент старта и как читается потом
+// ---------------------------------------------------------------------------
+
+/**
+ * Контекст запуска для `attempt start`: окружение процесса, поверх него
+ * названное флагами, поверх этого — диспетчер, спрошенный у оркестратора
+ * по терминалу.
+ *
+ * Порядок именно такой, потому что каждый следующий источник ТОЧНЕЕ, а не
+ * просто «позже»: окружение знает процесс о себе сам, флаг называет
+ * запускающий, а оркестратор — единственный, кто знает ctx_*, и знает
+ * его точно. Спрашивается он только если терминал известен и диспетчер
+ * не назван: лишний запуск чужого бинаря на ровном месте не нужен.
+ */
+export function resolveLaunch(
+  ctx: CommandContext,
+  probe: LaunchProbe,
+): { launch: LaunchContext; lookupFailed: boolean } {
+  let launch = launchContext(probe.env());
+  const sessionFlag = flagStr(ctx, "session");
+  const dispatchFlag = flagStr(ctx, "dispatch");
+  const pidFlag = flagNum(ctx, "pid");
+  launch = overrideLaunch(launch, {
+    ...(sessionFlag !== undefined ? { sessionId: sessionFlag } : {}),
+    ...(dispatchFlag !== undefined ? { dispatchId: dispatchFlag } : {}),
+    ...(pidFlag !== undefined ? { agentPid: pidFlag } : {}),
+  });
+  if (launch.dispatchId !== null || launch.terminal === null || flagBool(ctx, "no-orca")) {
+    return { launch, lookupFailed: false };
+  }
+  const found = probe.dispatchOf(launch.terminal);
+  if (found === null) return { launch, lookupFailed: true };
+  return {
+    launch: overrideLaunch(launch, {
+      dispatchId: found.dispatchId,
+      dispatchSource: "lookup",
+      ...(found.runId !== null ? { runId: found.runId } : {}),
+    }),
+    lookupFailed: false,
+  };
+}
+
+export function runView(r: RunRecord | undefined): Record<string, unknown> | null {
+  if (r === undefined) return null;
+  return {
+    sessionId: r.sessionId,
+    sessionSource: r.sessionSource,
+    transcriptPath: r.transcriptPath,
+    dispatchId: r.dispatchId,
+    dispatchSource: r.dispatchSource,
+    runId: r.runId,
+    terminal: r.terminal,
+    paneKey: r.paneKey,
+    agentPid: r.agentPid,
+    pidSource: r.pidSource,
+    harnessBuild: r.harnessBuild,
+    procState: r.procState,
+    procCheckedAt: r.procCheckedAt === null ? null : new Date(r.procCheckedAt).toISOString(),
+    procExitedAt: r.procExitedAt === null ? null : new Date(r.procExitedAt).toISOString(),
+    gitHead: r.gitHead,
+    filesTouched: r.filesTouched,
+    recordedAt: new Date(r.recordedAt).toISOString(),
+  };
+}
+
+export interface LiveRow {
+  readonly attempt: Record<string, unknown>;
+  readonly run: Record<string, unknown> | null;
+  readonly liveState: LiveState;
+  readonly meaning: string;
+  /** Сколько прошло с открытия попытки — «сколько висит». */
+  readonly ageMs: number;
+  /** Сколько процесс живёт ПОСЛЕ приёмки; null, если работа не закрыта. */
+  readonly afterFinishMs: number | null;
+}
+
+/**
+ * Наблюдение над списком попыток. Пробу и часы берём снаружи: без этого
+ * «завершено, но живо» проверялось бы только на живой машине, то есть
+ * никогда.
+ */
+export function observe(
+  rows: readonly AttemptWithRun[],
+  probe: LaunchProbe,
+  now: number,
+): LiveRow[] {
+  return rows.map(({ attempt, run }) => {
+    const state = liveStateOf(attempt, probe.alive(run?.agentPid ?? null));
+    return {
+      attempt: attemptView(attempt),
+      run: runView(run),
+      liveState: state,
+      meaning: LIVE_STATE_MEANING[state],
+      ageMs: now - attempt.startedAt,
+      afterFinishMs:
+        attempt.finishedAt === null || !isAlive(state) ? null : now - attempt.finishedAt,
+    };
+  });
+}
+
+function fmtAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}ч ${String(m).padStart(2, "0")}м` : `${m}м ${String(s % 60).padStart(2, "0")}с`;
+}
+
+/**
+ * Плотная строка на запуск. Осиротевшее показывается ВМЕСТЕ с командой
+ * снятия — но myc её не выполняет: снимает тот, кто запускал.
+ */
+export function renderLiveHuman(raw: unknown): string {
+  const rows = raw as LiveRow[];
+  if (rows.length === 0) return "живых процессов по записи нет\n";
+  const lines = rows.map((r) => {
+    const run = r.run as Record<string, unknown> | null;
+    const pid = run?.["agentPid"];
+    const sess = run?.["sessionId"];
+    const disp = run?.["dispatchId"];
+    return [
+      String(r.attempt["attemptId"]).padEnd(16),
+      String(r.attempt["taskId"]).padEnd(20),
+      `${r.liveState}`.padEnd(8),
+      `pid ${pid ?? "—"}`.padEnd(11),
+      fmtAge(r.ageMs).padEnd(9),
+      r.afterFinishMs === null ? "".padEnd(16) : `висит ${fmtAge(r.afterFinishMs)}`.padEnd(16),
+      `сессия ${sess === null || sess === undefined ? "—" : String(sess).slice(0, 8)}`.padEnd(16),
+      `${disp ?? "—"}`,
+    ].join(" ").trimEnd();
+  });
+  const orphans = rows.filter((r) => r.liveState === "orphan");
+  if (orphans.length > 0) {
+    lines.push(
+      "",
+      `ОСИРОТЕЛО ${orphans.length}: работа принята, процесс жив. ` +
+        "worker-release снимает учётную запись терминала, но не процесс.",
+      `  kill ${orphans.map((r) => (r.run as Record<string, unknown>)["agentPid"]).join(" ")}`,
+      "  (снимает тот, кто запускал: myc ведёт запись, а не процессы)",
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function fmtUsd(v: number | null): string {
@@ -495,7 +771,9 @@ function renderAttemptHuman(raw: unknown): string {
   const a = raw as ReturnType<typeof attemptView>;
   const head = `${a["attemptId"]}  ${a["taskId"]}  ${a["modelId"]}@${a["effort"]} (${a["harness"]})`;
   const cls = `class    ${a["taskClass"]}`;
-  if (a["finishedAt"] === null) return `${head}\n${cls}\nopen     started ${a["startedAt"]}\n`;
+  if (a["finishedAt"] === null) {
+    return `${[head, cls, `open     started ${a["startedAt"]}`, ...runLines(a)].join("\n")}\n`;
+  }
   const caveats = a["caveats"] as string[];
   const verdict = `verdict  ${a["verdict"]}${caveats.length > 0 ? ` · оговорки: ${caveats.join(", ")}` : ""}`;
   const quality = `quality  ${(a["quality"] as number).toFixed(2)}   cost ${fmtUsd(
@@ -511,12 +789,45 @@ function renderAttemptHuman(raw: unknown): string {
         `сессия ${t.sessionId ?? "?"}, ответов ${t.responses} из ${t.usageRecords} записей`,
     );
   }
+  lines.push(...runLines(a));
   return `${lines.join("\n")}\n`;
+}
+
+/** Строка запуска в человеческом выводе: сессия, диспетчер, процесс. */
+function runLines(a: Record<string, unknown>): string[] {
+  const r = a["run"] as Record<string, unknown> | null | undefined;
+  if (r === null || r === undefined) return [];
+  const out = [
+    `запуск   сессия ${r["sessionId"] ?? "—"} (${r["sessionSource"]}) · ` +
+      `диспетчер ${r["dispatchId"] ?? "—"} (${r["dispatchSource"]})`,
+    `процесс  pid ${r["agentPid"] ?? "—"} (${r["pidSource"]}) · ${r["procState"]}` +
+      (a["liveState"] === undefined ? "" : ` · ${a["liveState"]}: ${a["meaning"]}`),
+  ];
+  const files = r["filesTouched"] as string[] | null;
+  if (files !== null && files !== undefined) {
+    out.push(`тронуто  ${files.length} файлов${files.length > 0 ? `: ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
 // attempt start / finish / list / show
 // ---------------------------------------------------------------------------
+
+/**
+ * Флаги запуска. Все — ЗАПАСНОЙ путь: в норме `attempt start` вызывается
+ * без единого из них, потому что процесс знает о себе всё сам.
+ */
+const LAUNCH_FLAGS: readonly FlagSpec[] = [
+  {
+    name: "session",
+    value: "string",
+    description: "session/transcript uuid (default $CLAUDE_CODE_SESSION_ID)",
+  },
+  { name: "dispatch", value: "string", description: "orchestrator dispatch id (ctx_…)" },
+  { name: "pid", value: "number", description: "agent process pid (default $CLAUDE_PID)" },
+  { name: "no-orca", description: "do not ask the orchestrator for the dispatch id" },
+];
 
 const TOKEN_FLAGS: readonly FlagSpec[] = [
   { name: "tokens-in", value: "number", description: "input tokens spent ($MYC_TOKENS_IN)" },
@@ -539,6 +850,7 @@ function buildStartCommand(deps: AttemptDeps): Command {
       { name: "class", value: "string", description: "override task class, e.g. fix:module" },
       { name: "note", value: "string", description: "free-form note" },
       { name: "as", value: "string", description: "actor (default $MYC_ACTOR/$USER)" },
+      ...LAUNCH_FLAGS,
       ...TOKEN_FLAGS,
     ],
     handler: async (ctx): Promise<CommandResult> => {
@@ -554,7 +866,7 @@ function buildStartCommand(deps: AttemptDeps): Command {
       const opened = await deps.store.openStore(ctx);
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
-      const swarm = swarmOn(h.driver.database);
+      const swarm = swarmOn(h.driver.database, deps.probe.now);
       try {
         const resolved = resolveId(h, idInput);
         if (!resolved.ok) return resolved.failure;
@@ -565,6 +877,8 @@ function buildStartCommand(deps: AttemptDeps): Command {
 
         const taskClass =
           declaredClass ?? taskClassOf(node, h.driver.database, node.id);
+        const cwd = resolve(ctx.globals.directory ?? process.cwd());
+        const { launch, lookupFailed } = resolveLaunch(ctx, deps.probe);
         const record = swarm.attribution.startAttempt({
           taskId: node.id,
           modelId: model.modelId,
@@ -574,9 +888,29 @@ function buildStartCommand(deps: AttemptDeps): Command {
           harness: flagStr(ctx, "harness") as never,
           actor: resolveActor(ctx),
           note: flagStr(ctx, "note"),
+          run: { launch, gitHead: deps.probe.gitHead(cwd) },
           ...tokenArgs(ctx),
         });
-        return { ok: true, data: attemptView(record) };
+        // Молчать тут нельзя: связь, которой нет, потом ищут перебором
+        // стенограмм — тем самым способом, который уже ломался.
+        if (launch.sessionId === null) {
+          ctx.warn(
+            "launch.no_session",
+            `${record.attemptId}: сессия не записана — расход придётся искать перебором ` +
+              "(myc attempt start … --session <uuid> или $MYC_SESSION_ID)",
+          );
+        }
+        if (lookupFailed) {
+          ctx.warn(
+            "launch.no_dispatch",
+            `${record.attemptId}: терминал ${launch.terminal} известен, а диспетчер нет — ` +
+              "оркестратор не ответил (myc attempt start … --dispatch ctx_…)",
+          );
+        }
+        return {
+          ok: true,
+          data: { ...attemptView(record), run: runView(swarm.attribution.getRun(record.attemptId)) },
+        };
       } catch (e) {
         return attemptFailure(e);
       } finally {
@@ -588,9 +922,57 @@ function buildStartCommand(deps: AttemptDeps): Command {
 }
 
 /** Схема роя на уже открытом соединении графа: второй базы не заводим. */
-export function swarmOn(db: Database): { roster: Roster; attribution: Attribution } {
+export function swarmOn(
+  db: Database,
+  now: () => number = Date.now,
+): { roster: Roster; attribution: Attribution } {
   ensureSwarmSchema(db);
-  return { roster: new Roster(db), attribution: new Attribution(db) };
+  return { roster: new Roster(db, now), attribution: new Attribution(db, now) };
+}
+
+/**
+ * Расход из записанной сессии, если руками не назвали ничего другого.
+ *
+ * ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ ЯВНОГО --from-session. Явный флаг — просьба
+ * прочитать стенограмму, и отказ разбора обязан быть отказом команды:
+ * ноль там неотличим от «не смогли прочитать». Здесь стенограмму никто не
+ * просил — её нашла запись, — и терять из-за неё ВЕРДИКТ нельзя: вердикт
+ * знает только координатор и вводит его один раз. Поэтому отказ разбора
+ * тут WARN, а не отказ. Тихого нуля всё равно нет: строка про отказ
+ * попадает и в человеческий вывод, и в конверт.
+ */
+export function recordedSpend(
+  ctx: CommandContext,
+  attribution: Attribution,
+  attemptId: string,
+  spend: TokenSource,
+): TokenSource & { via: "flags" | "transcript" | "recorded" | "none" } {
+  if (spend.transcript !== undefined) return { ...spend, via: "transcript" };
+  if (Object.keys(spend.tokens).length > 0) return { ...spend, via: "flags" };
+  const run = attribution.getRun(attemptId);
+  if (run?.sessionId == null) return { ...spend, via: "none" };
+  try {
+    const dir = transcriptDir(resolve(ctx.globals.directory ?? process.cwd()));
+    const path = run.transcriptPath ?? findSessionTranscript(dir, run.sessionId);
+    const read = readTranscriptUsage(path);
+    return {
+      tokens: {
+        tokensIn: read.tokensIn,
+        tokensOut: read.tokensOut,
+        tokensCacheRead: read.tokensCacheRead,
+        tokensCacheWrite: read.tokensCacheWrite,
+      },
+      transcript: read,
+      via: "recorded",
+    };
+  } catch (e) {
+    const code = e instanceof TranscriptError ? e.code : "transcript.unreadable";
+    ctx.warn(
+      code,
+      `расход по записанной сессии ${run.sessionId} не прочитан: ${(e as Error).message}`,
+    );
+    return { ...spend, via: "none" };
+  }
 }
 
 function buildFinishCommand(deps: AttemptDeps): Command {
@@ -624,7 +1006,7 @@ function buildFinishCommand(deps: AttemptDeps): Command {
       const spend = tokenSource(ctx);
       if (!("tokens" in spend)) return spend;
 
-      const opened = deps.openSwarm(ctx);
+      const opened = deps.openSwarm(ctx, deps.probe.now);
       if (!("db" in opened)) return opened;
       try {
         let attemptId = ctx.args[0];
@@ -648,14 +1030,32 @@ function buildFinishCommand(deps: AttemptDeps): Command {
           }
           attemptId = open.attemptId;
         }
+        // Расход по ЗАПИСАННОЙ сессии, если источник не назван руками.
+        // Это и есть ответ на «считать расход без перебора файлов»:
+        // стенограмма берётся по uuid из строки запуска, а не ищется по
+        // строке брифа, которую человек может написать иначе.
+        const recorded = recordedSpend(ctx, opened.attribution, attemptId, spend);
         const record = opened.attribution.finishAttempt(attemptId, {
           verdict,
           caveats,
           retries: flagNum(ctx, "retries"),
           note: flagStr(ctx, "note"),
-          ...spend.tokens,
+          ...recorded.tokens,
         });
-        return { ok: true, data: withTranscript(attemptView(record), spend.transcript) };
+        const cwd = resolve(ctx.globals.directory ?? process.cwd());
+        const run = opened.attribution.getRun(attemptId);
+        if (run?.gitHead != null) {
+          const touched = deps.probe.filesTouched(cwd, run.gitHead);
+          if (touched !== null) opened.attribution.recordFilesTouched(attemptId, touched);
+        }
+        return {
+          ok: true,
+          data: {
+            ...withTranscript(attemptView(record), recorded.transcript),
+            run: runView(opened.attribution.getRun(attemptId)),
+            spendVia: recorded.via,
+          },
+        };
       } catch (e) {
         return attemptFailure(e);
       } finally {
@@ -666,19 +1066,115 @@ function buildFinishCommand(deps: AttemptDeps): Command {
   };
 }
 
+/**
+ * Поздняя привязка: попытка уже есть, а её сессия/процесс — нет.
+ *
+ * Нужна ровно двум случаям, и оба реальны. Ретроспективная попытка из
+ * `myc close --verdict` процесса не видела вовсе. И — главное — старая
+ * дорога, поиск стенограммы перебором по строке брифа
+ * (scripts/attempt-cost.ts): она осталась запасной, но её находку
+ * теперь можно ЗАПИСАТЬ, пометив `--found`. Тогда угаданное видно как
+ * угаданное и не выдаёт себя за записанное при старте.
+ */
+function buildLinkCommand(deps: AttemptDeps): Command {
+  return {
+    name: "link",
+    summary: "attach session / dispatch / pid to an existing attempt",
+    help:
+      "Запасной путь: в норме связь пишется при `attempt start`. --found помечает " +
+      "источник как 'search' — находку перебором стенограмм, а не запись процесса о себе.",
+    flags: [
+      { name: "task", value: "string", description: "link the open attempt of this task" },
+      { name: "found", description: "mark the session as found by search, not recorded" },
+      { name: "transcript", value: "string", description: "exact transcript file" },
+      ...LAUNCH_FLAGS,
+    ],
+    handler: (ctx): CommandResult => {
+      const opened = deps.openSwarm(ctx, deps.probe.now);
+      if (!("db" in opened)) return opened;
+      try {
+        let attemptId = ctx.args[0];
+        const taskId = flagStr(ctx, "task");
+        if (attemptId === undefined) {
+          if (taskId === undefined) {
+            return usage(
+              "usage.invalid",
+              "нужен id попытки или --task <id>: myc attempt link <attempt-id> --session <uuid>",
+            );
+          }
+          const open = opened.attribution.openAttemptForTask(taskId);
+          if (open === undefined) {
+            return {
+              ok: false,
+              code: "notfound.attempt",
+              msg: `у задачи "${taskId}" нет открытой попытки`,
+              exit: ExitCode.NOTFOUND,
+            };
+          }
+          attemptId = open.attemptId;
+        }
+        const existing = opened.attribution.getRun(attemptId);
+        const { launch } = resolveLaunch(ctx, deps.probe);
+        // Уже записанное не стирается пустотой: дописать диспетчера к
+        // строке с сессией — обычное дело, а потерять при этом сессию —
+        // ровно та потеря связи, против которой всё писалось.
+        const merged = overrideLaunch(launch, {
+          ...(launch.sessionId === null && existing?.sessionId != null
+            ? { sessionId: existing.sessionId, sessionSource: existing.sessionSource }
+            : {}),
+          ...(launch.dispatchId === null && existing?.dispatchId != null
+            ? { dispatchId: existing.dispatchId, dispatchSource: existing.dispatchSource }
+            : {}),
+          ...(launch.agentPid === null && existing?.agentPid != null
+            ? { agentPid: existing.agentPid }
+            : {}),
+        });
+        const found = flagBool(ctx, "found");
+        const run = opened.attribution.attachRun(attemptId, {
+          launch:
+            found && merged.sessionId !== null
+              ? { ...merged, sessionSource: "search" }
+              : merged,
+          transcriptPath: flagStr(ctx, "transcript") ?? existing?.transcriptPath ?? null,
+          gitHead: existing?.gitHead ?? null,
+          procState: existing?.procState,
+        });
+        return { ok: true, data: { attemptId, run: runView(run) } };
+      } catch (e) {
+        return attemptFailure(e);
+      } finally {
+        opened.close();
+      }
+    },
+    renderHuman: (raw) => {
+      const d = raw as { attemptId: string; run: Record<string, unknown> | null };
+      const r = d.run;
+      return (
+        `${d.attemptId}  сессия ${r?.["sessionId"] ?? "—"} (${r?.["sessionSource"] ?? "—"}) · ` +
+        `диспетчер ${r?.["dispatchId"] ?? "—"} · pid ${r?.["agentPid"] ?? "—"}\n`
+      );
+    },
+  };
+}
+
 function buildListCommand(deps: AttemptDeps): Command {
   return {
     name: "list",
     summary: "recorded attempts, newest first",
+    help:
+      "--live отвечает на вопрос «что сейчас работает и сколько висит»: смотрит на " +
+      "записанные pid сигналом 0 и показывает ЖИВЫЕ процессы, отличая работающие от " +
+      "тех, чья работа уже принята. Снятие — не его дело: myc ведёт запись.",
     flags: [
       { name: "task", value: "string", description: "filter by task id" },
       { name: "model", value: "string", description: "filter by model id" },
       { name: "open", description: "only unfinished attempts" },
+      { name: "live", description: "only attempts whose recorded pid is still alive" },
       { name: "since", value: "string", description: "window, e.g. 7d" },
       { name: "limit", value: "number", description: "max rows (default 50)" },
     ],
     handler: (ctx): CommandResult => {
-      const opened = deps.openSwarm(ctx);
+      const opened = deps.openSwarm(ctx, deps.probe.now);
       if (!("db" in opened)) return opened;
       try {
         let since: number | undefined;
@@ -688,21 +1184,52 @@ function buildListCommand(deps: AttemptDeps): Command {
           if (span === undefined) return usage("usage.invalid", `--since: не длительность "${sinceRaw}"`);
           since = Date.now() - span;
         }
-        const rows = opened.attribution.listAttempts({
+        const filter = {
           taskId: flagStr(ctx, "task"),
           modelId: flagStr(ctx, "model"),
           open: flagBool(ctx, "open"),
           since,
           limit: flagNum(ctx, "limit") ?? 50,
-        });
-        return { ok: true, data: rows.map(attemptView), meta: { count: rows.length } };
+        };
+        if (!flagBool(ctx, "live")) {
+          const rows = opened.attribution.listAttempts(filter);
+          return { ok: true, data: rows.map(attemptView), meta: { count: rows.length } };
+        }
+
+        // Запись процессов ведётся ЗДЕСЬ и только здесь: обычный `list` —
+        // чтение и не должен ничего писать. Отметка ставится лишь на
+        // расхождение (running в записи, а pid мёртв), поэтому в
+        // установившемся состоянии записей не будет вовсе.
+        const now = deps.probe.now();
+        const seen = observe(
+          opened.attribution.listWithRuns({ ...filter, withRun: true }),
+          deps.probe,
+          now,
+        );
+        for (const row of seen) {
+          const id = String(row.attempt["attemptId"]);
+          const state = (row.run as Record<string, unknown> | null)?.["procState"];
+          if (isAlive(row.liveState)) {
+            if (state === "running") opened.attribution.markSeen(id, now);
+          } else if (row.liveState !== "unknown" && state !== "exited") {
+            opened.attribution.markExited(id, now);
+          }
+        }
+        const live = seen.filter((r) => isAlive(r.liveState));
+        const orphans = live.filter((r) => r.liveState === "orphan").length;
+        return {
+          ok: true,
+          data: live,
+          meta: { count: live.length, orphans, scanned: seen.length },
+        };
       } catch (e) {
         return attemptFailure(e);
       } finally {
         opened.close();
       }
     },
-    renderHuman: renderAttemptListHuman,
+    renderHuman: (data, ctx) =>
+      flagBool(ctx, "live") ? renderLiveHuman(data) : renderAttemptListHuman(data),
   };
 }
 
@@ -715,7 +1242,7 @@ function buildShowCommand(deps: AttemptDeps): Command {
       if (attemptId === undefined) {
         return usage("usage.invalid", "нужен id попытки: myc attempt show <attempt-id>");
       }
-      const opened = deps.openSwarm(ctx);
+      const opened = deps.openSwarm(ctx, deps.probe.now);
       if (!("db" in opened)) return opened;
       try {
         const record = opened.attribution.getAttempt(attemptId);
@@ -727,7 +1254,17 @@ function buildShowCommand(deps: AttemptDeps): Command {
             exit: ExitCode.NOTFOUND,
           };
         }
-        return { ok: true, data: attemptView(record) };
+        const run = opened.attribution.getRun(attemptId);
+        const state = liveStateOf(record, deps.probe.alive(run?.agentPid ?? null));
+        return {
+          ok: true,
+          data: {
+            ...attemptView(record),
+            run: runView(run),
+            liveState: state,
+            meaning: LIVE_STATE_MEANING[state],
+          },
+        };
       } catch (e) {
         return attemptFailure(e);
       } finally {
@@ -738,13 +1275,14 @@ function buildShowCommand(deps: AttemptDeps): Command {
   };
 }
 
-export function createAttemptCommand(deps: AttemptDeps = realDeps): Command {
+export function createAttemptCommand(deps: AttemptDeps = realAttemptDeps): Command {
   return {
     name: "attempt",
     summary: "execution attribution: who ran the task, with what, to what result",
     subcommands: [
       buildStartCommand(deps),
       buildFinishCommand(deps),
+      buildLinkCommand(deps),
       buildListCommand(deps),
       buildShowCommand(deps),
     ],
@@ -809,7 +1347,7 @@ function renderReportHuman(raw: unknown): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function createReportCommand(deps: AttemptDeps = realDeps): Command {
+export function createReportCommand(deps: AttemptDeps = realAttemptDeps): Command {
   const models: Command = {
     name: "models",
     summary: "which model is cheaper at equal result, per task class",
@@ -826,7 +1364,7 @@ export function createReportCommand(deps: AttemptDeps = realDeps): Command {
       if (taskClass !== undefined && !isTaskClass(taskClass)) {
         return usage("usage.class", `--class обязан быть intent:scope, получено "${taskClass}"`);
       }
-      const opened = deps.openSwarm(ctx);
+      const opened = deps.openSwarm(ctx, deps.probe.now);
       if (!("db" in opened)) return opened;
       try {
         let since: number | undefined;

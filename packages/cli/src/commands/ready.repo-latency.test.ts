@@ -16,9 +16,13 @@
  *
  * Тест проверяет три вещи, и третья важнее первых двух:
  *   1. план запроса использует ix_nodes_ready_repo и не сканирует таблицу;
- *   2. p99 запроса укладывается в бюджет;
+ *   2. запрос опережает соперника — тот же запрос, но с выражением из строки
+ *      таблицы, — и укладывается в бюджет;
  *   3. фильтр реально отсеивает — иначе замер относился бы к запросу без
  *      отсева, и оба предыдущих пункта ничего не значили бы.
+ *
+ * Методика замера — @myc/bench (packages/bench/src/index.ts): абсолютный бюджет проверяется
+ * только при годных условиях, преимущество над соперником — всегда.
  */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
@@ -27,6 +31,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
+import {
+  expectAheadOfRival,
+  expectWithinBudget,
+  measure,
+  report,
+} from "@myc/bench";
 import { readyQueries } from "./ready.ts";
 
 const N = 100_000;
@@ -47,8 +57,25 @@ const READY_BUDGET_MS = 5;
  *                                                         p99 5.20–6.38 мс.
  * Порог 3 мс лежит между здоровым и деградировавшим планом: запас 1.8× от
  * дрожания тёплой машины и втрое ниже худшего мутантного p99.
+ *
+ * ЭТОТ ПОРОГ — НЕ ГЛАВНАЯ ПРОВЕРКА. Стенное время меряется на машине, о
+ * загрузке которой тест ничего не знает: в общем прогоне этот же замер давал
+ * p99 2.43 мс при пороге 3, то есть запас 1.23× — лотерея (memory-ws31ztqgh43c).
+ * Главная проверка — MIN_SLOWDOWN ниже: отношение здорового плана к
+ * деградировавшему, измеренное чередуясь в одном процессе. Загрузка машины
+ * растягивает обоих одинаково и из отношения уходит.
  */
 const FILTERED_BUDGET_MS = 3;
+/**
+ * Во сколько раз здоровый план обязан опережать соперника. Измерено:
+ *   здоровый, машина свободна   ×3.80 / ×3.87 / ×3.89 (p50 1.33 против 5.04 мс)
+ *   здоровый, 20 занятых ядер   ×3.96  (p50 1.47 против 5.82 мс)
+ *   МУТАЦИЯ «ix_nodes_ready_repo снят», 20 занятых ядер — ×0.86
+ *   (p50 6.80 против 5.83 мс: здоровый путь стал соперником).
+ * Порог 2.0 лежит между 3.80 и 0.86. Он держится под нагрузкой ровно потому,
+ * что обе половины меряются чередуясь: машина растягивает их вместе.
+ */
+const MIN_SLOWDOWN = 2.0;
 
 let dir: string;
 let db: Database;
@@ -113,11 +140,6 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function percentile(sorted: readonly number[], p: number): number {
-  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-  return sorted[Math.max(0, idx)]!;
-}
-
 type Args = [string, number, number, number, number, number, number, number, string];
 const ARGS: Args = [SCOPE, W.pri, W.unb, W.fresh, W.anch, W.type, 10, Date.now(), OWN];
 
@@ -145,36 +167,28 @@ test("очередь без фильтра осталась на своём ко
 
 test(`очередь с фильтром укладывается в бюджет (И1, ready ${READY_BUDGET_MS} мс)`, () => {
   const q = db.query<Record<string, unknown>, Args>(readyQueries.ready_top_noanchors_repo.sql);
-  // Мутационный контроль: тот же предикат, но выражение приходится брать из
-  // строки таблицы — так выглядит «фильтр перестал быть частью индексного
-  // скана». Меряется рядом, чтобы порог был обоснован числом, а не верой.
+  // Соперник: тот же предикат, но выражение приходится брать из строки
+  // таблицы — так выглядит «фильтр перестал быть частью индексного скана».
+  // Меряется ЧЕРЕДУЯСЬ со здоровым, чтобы оба застали одни условия.
   const mutated = db.query<Record<string, unknown>, Args>(
     readyQueries.ready_top_noanchors_repo.sql.replace("ix_nodes_ready_repo", "ix_nodes_ready"),
   );
 
-  for (let i = 0; i < 10; i++) {
-    q.all(...ARGS);
-    mutated.all(...ARGS);
-  }
-  const samples: number[] = [];
-  const mutSamples: number[] = [];
-  for (let i = 0; i < 60; i++) {
-    const t0 = performance.now();
-    q.all(...ARGS);
-    samples.push(performance.now() - t0);
-    const t1 = performance.now();
-    mutated.all(...ARGS);
-    mutSamples.push(performance.now() - t1);
-  }
-  samples.sort((a, b) => a - b);
-  mutSamples.sort((a, b) => a - b);
-  console.log(
-    `[S59 ready @${N}, ${REPOS} репозиториев] индекс охвата p50=${percentile(samples, 50).toFixed(3)}ms ` +
-      `p99=${percentile(samples, 99).toFixed(3)}ms · без него ` +
-      `p50=${percentile(mutSamples, 50).toFixed(3)}ms p99=${percentile(mutSamples, 99).toFixed(3)}ms`,
-  );
-  expect(percentile(samples, 99)).toBeLessThan(FILTERED_BUDGET_MS);
-});
+  const m = measure(`S59 ready @${N}, ${REPOS} репозиториев`, () => void q.all(...ARGS), {
+    warmup: 10,
+    iters: 50,
+    budgetMs: FILTERED_BUDGET_MS,
+    rival: () => void mutated.all(...ARGS),
+    rivalLabel: "выражение из строки таблицы, не из индекса",
+  });
+  report(m);
+  expectAheadOfRival(m, MIN_SLOWDOWN);
+  expectWithinBudget(m);
+  // Лимит ниже — потолок «что-то зациклилось», а не бюджет: бюджет проверяют
+  // утверждения выше. Стенное время всего замера зависит от загрузки машины
+  // так же, как и всё прочее, и лимит по умолчанию (5 с) под нагрузкой даёт
+  // ровно ту ложную тревогу, ради которой всё это писалось.
+}, 120_000);
 
 test("фильтр РАБОТАЕТ: чужие репозитории отсеяны, общее и неопределённое — нет", () => {
   const rows = db

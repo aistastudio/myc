@@ -22,6 +22,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expectWithinBudget, measure, report, type Measured } from "@myc/bench";
 import { digestCacheQueries } from "@myc/core";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { primeQueries } from "./prime.ts";
@@ -59,21 +60,27 @@ const MIN_SPEEDUP = 5;
 let dir: string;
 let db: Database;
 
-function percentile(sorted: readonly number[], p: number): number {
-  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-  return sorted[idx]!;
-}
-
-function measureUs(iterations: number, fn: () => void): { p50: number; p99: number } {
-  for (let i = 0; i < 200; i++) fn();
-  const samples: number[] = [];
-  for (let i = 0; i < iterations; i++) {
-    const t0 = Bun.nanoseconds();
-    fn();
-    samples.push((Bun.nanoseconds() - t0) / 1000);
-  }
-  samples.sort((a, b) => a - b);
-  return { p50: percentile(samples, 50), p99: percentile(samples, 99) };
+/**
+ * Замер в микросекундах через @myc/bench: медиана перцентилей по трём
+ * независимым прогонам, рядом крутится эталон той же длительности, условия
+ * записываются вместе с числом. Абсолютный потолок (если задан) утверждается
+ * потом через `expectWithinBudget` — и только при годных условиях: под
+ * двадцатью занятыми процессами эта же проверка актуальности давала p99
+ * 143.9 мкс при потолке 200, то есть запас всего ×1.4, и следующий сосед по
+ * процессору сделал бы её красной, ничего не сломав в коде.
+ */
+function measureUs(
+  label: string,
+  iterations: number,
+  fn: () => void,
+  budgetUs?: number,
+): { p50: number; p99: number; m: Measured } {
+  const m = measure(label, fn, {
+    warmup: 200,
+    iters: iterations,
+    ...(budgetUs === undefined ? {} : { budgetMs: budgetUs / 1000 }),
+  });
+  return { p50: m.stats.p50 * 1000, p99: m.stats.p99 * 1000, m };
 }
 
 beforeAll(async () => {
@@ -152,17 +159,17 @@ describe("цена кеша дайджеста", () => {
 
     // Цена ИНВАЛИДАЦИИ — это один statement без разбора payload: ровно то,
     // что задача оценивала в ~50 мкс.
-    const check = measureUs(2000, () => {
+    const check = measureUs("digest_cache: проверка актуальности", 2000, () => {
       const row = lookup.get(SCOPE, "prime", "v3::") as { payload: string | null };
       if (row.payload === null) throw new Error("кеш обязан быть горячим");
-    });
+    }, LOOKUP_BUDGET_US);
     // Цена ПОПАДАНИЯ целиком: та же проверка плюс разбор дайджеста.
-    const hit = measureUs(2000, () => {
+    const hit = measureUs("digest_cache: попадание целиком", 2000, () => {
       const row = lookup.get(SCOPE, "prime", "v3::") as { payload: string | null };
       if (row.payload === null) throw new Error("кеш обязан быть горячим");
       JSON.parse(row.payload);
-    });
-    const miss = measureUs(300, () => {
+    }, HIT_P99_BUDGET_US);
+    const miss = measureUs("digest_cache: расчёт с нуля", 150, () => {
       compute();
     });
 
@@ -176,10 +183,10 @@ describe("цена кеша дайджеста", () => {
       `SELECT coalesce(max(seq), 0) AS s FROM oplog NOT INDEXED WHERE scope = ?1`,
     );
     expect(withIndex.get(RARE_SCOPE)).toEqual(noIndex.get(RARE_SCOPE) as never);
-    const rareIndexed = measureUs(500, () => {
+    const rareIndexed = measureUs("digest_cache: редкий скоуп по индексу", 300, () => {
       withIndex.get(RARE_SCOPE);
     });
-    const blind = measureUs(200, () => {
+    const blind = measureUs("digest_cache: то же без ix_oplog_scope", 100, () => {
       noIndex.get(RARE_SCOPE);
     });
 
@@ -193,9 +200,18 @@ describe("цена кеша дайджеста", () => {
         `мутация «то же без ix_oplog_scope» p50=${blind.p50.toFixed(1)}мкс`,
     );
 
-    expect(check.p99).toBeLessThan(LOOKUP_BUDGET_US);
+    // Условия замера — вместе с числами, по одной строке на замер.
+    report(check.m);
+    report(hit.m);
+
+    // Абсолютные потолки — только при годных условиях замера (@myc/bench).
+    expectWithinBudget(check.m);
+    expectWithinBudget(hit.m);
+    // p50 попадания держится и под нагрузкой (30.8 мкс при 20 занятых ядрах
+    // против 200 потолка): медиана не хвост, её сосед по процессору не двигает.
     expect(hit.p50).toBeLessThan(HIT_P50_BUDGET_US);
-    expect(hit.p99).toBeLessThan(HIT_P99_BUDGET_US);
+
+    // ОТНОСИТЕЛЬНЫЕ утверждения — обязательные при любой загрузке.
     expect(miss.p50 / hit.p50).toBeGreaterThan(MIN_SPEEDUP);
     // Индекс — не украшение: без него та же проверка на порядок дороже.
     expect(blind.p50).toBeGreaterThan(rareIndexed.p50 * 10);

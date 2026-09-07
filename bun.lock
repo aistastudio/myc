@@ -8,6 +8,7 @@
         "@aistastudio/myc": "^0.1.0",
       },
       "devDependencies": {
+        "@myc/bench": "workspace:*",
         "@myc/core": "workspace:*",
         "@myc/embed": "workspace:*",
         "@myc/retrieval": "workspace:*",
@@ -23,9 +24,13 @@
         "@myc/core": "workspace:*",
       },
     },
+    "packages/bench": {
+      "name": "@myc/bench",
+      "version": "0.1.0",
+    },
     "packages/cli": {
       "name": "@myc/cli",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@myc/code-intel": "workspace:*",
         "@myc/core": "workspace:*",
@@ -35,6 +40,9 @@
         "@myc/store-sqlite": "workspace:*",
         "@myc/swarm": "workspace:*",
         "@myc/web": "workspace:*",
+      },
+      "devDependencies": {
+        "@myc/bench": "workspace:*",
       },
     },
     "packages/code-intel": {
@@ -83,6 +91,7 @@
         "@myc/core": "workspace:*",
       },
       "devDependencies": {
+        "@myc/bench": "workspace:*",
         "@myc/store-sqlite": "workspace:*",
       },
     },
@@ -133,6 +142,8 @@
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
 
     "@myc/anchors": ["@myc/anchors@workspace:packages/anchors"],
+
+    "@myc/bench": ["@myc/bench@workspace:packages/bench"],
 
     "@myc/cli": ["@myc/cli@workspace:packages/cli"],
 

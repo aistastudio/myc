@@ -27,6 +27,13 @@ import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { REPO_KEY } from "@myc/core";
 import { run, type RunResult } from "../index.ts";
+import {
+  expectCostAtMost,
+  expectWithinBudget,
+  measure,
+  measureAsync,
+  report,
+} from "@myc/bench";
 import { Registry } from "../registry.ts";
 import { createRecallCommand } from "./recall.ts";
 import { realStoreDeps } from "./store.ts";
@@ -45,6 +52,14 @@ const N = 100_000;
 const POOL = 100;
 /** Бюджет И1 для recall целиком: 25 мс на 100k. */
 const RECALL_BUDGET_MS = 25;
+/**
+ * Потолок ОТНОСИТЕЛЬНОЙ цены фильтра охвата: recall с фильтром против того же
+ * recall с `--repo all` на тех же данных, измеренных чередуясь. Порог
+ * поставлен по замеру — см. вывод теста. Абсолютный бюджет в 25 мс тот же
+ * замер давал с запасом всего 1.24× в общем прогоне (p99 20.2 мс), то есть
+ * решал лотереей; отношение от загрузки машины не зависит.
+ */
+const RECALL_MAX_COST_RATIO = 2;
 /**
  * Потолок для ПОСТФИЛЬТРА на полном пуле. Число выбрано по замеру, а не на
  * глаз. Стенд — 100 строк, отсекаемых ПЕРВОЙ проверкой; сравнивались текущая
@@ -75,10 +90,6 @@ function retrieveDeps(): RetrieveDeps {
     ...realRetrieveExtras,
     resolveEmbedder: async () => ({ ok: false, reason: "в замере эмбеддер отключён" }),
   };
-}
-
-function pct(sorted: readonly number[], p: number): number {
-  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length * p) / 100))] ?? 0;
 }
 
 beforeAll(async () => {
@@ -161,25 +172,19 @@ test("постфильтр с подсчётом причин стоит мик�
   const f: RetrieveFilters = { kinds: ["task"], reach: ["project"] };
 
   let checked = 0;
-  // Прогрев: первые сотни проходов меряют JIT, а не фильтр.
-  for (let r = 0; r < 500; r++) {
+  const pass = (): void => {
     for (const row of rows) if (dropMaskOf(row, f, "messaging-server") === 0) checked++;
-  }
-  const runs: number[] = [];
-  for (let r = 0; r < 2000; r++) {
-    const t = performance.now();
-    for (const row of rows) if (dropMaskOf(row, f, "messaging-server") === 0) checked++;
-    runs.push(performance.now() - t);
-  }
-  runs.sort((a, b) => a - b);
-  const p50 = pct(runs, 50);
-  const p99 = pct(runs, 99);
-  console.log(
-    `постфильтр ${POOL} строк: p50 ${(p50 * 1000).toFixed(1)} мкс · p99 ${(p99 * 1000).toFixed(1)} мкс`,
-  );
+  };
+  // Прогрев (первые сотни проходов меряют JIT, а не фильтр) — внутри measure.
+  const mm = measure(`постфильтр ${POOL} строк`, pass, {
+    warmup: 500,
+    iters: 2000,
+    budgetMs: FILTER_BUDGET_MS,
+  });
+  report(mm);
   // Ни одна строка не прошла — замер про отсев, а не про сквозной проход.
   expect(checked).toBe(0);
-  expect(p99).toBeLessThan(FILTER_BUDGET_MS);
+  expectWithinBudget(mm);
 
   // И причина отсева — та, которая сработала: у строки её три (kind, repo и
   // ничего больше не задано), значит честное «несколько сразу».
@@ -188,31 +193,47 @@ test("постфильтр с подсчётом причин стоит мик�
   expect(dropReasonOf(dropMaskOf(rows[0]!, { kinds: ["task"] }, "messaging-server"))).toBe(
     "several",
   );
-});
+  // 120 с — потолок «что-то зациклилось», а не бюджет: см. ready.repo-latency.test.ts.
+}, 120_000);
 
 test("recall на 100k из чужого репозитория укладывается в бюджет И1", async () => {
-  const took: number[] = [];
   let drops: DropCounts | undefined;
-  for (let i = 0; i < 12; i++) {
-    const r = await myc(join(dir, "messaging-server"), "recall", "батч", "--json");
+  let total = -1;
+  // Время берётся из самого ответа (`took_ms`), а не по стенным часам вокруг
+  // вызова: так в замер не попадает разбор JSON и печать.
+  const once = async (...extra: string[]): Promise<number> => {
+    const r = await myc(join(dir, "messaging-server"), "recall", "батч", ...extra, "--json");
     const env = JSON.parse(text(r.stdout)) as {
       data: { took_ms: number; drops: DropCounts; total: number };
     };
-    took.push(env.data.took_ms);
-    drops = env.data.drops;
-    expect(env.data.total).toBe(0);
-  }
-  took.sort((a, b) => a - b);
-  const p50 = pct(took, 50);
-  const p99 = pct(took, 99);
-  console.log(`recall на ${N} узлов: p50 ${p50.toFixed(1)} мс · p99 ${p99.toFixed(1)} мс`);
-  expect(p99).toBeLessThan(RECALL_BUDGET_MS);
+    if (extra.length === 0) {
+      drops = env.data.drops;
+      total = env.data.total;
+    }
+    return env.data.took_ms;
+  };
+
+  const m = await measureAsync(`recall @${N} узлов, охват чужого репозитория`, () => once(), {
+    warmup: 3,
+    iters: 12,
+    budgetMs: RECALL_BUDGET_MS,
+    // Эталон — ТОТ ЖЕ recall без фильтра охвата (`--repo all`): та же лексика,
+    // тот же пул, но отсева нет. Фильтр обязан оставаться дешевле полного
+    // ответа; если он когда-нибудь начнёт стоить дороже, чем вернуть всё,
+    // это регрессия независимо от того, насколько занята машина.
+    rival: () => once("--repo", "all"),
+    rivalLabel: "тот же recall без фильтра охвата (--repo all)",
+  });
+  report(m);
+  expectCostAtMost(m, RECALL_MAX_COST_RATIO);
+  expectWithinBudget(m);
 
   // Третий и главный пункт: отсев был, он посчитан, и посчитан ОХВАТОМ
   // РЕПОЗИТОРИЯ — замер без отсева ничего не проверял бы.
+  expect(total).toBe(0);
   expect(drops!.repo).toBeGreaterThan(0);
   expect(drops!.kind).toBe(0);
-});
+}, 120_000);
 
 test("подвал этого же прогона называет охват, а не дежурный список флагов", async () => {
   const out = text((await myc(join(dir, "messaging-server"), "recall", "батч")).stdout);

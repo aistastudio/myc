@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { Attribution, ensureSwarmSchema, Roster } from "./index.ts";
+import { Attribution, ensureSwarmSchema, Roster, swarmMigrations } from "./index.ts";
 
 /**
  * Настоящая конкурентность: шесть процессов Bun.spawn одновременно
@@ -113,7 +113,12 @@ describe("гонка исхода (6 процессов Bun.spawn)", () => {
     const migrations = db
       .query("SELECT version FROM swarm_schema_migrations ORDER BY version")
       .all() as Array<{ version: number }>;
-    expect(migrations.map((m) => m.version)).toEqual([1, 2, 3, 4, 5]);
+    // Список версий берётся из набора, а не переписывается руками на
+    // каждую миграцию: проверяется «применены все и ровно по разу», а не
+    // конкретное их число.
+    expect(migrations.map((m) => m.version)).toEqual(
+      [...swarmMigrations].map((m) => m.version).sort((a, b) => a - b),
+    );
     db.close();
   }, 30_000);
 });

@@ -31,11 +31,19 @@
  */
 
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { cpus, loadavg, tmpdir } from "node:os";
+import { arch, cpus, loadavg, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateId, historyClause, type Layer } from "@myc/core";
 import { openSqlite, migrate, migrations, GraphStore, type SqliteDriver } from "@myc/store-sqlite";
 import { hybridSearch, type FtsCaller } from "@myc/retrieval";
+import {
+  JITTER_MAX,
+  isStrict,
+  machine,
+  measure,
+  measureAsync,
+  percentile as guardPercentile,
+} from "@myc/bench";
 import { buildBinary } from "./build.ts";
 
 // --------------------------------------------------------------------------
@@ -99,9 +107,12 @@ export interface Stats {
   readonly max: number;
 }
 
-export function percentile(sorted: readonly number[], p: number): number {
-  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-  return sorted[Math.max(0, idx)]!;
+export const percentile = guardPercentile;
+
+/** Замер вместе с условием, при котором он получен (дрожание эталона). */
+export interface Timed extends Stats {
+  /** худшее ref.p99/ref.p50 по трейлам; больше JITTER_MAX — машина была занята */
+  readonly jitter: number;
 }
 
 export function summarize(samples: readonly number[]): Stats {
@@ -116,39 +127,22 @@ export function summarize(samples: readonly number[]): Stats {
   };
 }
 
-/** Прогрев отбрасывается, ITERS прогонов таймятся по одному вызову за раз. */
-function bench(warmup: number, iters: number, fn: () => void): Stats {
-  for (let i = 0; i < warmup; i++) fn();
-  const samples: number[] = new Array(iters);
-  for (let i = 0; i < iters; i++) {
-    const t0 = performance.now();
-    fn();
-    samples[i] = performance.now() - t0;
-  }
-  return summarize(samples);
-}
-
 /**
  * Медиана из нескольких независимых прогонов, а не один прогон — так, как
  * того требует приёмка. Один трейл может словить локальный шум (GC-пауза,
  * соседний процесс на CPU); TRIALS независимых прогонов дают устойчивую
  * оценку p50/p95/p99 через медиану по трейлам, а не через один расчёт
  * перцентиля по одному набору сэмплов.
+ *
+ * Каждый трейл меряется через @myc/bench (packages/bench/src/index.ts), то есть ЧЕРЕДУЯСЬ с
+ * эталонной чисто процессорной работой той же длительности. Из трейлов
+ * берётся не только медиана перцентилей, но и ХУДШЕЕ дрожание эталона — это
+ * и есть записываемое условие замера: во сколько раз машина в это время
+ * растягивала заведомо ровную работу.
  */
-function benchTrials(trials: number, warmup: number, iters: number, fn: () => void): Stats {
-  const runs = Array.from({ length: trials }, () => bench(warmup, iters, fn));
-  const medianOf = (pick: (s: Stats) => number): number => {
-    const vs = runs.map(pick).sort((a, b) => a - b);
-    return percentile(vs, 50);
-  };
-  return {
-    n: runs.reduce((s, r) => s + r.n, 0),
-    p50: medianOf((r) => r.p50),
-    p95: medianOf((r) => r.p95),
-    p99: medianOf((r) => r.p99),
-    min: Math.min(...runs.map((r) => r.min)),
-    max: Math.max(...runs.map((r) => r.max)),
-  };
+function benchTrials(trials: number, warmup: number, iters: number, fn: () => void): Timed {
+  const m = measure("trial", fn, { warmup, iters, trials });
+  return { ...m.stats, jitter: m.jitter };
 }
 
 // --------------------------------------------------------------------------
@@ -354,7 +348,7 @@ function writeOp(store: GraphStore, i: number): void {
  * которого сдвиг не касался. Сборка стоит 0.3 с и снимает целый класс таких
  * расследований: мерится ровно то, что собирает scripts/build.ts.
  */
-async function coldStartOp(): Promise<Stats> {
+async function coldStartOp(): Promise<Timed> {
   const binary = join(import.meta.dir, "..", "dist", "myc");
   console.log("cold_start: пересборка dist/myc рецептом scripts/build.ts…");
   await buildBinary({ quiet: true });
@@ -362,17 +356,17 @@ async function coldStartOp(): Promise<Stats> {
   if (!(await file.exists())) {
     throw new Error(`${binary} не собрался`);
   }
-  const runs = 25;
-  const durations: number[] = [];
-  const spawnOnce = async (): Promise<number> => {
-    const t0 = performance.now();
+  const spawnOnce = async (): Promise<void> => {
     const proc = Bun.spawn([binary, "--version"], { stdout: "ignore", stderr: "ignore" });
     await proc.exited;
-    return performance.now() - t0;
   };
-  for (let i = 0; i < 3; i++) await spawnOnce();
-  for (let i = 0; i < runs; i++) durations.push(await spawnOnce());
-  return summarize(durations);
+  // Через measureAsync — чтобы у холодного старта тоже было записано условие
+  // замера: эталон крутится МЕЖДУ спавнами, не отбирая процессор у измеряемого.
+  // trials: 1 — 25 спавнов процесса уже стоят секунды, и трейлы здесь платятся
+  // временем сборки, а не точностью; хвост cold_start и без того сравнивается
+  // по p50 (см. REGRESSION_METRIC).
+  const m = await measureAsync("cold_start", spawnOnce, { warmup: 3, iters: 25, trials: 1 });
+  return { ...m.stats, jitter: m.jitter };
 }
 
 // --------------------------------------------------------------------------
@@ -385,34 +379,62 @@ export interface BaselineEntry {
   readonly p99: number;
   readonly updated_at: string;
   /**
-   * Средняя загрузка машины за 1 минуту в момент снятия и число ядер. Без
-   * этого линия — число без условий: та же сборка на load 4.6 и на load 7.5
-   * даёт разный холодный старт, и через сутки уже не восстановить, во что
-   * упёрлось расхождение. Ровно на этом сгорело расследование
-   * memory-21w8b5x63acn.
+   * УСЛОВИЯ ЗАМЕРА. Без них линия — число без условий: та же сборка на load 4.6
+   * и на load 7.5 даёт разный холодный старт, и через сутки уже не
+   * восстановить, во что упёрлось расхождение. Ровно на этом сгорело
+   * расследование memory-21w8b5x63acn.
+   *
+   * Отпечаток машины (платформа-архитектура-ядра) — это КЛЮЧ секции файла, а
+   * не поле записи: 15 % от числа, снятого на другой машине, не значат ничего,
+   * и сравнение с чужой секцией не проводится вовсе.
+   * `jitter` — во сколько раз машина растягивала эталонную работу в момент
+   * снятия (@myc/bench (packages/bench/src/index.ts)). Линия, снятая при дрожании ×10, — не
+   * линия, и это видно прямо в файле.
    */
   readonly load1?: number;
   readonly cpus?: number;
+  readonly jitter?: number;
   /** зачем линия сдвинута — для операций, где числа изменились не сами по себе */
   readonly note?: string;
 }
 
+/** Секция базовой линии ОДНОЙ машины: операция → числа с условиями. */
 export type Baseline = Record<string, BaselineEntry>;
 
-function readBaseline(): Baseline {
+/**
+ * Файл базовой линии разложен ПО МАШИНАМ (`machineId()`), а не по операциям.
+ * Причина простая: 15 % от числа, снятого на другом железе, не значат ничего.
+ * Плоский файл заставлял выбирать между «сравнивать несравнимое» и «выкинуть
+ * проверку»; разложенный по машинам позволяет держать линию ноутбука
+ * разработчика и линию раннера рядом, и каждая сравнивается со своей.
+ * Секции для текущей машины нет — сравнение просто не проводится, и это
+ * сказано вслух, а не подразумевается.
+ */
+export type BaselineFile = Record<string, Baseline>;
+
+function readBaselineFile(): BaselineFile {
   if (!existsSync(BASELINE_PATH)) return {};
-  return JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as Baseline;
+  const raw = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as Record<string, unknown>;
+  // Плоский файл старого формата (операция → числа) распознаётся по числовому
+  // p50 у значения. Такая линия снята неизвестно на чём и не сравнивается ни
+  // с чем: сохраняем её под именем машины "неизвестная".
+  const flat = Object.values(raw).some(
+    (v) => typeof v === "object" && v !== null && typeof (v as { p50?: unknown }).p50 === "number",
+  );
+  return flat ? { "неизвестная-машина": raw as Baseline } : (raw as BaselineFile);
 }
 
-function writeBaseline(baseline: Baseline): void {
-  writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`);
+function writeBaselineFile(file: BaselineFile): void {
+  writeFileSync(BASELINE_PATH, `${JSON.stringify(file, null, 2)}\n`);
 }
 
 export interface Verdict {
   readonly op: string;
-  readonly stats: Stats;
+  readonly stats: Timed;
   readonly budgetMs: number;
   readonly budgetOk: boolean;
+  /** годны ли условия замера для абсолютного утверждения */
+  readonly quiet: boolean;
   /** перцентиль, по которому сравнивается эта операция — см. REGRESSION_METRIC */
   readonly metric: "p50" | "p95";
   readonly baselineValue: number | null;
@@ -421,11 +443,17 @@ export interface Verdict {
   readonly regressionOk: boolean;
 }
 
-export function judge(op: string, stats: Stats, baseline: Baseline): Verdict {
+/** Отпечаток машины: сравнивать линии, снятые на разном железе, бессмысленно. */
+export function machineId(): string {
+  return `${platform()}-${arch()}-${cpus().length}`;
+}
+
+export function judge(op: string, stats: Timed, baseline: Baseline): Verdict {
   const budgetMs = BUDGETS[op]!.p99Ms;
   const budgetOk = stats.p99 <= budgetMs;
   const prior = baseline[op];
   const metric = metricFor(op);
+  const quiet = stats.jitter <= JITTER_MAX;
   const baselineValue = prior?.[metric] ?? null;
   const currentValue = stats[metric];
   const regressionPct =
@@ -440,23 +468,45 @@ export function judge(op: string, stats: Stats, baseline: Baseline): Verdict {
   const absFloorMs = budgetMs * 0.05;
   const regressionOk =
     regressionPct === null || regressionPct <= REGRESSION_PCT || (absDeltaMs !== null && absDeltaMs < absFloorMs);
-  return { op, stats, budgetMs, budgetOk, metric, baselineValue, currentValue, regressionPct, regressionOk };
+  return {
+    op,
+    stats,
+    budgetMs,
+    budgetOk,
+    quiet,
+    metric,
+    baselineValue,
+    currentValue,
+    regressionPct,
+    regressionOk,
+  };
 }
 
 function fmt(n: number): string {
   return n.toFixed(3);
 }
 
+/** Роняет ли этот вердикт прогон. Разбор — в комментарии к `main`. */
+export function fails(v: Verdict, updateBaseline: boolean): boolean {
+  const budgetFails = !v.budgetOk && (v.quiet || isStrict());
+  return budgetFails || (!updateBaseline && !v.regressionOk);
+}
+
 function printVerdict(v: Verdict, updateBaseline: boolean): void {
-  const regressionFails = !updateBaseline && !v.regressionOk;
-  const status = v.budgetOk && !regressionFails ? "OK" : "FAIL";
+  const status = fails(v, updateBaseline) ? "FAIL" : v.budgetOk ? "OK" : "УСЛОВНО";
   console.log(
     `[${status}] ${v.op}: p50=${fmt(v.stats.p50)}ms p95=${fmt(v.stats.p95)}ms p99=${fmt(v.stats.p99)}ms ` +
-      `(budget p99<${v.budgetMs}ms) n=${v.stats.n}`,
+      `(budget p99<${v.budgetMs}ms) n=${v.stats.n} · дрожание эталона ×${v.stats.jitter.toFixed(2)}`,
   );
   if (!v.budgetOk) {
     const over = (((v.stats.p99 - v.budgetMs) / v.budgetMs) * 100).toFixed(1);
-    console.log(`       БЮДЖЕТ НАРУШЕН: p99 ${fmt(v.stats.p99)}ms > ${v.budgetMs}ms (+${over}%)`);
+    console.log(
+      `       БЮДЖЕТ НАРУШЕН: p99 ${fmt(v.stats.p99)}ms > ${v.budgetMs}ms (+${over}%)` +
+        (v.quiet || isStrict()
+          ? ""
+          : ` — НЕДОСТОВЕРНО: дрожание эталона ×${v.stats.jitter.toFixed(2)} выше ${JITTER_MAX},` +
+            " машина была занята; замер не роняет прогон, но и ничего не доказывает"),
+    );
   }
   if (v.baselineValue !== null) {
     const sign = (v.regressionPct ?? 0) >= 0 ? "+" : "";
@@ -470,7 +520,10 @@ function printVerdict(v: Verdict, updateBaseline: boolean): void {
       );
     }
   } else {
-    console.log("       нет базовой линии для этой операции (обновите: bun run bench:latency:update-baseline)");
+    console.log(
+      "       нет базовой линии для этой операции НА ЭТОЙ МАШИНЕ" +
+        " (снять: bun run bench:latency:update-baseline)",
+    );
   }
 }
 
@@ -489,11 +542,14 @@ async function main(): Promise<void> {
   );
   // Условия прогона в первой же строке: сравнивать числа, снятые при разной
   // загрузке машины, нельзя, а узнать её задним числом невозможно.
+  const mach = machine();
   console.log(
-    `машина: ${cpus().length} ядер, load ${loadavg().map((n) => n.toFixed(2)).join(" ")}`,
+    `машина: ${machineId()}, load ${loadavg().map((n) => n.toFixed(2)).join(" ")}` +
+      `${isStrict() ? " · СТРОГИЙ режим: абсолютные бюджеты обязательны при любых условиях" : ""}`,
   );
+  void mach;
   const bed = await makeBed();
-  const results: Record<string, Stats> = {};
+  const results: Record<string, Timed> = {};
   try {
     results.prime = benchTrials(TRIALS, WARMUP, ITERS, () => primeOp(bed.driver));
     results.read = benchTrials(TRIALS, WARMUP, ITERS, (() => {
@@ -510,7 +566,16 @@ async function main(): Promise<void> {
   }
   results.cold_start = await coldStartOp();
 
-  const baseline = readBaseline();
+  const file = readBaselineFile();
+  const mine = machineId();
+  const baseline = file[mine] ?? {};
+  if (Object.keys(baseline).length === 0) {
+    console.log(
+      `\nбазовой линии для машины ${mine} нет — сравнение не проводится.` +
+        ` В файле есть линии: ${Object.keys(file).join(", ") || "(пусто)"}.` +
+        " Снять свою: bun run bench:latency:update-baseline --note=\"зачем\"",
+    );
+  }
   const verdicts = Object.entries(results).map(([op, stats]) => judge(op, stats, baseline));
 
   console.log("");
@@ -518,6 +583,8 @@ async function main(): Promise<void> {
 
   if (updateBaseline) {
     const next: Baseline = { ...baseline };
+    // Секции ДРУГИХ машин не трогаются: линия раннера не должна исчезать
+    // оттого, что кто-то снял свою на ноутбуке.
     const now = new Date().toISOString();
     const noteArg = process.argv.find((a) => a.startsWith("--note="));
     const note = noteArg?.slice("--note=".length);
@@ -530,18 +597,19 @@ async function main(): Promise<void> {
         updated_at: now,
         load1,
         cpus: cpus().length,
+        jitter: Number(stats.jitter.toFixed(3)),
         ...(note !== undefined ? { note } : {}),
       };
     }
-    writeBaseline(next);
-    console.log(`\nбазовая линия обновлена: ${BASELINE_PATH}`);
+    writeBaselineFile({ ...file, [mine]: next });
+    console.log(`\nбазовая линия машины ${mine} обновлена: ${BASELINE_PATH}`);
   }
 
   // При явном обновлении базовой линии регрессия к СТАРОЙ линии не повод
   // падать — вы её и обновляете затем, чтобы принять новые числа как норму.
   // Бюджет И1 — другое дело: он не про baseline, а про инвариант, обновление
   // базовой линии его нарушение не извиняет.
-  const failed = verdicts.filter((v) => !v.budgetOk || (!updateBaseline && !v.regressionOk));
+  const failed = verdicts.filter((v) => fails(v, updateBaseline));
   if (failed.length > 0) {
     console.log(`\n${failed.length} операций нарушают бюджет или регрессировали: ${failed.map((v) => v.op).join(", ")}`);
     process.exit(1);
