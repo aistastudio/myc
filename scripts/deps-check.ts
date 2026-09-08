@@ -69,7 +69,13 @@ async function collectImportedDeps(pkgDir: string): Promise<Set<string>> {
   const glob = new Bun.Glob("**/*.{ts,tsx}");
   for await (const file of glob.scan(srcDir)) {
     const text = await Bun.file(`${srcDir}/${file}`).text();
-    const matches = text.matchAll(/@myc\/([a-z0-9-]+)/g);
+    // Ищем ИМПОРТЫ, а не любое вхождение имени: комментарий, объясняющий
+    // связь с соседним пакетом («тот же выключатель, что у @myc/bench»),
+    // засчитывался как зависимость, и правило запрещало объяснять само себя.
+    // Здесь важна форма: `from "@myc/x"`, `import("@myc/x")`, `require`.
+    const matches = text.matchAll(
+      /(?:from|import|require)\s*\(?\s*["'`]@myc\/([a-z0-9-]+)["'`]/g,
+    );
     for (const m of matches) {
       const dep = m[1]!;
       if (dep !== pkgDir) deps.add(dep);
