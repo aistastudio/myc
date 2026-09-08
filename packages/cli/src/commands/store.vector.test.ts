@@ -40,6 +40,8 @@ import type { CommandContext } from "../registry.ts";
 
 /** Факт среды, а не догадка: тот же источник, которым пользуется продукт. */
 const VEC0 = ensureSqliteRuntime().vec.loaded;
+/** Модуль рантайма — подпроцессу нужен абсолютный путь, а не имя пакета. */
+const RUNTIME_MODULE = join(import.meta.dir, "..", "..", "..", "store-sqlite", "src", "runtime.ts");
 
 let projectDir: string;
 let registry: Registry;
@@ -218,7 +220,11 @@ describe("S45: рантайм расширений — по потребност
         "registry.register(createRecallCommand());",
         `const r = await run(["-C", ${JSON.stringify(projectDir)}, "recall", "поздний рантайм"], { registry, env: { MYC_ACTOR: "tester" } });`,
         'const text = [String(r.stdout ?? ""), String(r.stderr ?? "")].join(" ");',
-        "console.log(JSON.stringify({ code: r.code, text }));",
+        // Состояние рантайма — предмет проверки, а не украшение: без него
+        // «деградации нет» неотличимо от «деградация не названа».
+        `const { getSqliteRuntimeState } = await import(${JSON.stringify(RUNTIME_MODULE)});`,
+        "const runtime = getSqliteRuntimeState();",
+        "console.log(JSON.stringify({ code: r.code, text, vec: runtime?.vec.loaded ?? null }));",
       ].join("\n"),
     );
     const proc = Bun.spawnSync([process.execPath, script], {
@@ -231,9 +237,9 @@ describe("S45: рантайм расширений — по потребност
     // неё падение выглядит как голое `JSON.parse` на пустой строке и не
     // говорит НИЧЕГО о причине — а причина живёт в другом процессе и на
     // другой платформе, где её иначе не увидеть.
-    let parsed: { code: number; text: string };
+    let parsed: { code: number; text: string; vec: boolean | null };
     try {
-      parsed = JSON.parse(out) as { code: number; text: string };
+      parsed = JSON.parse(out) as { code: number; text: string; vec: boolean | null };
     } catch {
       throw new Error(
         "подпроцесс не напечатал JSON.\n" +
@@ -246,8 +252,20 @@ describe("S45: рантайм расширений — по потребност
       console.log(`[диагностика] recall вернул ${parsed.code}, текст: ${parsed.text.slice(0, 600)}`);
     }
     expect(parsed.code).toBe(0);
-    if (VEC0) {
-      // Именно названная деградация, а не молчание и не падение.
+    // Исходов ДВА, и оба законны — какой именно, решает платформа.
+    //
+    // macOS: `setCustomSQLite` после первого соединения бросает, рантайм в
+    //   таком процессе не поднять, вектора не будет — и это ОБЯЗАНО быть
+    //   названо (`degraded.vector_runtime`), иначе выдача без вектора
+    //   неотличима от выдачи с ним (И2).
+    // Linux (проверено на ubuntu-latest прошлым прогоном CI): поздний вызов
+    //   проходит, рантайм поднимается полностью, vec0 загружается — называть
+    //   нечего, потому что деградации нет.
+    //
+    // Недопустима ровно одна комбинация: вектора нет И об этом молчат.
+    if (parsed.vec === true) {
+      expect(parsed.text).not.toContain("degraded.vector_runtime");
+    } else if (VEC0) {
       expect(parsed.text).toContain("degraded.vector_runtime");
     }
   }, 20_000);

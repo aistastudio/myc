@@ -1152,33 +1152,47 @@ function readMemoryCounts(db: Database): { ops: number | undefined; nodes: numbe
  * решающая, СТИРАТЬ ЛИ память, сама переписала бы её файлы, а отказ перестал
  * бы быть отказом «без единой записи на диск».
  *
- * Поэтому вторая ветка — `immutable=1`: SQLite читает сам файл базы и не
- * создаёт ни `-shm`, ни `-wal` (в том же замере слепок каталога до и после
- * совпадает). Взамен immutable ИГНОРИРУЕТ журнал — поэтому ветка включается
- * только там, где журнала нет вовсе, и проверяется это дважды: до чтения и
- * после (писатель мог стартовать в промежутке). Во всех прочих случаях
- * остаётся прежнее fail-closed: чего не прочли, того не стираем.
+ * Поэтому для базы БЕЗ журнала берётся `immutable=1`: SQLite читает сам файл
+ * и не создаёт ни `-shm`, ни `-wal` (в том же замере слепок каталога до и
+ * после совпадает). Взамен immutable ИГНОРИРУЕТ журнал — поэтому ветка и
+ * включается только там, где журнала нет вовсе, и проверяется это дважды: до
+ * чтения и после (писатель мог стартовать в промежутке).
+ *
+ * ПОРЯДОК ВЕТВЕЙ РЕШАЕТ, и это выяснилось на CI (ubuntu-latest), а не здесь.
+ * Раньше `readonly` шёл первым, а `immutable` был запасным — и то, что запись
+ * на диск не появлялась, держалось на СЛУЧАЙНОСТИ: на macOS с кастомной
+ * libsqlite3 первая ветка на базе без спутников падает, и до второй доходило
+ * всегда. На Linux она НЕ падает: readonly-соединение открывает WAL-базу и
+ * создаёт `-shm` и `-wal`. Функция, решающая, стирать ли память, оставляла
+ * на диске два новых файла — ровно то, чего обещала не делать, и тест
+ * «не пишет ни байта» краснел там, а не здесь.
+ *
+ * Поэтому ветка выбирается ПО СОСТОЯНИЮ, а не по тому, упало ли первое
+ * открытие: нет спутников — immutable (создать нечего); есть — обычный
+ * readonly (журнал учитывается, а файлы и так на диске). Во всех прочих
+ * случаях остаётся прежнее fail-closed: чего не прочли, того не стираем.
  */
 function countPersonalMemory(dbPath: string): PersonalMemoryCounts {
+  if (sqliteSidecars(dbPath).length === 0) {
+    try {
+      const db = new Database(`${fileUri(dbPath)}?immutable=1`, { readonly: true });
+      try {
+        const counts = readMemoryCounts(db);
+        // Журнал мог появиться, пока мы читали: тогда прочитанное — прошлое.
+        if (sqliteSidecars(dbPath).length > 0) return unreadableMemory();
+        return { ...counts, readable: true };
+      } finally {
+        db.close();
+      }
+    } catch {
+      return unreadableMemory();
+    }
+  }
+
   try {
     const db = new Database(dbPath, { readonly: true });
     try {
       return { ...readMemoryCounts(db), readable: true };
-    } finally {
-      db.close();
-    }
-  } catch {
-    // Единственная разрешённая вторая попытка — ниже, и только без журнала.
-  }
-
-  if (sqliteSidecars(dbPath).length > 0) return unreadableMemory();
-  try {
-    const db = new Database(`${fileUri(dbPath)}?immutable=1`, { readonly: true });
-    try {
-      const counts = readMemoryCounts(db);
-      // Журнал мог появиться, пока мы читали: тогда прочитанное — прошлое.
-      if (sqliteSidecars(dbPath).length > 0) return unreadableMemory();
-      return { ...counts, readable: true };
     } finally {
       db.close();
     }

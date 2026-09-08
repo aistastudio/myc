@@ -200,11 +200,32 @@ export function isStrict(): boolean {
   return process.env.MYC_BENCH_STRICT === "1";
 }
 
+/**
+ * Проверять ли АБСОЛЮТНЫЙ бюджет на этой машине.
+ *
+ * `JITTER_MAX` и `TAIL_MAX` стерегут условия ЗАМЕРА — занятость и шум. Оба
+ * слепы к третьему: машина может быть незагруженной и при этом просто другой.
+ * Бюджеты И1 сняты на рабочем ноутбуке (14 ядер, arm64); общий раннер GitHub
+ * даёт 4 ядра x86 и на нём тот же код честно медленнее. Замер тогда пишет
+ * «условия годны: дрожание ×1.05, load1 1.12 — это регрессия, а не загрузка
+ * машины», и это НЕПРАВДА: регрессии нет, откалиброван бюджет под другое
+ * железо.
+ *
+ * Поэтому абсолют выключается там, где машина не откалибрована, — явным
+ * `MYC_BENCH_ABSOLUTE=0` в workflow, а не догадкой по числу ядер: догадка
+ * молча выключила бы проверку и на настоящем стенде. Относительные
+ * утверждения остаются обязательными везде: именно они ловят регрессию, и
+ * загрузка с железом из отношения уходят.
+ */
+export function absoluteEnabled(): boolean {
+  return process.env.MYC_BENCH_ABSOLUTE !== "0";
+}
+
 // --------------------------------------------------------------------------
 // Замер
 // --------------------------------------------------------------------------
 
-export type Verdict = "ok" | "over" | "unreliable" | "none";
+export type Verdict = "ok" | "over" | "unreliable" | "uncalibrated" | "none";
 
 export interface Measured {
   readonly label: string;
@@ -330,9 +351,11 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
       ? "none"
       : stats.p99 <= budgetMs
         ? "ok"
-        : quiet || strict
-          ? "over"
-          : "unreliable";
+        : !absoluteEnabled() && !strict
+          ? "uncalibrated"
+          : quiet || strict
+            ? "over"
+            : "unreliable";
   const rivalStats = rival ? medianOfTrials(rivalRuns) : null;
 
   return {
@@ -429,9 +452,11 @@ export async function measureAsync(
         ? "none"
         : stats.p99 <= budgetMs
           ? "ok"
-          : quiet || strict
-            ? "over"
-            : "unreliable",
+          : !absoluteEnabled() && !strict
+            ? "uncalibrated"
+            : quiet || strict
+              ? "over"
+              : "unreliable",
     machine: machine(),
     strict,
     rival: rivalStats,
@@ -508,6 +533,11 @@ function verdictWord(m: Measured): string {
       return "в бюджете";
     case "over":
       return "НАРУШЕН";
+    case "uncalibrated":
+      return (
+        "НЕ ПРОВЕРЯЕТСЯ (MYC_BENCH_ABSOLUTE=0: бюджет откалиброван под другое " +
+        "железо; относительные утверждения ниже проверены и обязательны)"
+      );
     case "unreliable": {
       // Причин недостоверности две, и человеку нужна именно та, что сработала:
       // «машина занята» посылает разгружать стенд, «шумит хвост» — смотреть на

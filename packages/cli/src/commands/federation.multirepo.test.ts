@@ -140,9 +140,23 @@ describe("R3: recall из корня видит репозиторные вор�
     }
     await mycAt(root, "remember", "в корне очередь ретраев описана общим решением");
 
-    const env = await jsonAt(root, "recall", "очередь ретраев", "-n", "20", "--repo", "all");
+    // Бюджет задан с запасом НАМЕРЕННО: проверяется федерация источников, а
+    // не усечение хвоста. С умолчанием (2000 символов) четыре источника
+    // умещаются не всегда — на раннере CI выпал `gamma`, и тест сообщил о
+    // работающей обрезке как о неработающей федерации.
+    const env = await jsonAt(
+      root, "recall", "очередь ретраев", "-n", "20", "--repo", "all", "--budget", "20000",
+    );
     const rows = env.data["rows"] as Row[];
     const sources = new Set(rows.map((r) => r.source));
+    // Если источник всё-таки пропал, отчёт должен назвать, кто пришёл и что
+    // сказала федерация, — иначе разбор снова упрётся в голое `false`.
+    if (sources.size < 4) {
+      console.log(
+        `[диагностика] источников ${sources.size}: ${[...sources].join(", ")}; ` +
+          `строк ${rows.length}; federation=${JSON.stringify(env.meta["federation"])}`,
+      );
+    }
     expect(sources.has("project")).toBe(true);
     expect(sources.has("alpha")).toBe(true);
     expect(sources.has("beta")).toBe(true);
