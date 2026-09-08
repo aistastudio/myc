@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openSqlite, type SqliteDriver } from "./index.ts";
 import {
+  ALREADY_LOADED_MESSAGE,
   buildLibCandidates,
   buildVecCandidates,
   ensureSqliteRuntime,
@@ -216,11 +217,39 @@ describe("громкая деградация и явные ошибки (суб
     expect(vecErr).toContain("no such module");
   });
 
+  /**
+   * Предпосылка теста — что кастомная libsqlite3 вообще НАЙДЕНА: без файла
+   * `setCustomSQLite` не зовётся, бросать нечего, и фикстура честно выходит
+   * нулём. На macOS с Homebrew она есть всегда, на голом раннере может не
+   * быть — и там проверять нечего, а не «сломано».
+   *
+   * Поэтому предпосылка проверяется явно и по ней же решается судьба теста:
+   * нет библиотеки — пропуск с названной причиной (И2: молчаливый зелёный
+   * тест на непроверенном пути хуже отсутствующего). Ошибку формы «случилось
+   * что-то другое» тест по-прежнему ловит.
+   */
   test("соединение до инициализации — громкая ошибка программиста", async () => {
+    const found = buildLibCandidates().filter((c) => existsSync(c.path));
+    if (found.length === 0) {
+      console.log(
+        "[skip] соединение до инициализации: ни одного файла libsqlite3 из " +
+          `${buildLibCandidates().length} кандидатов — setCustomSQLite не вызывается, ` +
+          "ошибке взяться неоткуда",
+      );
+      return;
+    }
     const result = await runFixture("late-init");
+    // Диагностика печатается ДО утверждений: если поведение платформы иное,
+    // следующий прогон CI покажет, какое именно, вместо голого «not 0».
+    if (result.code === 0) {
+      console.log(
+        `[диагностика] библиотека найдена (${found[0]!.path}), но фикстура вышла нулём.\n` +
+          `stdout: ${result.stdout.slice(0, 400)}\nstderr: ${result.stderr.slice(0, 400)}`,
+      );
+    }
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("ensureSqliteRuntime");
-    expect(result.stderr).toContain("SQLite already loaded");
+    expect(result.stderr).toContain(ALREADY_LOADED_MESSAGE);
   });
 });
 

@@ -266,12 +266,45 @@ describe("здоровье", () => {
     expect(h.workspace.schema_version).toBeGreaterThan(0);
 
     const codes = h.degraded.map((d) => d.code);
-    // Без ключа и без vec0 продукт работает, но обязан говорить об этом вслух.
+    // Без отпечатка и без vec0 продукт работает, но обязан говорить об этом вслух.
     expect(codes).toContain("embeddings.off");
     expect(codes).toContain("vector.unavailable");
     expect(codes).toContain("health.hooks");
     expect(codes).not.toContain("schema.version_unknown");
     expect(h.components.find((c) => c.component === "hooks")?.state).toBe("degraded");
+  });
+
+  /**
+   * Панель и сервер отвечают на ОДИН вопрос — работал ли эмбеддер — и обязаны
+   * отвечать одинаково. Панель читала `myc_meta.embed_model`, которого не
+   * пишет никто (ключ остался замыслом в комментарии миграции 001), и потому
+   * объявляла «эмбеддер не настроен» на живой базе с проиндексированными
+   * узлами: заказчик увидел это на рабочем воркспейсе, где отпечаток записан.
+   * Ложная тревога дороже молчания — к ней привыкают, а привыкнув, пропускают
+   * настоящую.
+   */
+  test("отпечаток записан — панель НЕ объявляет эмбеддер выключенным", async () => {
+    const w = await ws();
+    seedGraph(w.db, { nodes: 5 });
+    w.db.exec(
+      "INSERT OR REPLACE INTO myc_meta (key, value) VALUES " +
+        "('embed_fingerprint','local:onnx-wasm:multilingual-e5-small-q8:384:l2')",
+    );
+    const ro = openReadOnly(w.dbPath);
+    cleanups.push(() => ro.close());
+
+    const h = buildHealth(ro, { slug: "myc", dbPath: w.dbPath });
+    expect(h.degraded.map((d) => d.code)).not.toContain("embeddings.off");
+    expect(h.embed.state).not.toBe("off");
+    // И обратная сторона: без отпечатка тревога обязана остаться, иначе
+    // «починка» свелась бы к тому, что панель молчит всегда.
+    const w2 = await ws();
+    seedGraph(w2.db, { nodes: 5 });
+    const ro2 = openReadOnly(w2.dbPath);
+    cleanups.push(() => ro2.close());
+    expect(buildHealth(ro2, { slug: "myc", dbPath: w2.dbPath }).degraded.map((d) => d.code)).toContain(
+      "embeddings.off",
+    );
   });
 
   test("протухшие якоря попадают в деградации", async () => {

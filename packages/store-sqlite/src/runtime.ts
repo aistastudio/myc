@@ -62,7 +62,13 @@ interface ResolvedVec {
 }
 
 const EXTENSION_UNSUPPORTED = /does not support dynamic extension loading/i;
-const ALREADY_LOADED = "SQLite already loaded";
+/**
+ * Сообщение bun:sqlite при `setCustomSQLite` после первого соединения.
+ * Экспортируется, чтобы тест сверялся С НЕЙ, а не со своей копией строки:
+ * разойдясь, копия сделала бы тест зелёным на изменившемся поведении.
+ */
+export const ALREADY_LOADED_MESSAGE = "SQLite already loaded";
+const ALREADY_LOADED = ALREADY_LOADED_MESSAGE;
 
 let cached: SqliteRuntimeState | null = null;
 

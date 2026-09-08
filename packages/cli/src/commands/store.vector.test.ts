@@ -227,7 +227,24 @@ describe("S45: рантайм расширений — по потребност
       env: { ...process.env, NODE_ENV: "test" },
     });
     const out = proc.stdout.toString().trim().split("\n").at(-1) ?? "";
-    const parsed = JSON.parse(out) as { code: number; text: string };
+    // Диагностика на случай, когда подпроцесс не дожил до своей печати: без
+    // неё падение выглядит как голое `JSON.parse` на пустой строке и не
+    // говорит НИЧЕГО о причине — а причина живёт в другом процессе и на
+    // другой платформе, где её иначе не увидеть.
+    let parsed: { code: number; text: string };
+    try {
+      parsed = JSON.parse(out) as { code: number; text: string };
+    } catch {
+      throw new Error(
+        "подпроцесс не напечатал JSON.\n" +
+          `код выхода: ${proc.exitCode}\n` +
+          `stdout: ${proc.stdout.toString().slice(0, 800)}\n` +
+          `stderr: ${proc.stderr.toString().slice(0, 800)}`,
+      );
+    }
+    if (parsed.code !== 0) {
+      console.log(`[диагностика] recall вернул ${parsed.code}, текст: ${parsed.text.slice(0, 600)}`);
+    }
     expect(parsed.code).toBe(0);
     if (VEC0) {
       // Именно названная деградация, а не молчание и не падение.

@@ -716,14 +716,36 @@ describe("init --global --force: писатель вышел начисто (н�
       .join("\n");
   }
 
+  /**
+   * Читает `myc_meta` тем же двухступенчатым способом, что и продуктовый
+   * `countPersonalMemory` — и по той же причине.
+   *
+   * База после `wal_checkpoint(TRUNCATE)` не имеет спутников, и голое
+   * `new Database(path, { readonly: true })` на ВСТРОЕННОЙ в Bun sqlite
+   * падает с `SQLITE_CANTOPEN`; кастомная libsqlite3, которую подгружает
+   * preload, открывает её молча. Хелпер, написанный по первому поведению,
+   * зелен на машине с Homebrew и красен на голом раннере — что и случилось
+   * в CI (ubuntu-latest). Воспроизведено локально подменой preload.
+   *
+   * Тест, который сам не переживает окружения, проверяемого им же, ничего не
+   * проверяет — поэтому здесь та же вторая ступень `immutable=1`.
+   */
   function meta(key: string): string | undefined {
-    const db = new Database(join(homeDir, ".myc", "myc.db"), { readonly: true });
+    const path = join(homeDir, ".myc", "myc.db");
+    const read = (db: Database): string | undefined => {
+      try {
+        return (db.query("SELECT value FROM myc_meta WHERE key = ?1").get(key) as
+          | { value: string }
+          | null)?.value;
+      } finally {
+        db.close();
+      }
+    };
     try {
-      return (db.query("SELECT value FROM myc_meta WHERE key = ?1").get(key) as
-        | { value: string }
-        | null)?.value;
-    } finally {
-      db.close();
+      return read(new Database(path, { readonly: true }));
+    } catch {
+      // Спутников нет — значит журнал не игнорируется, а отсутствует.
+      return read(new Database(`file://${path}?immutable=1`, { readonly: true }));
     }
   }
 
@@ -756,6 +778,16 @@ describe("init --global --force: писатель вышел начисто (н�
     const before = snapshot();
 
     const r = await spawnMyc("init", "--global", "--force");
+    // Утверждения ниже сверяют ТЕКСТ отказа, и когда он расходится, голое
+    // «expected to contain» не говорит, чем именно. Подпроцесс живёт отдельно
+    // и на другой платформе может отвечать иначе — печатаем то, что он
+    // ответил на самом деле, иначе разбор упирается в отсутствие фактов.
+    if (r.code !== ExitCode.PRECOND || !r.err.includes("1 узел,")) {
+      console.log(
+        `[диагностика] init --global --force вернул ${r.code} (ожидался ${ExitCode.PRECOND})\n` +
+          `stderr: ${r.err.slice(0, 800)}\nstdout: ${r.out.slice(0, 400)}`,
+      );
+    }
     expect(r.code).toBe(ExitCode.PRECOND);
     // «База не читается» — не ответ, а признак слепоты защиты: файл на месте
     // и прекрасно читается, а человеку нужны цифры того, что он теряет.

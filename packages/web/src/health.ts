@@ -113,7 +113,14 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
     : [];
 
   // --- эмбеддер ----------------------------------------------------------
-  const embedModel = db.meta("embed_model") ?? "";
+  // Отпечаток векторного пространства пишется при первой успешной записи
+  // вектора (absorb/reindex) — это ЕДИНСТВЕННЫЙ след того, что эмбеддер
+  // работал. Ключа `embed_model` не пишет никто: он остался в комментарии
+  // миграции 001 как замысел, а читался только здесь — и панель объявляла
+  // «эмбеддер не настроен» на живой базе с проиндексированными узлами.
+  // Сервер (packages/server/src/index.ts:204) на тот же вопрос отвечает по
+  // отпечатку; две поверхности не имеют права расходиться в ответе.
+  const embedModel = db.meta("embed_fingerprint") ?? "";
   const embedDim = numMeta(db, "embed_dim");
   let vecRows: number | null = null;
   let vecLoadedHere = false;
@@ -144,10 +151,13 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   let embedDetail: string;
   if (embedModel.length === 0) {
     embedState = "off";
-    embedDetail = "модель не записана в myc_meta.embed_model — эмбеддинги выключены, поиск идёт по FTS";
+    embedDetail =
+      "myc_meta.embed_fingerprint пуст — ни одного вектора ещё не записано, поиск идёт по FTS";
     degraded.push({
       code: "embeddings.off",
-      msg: "эмбеддер не настроен: векторный поиск недоступен, семантика урезана до полнотекста",
+      msg:
+        "модель эмбеддингов ни разу не записала вектор (myc_meta.embed_fingerprint пуст) — " +
+        "векторная ветка поиска и absorb-косинус недоступны, семантика урезана до FTS",
     });
   } else if (embedFailed > 0) {
     embedState = "degraded";
