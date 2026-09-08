@@ -73,12 +73,33 @@ describe("judge — бюджет", () => {
     expect(v.regressionOk).toBe(true); // нет baseline — регрессию не с чем сравнивать
   });
 
-  test("p99 выше бюджета — FAIL, независимо от baseline", () => {
+  /**
+   * Проверяются ОБЕ стороны калибровки, и окружение задаётся явно, а не
+   * наследуется от прогона: в CI стоит `MYC_BENCH_ABSOLUTE=0`, и тест,
+   * читавший внешнюю переменную, начал утверждать обратное тому, что
+   * задумано, — покраснел там, где поведение было верным.
+   */
+  test("p99 выше бюджета — FAIL на откалиброванной машине, наблюдение на чужой", () => {
     const stats = timed(Array(100).fill(999)); // намного больше любого бюджета
     const v = judge("write", stats, {});
     expect(v.budgetOk).toBe(false);
     expect(v.quiet).toBe(true);
-    expect(fails(v, false)).toBe(true);
+
+    const saved = process.env["MYC_BENCH_ABSOLUTE"];
+    try {
+      delete process.env["MYC_BENCH_ABSOLUTE"];
+      expect(fails(v, false)).toBe(true);
+      process.env["MYC_BENCH_ABSOLUTE"] = "0";
+      // Машина не откалибрована: число печатается, сборка не падает.
+      expect(fails(v, false)).toBe(false);
+      process.env["MYC_BENCH_STRICT"] = "1";
+      // Ночной стенд: абсолют обязателен, выключатель его не отменяет.
+      expect(fails(v, false)).toBe(true);
+    } finally {
+      delete process.env["MYC_BENCH_STRICT"];
+      if (saved === undefined) delete process.env["MYC_BENCH_ABSOLUTE"];
+      else process.env["MYC_BENCH_ABSOLUTE"] = saved;
+    }
   });
 
   /**
