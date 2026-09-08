@@ -138,10 +138,16 @@ interface Dom {
   cards: Map<string, CardView>;
   /** Ответ на `GET /api/routing` — тест подменяет, когда нужен другой случай (available:false, no_cost_data, …). */
   routingPayload: unknown;
+  /** Ответ на `GET /api/decisions` (W8) — тест подменяет ради цепочек/противоречий. */
+  decisionsPayload: unknown;
   /** `data` конверта `GET /api/bootstrap` — тест подменяет ради обрезки/подстановки. */
   bootstrapPreview: unknown;
   /** `data.rows` конверта `GET /api/bootstrap/blocks`. */
   bootstrapBlocks: unknown[];
+  /** `data` конверта `GET /api/search` — тест подменяет ради строк выдачи. */
+  searchPayload: unknown;
+  /** `warn[]` конверта `GET /api/search` — деградация, которую обязан показать экран (И2). */
+  searchWarn: { code: string; msg: string }[];
   /**
    * Одноразовая подмена ответа на следующий `POST /api/nodes/:id` — тело
    * записывается в `posts` как обычно, но в ответ уходит это вместо
@@ -202,7 +208,65 @@ class StubWorker {
   }
 }
 
-const TAB_NAMES = ["graph", "ready", "kb", "timeline", "health", "board", "routing", "bootstrap"] as const;
+const TAB_NAMES = ["graph", "ready", "kb", "timeline", "health", "board", "search", "routing", "decisions", "bootstrap"] as const;
+
+/** Строка выдачи `/api/search` по умолчанию: одна с z-оценкой уверенности, одна без вектора. */
+function defaultSearchPayload(): unknown {
+  return {
+    query: "бюджет prime",
+    rows: [
+      {
+        id: "memory-conf",
+        rank: 1,
+        score: 0.0217,
+        confidence: 1.83,
+        kind: "note",
+        type: "note",
+        layer: 1,
+        updated_at: 1,
+        title: "бюджет prime считается посимвольно",
+        excerpt: "правило запуска про бюджет prime",
+        reach: "project",
+        reach_session: "",
+        repo: "",
+        repo_state: "root",
+        tier: "project",
+        source: "project",
+      },
+      {
+        id: "memory-noconf",
+        rank: 2,
+        score: 0.019,
+        kind: "note",
+        type: "note",
+        layer: 1,
+        updated_at: 1,
+        title: "второй хит без векторного сигнала",
+        excerpt: "чисто лексическое совпадение",
+        reach: "project",
+        reach_session: "",
+        repo: "",
+        repo_state: "root",
+        tier: "project",
+        source: "project",
+      },
+    ],
+    shown: 2,
+    total: 2,
+    mode: "bm25 only",
+    budget: 2000,
+    used_chars: 300,
+    took_ms: 3,
+    partial: false,
+    omitted: 0,
+    pool_exhausted: false,
+    deduped: 0,
+    foreign: 0,
+    unknown_reach: 0,
+    unknown_repo: 0,
+    repo: "",
+  };
+}
 
 /** Payload по умолчанию для /api/routing — переопределяется по месту, где нужен другой ответ. */
 function defaultRoutingPayload(): unknown {
@@ -300,6 +364,46 @@ function defaultRoutingPayload(): unknown {
   };
 }
 
+/** Payload по умолчанию для /api/decisions (W8): одна цепочка, одно открытое противоречие. */
+function defaultDecisionsPayload(): unknown {
+  return {
+    chains: [
+      {
+        head: "dec-new",
+        links: [
+          {
+            id: "dec-old",
+            title: "Бюджет prime — 1500 символов",
+            status: "superseded",
+            author: "egor",
+            created_at: 1000,
+            current: false,
+            reason: "старое решение мерило не то дерево",
+          },
+          {
+            id: "dec-new",
+            title: "Бюджет prime — 2000 символов",
+            status: "active",
+            author: "egor",
+            created_at: 2000,
+            current: true,
+          },
+        ],
+      },
+    ],
+    contradictions: [
+      {
+        a: { id: "dec-x", title: "Порог 0.845", status: "active", author: "egor", created_at: 1000 },
+        b: { id: "dec-y", title: "Порог 0.9", status: "active", author: "claude", created_at: 2000 },
+        reason: "числа разошлись без маркера обновления",
+      },
+    ],
+    total_decisions: 3,
+    degraded: [],
+    took_ms: 2,
+  };
+}
+
 /** `data` конверта `GET /api/bootstrap` — та же форма, что `renderBootstrap` (packages/cli). */
 function defaultBootstrapPreview(): unknown {
   return {
@@ -390,8 +494,11 @@ function installDom(hash: string, graphNodes = 0, opts: { readOnly?: boolean } =
     cards: new Map(),
     nextWriteReply: null,
     routingPayload: defaultRoutingPayload(),
+    decisionsPayload: defaultDecisionsPayload(),
     bootstrapPreview: defaultBootstrapPreview(),
     bootstrapBlocks: [],
+    searchPayload: defaultSearchPayload(),
+    searchWarn: [],
   };
 
   const docListeners = new Map<string, Array<(e: any) => void>>();
@@ -505,6 +612,16 @@ function installDom(hash: string, graphNodes = 0, opts: { readOnly?: boolean } =
     }
     if (path === "/api/routing") {
       return { ok: true, status: 200, json: async () => dom.routingPayload };
+    }
+    if (path === "/api/decisions") {
+      return { ok: true, status: 200, json: async () => dom.decisionsPayload };
+    }
+    if (path.startsWith("/api/search")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, data: dom.searchPayload, meta: { degraded: [] }, warn: dom.searchWarn }),
+      };
     }
     if (path === "/api/bootstrap" || path.startsWith("/api/bootstrap?")) {
       return { ok: true, status: 200, json: async () => ({ ok: true, data: dom.bootstrapPreview }) };
@@ -1171,6 +1288,156 @@ describe("роутинг: модель × класс задачи (W12)", () => 
       (e) => e.tagName === "CODE" && e.textContent === "swarm.missing",
     );
     expect(swarmMissing).toBeDefined();
+  });
+});
+
+describe("решения (W8, memory-cx00fqk28pgv): цепочки и открытые противоречия", () => {
+  test("сводка показывает счётчики, актуальная версия и старая различимы", async () => {
+    const dom = await boot("#decisions");
+    const sub = dom.el("decisions-sub").textContent;
+    expect(sub).toContain("3");
+    expect(sub).toContain("1");
+
+    // МУТАЦИЯ: если клиент забудет прокинуть флаг current с сервера (или
+    // инвертирует его), «· актуальна» пропадёт у головы или появится у обеих
+    // версий — ровно баг «устаревшее решение показано как действующее».
+    // Голова (dec-new, status active) обязана нести пометку «· актуальна»…
+    const currentPill = dom.findCreated((e) => e.textContent === "active · актуальна");
+    expect(currentPill).toBeDefined();
+    // …а устаревшее звено (dec-old, status superseded) — нет, ни в каком виде.
+    const stalePill = dom.findCreated((e) => e.textContent === "superseded");
+    expect(stalePill).toBeDefined();
+    const staleMarkedCurrent = dom.findCreated((e) => e.textContent === "superseded · актуальна");
+    expect(staleMarkedCurrent).toBeUndefined();
+    const oldLine = dom.findCreated((e) => e.textContent === "dec-old");
+    expect(oldLine).toBeDefined();
+    const newLine = dom.findCreated((e) => e.textContent === "dec-new");
+    expect(newLine).toBeDefined();
+  });
+
+  test("read-only: кнопки «это верное» не рисуются вовсе", async () => {
+    const dom = await boot("#decisions", 0, { readOnly: true });
+    const btn = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "это верное");
+    expect(btn).toBeUndefined();
+  });
+
+  test("«это верное» отменяет ДРУГУЮ сторону обычным путём (POST .../op, op=cancel) с непустой причиной", async () => {
+    const dom = await boot("#decisions", 0, { readOnly: false });
+    const buttons = dom.created.filter((e) => e.tagName === "BUTTON" && e.textContent === "это верное");
+    // Один на каждую сторону единственного противоречия.
+    expect(buttons.length).toBe(2);
+    buttons[0]!.fire("click");
+    await settle();
+
+    expect(dom.posts.length).toBe(1);
+    const post = dom.posts[0]!;
+    // Кнопка на строке dec-x отменяет ДРУГУЮ сторону — dec-y, не саму dec-x:
+    // тихое погашение своей же стороны было бы противоположностью приёмки.
+    expect(post.path).toBe("/api/nodes/dec-y/op");
+    expect(post.body).toMatchObject({ op: "cancel" });
+    const body = post.body as { op: string; reason: string };
+    expect(body.reason.length).toBeGreaterThan(0);
+    expect(body.reason).toContain("dec-x");
+  });
+
+  test("противоречий нет — экран говорит это явно", async () => {
+    const dom = await boot("#graph");
+    dom.decisionsPayload = { ...(defaultDecisionsPayload() as Record<string, unknown>), contradictions: [] };
+    dom.goto("#decisions");
+    await settle();
+    expect(dom.el("decisions-contradictions-empty").hidden).toBe(false);
+    const title = dom.findCreated((e) => e.className === "big" && e.textContent === "Открытых противоречий нет");
+    expect(title).toBeDefined();
+  });
+
+  test("оговорки деградации видны, а не проглочены (И2)", async () => {
+    const dom = await boot("#graph");
+    dom.decisionsPayload = {
+      ...(defaultDecisionsPayload() as Record<string, unknown>),
+      degraded: [{ code: "decisions.chain_truncated", msg: "у части цепочек версий больше бюджета чтения" }],
+    };
+    dom.goto("#decisions");
+    await settle();
+    const code = dom.findCreated(
+      (e) => e.tagName === "CODE" && e.textContent === "decisions.chain_truncated",
+    );
+    expect(code).toBeDefined();
+  });
+});
+
+describe("поиск (W6, memory-c7075t2s0nj6): гибридный поиск, тот же движок, что myc recall", () => {
+  async function search(dom: Dom, query: string): Promise<void> {
+    (dom.el("search-query") as unknown as { value: string }).value = query;
+    dom.el("search-go").fire("click");
+    await settle();
+  }
+
+  test("запрос уходит в /api/search с текстом query — ноль своей логики поиска в браузере", async () => {
+    const dom = await boot("#search");
+    await search(dom, "бюджет prime");
+    const call = dom.fetches.find((f) => f.startsWith("/api/search"));
+    expect(call).toBeDefined();
+    expect(decodeURIComponent(call!.replace(/\+/g, " "))).toContain("q=бюджет prime");
+  });
+
+  test("МУТАЦИЯ: z-оценка уверенности (S47) обязана быть видна на экране для каждой строки", async () => {
+    const dom = await boot("#search");
+    await search(dom, "бюджет prime");
+    // Строка с вектором: confidence=1.83 напечатан как есть, не «1» и не «да».
+    const conf = dom.findCreated((e) => e.className === "search-conf" && e.textContent === "1.83");
+    expect(conf).toBeDefined();
+    // Строка БЕЗ вектора: "·", а не "0.00" — ноль читался бы как измеренное
+    // низкое качество, а сигнала не было вовсе (см. types.ts, S47).
+    const none = dom.findCreated(
+      (e) => e.className === "search-conf search-conf-none" && e.textContent === "·",
+    );
+    expect(none).toBeDefined();
+  });
+
+  test("МУТАЦИЯ: предупреждение деградации (warn[]) обязано долететь до экрана, а не потеряться", async () => {
+    const dom = await boot("#search");
+    dom.searchWarn = [
+      { code: "degraded.embeddings", msg: "прогрев эмбеддера выключен — векторная ветка не звалась" },
+    ];
+    await search(dom, "переезд задачи");
+    const code = dom.findCreated((e) => e.tagName === "CODE" && e.textContent === "degraded.embeddings");
+    expect(code).toBeDefined();
+    const msg = dom.findCreated(
+      (e) => e.textContent?.includes("векторная ветка не звалась") ?? false,
+    );
+    expect(msg).toBeDefined();
+  });
+
+  test("деградации нет — предупреждений на экране тоже нет", async () => {
+    const dom = await boot("#search");
+    dom.searchWarn = [];
+    await search(dom, "бюджет prime");
+    const code = dom.findCreated((e) => e.tagName === "CODE");
+    expect(code).toBeUndefined();
+  });
+
+  test("partial и cursor показаны своей строкой, а не спрятаны в подсказку", async () => {
+    const dom = await boot("#search");
+    dom.searchPayload = {
+      ...(defaultSearchPayload() as Record<string, unknown>),
+      partial: true,
+      omitted: 3,
+      cursor: "5",
+    };
+    await search(dom, "бюджет prime");
+    const partial = dom.findCreated((e) => e.textContent?.startsWith("partial:") ?? false);
+    expect(partial).toBeDefined();
+    expect(partial!.textContent).toContain("3 сверх бюджета");
+    const more = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "показать ещё");
+    expect(more).toBeDefined();
+  });
+
+  test("пустая выдача — явное пустое состояние, а не молчащий пустой список", async () => {
+    const dom = await boot("#search");
+    dom.searchPayload = { ...(defaultSearchPayload() as Record<string, unknown>), rows: [], shown: 0, total: 0 };
+    await search(dom, "нет такого текста");
+    expect(dom.el("search-rows").hidden).toBe(true);
+    expect(dom.el("search-empty").hidden).toBe(false);
   });
 });
 

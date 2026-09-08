@@ -52,6 +52,79 @@ export function noteInput(input: NoteInput): NodeInput {
 }
 
 // ---------------------------------------------------------------------------
+// comment — реплика в нити обсуждения узла (S64)
+// ---------------------------------------------------------------------------
+
+/** Значение `attrs.type` у комментария. Одно на все поверхности. */
+export const COMMENT_TYPE = "comment";
+
+export interface CommentInput {
+  /** Текст реплики целиком; первая строка становится заголовком узла. */
+  readonly text: string;
+  readonly scope?: string;
+  /** Автор реплики. У ввезённых записей — автор ИСТОЧНИКА, а не импортёра. */
+  readonly actor?: string;
+  readonly acl?: string;
+  /** Ссылка на запись источника: на ней стоит идемпотентность ввоза. */
+  readonly external_ref?: string;
+  /**
+   * Заголовок, если у поверхности своё правило обрезки (у импорта — 120 с
+   * многоточием, у остальных — 80 дословно). Тело от этого не зависит: оно
+   * всегда `text` целиком.
+   */
+  readonly title?: string;
+  /** Время СОБЫТИЯ в источнике, epoch ms: `created_at` узла — время записи. */
+  readonly external_created_at?: number;
+}
+
+/**
+ * ЕДИНСТВЕННЫЙ вид узла для комментария: kind='note', layer=1,
+ * attrs.type='comment'. Сам факт «это реплика вот в этой нити» несёт РЕБРО
+ * `replies_to`, которое заводит вызывающий, — вид узла нить не определяет.
+ *
+ * Функция существует, чтобы вид нельзя было разойтись снова. Три поверхности
+ * писали комментарии независимо (mcp addNote, `myc comment`, import-beads), и
+ * ровно так расхождение и возникло: MCP писал note+type='comment', CLI —
+ * kind='message', а веб читал по kind='message' и показывал НОЛЬ из девяти
+ * накопленных комментариев (memory-1nh192mztcqy). Теперь форму задаёт одно
+ * место, и разойтись можно только правкой этой строки.
+ *
+ * Почему `note`, а не `message`, хотя имя ближе (docs/design/01-core-data-model.md
+ * §2.3, §5.1): `message` — это L0, сырой диалог сессии. Тело L0 через 14 суток
+ * уезжает в `bodies_cold`, а FTS-строки удаляются; в векторный индекс L0 не
+ * попадает вовсе; обязательные attrs — session_id/role/ord/thread_root, которых
+ * у комментария к задаче нет; статус допустим ровно один — `active`.
+ * Комментарий к задаче — постоянная история проекта, его ищут через полгода;
+ * `note` L1 хранится бессрочно, индексируется и ищется.
+ */
+export function commentInput(input: CommentInput): NodeInput {
+  const attrs: Record<string, JsonValue> = { type: COMMENT_TYPE };
+  if (input.external_ref !== undefined) attrs.external_ref = input.external_ref;
+  if (input.external_created_at !== undefined) {
+    attrs.external_created_at = input.external_created_at;
+  }
+  return {
+    kind: "note",
+    layer: 1,
+    scope: input.scope,
+    title: input.title ?? commentTitle(input.text),
+    body: input.text,
+    ...(input.actor !== undefined && input.actor.length > 0 ? { actor: input.actor } : {}),
+    ...(input.acl !== undefined ? { acl: input.acl } : {}),
+    attrs,
+  };
+}
+
+/**
+ * Заголовок реплики — её первая строка, обрезанная до 80. Тело при этом
+ * остаётся ЦЕЛЫМ, включая ту же первую строку: узел обязан иметь title, но
+ * резать текст надвое значит потерять первую строку у читателя тела.
+ */
+export function commentTitle(text: string): string {
+  return (text.split("\n")[0] ?? "").slice(0, 80);
+}
+
+// ---------------------------------------------------------------------------
 // doc + fragment — документ разобран на типизированные куски (§2.3)
 // ---------------------------------------------------------------------------
 

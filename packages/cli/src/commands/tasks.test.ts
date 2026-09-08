@@ -19,6 +19,7 @@ import {
   createClaimCommand,
   createReleaseCommand,
   createMsgCommand,
+  createCommentCommand,
   createEpicCommand,
   createCloseCommand,
   createCreateCommand,
@@ -48,6 +49,7 @@ function makeRegistry(): Registry {
   r.register(createDepCommand());
   r.register(createReadyCommand());
   r.register(createMsgCommand());
+  r.register(createCommentCommand());
   r.register(createEpicCommand());
   return r;
 }
@@ -701,6 +703,99 @@ describe("msg --reply-to: комментарий как обычная опер�
   test("несуществующий адресат — отказ, а не молчаливый комментарий в пустоту", async () => {
     const orphan = await myc("msg", "в никуда", "--reply-to", "нет-такого");
     expect(orphan.code).not.toBe(ExitCode.OK);
+  });
+
+  /**
+   * Ограждение S64. `message` — это L0, сырой диалог сессии: его тело через
+   * 14 суток уезжает в bodies_cold, FTS-строки удаляются, а в векторный индекс
+   * L0 не попадает вовсе (01-core-data-model.md §5.1). Комментарий к задаче,
+   * записанный этим видом, через две недели станет пустой строкой. Отказать
+   * нельзя — межагентская нить законна, — но молчать значит завести четвёртую
+   * поверхность записи ровно там, где три уже разошлись.
+   */
+  test("msg --reply-to на задачу называет вид ошибочным и зовёт myc comment", async () => {
+    const task = idOf((await myc("task", "задача")).stdout);
+    const r = await mycJson("msg", "реплика не туда", "--reply-to", task);
+    const warns = ((r.env as { warn?: { code: string; msg: string }[] }).warn ?? []).filter(
+      (w) => w.code === "comment.kind_wrong",
+    );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.msg).toContain("myc comment");
+  });
+
+  test("ответ на message предупреждения не даёт: там вид верный", async () => {
+    // Мутация с числом на само ограждение: если бы оно смотрело только на
+    // `--reply-to`, а не на вид адресата, оно кричало бы и на законной
+    // межагентской нити — 1 предупреждение там, где их должно быть 0.
+    const root = idOf((await myc("msg", "корень нити")).stdout);
+    const r = await mycJson("msg", "реплика в нити", "--reply-to", root);
+    const warns = ((r.env as { warn?: { code: string }[] }).warn ?? []).filter(
+      (w) => w.code === "comment.kind_wrong",
+    );
+    expect(warns).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// myc comment — единственный вид узла для комментария (S64)
+// ---------------------------------------------------------------------------
+
+describe("myc comment: один вид узла на все поверхности", () => {
+  test("создаёт note+attrs.type='comment' с ребром replies_to, а не kind='message'", async () => {
+    const task = idOf((await myc("task", "задача с обсуждением")).stdout);
+    const r = await mycJson("comment", task, "первый комментарий");
+    const d = (r.env as { data: { id: string; kind: string; type: string; replies_to: string } }).data;
+    expect(d.kind).toBe("note");
+    expect(d.type).toBe("comment");
+    expect(d.replies_to).toBe(task);
+
+    const view = await mycJson("show", task);
+    const thread = (view.env as { data: { thread?: { id: string; actor: string }[] } }).data.thread ?? [];
+    expect(thread).toHaveLength(1);
+    expect(thread[0]!.id).toBe(d.id);
+    expect(thread[0]!.actor).toBe("tester");
+  });
+
+  test("нить смешанных видов читается целиком: 2 из 2, а не 1 из 2", async () => {
+    // Оба писателя в одну нить: `myc comment` даёт note, `myc msg` — message.
+    // Читатель, фильтрующий по виду, увидел бы одну реплику из двух — тот
+    // самый отказ, из-за которого веб показывал ноль из девяти.
+    const task = idOf((await myc("task", "задача")).stdout);
+    const asNote = (await mycJson("comment", task, "комментарий-заметка")).env as {
+      data: { id: string };
+    };
+    const asMessage = idOf((await myc("msg", "реплика-сообщение", "--reply-to", task)).stdout);
+
+    const view = await mycJson("show", task);
+    const thread = (view.env as { data: { thread?: { id: string }[] } }).data.thread ?? [];
+    expect(thread).toHaveLength(2);
+    expect(thread.map((c) => c.id).sort()).toEqual([asNote.data.id, asMessage].sort());
+  });
+
+  test("текст целиком в теле; первая строка — заголовок", async () => {
+    const task = idOf((await myc("task", "задача")).stdout);
+    const r = await mycJson("comment", task, "первая строка\nвторая строка");
+    const id = (r.env as { data: { id: string; title: string } }).data.id;
+    const shown = await mycJson("show", id);
+    const d = (shown.env as { data: { title: string; body: string } }).data;
+    expect(d.title).toBe("первая строка");
+    expect(d.body).toBe("первая строка\nвторая строка");
+  });
+
+  test("без адресата и без текста — отказ по usage, а не пустой узел", async () => {
+    const noTarget = await myc("comment");
+    expect(noTarget.code).toBe(ExitCode.USAGE);
+    const task = idOf((await myc("task", "задача")).stdout);
+    const noText = await myc("comment", task);
+    expect(noText.code).toBe(ExitCode.USAGE);
+    // Ни один узел при этом не создан: нить пуста.
+    const view = await mycJson("show", task);
+    expect((view.env as { data: { thread?: unknown[] } }).data.thread).toBeUndefined();
+  });
+
+  test("несуществующий адресат — отказ, комментария в пустоту нет", async () => {
+    const r = await myc("comment", "нет-такого", "в никуда");
+    expect(r.code).not.toBe(ExitCode.OK);
   });
 });
 

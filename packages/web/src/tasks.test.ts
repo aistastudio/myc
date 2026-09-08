@@ -19,6 +19,8 @@ import type { Database } from "bun:sqlite";
 import { startVizServer, type VizServer } from "./server.ts";
 import type { RunCli } from "./mutate.ts";
 import { makeWorkspace, type Workspace } from "./harness.ts";
+import { openReadOnly } from "./db.ts";
+import { buildCard } from "./card.ts";
 import type { CardView } from "./types.ts";
 
 const CLI = join(import.meta.dir, "../../cli/src/main.ts");
@@ -385,4 +387,32 @@ describe("приёмка W3: тип без иллюзии отдельной с�
     expect(res.body.error?.code).toBe("usage.invalid");
     expect(res.body.error?.msg).toContain("--kind");
   }, 60_000);
+});
+
+describe("нить читается по ребру, а не по виду узла", () => {
+  test("смешанная нить видна целиком: и note, и message", async () => {
+    // Три писателя дают РАЗНЫЕ виды: MCP и `myc comment` пишут note с
+    // attrs.type='comment', `myc msg --reply-to` — message. Читатель с
+    // фильтром по одному виду показывал ноль там, где CLI показывал нить, и
+    // после ввоза 156 комментариев из beads невидимыми стали бы все 156.
+    // Поэтому в этом тесте нить ОБЯЗАНА содержать оба вида: тест на одном
+    // виде прошёл бы и на сломанном фильтре.
+    const { w, run } = await ws();
+    const made = await run(["task", "узел со смешанной нитью", "--json"]);
+    const task = (JSON.parse(made.stdout) as { data: { id: string } }).data.id;
+    await run(["comment", task, "видом note"]);
+    await run(["msg", "видом message", "--reply-to", task]);
+
+    const kinds = openReadOnly(w.dbPath)
+      .all<{ kind: string }>(
+        `SELECT n.kind FROM edges e JOIN nodes n ON n.id = e.src
+          WHERE e.dst = ?1 AND e.type = 'replies_to' ORDER BY n.kind`,
+        [task],
+      )
+      .map((r) => r.kind);
+    expect(kinds).toEqual(["message", "note"]);
+
+    const card = buildCard(openReadOnly(w.dbPath), task);
+    expect(card?.comments.length).toBe(2);
+  });
 });

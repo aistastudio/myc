@@ -60,6 +60,10 @@ import {
   wipePersonalWorkspace,
   type PersonalWipePlan,
 } from "./store.ts";
+// Из wsfind.ts напрямую: init и так тянет store.ts, но связь worktree →
+// основное дерево живёт там же, где её читает поиск воркспейса, и второй
+// реализации у неё быть не должно.
+import { findWorktreeLink, type WorktreeLink } from "./wsfind.ts";
 
 // bun:sqlite Database напрямую, без vec0-рантайма CliDriver (store.ts) и без
 // GraphStore: init только создаёт файл, накатывает миграции и пишет пару
@@ -427,6 +431,8 @@ interface InitData {
   db: { path: string; schemaVersion: number | undefined; nodeCount?: number };
   personal: PersonalSummary;
   siteId?: string;
+  /** Звали из git worktree: цель — основное дерево, а не текущий каталог. */
+  worktree?: { dir: string; main: string };
   next: string;
   took_ms: number;
 }
@@ -443,6 +449,25 @@ function codeIntelLine(c: InitData["code_intel"]): string {
   return `  ${mark} код-интеллект        ${c.reason}`;
 }
 
+/**
+ * Блок про worktree в выводе — печатается ВСЕГДА, когда звали оттуда. Это не
+ * украшение: init создал (или нашёл) воркспейс не в том каталоге, где стоит
+ * человек, и умолчать об этом значило бы оставить его гадать, почему `.myc`
+ * не появился под ногами.
+ */
+function worktreeData(link: WorktreeLink | undefined): { worktree?: { dir: string; main: string } } {
+  return link === undefined ? {} : { worktree: { dir: link.worktreeDir, main: link.mainRoot } };
+}
+
+function worktreeLine(w: NonNullable<InitData["worktree"]>, idempotent: boolean): string {
+  const what = idempotent ? "воркспейс уже есть" : "воркспейс создан";
+  return (
+    `  ! git worktree         ${w.dir} — ветка, а не проект: ${what} в основном дереве ` +
+    `${w.main}. Воркспейс один на репозиторий: второй расколол бы очередь и память, ` +
+    `и claim перестал бы что-либо значить`
+  );
+}
+
 function renderInitHuman(raw: unknown): string {
   const d = raw as InitData;
   const lines: string[] = [];
@@ -454,6 +479,7 @@ function renderInitHuman(raw: unknown): string {
       `myc ${version} · .myc уже существует (slug=${d.slug}, schema v${d.db.schemaVersion ?? "?"}, ${n})`,
     );
     lines.push("ничего не изменено. пересоздать: myc init --force (удалит локальную базу)");
+    if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, true));
     lines.push(codeIntelLine(d.code_intel));
     lines.push(personalLine(d.personal));
     lines.push(`дальше: ${d.next}`);
@@ -465,6 +491,7 @@ function renderInitHuman(raw: unknown): string {
       `myc ${version} · клон ${d.dir} · slug=${d.slug} из .myc/workspace.toml (не тронут)`,
     );
     lines.push("");
+    if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, false));
     lines.push(`  ✓ .myc/myc.db          создана, sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
     lines.push(`  · .myc/workspace.toml  приехал из git — общая личность воркспейса`);
     lines.push(`  · graft                ${d.graft ? "найден" : "не найден"}`);
@@ -483,6 +510,7 @@ function renderInitHuman(raw: unknown): string {
   lines.push("");
   lines.push(`  ✓ .myc/myc.db          sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
   lines.push(`  ✓ .myc/workspace.toml  slug=${d.slug}`);
+  if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, false));
   if (d.slug_changed !== undefined) {
     const n = d.slug_changed.nodes;
     lines.push(
@@ -721,7 +749,35 @@ export function createInitCommand(): Command {
       const target = ctx.args[0] !== undefined ? resolve(base, ctx.args[0]) : base;
 
       const gitRoot = detectGitRoot(target);
-      const workspaceDir = gitRoot ?? target;
+
+      // ВОРКСПЕЙС ПРИНАДЛЕЖИТ РЕПОЗИТОРИЮ, А НЕ ВЕТКЕ (memory-6amwnpb7tbat).
+      // `git rev-parse --show-toplevel` в worktree отдаёт корень САМОГО
+      // worktree, и init на нём завёл бы второй воркспейс: очередь и память
+      // раскололись бы надвое, а claim перестал бы что-либо значить — два
+      // агента на двух ветках друг друга не увидели бы. Поэтому цель —
+      // основное дерево. Не отказ: отказ отправил бы человека делать то же
+      // самое руками, а промолчать и создать рядом нельзя. Куда именно
+      // создали, печатается отдельной строкой — это и есть объяснение.
+      // Подъём по каталогам, а не `gitRoot`: у СЛОМАННОГО worktree (основное
+      // дерево унесли) `git rev-parse` падает и отдаёт undefined — то есть
+      // именно там, где отказ обязателен, git молчит.
+      const link = findWorktreeLink(target);
+      if (link !== undefined && !existsSync(link.mainRoot)) {
+        // Единственный случай, когда остаётся только отказать: создавать
+        // нечего и негде. Молча завести воркспейс в worktree — ровно тот
+        // раскол, ради которого всё это.
+        return {
+          ok: false,
+          code: "precond.worktree_main_missing",
+          msg:
+            `${link.worktreeDir} — git worktree, воркспейс принадлежит основному дереву, ` +
+            `но каталога ${link.mainRoot} нет: перенесли или удалили ` +
+            `(файл .git ведёт в ${link.gitDir})`,
+          exit: ExitCode.PRECOND,
+          hint: "git worktree repair <путь к основному дереву>",
+        };
+      }
+      const workspaceDir = link?.mainRoot ?? gitRoot ?? target;
       const force = flagBool(ctx, "force");
 
       const mycDir = join(workspaceDir, ".myc");
@@ -761,6 +817,7 @@ export function createInitCommand(): Command {
           adopted: false,
           db: { path: dbPath, schemaVersion: existing.schemaVersion, nodeCount: existing.nodeCount },
           personal: readPersonalSummary(),
+          ...worktreeData(link),
           next: "myc ready",
           took_ms: Math.max(1, Math.round(performance.now() - t0)),
         };
@@ -846,6 +903,7 @@ export function createInitCommand(): Command {
         adopted,
         ...(slugChanged ? { slug_changed: { from: priorSlug!, to: slug, nodes: nodesBefore } } : {}),
         db: { path: dbPath, schemaVersion },
+        ...worktreeData(link),
         personal: readPersonalSummary(),
         ...(siteId !== undefined ? { siteId } : {}),
         next: adopted ? "myc import" : 'myc task "<первая задача>" -p P1',

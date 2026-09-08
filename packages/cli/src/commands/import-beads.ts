@@ -13,8 +13,16 @@
  *    приводятся к форме show ({id, dependency_type}).
  *
  * Задачи (task/bug/feature/epic/decision) ложатся на kind=task с attrs.type,
- * память `bd remember` — на kind=note слоя L3, заметки `bd note` — на
- * kind=note с ребром replies_to к задаче (как mcp addNote).
+ * память `bd remember` — на kind=note слоя L3, заметки `bd note` и
+ * комментарии `bd comment` — на kind=note с attrs.type='comment' и ребром
+ * replies_to к задаче (S64, тот же вид, что пишут mcp addNote и `myc comment`).
+ *
+ * НАБОР ЧИТАЕМЫХ ПОЛЕЙ ЗАДАЧИ — ЯВНЫЙ (MAPPED_ISSUE_FIELDS). Пока он был
+ * неявным — «то, что упоминает код», — незнакомое поле было неотличимо от
+ * отсутствующего, и массив `comments` (156 записей на 53 задачах рабочего
+ * cherry) не ввозился и не назывался ВООБЩЕ: отчёт печатал «заметки новых
+ * 265» и молчал о потере. Теперь всякое поле вне набора идёт в WARN
+ * `import.unknown_fields` с числом задач.
  *
  * Два правила, нарушение которых портит данные тихо:
  * 1. Исходный beads-ID каждой сущности сохраняется в attrs.external_ref —
@@ -67,7 +75,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { contentHash } from "@myc/core";
+import { commentInput, contentHash } from "@myc/core";
 import type { EdgeKind, JsonValue, NodeInput, NodePatch, NodeRecord } from "@myc/core";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandFailure } from "../registry.ts";
@@ -89,6 +97,19 @@ export interface BeadsDependency {
   readonly dependency_type?: string;
 }
 
+/**
+ * Комментарий beads — САМОСТОЯТЕЛЬНАЯ запись, а не поле задачи: у него свой
+ * автор, своё тело и своё время. Поэтому он ложится отдельным узлом с ребром
+ * `replies_to` на задачу, а не приклеивается к её описанию.
+ */
+export interface BeadsComment {
+  readonly id: string;
+  readonly issue_id?: string;
+  readonly author?: string;
+  readonly text: string;
+  readonly created_at?: string;
+}
+
 export interface BeadsIssue {
   readonly id: string;
   readonly title: string;
@@ -100,6 +121,7 @@ export interface BeadsIssue {
   readonly labels?: readonly string[];
   readonly dependencies?: readonly BeadsDependency[];
   readonly notes?: string;
+  readonly comments?: readonly BeadsComment[];
   readonly close_reason?: string;
   readonly closed_at?: string;
 }
@@ -111,6 +133,11 @@ export interface BeadsSnapshot {
   readonly unknownTypes?: Readonly<Record<string, number>>;
   /** Приоритеты, прижатые к шкале myc (у beads P0..P4): «id: P4→P3». */
   readonly clampedPriorities?: readonly string[];
+  /**
+   * Поля задачи, которых импорт НЕ ЗНАЕТ, и сколько задач их несут. Не повод
+   * отказать — повод сказать: см. `KNOWN_ISSUE_FIELDS`.
+   */
+  readonly unknownFields?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -126,6 +153,71 @@ export interface BeadsSnapshot {
  */
 const KNOWN_TASK_TYPES = new Set(["task", "bug", "feature", "epic", "decision"]);
 const TASK_STATUSES = new Set(["open", "in_progress", "blocked", "closed", "cancelled"]);
+
+/**
+ * Поля задачи beads, которые импорт ЧИТАЕТ. Всё, чего здесь нет, ввозится
+ * никуда — и обязано быть НАЗВАНО (И2), а не пропущено молча.
+ *
+ * Это ограждение написано по цене конкретной потери: массив `comments` — 156
+ * записей на 53 задачах рабочего cherry — не упоминался в этом файле ВООБЩЕ,
+ * и отчёт про них не говорил ни слова, бодро докладывая «заметки новых 265»
+ * (число одних только `notes`). Пока набор известных полей был неявным —
+ * «то, что читает код», — незнакомое поле было неотличимо от отсутствующего.
+ * Теперь набор явный, и всякое поле вне его попадает в `import.unknown_fields`
+ * с числом задач: человек видит, ЧТО именно осталось за бортом, и может
+ * решить, дописывать ли ввоз.
+ */
+const MAPPED_ISSUE_FIELDS = new Set([
+  "id",
+  "title",
+  "description",
+  "status",
+  "priority",
+  "issue_type",
+  "assignee",
+  "labels",
+  "dependencies",
+  "notes",
+  "comments",
+  "close_reason",
+  "closed_at",
+]);
+
+/**
+ * Поля, которые импорт знает и осознанно НЕ ввозит, потому что ввозить нечего:
+ * `_type` — тег строки JSONL, а не поле задачи; три счётчика — производные от
+ * массивов, которые мы и так ввозим целиком, и после ввоза считаются по ним.
+ * Набор держится КОРОТКИМ намеренно: каждое имя здесь — обещание, что за ним
+ * нет потери данных. Всё сомнительное (`owner`, `acceptance_criteria`,
+ * `design`, времена источника) остаётся незнакомым и называется вслух.
+ */
+const IGNORED_ISSUE_FIELDS = new Set([
+  "_type",
+  "comment_count",
+  "dependency_count",
+  "dependent_count",
+]);
+
+/**
+ * Комментарий в любой форме bd → {id, text, author?, created_at?}. Запись без
+ * текста — не комментарий: ввозить пустое тело значит засорить нить.
+ */
+function normalizeComment(raw: unknown, where: string): BeadsComment | undefined {
+  if (!isRecord(raw)) throw new Error(`${where}: комментарий — не объект`);
+  const text = raw["text"] ?? raw["body"] ?? raw["comment"];
+  if (typeof text !== "string" || text.trim().length === 0) return undefined;
+  const id = raw["id"];
+  const author = raw["author"] ?? raw["created_by"];
+  const createdAt = raw["created_at"];
+  return {
+    // id у комментария bd есть всегда; если его нет — идентичность строим по
+    // порядковому номеру внутри задачи, иначе повторный импорт удвоит нить.
+    id: typeof id === "string" && id.length > 0 ? id : typeof id === "number" ? String(id) : where,
+    text,
+    ...(typeof author === "string" && author.length > 0 ? { author } : {}),
+    ...(typeof createdAt === "string" ? { created_at: createdAt } : {}),
+  };
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -196,6 +288,8 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
   const unknownTypes = new Map<string, number>();
   /** Приоритеты, прижатые к шкале myc: у beads она шире. */
   const clampedPriorities: string[] = [];
+  /** Поля задач, которых импорт не знает, и сколько задач их несут. */
+  const unknownFields = new Map<string, number>();
   for (const [i, entry] of (raw["issues"] as unknown[]).entries()) {
     const where = `issues[${i}]`;
     // `bd show --json` по одной задаче — массив из одного объекта
@@ -233,12 +327,29 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     if (deps !== undefined && !Array.isArray(deps)) {
       throw new Error(`${where} (${id}): dependencies — не массив`);
     }
+    const rawComments = item["comments"];
+    if (rawComments !== undefined && !Array.isArray(rawComments)) {
+      throw new Error(`${where} (${id}): comments — не массив`);
+    }
+    const comments =
+      rawComments === undefined
+        ? undefined
+        : (rawComments as unknown[])
+            .map((c, j) => normalizeComment(c, `${where}.comments[${j}]`))
+            .filter((c): c is BeadsComment => c !== undefined);
+    // Незнакомые поля считаем ПО ЗАДАЧАМ, а не по вхождениям: человеку важно
+    // «сколько задач несут потерю», а не «сколько раз встретилось имя».
+    for (const key of Object.keys(item)) {
+      if (MAPPED_ISSUE_FIELDS.has(key) || IGNORED_ISSUE_FIELDS.has(key)) continue;
+      unknownFields.set(key, (unknownFields.get(key) ?? 0) + 1);
+    }
     issues.push({
       ...(item as unknown as BeadsIssue),
       priority: clampedPriority,
       ...(deps !== undefined
         ? { dependencies: (deps as unknown[]).map((d, j) => normalizeDependency(d, `${where}.dependencies[${j}]`)) }
         : {}),
+      ...(comments !== undefined ? { comments } : {}),
     });
   }
   const memories = raw["memories"];
@@ -256,6 +367,7 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     memories: cleanMemories,
     ...(unknownTypes.size > 0 ? { unknownTypes: Object.fromEntries(unknownTypes) } : {}),
     ...(clampedPriorities.length > 0 ? { clampedPriorities } : {}),
+    ...(unknownFields.size > 0 ? { unknownFields: Object.fromEntries(unknownFields) } : {}),
   };
 }
 
@@ -362,17 +474,57 @@ function titleOf(text: string): string {
   return firstLine.length <= TITLE_MAX ? firstLine : `${firstLine.slice(0, TITLE_MAX - 1).trimEnd()}…`;
 }
 
-/** Заметка `bd note` → kind=note + replies_to (форма mcp addNote); текст вербатим. */
+/** Заметка `bd note` → тот же вид узла, что у комментария (S64); текст вербатим. */
 export function noteToNodeInput(issue: BeadsIssue, notes: string, scope: string, actor: string): NodeInput {
-  return {
-    kind: "note",
-    scope,
-    layer: 1,
+  return commentInput({
+    text: notes,
     title: titleOf(notes).slice(0, 80),
-    body: notes,
+    scope,
     actor,
-    attrs: { type: "comment", external_ref: `${issue.id}#notes` },
-  };
+    external_ref: `${issue.id}#notes`,
+  });
+}
+
+/** ISO-время источника → epoch ms; неразбираемое — просто отсутствует. */
+function parseAt(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? t : undefined;
+}
+
+/**
+ * Комментарий beads → тот же вид узла, что у mcp addNote и у заметки:
+ * kind=note, layer=1, attrs.type='comment', ребро `replies_to` на задачу (S64).
+ *
+ * Автор комментария — СВОЙ, а не автор импорта: в `actor` уходит `author`
+ * записи, и только когда его нет, — тот, кто запустил ввоз. Иначе 156 чужих
+ * реплик подписались бы одним именем, и нить перестала бы быть разговором.
+ *
+ * Время источника кладётся в `attrs.external_created_at`: `created_at` узла
+ * ставит движок (это время ЗАПИСИ, оно у всех ввезённых одинаковое с точностью
+ * до миллисекунд), а нить читается по времени СОБЫТИЯ — иначе порядок реплик
+ * внутри задачи определялся бы случайным порядком id.
+ */
+export function commentToNodeInput(
+  issue: BeadsIssue,
+  comment: BeadsComment,
+  scope: string,
+  actor: string,
+): NodeInput {
+  const at = parseAt(comment.created_at);
+  return commentInput({
+    text: comment.text,
+    title: titleOf(comment.text),
+    scope,
+    actor: comment.author !== undefined && comment.author.length > 0 ? comment.author : actor,
+    external_ref: commentRef(issue, comment),
+    ...(at !== undefined ? { external_created_at: at } : {}),
+  });
+}
+
+/** Идентичность ввезённого комментария: на ней стоит идемпотентность. */
+export function commentRef(issue: BeadsIssue, comment: BeadsComment): string {
+  return `${issue.id}#comment:${comment.id}`;
 }
 
 /** Память `bd remember` → kind=note слоя L3; ключ и исходный ID сохраняются. */
@@ -551,6 +703,8 @@ export interface ImportBeadsData {
   edges_removed: number;
   notes_created: number;
   notes_existing: number;
+  comments_created: number;
+  comments_existing: number;
   memories_created: number;
   memories_existing: number;
   blockers_recounted: number;
@@ -641,6 +795,8 @@ export function importBeadsSnapshot(
     edges_removed: 0,
     notes_created: 0,
     notes_existing: 0,
+    comments_created: 0,
+    comments_existing: 0,
     memories_created: 0,
     memories_existing: 0,
     blockers_recounted: 0,
@@ -946,6 +1102,37 @@ export function importBeadsSnapshot(
     data.notes_created++;
   }
 
+  // Проход 4б: комментарии `bd comment` — отдельные узлы того же вида, что и
+  // заметки (S64: комментарий это kind=note + attrs.type='comment'), с ребром
+  // `replies_to` на свою задачу и СВОИМ автором в actor.
+  //
+  // Отдельный проход, а не ветка внутри прохода 4: у задачи бывают и `notes`,
+  // и `comments` сразу (в cherry — у 53 задач), это разные сущности beads, и
+  // считаются они порознь. Идемпотентность держится на external_ref
+  // `<issue>#comment:<id>`, как у всего остального ввезённого.
+  for (const issue of snapshot.issues) {
+    for (const comment of issue.comments ?? []) {
+      const ref = commentRef(issue, comment);
+      if (existing.has(ref)) {
+        data.comments_existing++;
+        continue;
+      }
+      const taskId = idByRef.get(issue.id);
+      if (taskId === undefined) {
+        data.skipped.push(`${ref}: комментарий не ввезён — сама задача ${issue.id} не ввезена`);
+        continue;
+      }
+      const id = createGuarded(
+        commentToNodeInput(issue, comment, h.scope, h.actor),
+        ref,
+        "комментарий",
+      );
+      if (id === undefined) continue;
+      if (!dry) h.store.addEdge(id, "replies_to", taskId);
+      data.comments_created++;
+    }
+  }
+
   // Проход 5: память bd remember → kind=note L3.
   for (const [key, text] of Object.entries(snapshot.memories ?? {})) {
     const ref = `bd-remember:${key}`;
@@ -982,6 +1169,7 @@ function renderImportBeadsHuman(raw: unknown): string {
     `рёбра     новых ${d.edges_created}, уже было ${d.edges_existing}` +
       (d.edges_removed > 0 ? `, снято ${d.edges_removed}` : ""),
     `заметки   новых ${d.notes_created}, уже было ${d.notes_existing}`,
+    `коммент.  новых ${d.comments_created}, уже было ${d.comments_existing}`,
     `память    новых ${d.memories_created}, уже было ${d.memories_existing}`,
   ];
   if (!d.dry_run && d.blockers_recounted > 0) {
@@ -1089,6 +1277,20 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
           ctx.warn(
             "import.unknown_types",
             `типы, которых myc не знает, ввезены дословно в attrs.type: ${list}`,
+          );
+        }
+        // Незнакомое поле задачи — потеря, и она обязана быть НАЗВАНА. Молчание
+        // здесь однажды уже стоило 156 комментариев: их не было ни в отчёте,
+        // ни в WARN, а строка «заметки новых 265» звучала как полный успех.
+        const unknownFields = snapshot.unknownFields;
+        if (unknownFields !== undefined) {
+          const list = Object.entries(unknownFields)
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .map(([f, n]) => `${f}×${n}`)
+            .join(", ");
+          ctx.warn(
+            "import.unknown_fields",
+            `поля задач beads, которые импорт не читает и никуда не ввёз: ${list}`,
           );
         }
         const clamped = snapshot.clampedPriorities;

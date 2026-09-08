@@ -261,10 +261,21 @@ function buildView(
   for (const e of h.store.edgesTo(node.id, "replies_to")) {
     const src = h.store.getNode(e.src);
     if (src === undefined) continue;
+    // ВИД УЗЛА ЗДЕСЬ НЕ СПРАШИВАЕТСЯ. Нить определяется РЕБРОМ: комментарии
+    // пишут mcp addNote (note), `myc comment` (note) и import-beads (note), а
+    // межагентские реплики — `myc msg` (message). Любой фильтр по kind делает
+    // читателя зависимым от того, какая поверхность писала, — ровно так веб
+    // показывал ноль из девяти существовавших комментариев (memory-1nh192mztcqy).
+    //
+    // Время реплики — время СОБЫТИЯ, а не записи: у 156 комментариев,
+    // ввезённых из beads одним прогоном, created_at совпадает с точностью до
+    // миллисекунд, и порядок нити определялся бы случайным порядком id.
+    // Источник кладёт исходное время в attrs.external_created_at.
+    const external = src.attrs["external_created_at"];
     thread.push({
       id: src.id,
       actor: src.actor,
-      at: src.updated_at,
+      at: typeof external === "number" && Number.isFinite(external) ? external : src.updated_at,
       title: src.title,
       replies: h.store.edgesTo(src.id, "replies_to").length,
     });

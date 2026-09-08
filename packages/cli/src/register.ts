@@ -41,6 +41,7 @@ export function registerAll(registry: Registry): void {
   lazy("bug", () => import("./commands/tasks.ts").then((m) => m.createBugCommand()));
   lazy("epic", () => import("./commands/tasks.ts").then((m) => m.createEpicCommand()));
   lazy("msg", () => import("./commands/tasks.ts").then((m) => m.createMsgCommand()));
+  lazy("comment", () => import("./commands/tasks.ts").then((m) => m.createCommentCommand()));
   lazy("update", () => import("./commands/tasks.ts").then((m) => m.createUpdateCommand()));
   lazy("claim", () => import("./commands/tasks.ts").then((m) => m.createClaimCommand()));
   lazy("release", () => import("./commands/tasks.ts").then((m) => m.createReleaseCommand()));

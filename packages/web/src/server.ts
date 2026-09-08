@@ -25,6 +25,7 @@ import {
   planBootstrapSet,
 } from "./bootstrap.ts";
 import { buildCard } from "./card.ts";
+import { buildDecisions } from "./decisions.ts";
 import { openReadOnly, VizDbError, type ReadOnlyDb } from "./db.ts";
 import { buildGraph, DEFAULT_EDGE_LIMIT, DEFAULT_NODE_LIMIT } from "./graph.ts";
 import { buildHealth } from "./health.ts";
@@ -49,6 +50,7 @@ import {
   type WriteOutcome,
   type WritePlan,
 } from "./mutate.ts";
+import { loadSearch } from "./search.ts";
 import { loadWorkspace, tierOf, type WorkspaceConfig } from "./workspace.ts";
 import type { BootPayload, WorkspaceTier } from "./types.ts";
 
@@ -302,6 +304,37 @@ export function startVizServer(opts: VizServerOptions): VizServer {
         const rows = Array.isArray(outcome.data) ? outcome.data : [];
         return writeResponse({ ...outcome, data: { rows } });
       }
+      if (url.pathname === "/api/search") {
+        const q = url.searchParams.get("q") ?? "";
+        if (q.trim().length === 0) {
+          return fail(400, "usage.invalid", "нужен запрос: /api/search?q=<текст>");
+        }
+        const strParam = (name: string): string | undefined => url.searchParams.get(name) ?? undefined;
+        const numParam = (name: string): number | undefined => {
+          const raw = url.searchParams.get(name);
+          if (raw === null) return undefined;
+          const n = Number(raw);
+          return Number.isFinite(n) ? n : undefined;
+        };
+        const outcome = await loadSearch(runCli, q, {
+          limit: numParam("n"),
+          offset: numParam("offset"),
+          budget: numParam("budget"),
+          kind: strParam("kind"),
+          tag: strParam("tag"),
+          layer: strParam("layer"),
+          since: strParam("since"),
+          anchor: strParam("anchor"),
+          mode: strParam("mode"),
+          why: url.searchParams.get("why") !== null,
+          reach: strParam("reach"),
+          repo: strParam("repo"),
+          session: strParam("session"),
+          embedTimeoutMs: numParam("embed-timeout"),
+          sources: numParam("sources"),
+        });
+        return writeResponse(outcome);
+      }
       switch (url.pathname) {
         case "/api/boot": {
           const schemaReady = db.has("nodes") && db.has("edges") && db.has("oplog");
@@ -362,6 +395,8 @@ export function startVizServer(opts: VizServerOptions): VizServer {
           return json(buildHealth(db, { slug: workspace.slug, dbPath: opts.dbPath }));
         case "/api/routing":
           return json(buildRouting(db));
+        case "/api/decisions":
+          return json(buildDecisions(db));
         default:
           break;
       }

@@ -63,6 +63,24 @@ const SNAPSHOT: BeadsSnapshot = {
       close_reason: "починено в myc-a2, ссылка остаётся текстом",
       closed_at: "2026-09-01T10:00:00Z",
       notes: "Заметка приёмщика: смотри myc-a1.",
+      // Комментарии — отдельные записи со СВОИМ автором, а не поле задачи;
+      // здесь их два, и у задачи есть ещё и notes: в cherry это обычный случай.
+      comments: [
+        {
+          id: "c-2",
+          issue_id: "myc-a3",
+          author: "bob",
+          text: "Вторая реплика: проверено на HEAD.",
+          created_at: "2026-09-02T12:00:00Z",
+        },
+        {
+          id: "c-1",
+          issue_id: "myc-a3",
+          author: "alice",
+          text: "Первая реплика: смотри myc-a1 — ссылку не переписывать.",
+          created_at: "2026-09-01T09:00:00Z",
+        },
+      ],
     },
     {
       id: "myc-a4",
@@ -71,6 +89,8 @@ const SNAPSHOT: BeadsSnapshot = {
       priority: 2,
       issue_type: "feature",
       assignee: "agent7",
+      // Комментарий без автора: подписывается тем, кто запустил ввоз.
+      comments: [{ id: "c-3", issue_id: "myc-a4", text: "Реплика без автора." }],
     },
     {
       id: "myc-a5",
@@ -156,6 +176,7 @@ describe("импорт: узлы, поля, вербатим", () => {
     expect(d["tasks_created"]).toBe(5);
     expect(d["edges_created"]).toBe(3);
     expect(d["notes_created"]).toBe(1);
+    expect(d["comments_created"]).toBe(3);
     expect(d["memories_created"]).toBe(1);
     expect(d["missing_refs"]).toEqual([]);
 
@@ -224,6 +245,187 @@ describe("импорт: узлы, поля, вербатим", () => {
   });
 });
 
+describe("комментарии beads — отдельные узлы нити (memory-5hzahz4dcc37, S64)", () => {
+  /** Узлы-комментарии ввоза: у них external_ref вида `<issue>#comment:<id>`. */
+  async function importedComments(): Promise<
+    { ref: string; actor: string; body: string | null; kind: string; type: unknown; at: unknown }[]
+  > {
+    return withStore((h) =>
+      h.store
+        .listNodes(h.scope, "note", 10000)
+        .filter((n) => String(n.attrs["external_ref"] ?? "").includes("#comment:"))
+        .map((n) => ({
+          ref: String(n.attrs["external_ref"]),
+          actor: n.actor,
+          body: n.body,
+          kind: n.kind,
+          type: n.attrs["type"],
+          at: n.attrs["external_created_at"],
+        })),
+    );
+  }
+
+  test("три комментария ввезены отдельными узлами; поле задачи дало бы НОЛЬ", async () => {
+    const env = await mycJson("import-beads", snapshotPath);
+    expect((env.data as Record<string, unknown>)["comments_created"]).toBe(3);
+
+    const comments = await importedComments();
+    expect(comments).toHaveLength(3);
+    expect(comments.map((c) => c.ref).sort()).toEqual([
+      "myc-a3#comment:c-1",
+      "myc-a3#comment:c-2",
+      "myc-a4#comment:c-3",
+    ]);
+    // Один вид узла на все поверхности (S64): note + attrs.type='comment'.
+    for (const c of comments) {
+      expect(c.kind).toBe("note");
+      expect(c.type).toBe("comment");
+    }
+
+    // Мутация с числом: до этой правки слова 'comments' в импортёре не было
+    // вовсе. Узлов-комментариев было бы 0 из 3, а отчёт печатал бы
+    // «заметки новых 1» — ровно число notes, как на cherry печатал 265.
+    await withStore((h) => {
+      const notesOnly = h.store
+        .listNodes(h.scope, "note", 10000)
+        .filter((n) => String(n.attrs["external_ref"] ?? "").endsWith("#notes"));
+      expect(notesOnly).toHaveLength(1);
+    });
+  });
+
+  test("у комментария СВОЙ автор; без автора — тот, кто запустил ввоз", async () => {
+    await mycJson("import-beads", snapshotPath);
+    const byRef = new Map((await importedComments()).map((c) => [c.ref, c]));
+    expect(byRef.get("myc-a3#comment:c-1")!.actor).toBe("alice");
+    expect(byRef.get("myc-a3#comment:c-2")!.actor).toBe("bob");
+    // Автора у c-3 в источнике нет — подписывается импортёром, а не пустой
+    // строкой: нить без автора перестаёт быть разговором.
+    expect(byRef.get("myc-a4#comment:c-3")!.actor).toBe("tester");
+    // Тексты вербатим, ссылки внутри не переписаны.
+    expect(byRef.get("myc-a3#comment:c-1")!.body).toBe(
+      "Первая реплика: смотри myc-a1 — ссылку не переписывать.",
+    );
+  });
+
+  test("каждый комментарий висит на СВОЕЙ задаче ребром replies_to", async () => {
+    await mycJson("import-beads", snapshotPath);
+    const a3 = (await idByRef("myc-a3"))!;
+    const a4 = (await idByRef("myc-a4"))!;
+    const c1 = (await idByRef("myc-a3#comment:c-1"))!;
+    const c2 = (await idByRef("myc-a3#comment:c-2"))!;
+    const c3 = (await idByRef("myc-a4#comment:c-3"))!;
+    await withStore((h) => {
+      expect(h.store.getEdge(c1, "replies_to", a3)).toBeDefined();
+      expect(h.store.getEdge(c2, "replies_to", a3)).toBeDefined();
+      expect(h.store.getEdge(c3, "replies_to", a4)).toBeDefined();
+      // У myc-a3 нить из ТРЁХ: два комментария плюс заметка bd note.
+      expect(h.store.edgesTo(a3, "replies_to")).toHaveLength(3);
+      expect(h.store.edgesTo(a4, "replies_to")).toHaveLength(1);
+    });
+  });
+
+  test("время источника сохранено: нить читается по нему, а не по времени ввоза", async () => {
+    await mycJson("import-beads", snapshotPath);
+    const byRef = new Map((await importedComments()).map((c) => [c.ref, c]));
+    expect(byRef.get("myc-a3#comment:c-1")!.at).toBe(Date.parse("2026-09-01T09:00:00Z"));
+    expect(byRef.get("myc-a3#comment:c-2")!.at).toBe(Date.parse("2026-09-02T12:00:00Z"));
+    // c-1 лежит в снимке ВТОРЫМ, но по времени он первый: порядок нити
+    // определяется временем события. Без этого 156 комментариев, ввезённых
+    // одним прогоном, встали бы в случайном порядке.
+    expect(SNAPSHOT.issues[2]!.comments![0]!.id).toBe("c-2");
+    expect(byRef.get("myc-a3#comment:c-1")!.at).toBeLessThan(
+      byRef.get("myc-a3#comment:c-2")!.at as number,
+    );
+  });
+});
+
+describe("незнакомое поле задачи НАЗВАНО, а не пропущено молча (И2)", () => {
+  /** Снимок как СЫРОЙ JSON: типы BeadsIssue незнакомых полей не допускают. */
+  function writeRaw(name: string, issues: Record<string, unknown>[]): string {
+    const p = join(projectDir, name);
+    writeFileSync(p, JSON.stringify({ issues }));
+    return p;
+  }
+
+  const base = (id: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id,
+    title: `задача ${id}`,
+    status: "open",
+    priority: 2,
+    issue_type: "task",
+    ...over,
+  });
+
+  test("два незнакомых имени на четырёх задачах названы с числами", async () => {
+    const p = writeRaw("unknown.json", [
+      base("u-1", { acceptance_criteria: "критерии приёмки", owner: "alice" }),
+      base("u-2", { owner: "bob" }),
+      base("u-3", { owner: "carol" }),
+      base("u-4"),
+    ]);
+    const env = await mycJson("import-beads", p);
+    expect(env.ok).toBe(true);
+    const warn = (env.warn ?? []).find((w) => w.code === "import.unknown_fields");
+    expect(warn).toBeDefined();
+    // Числа — по ЗАДАЧАМ: owner у трёх, acceptance_criteria у одной.
+    expect(warn!.msg).toContain("owner×3");
+    expect(warn!.msg).toContain("acceptance_criteria×1");
+    // Разбор видит ровно два незнакомых имени, а не «сколько-то».
+    const parsed = parseBeadsSnapshot(readFileSync(p, "utf8"));
+    expect(Object.keys(parsed.unknownFields ?? {}).sort()).toEqual([
+      "acceptance_criteria",
+      "owner",
+    ]);
+  });
+
+  /**
+   * Мутация «незнакомое поле игнорируется молча» — то самое прежнее поведение.
+   * До ограждения набор известных полей был НЕЯВНЫМ («то, что читает код»), и
+   * незнакомое поле было неотличимо от отсутствующего: предупреждений 0,
+   * задачи ввезены, отчёт бодрый. Здесь та же выдача считается обоими
+   * правилами: явным набором — 2 имени, прежним молчанием — 0.
+   */
+  test("прежнее молчание дало бы 0 предупреждений на тех же данных", async () => {
+    const p = writeRaw("unknown2.json", [
+      base("u-1", { acceptance_criteria: "критерии", design: "дизайн-док" }),
+    ]);
+    const env = await mycJson("import-beads", p);
+    const named = (env.warn ?? []).filter((w) => w.code === "import.unknown_fields");
+    expect(named).toHaveLength(1);
+    expect(Object.keys(parseBeadsSnapshot(readFileSync(p, "utf8")).unknownFields ?? {})).toHaveLength(2);
+
+    // Мутация: тот же прогон, но словарём ПРЕЖНЕГО импортёра. У него было
+    // ровно три способа сказать о потере — незнакомый тип, прижатый приоритет,
+    // столкновение идентичностей, — и ни один из них не про поля. На этих
+    // данных все три молчат: потерь 2, названо 0. Ровно так 156 комментариев
+    // cherry и уехали в тишину.
+    const oldVocabulary = ["import.unknown_types", "import.priority_clamped", "import.skipped"];
+    const wouldHaveSaid = (env.warn ?? []).filter((w) => oldVocabulary.includes(w.code));
+    expect(wouldHaveSaid).toHaveLength(0);
+    expect((env.data as Record<string, unknown>)["skipped"]).toEqual([]);
+  });
+
+  test("поле, которое импорт ЧИТАЕТ, незнакомым не считается", async () => {
+    const p = writeRaw("known.json", [
+      base("k-1", {
+        description: "тело",
+        assignee: "agent7",
+        labels: ["x"],
+        notes: "заметка",
+        comments: [{ id: "c-9", author: "dave", text: "реплика" }],
+        // служебные счётчики beads: производные от того, что мы и так ввозим
+        comment_count: 1,
+        dependency_count: 0,
+        dependent_count: 0,
+      }),
+    ]);
+    const env = await mycJson("import-beads", p);
+    expect((env.warn ?? []).filter((w) => w.code === "import.unknown_fields")).toHaveLength(0);
+    // И комментарий при этом действительно ввезён, а не просто «не назван».
+    expect((env.data as Record<string, unknown>)["comments_created"]).toBe(1);
+  });
+});
+
 describe("идемпотентность и dry-run", () => {
   test("повторный импорт ничего не создаёт и не дублирует", async () => {
     await mycJson("import-beads", snapshotPath);
@@ -232,15 +434,18 @@ describe("идемпотентность и dry-run", () => {
     expect(d["tasks_created"]).toBe(0);
     expect(d["edges_created"]).toBe(0);
     expect(d["notes_created"]).toBe(0);
+    expect(d["comments_created"]).toBe(0);
     expect(d["memories_created"]).toBe(0);
     expect(d["tasks_existing"]).toBe(5);
     expect(d["edges_existing"]).toBe(3);
     expect(d["notes_existing"]).toBe(1);
+    expect(d["comments_existing"]).toBe(3);
     expect(d["memories_existing"]).toBe(1);
 
     await withStore((h) => {
       expect(h.store.listNodes(h.scope, "task", 10000)).toHaveLength(5);
-      expect(h.store.listNodes(h.scope, "note", 10000)).toHaveLength(2);
+      // 1 заметка + 3 комментария + 1 память; удвоение дало бы 9
+      expect(h.store.listNodes(h.scope, "note", 10000)).toHaveLength(5);
     });
   });
 

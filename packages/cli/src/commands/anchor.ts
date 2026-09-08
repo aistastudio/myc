@@ -38,7 +38,7 @@ import type { AnchorCheck, AnchorState, MaxLevel } from "@myc/code-intel/anchors
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
-import { findWorkspaceDb } from "./wsfind.ts";
+import { findWorkspaceDb, mapIntoMain, mapIntoWorktree, type WorktreeLink } from "./wsfind.ts";
 import type { StoreDeps, StoreHandle } from "./store.ts";
 
 /**
@@ -94,6 +94,32 @@ export function repoRelative(repoRoot: string, input: string, cwd: string): stri
   return rel.split(sep).join("/");
 }
 
+/**
+ * Две стороны одного файла в git worktree.
+ *
+ * Якорь — это ПУТЬ В РЕПОЗИТОРИИ плюс СОДЕРЖИМОЕ по нему. В worktree они
+ * расходятся: путь обязан быть тем же, что и из основного дерева (иначе в
+ * общий граф лягут якоря вида `../wt-feature/src/x.ts`, не совпадающие ни с
+ * одним настоящим), а читать надо файл, который агент правит прямо сейчас, —
+ * он лежит в worktree и на другой ветке отличается по содержимому.
+ *
+ * Отсюда две функции: `mainCwd` для вычисления пути, `localFile` для чтения.
+ * Вне worktree обе — тождество, ни одного лишнего вызова.
+ */
+function mainCwd(h: StoreHandle, ctx: CommandContext): string {
+  const cwd = ctx.globals.directory ?? process.cwd();
+  return h.worktree === undefined ? cwd : mapIntoMain(h.worktree, resolve(cwd));
+}
+
+function localFile(h: StoreHandle, absInMain: string): string {
+  if (h.worktree === undefined) return absInMain;
+  // Копия из worktree сильнее — это то, что агент правит. Но если её нет
+  // (файл не приехал на эту ветку), берётся копия основного дерева, а не
+  // выдаётся «файла нет»: путь-то в репозитории существует.
+  const local = mapIntoWorktree(h.worktree, absInMain);
+  return existsSync(local) ? local : absInMain;
+}
+
 export interface AnchorTarget {
   readonly path: string;
   readonly start: number;
@@ -127,14 +153,17 @@ function langOf(path: string): string {
  * Корень воркспейса без открытия базы. `findWorkspaceDb` — подъём с
  * `existsSync` на каждом уровне, ничего тяжелее.
  */
-function workspaceRoot(ctx: CommandContext): string | undefined {
+function workspaceRoot(
+  ctx: CommandContext,
+): { wsDir: string; worktree: WorktreeLink | undefined } | undefined {
   const explicit = ctx.globals.db;
   if (explicit !== undefined) {
     const mycDir = dirname(resolve(explicit));
-    return mycDir.split(sep).pop() === ".myc" ? dirname(mycDir) : undefined;
+    if (mycDir.split(sep).pop() !== ".myc") return undefined;
+    return { wsDir: dirname(mycDir), worktree: undefined };
   }
   const found = findWorkspaceDb(ctx.globals.directory ?? process.cwd());
-  return "wsDir" in found ? found.wsDir : undefined;
+  return "wsDir" in found ? { wsDir: found.wsDir, worktree: found.worktree } : undefined;
 }
 
 export interface TouchData {
@@ -194,16 +223,20 @@ function buildAnchorTouch(): Command {
       if (paths.length === 0) {
         return { ok: true, data: done(0, "", "путь не назван") };
       }
-      const wsDir = workspaceRoot(ctx);
-      if (wsDir === undefined) {
+      const ws = workspaceRoot(ctx);
+      if (ws === undefined) {
         // Не отказ: хук обязан быть безвредным вне воркспейса (§6.4).
         return { ok: true, data: done(0, "", "воркспейс не найден") };
       }
-      const log = join(wsDir, ".myc", DIRTY_LOG);
+      const log = join(ws.wsDir, ".myc", DIRTY_LOG);
       const cwd = ctx.globals.directory ?? process.cwd();
       let line = "";
       for (const p of paths) {
-        line += `${resolve(cwd, p)}\n`;
+        // Путь ПЕРЕСЧИТАН в основное дерево: журнал лежит там, и `anchor
+        // check` считает от его корня. Абсолютный путь worktree он молча
+        // отбросил бы — пометка пропала бы, а хук отчитался бы об успехе.
+        const abs = resolve(cwd, p);
+        line += `${ws.worktree === undefined ? abs : mapIntoMain(ws.worktree, abs)}\n`;
       }
       try {
         appendFileSync(log, line);
@@ -355,9 +388,8 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
         const node = resolved.node;
 
         const { repoId, repoRoot } = anchorRepo(h);
-        const cwd = ctx.globals.directory ?? process.cwd();
-        const path = repoRelative(repoRoot, target.path, cwd);
-        const abs = join(repoRoot, path);
+        const path = repoRelative(repoRoot, target.path, mainCwd(h, ctx));
+        const abs = localFile(h, join(repoRoot, path));
         if (!existsSync(abs)) {
           return failure(
             "notfound.file",
@@ -479,8 +511,8 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
         if (!resolved.ok) return resolved.failure;
         const node = resolved.node;
         const { repoRoot } = anchorRepo(h);
-        const cwd = ctx.globals.directory ?? process.cwd();
-        const wantPath = target === undefined ? undefined : repoRelative(repoRoot, target.path, cwd);
+        const wantPath =
+          target === undefined ? undefined : repoRelative(repoRoot, target.path, mainCwd(h, ctx));
 
         const db = h.driver.database;
         const rows = db
@@ -633,8 +665,7 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
       const h = opened.handle;
       try {
         const { repoId, repoRoot } = anchorRepo(h);
-        const cwd = ctx.globals.directory ?? process.cwd();
-        const path = repoRelative(repoRoot, target.path, cwd);
+        const path = repoRelative(repoRoot, target.path, mainCwd(h, ctx));
         const line = target.whole ? null : target.start;
 
         const db = h.driver.database;

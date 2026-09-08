@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myc — a local task-and-memory layer for coding agents</title>
+<meta name="description" content="myc: a local task queue, an oplog of decisions and hybrid search over a project's memory for coding agents. Every number on this page is measured and reproducible by a command from the repository.">
+<meta property="og:title" content="myc — a local task-and-memory layer for coding agents">
+<meta property="og:description" content="Every number on this page is measured, and the command that reproduces it stands next to it.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232a78d6'/%3E%3Ctext x='16' y='23' font-family='ui-monospace,monospace' font-size='19' font-weight='700' fill='white' text-anchor='middle'%3Em%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script>
+  // До первой отрисовки: язык и тема из сохранённого выбора, иначе из браузера.
+  // Здесь, а не в конце страницы, чтобы не мигало и не сбивало позицию прокрутки.
+  (function () {
+    var p = new URLSearchParams(location.search);
+    var lang = p.get("lang") || localStorage.getItem("myc-lang") ||
+      ((navigator.language || "en").toLowerCase().startsWith("ru") ? "ru" : "en");
+    if (lang !== "ru" && lang !== "en") lang = "en";
+    document.documentElement.setAttribute("data-lang", lang);
+    document.documentElement.setAttribute("lang", lang);
+    var theme = localStorage.getItem("myc-theme");
+    if (theme === "dark" || theme === "light") document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+</head>
+<body>
+<a class="skip" href="#main"><span lang="en">Skip to content</span><span lang="ru">К содержанию</span></a>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="#top">myc<span class="ver" id="brand-ver"></span></a>
+    <nav class="sections" aria-label="Sections">
+      <a href="#install"><span lang="en">Install</span><span lang="ru">Установка</span></a>
+      <a href="#speed"><span lang="en">Speed</span><span lang="ru">Скорость</span></a>
+      <a href="#ranking"><span lang="en">Ranking</span><span lang="ru">Ранжирование</span></a>
+      <a href="#cache"><span lang="en">Cache</span><span lang="ru">Кеш</span></a>
+      <a href="#migrate"><span lang="en">Migration</span><span lang="ru">Миграция</span></a>
+      <a href="#compare"><span lang="en">Comparison</span><span lang="ru">Сравнение</span></a>
+      <a href="#absent"><span lang="en">What it is not</span><span lang="ru">Чего нет</span></a>
+      <a href="#reproduce"><span lang="en">Reproduce</span><span lang="ru">Повторить</span></a>
+    </nav>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Language / Язык">
+        <button type="button" data-lang-btn="en" aria-pressed="false">EN</button>
+        <button type="button" data-lang-btn="ru" aria-pressed="false">RU</button>
+      </div>
+      <button type="button" class="icon-btn" id="theme-btn" aria-label="Theme">◐</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<div id="top"></div>
+
+<!-- ── герой ─────────────────────────────────────────────────────────────── -->
+<div class="hero">
+  <div class="wrap">
+    <h1>myc</h1>
+    <p class="lede" lang="en">A local task-and-memory layer for coding agents: a task queue, an oplog of facts and decisions, and hybrid search over a project's memory. <strong>No network calls, no mandatory LLM key.</strong></p>
+    <p class="lede" lang="ru">Локальный слой задач и памяти для кодовых агентов: очередь задач, оплог фактов и решений, гибридный поиск по памяти проекта. <strong>Без сетевых вызовов и без обязательного ключа к модели.</strong></p>
+
+    <p class="lede dim" style="margin-top:1rem" lang="en">Agents forget. myc is the part that doesn't: decisions survive context compaction, work survives process death, and both survive being moved between machines through plain git.</p>
+    <p class="lede dim" style="margin-top:1rem" lang="ru">Агенты забывают. myc — та часть, которая нет: решения переживают сжатие контекста, работа переживает смерть процесса, и то и другое переезжает между машинами обычным git.</p>
+
+    <div class="pledge">
+      <span class="mark">§</span>
+      <span lang="en">Every number on this page was measured, and the command that reproduces it stands next to it. Nothing here is an estimate. The build of this site <strong>fails</strong> if a number stops matching the measurement artefact in the repository.</span>
+      <span lang="ru">Каждое число на этой странице измерено, и рядом с ним стоит команда, которой его повторяют. Здесь нет ни одной оценки на глаз. Сборка этого сайта <strong>падает</strong>, если число разошлось с артефактом замера в репозитории.</span>
+    </div>
+
+    <div class="cta">
+      <a class="btn primary" href="#install"><span lang="en">Install</span><span lang="ru">Установить</span></a>
+      <a class="btn" href="https://github.com/aistastudio/myc">GitHub</a>
+      <a class="btn" href="#absent"><span lang="en">What myc is not</span><span lang="ru">Чего в myc нет</span></a>
+    </div>
+
+    <div class="grid-3" style="margin-top:2.6rem" id="hero-stats"></div>
+  </div>
+</div>
+
+<!-- ── установка ─────────────────────────────────────────────────────────── -->
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">01</span>
+      <h2 lang="en">Install</h2>
+      <h2 lang="ru">Установка</h2>
+      <p lang="en">One command, one binary, no models pulled. Semantic search is opt-in and says so until you enable it.</p>
+      <p lang="ru">Одна команда, один бинарь, модели при установке не качаются. Семантический поиск включается отдельно и до тех пор честно говорит, что его нет.</p>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Requires Bun — this is not fine print</h3>
+        <h3 lang="ru">Требуется Bun — и это не мелкий шрифт</h3>
+        <p class="sub" lang="en">The runtime is bound to <code>bun:sqlite</code>: SQLite and <code>sqlite-vec</code> ship inside Bun, with no native bindings on the Node side. It will not start on plain Node.js or Deno. Bun ≥ 1.3.0, pinned in <code>engines.bun</code>.</p>
+        <p class="sub" lang="ru">Рантайм привязан к <code>bun:sqlite</code>: SQLite и <code>sqlite-vec</code> едут внутри Bun, нативных биндингов на стороне Node нет. На чистом Node.js или Deno он не стартует. Bun ≥ 1.3.0, зафиксирован в <code>engines.bun</code>.</p>
+        <div class="cmd"><span class="prompt">$</span><code>curl -fsSL https://bun.sh/install | bash</code><button class="copy" type="button">copy</button></div>
+      </div>
+
+      <div class="card">
+        <h3 lang="en">Then myc itself</h3>
+        <h3 lang="ru">Дальше сам myc</h3>
+        <p class="sub" id="pkg-sub"></p>
+        <div class="cmd" style="margin-bottom:.5rem"><span class="prompt">$</span><code>bun install -g @aistastudio/myc</code><button class="copy" type="button">copy</button></div>
+        <div class="cmd"><span class="prompt">$</span><code>myc --version</code><button class="copy" type="button">copy</button></div>
+        <details class="how">
+          <summary><span lang="en">How the package size was measured</span><span lang="ru">Как померен размер пакета</span></summary>
+          <div class="body" id="pkg-how"></div>
+        </details>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:1.25rem">
+      <div class="card">
+        <h3 lang="en">Quick start</h3>
+        <h3 lang="ru">Быстрый старт</h3>
+        <p class="sub" lang="en">Five commands is the whole loop an agent lives in.</p>
+        <p class="sub" lang="ru">Пять команд — весь цикл, в котором живёт агент.</p>
+<pre class="block" lang="en"><code>myc init      <span class="c"># .myc/ + SQLite + migrations in this repo</span>
+myc wire      <span class="c"># hooks for Claude Code / Codex / opencode</span>
+myc ready     <span class="c"># what can be picked up right now</span>
+myc remember "why X, not Y"
+myc recall   "how retrieval works"
+myc prime     <span class="c"># session context packet — agents call this</span></code></pre>
+<pre class="block" lang="ru"><code>myc init      <span class="c"># .myc/ + SQLite + миграции в этом репозитории</span>
+myc wire      <span class="c"># хуки для Claude Code / Codex / opencode</span>
+myc ready     <span class="c"># что можно взять прямо сейчас</span>
+myc remember "почему X, а не Y"
+myc recall   "как устроен ретривал"
+myc prime     <span class="c"># пакет контекста сессии — его зовут агенты</span></code></pre>
+      </div>
+
+      <div class="card">
+        <h3 lang="en">Semantic search is opt-in</h3>
+        <h3 lang="ru">Семантический поиск — по запросу</h3>
+        <p class="sub" id="model-sub"></p>
+        <div class="cmd"><span class="prompt">$</span><code>myc models fetch multilingual-e5-small-q8</code><button class="copy" type="button">copy</button></div>
+        <p class="sub" style="margin-top:1rem" lang="en">Until you run it, search is lexical (BM25) and <strong>says so out loud</strong> on every degraded answer: <code>WARN degraded.embeddings</code>. The invariant is that a degraded answer must never be indistinguishable from a healthy one.</p>
+        <p class="sub" style="margin-top:1rem" lang="ru">До этого поиск лексический (BM25) и <strong>говорит об этом вслух</strong> в каждом ухудшенном ответе: <code>WARN degraded.embeddings</code>. Инвариант такой: ухудшенный ответ не имеет права быть неотличимым от здорового.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── скорость ──────────────────────────────────────────────────────────── -->
+<section id="speed">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">02</span>
+      <h2 lang="en">Speed is a constraint, not an optimisation</h2>
+      <h2 lang="ru">Скорость — ограничение, а не оптимизация</h2>
+      <p lang="en">Every hot path has a budget enforced in CI. The frame of each bar below <em>is</em> the budget; the fill is what was measured. A p95 regression over 15% fails the build.</p>
+      <p lang="ru">У каждого горячего пути есть бюджет, и он проверяется в CI. Рамка каждой полосы ниже — это и есть бюджет, заливка — измеренное. Регрессия p95 больше 15% роняет сборку.</p>
+    </div>
+    <div class="card">
+      <h3 lang="en">p99 against its budget, 100 000 nodes</h3>
+      <h3 lang="ru">p99 против своего бюджета, 100 000 узлов</h3>
+      <p class="sub" id="lat-sub"></p>
+      <div id="lat-chart" class="chart"></div>
+      <details class="how">
+        <summary><span lang="en">Command, conditions and the full percentile table</span><span lang="ru">Команда, условия и полная таблица перцентилей</span></summary>
+        <div class="body" id="lat-how"></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ── ранжирование ──────────────────────────────────────────────────────── -->
+<section id="ranking">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">03</span>
+      <h2 lang="en">Ranking is measured, not asserted</h2>
+      <h2 lang="ru">Ранжирование измеряется, а не декларируется</h2>
+      <p lang="en">Two labelled corpora with graded relevance. Each one contains a <strong>control group that gets worse</strong> when the feature works — so the gain cannot be manufactured by shaping the corpus.</p>
+      <p lang="ru">Два размеченных корпуса с градуированной релевантностью. В каждом есть <strong>контрольная группа, которая при верной работе ухудшается</strong> — поэтому выигрыш нельзя получить, подогнав корпус.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:1.25rem">
+      <h3 lang="en">Why a control group that gets worse is the point</h3>
+      <h3 lang="ru">Зачем нужна группа, которой становится хуже</h3>
+      <p class="sub narrow" lang="en">A boost that lifts priority, freshness and layer <em>must</em> push down a document that matches the words but is stale and low-priority. If every group improved, the corpus would be telling us what we already wanted to hear. The distractor group is the falsification test: it is expected to drop, and it drops.</p>
+      <p class="sub narrow" lang="ru">Буст, который поднимает приоритет, свежесть и ярус, <em>обязан</em> опустить документ, который совпал словами, но протух и малоприоритетен. Если бы улучшились все группы, корпус просто повторял бы то, что мы хотели услышать. Группа дистракторов — проверка на опровержение: она должна упасть, и она падает.</p>
+      <div id="control-stats" class="grid-2" style="margin-top:1rem"></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Boosts: priority, freshness, layer</h3>
+        <h3 lang="ru">Бусты: приоритет, свежесть, ярус</h3>
+        <p class="sub" id="boost-sub"></p>
+        <div id="boost-chart" class="chart"></div>
+        <details class="how">
+          <summary><span lang="en">Command and the full table</span><span lang="ru">Команда и полная таблица</span></summary>
+          <div class="body" id="boost-how"></div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h3 lang="en">Graph expansion to two hops</h3>
+        <h3 lang="ru">Расширение по графу на два хопа</h3>
+        <p class="sub" id="graph-sub"></p>
+        <div id="graph-chart" class="chart"></div>
+        <details class="how">
+          <summary><span lang="en">Command and the full table</span><span lang="ru">Команда и полная таблица</span></summary>
+          <div class="body" id="graph-how"></div>
+        </details>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── кеш ───────────────────────────────────────────────────────────────── -->
+<section id="cache">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">04</span>
+      <h2 lang="en">A cache that cannot go stale silently</h2>
+      <h2 lang="ru">Кеш, который не может протухнуть молча</h2>
+      <p lang="en">Result, embedding and hydration caches are invalidated by <code>MAX(oplog.seq)</code> read <em>from the database</em> — so a write by another process invalidates them too.</p>
+      <p lang="ru">Кеши результатов, эмбеддингов и гидратации инвалидируются по <code>MAX(oplog.seq)</code>, прочитанному <em>из базы</em> — поэтому запись чужого процесса сбрасывает их тоже.</p>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Price of a hit</h3>
+        <h3 lang="ru">Цена попадания</h3>
+        <p class="sub" id="cache-sub"></p>
+        <div id="cache-chart" class="chart"></div>
+        <details class="how">
+          <summary><span lang="en">Command and the numbers</span><span lang="ru">Команда и числа</span></summary>
+          <div class="body" id="cache-how"></div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h3 lang="en">What honest invalidation costs</h3>
+        <h3 lang="ru">Чего стоит честная инвалидация</h3>
+        <p class="sub" lang="en">Sequence validation is global: <strong>any</strong> write drops the whole search cache. That is the price of never returning a stale answer, and it is shown here rather than hidden.</p>
+        <p class="sub" lang="ru">Валидация по seq глобальная: <strong>любая</strong> запись сбрасывает весь кеш поиска. Это цена того, что устаревший ответ невозможен, и она показана, а не спрятана.</p>
+        <div id="hitrate-chart" class="chart"></div>
+        <div id="cache-identical" style="margin-top:1.25rem"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── миграция ──────────────────────────────────────────────────────────── -->
+<section id="migrate">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">05</span>
+      <h2 lang="en">Migration from beads is real, not a demo</h2>
+      <h2 lang="ru">Миграция с beads настоящая, а не демонстрационная</h2>
+      <p lang="en">A working project imported into an empty workspace. Unknown issue types are carried over verbatim <em>and named</em>; out-of-range priorities are clamped <em>and named</em> — instead of one odd row aborting the import.</p>
+      <p lang="ru">Живой проект, ввезённый в пустой воркспейс. Незнакомые типы задач переносятся дословно <em>и называются</em>; приоритеты вне шкалы прижимаются <em>и называются</em> — вместо того, чтобы одна странная строка роняла весь импорт.</p>
+    </div>
+
+    <div class="card">
+      <div id="import-stats" class="grid-3"></div>
+      <div id="import-warn" style="margin-top:1.5rem"></div>
+      <details class="how">
+        <summary><span lang="en">Commands that reproduce this</span><span lang="ru">Команды, которыми это повторяют</span></summary>
+        <div class="body" id="import-how"></div>
+      </details>
+    </div>
+
+    <div class="card" style="margin-top:1.25rem; border-left:2px solid var(--warning)">
+      <h3 lang="en">And where the migration is still wrong — ours, not theirs</h3>
+      <h3 lang="ru">И где миграция пока неверна — у нас, не у них</h3>
+      <div id="ready-gap"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── сравнение ─────────────────────────────────────────────────────────── -->
+<section id="compare">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">06</span>
+      <h2 lang="en">Comparison, with the losses included</h2>
+      <h2 lang="ru">Сравнение, включая проигрыши</h2>
+      <p lang="en">A table where one tool wins every row is an advertisement, not a comparison. Each tool below is compared only where the claim can be checked by a command on your own machine — which is also why some well-known tools are absent: we have not measured them, so they are not here.</p>
+      <p lang="ru">Таблица, где один инструмент выигрывает во всех строках, — реклама, а не сравнение. Каждый инструмент ниже сравнивается только там, где утверждение проверяется командой на вашей машине. По этой же причине здесь нет некоторых известных инструментов: мы их не мерили, значит, их тут нет.</p>
+    </div>
+
+    <div class="card">
+      <div class="tablewrap">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th><span lang="en">Tool</span><span lang="ru">Инструмент</span></th>
+              <th><span lang="en">Where it beats myc</span><span lang="ru">В чём он лучше myc</span></th>
+              <th><span lang="en">Where myc beats it</span><span lang="ru">В чём myc лучше</span></th>
+              <th><span lang="en">Check it yourself</span><span lang="ru">Как проверить</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>beads<br><span class="muted tnum" style="font-size:.8rem">1.0.5</span></td>
+              <td>
+                <span lang="en"><strong class="win">Its ready queue is more correct than ours.</strong> <code>bd ready</code> inherits blockers down the parent chain; <code>myc ready</code> only looks at a task's own blockers. On the same imported graph that is 144 against 195 — 51 tasks myc offers that are inside a still-blocked epic. Open bug <code>memory-atcm254ry6c7</code>.<br><br>Also: a 1.0 release against our 0.1.1; a Go binary with no Bun requirement; multi-machine sync through Dolt, which is a real database protocol rather than a merge driver over text.</span>
+                <span lang="ru"><strong class="win">Его очередь готовых задач корректнее нашей.</strong> <code>bd ready</code> наследует блокеры вниз по цепочке parent, <code>myc ready</code> смотрит только на собственные блокеры задачи. На одном и том же ввезённом графе это 144 против 195 — 51 задача, которую myc предлагает внутри ещё заблокированного эпика. Открытый баг <code>memory-atcm254ry6c7</code>.<br><br>Ещё: релиз 1.0 против нашего 0.1.1; бинарь на Go без требования Bun; синхронизация между машинами через Dolt — это настоящий протокол базы, а не merge-драйвер поверх текста.</span>
+              </td>
+              <td>
+                <span lang="en">Hybrid search over memory with a measured MRR@10 and labelled corpora; latency budgets enforced in CI on 100 000 nodes; facts and decisions as first-class nodes next to tasks, not only issues.</span>
+                <span lang="ru">Гибридный поиск по памяти с измеренным MRR@10 и размеченными корпусами; бюджеты латентности, проверяемые в CI на 100 000 узлов; факты и решения как полноправные узлы рядом с задачами, а не только задачи.</span>
+              </td>
+              <td><code>bd version</code><br><code>bd ready</code><br><code>myc ready --json</code></td>
+            </tr>
+            <tr>
+              <td>graft<br><span class="muted tnum" style="font-size:.8rem">0.16.0</span></td>
+              <td>
+                <span lang="en"><strong class="win">It builds a real call graph; we have a text index.</strong> <code>graft callers &lt;symbol&gt;</code> answers "who calls this" with exact edges. myc cannot answer that at all: our code-intelligence milestone (M3) stands at 3 of 9, and anchors do not yet bind code to knowledge. For "where does this code live and what breaks if I change it", graft wins outright.</span>
+                <span lang="ru"><strong class="win">Он строит настоящий граф вызовов, у нас текстовый индекс.</strong> <code>graft callers &lt;symbol&gt;</code> отвечает «кто это зовёт» точными рёбрами. myc на такой вопрос не отвечает вовсе: веха кодового интеллекта (M3) стоит на 3 из 9, якоря ещё не связывают код со знанием. На вопросе «где живёт этот код и что сломается, если его тронуть» graft выигрывает без оговорок.</span>
+              </td>
+              <td>
+                <span lang="en">Different job, and honestly so: graft indexes code, myc keeps tasks, decisions and attempts. Where they overlap — recall of project knowledge — myc has a measured ranking and a queue; graft has neither, and does not claim to.</span>
+                <span lang="ru">Другая работа, и это честно: graft индексирует код, myc держит задачи, решения и попытки. Там, где они пересекаются — вспоминание знания о проекте — у myc есть измеренное ранжирование и очередь; у graft нет ни того, ни другого, и он на это не претендует.</span>
+              </td>
+              <td><code>graft --version</code><br><code>graft callers &lt;symbol&gt;</code></td>
+            </tr>
+            <tr>
+              <td><span lang="en">Markdown notes<br><span class="muted" style="font-size:.8rem">CLAUDE.md, MEMORY.md</span></span><span lang="ru">Заметки в markdown<br><span class="muted" style="font-size:.8rem">CLAUDE.md, MEMORY.md</span></span></td>
+              <td>
+                <span lang="en"><strong class="win">Zero install, and every agent already reads them.</strong> A markdown file is reviewable in a pull request diff, editable in any editor, and survives the disappearance of every tool in this table — including myc. If the project's knowledge fits on one page, this is the right answer and myc is overhead.</span>
+                <span lang="ru"><strong class="win">Ноль установки, и их уже читает любой агент.</strong> Файл markdown виден в диффе пул-реквеста, правится в любом редакторе и переживает исчезновение любого инструмента из этой таблицы, включая myc. Если знание проекта помещается на одну страницу, это верный ответ, а myc — лишний.</span>
+              </td>
+              <td>
+                <span lang="en">A page does not rank. Past a few hundred facts the whole file goes into the context window every session; myc returns a ranked slice with a budget and names what it hid.</span>
+                <span lang="ru">Страница не ранжирует. За несколькими сотнями фактов весь файл каждый раз уезжает в контекст; myc отдаёт ранжированный срез с бюджетом и называет числом, что он скрыл.</span>
+              </td>
+              <td><code>myc prime</code><br><code>wc -c CLAUDE.md</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin-top:1.2rem" lang="en">All three tools were on this machine when the table was written; the versions are the ones the commands printed.</p>
+      <p class="sub" style="margin-top:1.2rem" lang="ru">Все три инструмента стояли на этой машине, когда писалась таблица; версии — те, которые напечатали команды.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── чего нет ──────────────────────────────────────────────────────────── -->
+<section id="absent">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">07</span>
+      <h2 lang="en">What myc is not</h2>
+      <h2 lang="ru">Чего в myc нет</h2>
+      <p lang="en">Today myc is a <strong>single-user local tool over files in git</strong>. The list below is not a roadmap teaser — it is what does not exist, stated as plainly as what does.</p>
+      <p lang="ru">Сегодня myc — <strong>однопользовательский локальный инструмент над файлами в git</strong>. Список ниже не анонс: это то, чего нет, сказанное так же прямо, как и то, что есть.</p>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="card absent">
+        <h3 lang="en">Does not exist</h3>
+        <h3 lang="ru">Не существует</h3>
+        <ul class="absent-list" style="margin-top:.9rem">
+          <li lang="en">No server. <code>myc serve</code> is designed and not written.</li>
+          <li lang="ru">Нет сервера. <code>myc serve</code> спроектирован и не написан.</li>
+          <li lang="en">No team mode and no ACL enforcement across users.</li>
+          <li lang="ru">Нет командного режима и нет проверки ACL между пользователями.</li>
+          <li lang="en">No network sync. Machines exchange the oplog through git, and that is the only route.</li>
+          <li lang="ru">Нет сетевой синхронизации. Машины обмениваются оплогом через git, и это единственный путь.</li>
+          <li lang="en">No Postgres, no containers, no hosted anything.</li>
+          <li lang="ru">Нет Postgres, нет контейнеров, нет ничего размещённого.</li>
+          <li lang="en">No code ↔ knowledge anchors in daily use: M3 stands at 3 of 9.</li>
+          <li lang="ru">Нет якорей код ↔ знание в повседневной работе: M3 стоит на 3 из 9.</li>
+          <li lang="en">No routing by cost and outcome, no distillation: M5 and M6 have not started.</li>
+          <li lang="ru">Нет роутинга по цене и результату, нет дистилляции: M5 и M6 не начаты.</li>
+          <li lang="en">Not published to the registry yet — the package is built and verified from a tarball.</li>
+          <li lang="ru">Ещё не опубликован в реестре — пакет собирается и проверяется из тарбола.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 lang="en">Does exist, and is measured above</h3>
+        <h3 lang="ru">Существует и измерено выше</h3>
+        <ul class="present-list" style="margin-top:.9rem">
+          <li lang="en">A task queue with leases, blockers and a parent hierarchy.</li>
+          <li lang="ru">Очередь задач с арендой, блокерами и иерархией parent.</li>
+          <li lang="en">An oplog of facts and decisions, merged per field in plain git.</li>
+          <li lang="ru">Оплог фактов и решений, сливаемый пополево обычным git.</li>
+          <li lang="en">Hybrid lexical + vector search with a measured MRR@10.</li>
+          <li lang="ru">Гибридный лексический + векторный поиск с измеренным MRR@10.</li>
+          <li lang="en">Latency budgets enforced in CI on 100 000 nodes.</li>
+          <li lang="ru">Бюджеты латентности, проверяемые в CI на 100 000 узлов.</li>
+          <li lang="en">Import from beads, with every anomaly named rather than swallowed.</li>
+          <li lang="ru">Импорт из beads, где каждая аномалия называется, а не проглатывается.</li>
+          <li lang="en">A read-write web interface for boards, cards and threads.</li>
+          <li lang="ru">Веб-интерфейс с записью: доски, карточки, нити обсуждения.</li>
+          <li lang="en">Loud degradation: no silent fallbacks anywhere on the hot path.</li>
+          <li lang="ru">Громкая деградация: молчаливых откатов на горячем пути нет.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 lang="en">Roadmap — done and not-done shown the same way</h3>
+      <h3 lang="ru">Дорожная карта — сделанное и несделанное показаны одинаково</h3>
+      <p class="sub" id="roadmap-sub"></p>
+      <div id="roadmap"></div>
+      <details class="how">
+        <summary><span lang="en">Command per milestone</span><span lang="ru">Команда на каждую веху</span></summary>
+        <div class="body" id="roadmap-how"></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ── повторить ─────────────────────────────────────────────────────────── -->
+<section id="reproduce">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">08</span>
+      <h2 lang="en">Reproduce every number on this page</h2>
+      <h2 lang="ru">Повторить каждое число этой страницы</h2>
+      <p lang="en">Clone the repository, install, and run the list below. The numbers on this page live in <code>site/measurements.json</code>; <code>site/build.ts</code> checks them against the measurement artefacts in the repository and refuses to build the site on a mismatch.</p>
+      <p lang="ru">Склонируйте репозиторий, поставьте зависимости и прогоните список ниже. Числа этой страницы лежат в <code>site/measurements.json</code>; <code>site/build.ts</code> сверяет их с артефактами замеров в репозитории и отказывается собирать сайт при расхождении.</p>
+    </div>
+
+    <div class="card">
+      <div id="commands"></div>
+    </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">Test suite, including the test that is currently red</h3>
+      <h3 lang="ru">Прогон тестов, включая тот, что сейчас красный</h3>
+      <div id="tests"></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p lang="en">myc — MIT. Source: <a href="https://github.com/aistastudio/myc">github.com/aistastudio/myc</a>. Package: <code>@aistastudio/myc</code>. Design documents live in <code>docs/design/</code>, measurement reports in <code>docs/reports/</code>.</p>
+    <p lang="ru">myc — MIT. Исходники: <a href="https://github.com/aistastudio/myc">github.com/aistastudio/myc</a>. Пакет: <code>@aistastudio/myc</code>. Документы проектирования — в <code>docs/design/</code>, отчёты о замерах — в <code>docs/reports/</code>.</p>
+    <p class="muted" id="footer-env"></p>
+  </div>
+</footer>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

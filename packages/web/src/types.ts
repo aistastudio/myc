@@ -13,7 +13,9 @@ export type VizTab =
   | "health"
   | "kb"
   | "routing"
-  | "bootstrap";
+  | "bootstrap"
+  | "search"
+  | "decisions";
 
 // ---------------------------------------------------------------------------
 // Граф
@@ -552,4 +554,103 @@ export interface BootstrapHistoryRow {
 
 export interface BootstrapHistoryPayload {
   readonly rows: readonly BootstrapHistoryRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Поиск (W6) — форма зеркалит RecallData/RetrieveRow из
+// packages/cli/src/commands/recall.ts и retrieve.ts БУКВАЛЬНО: клиент
+// показывает то, что вернул `myc recall --json`, а не пересчитывает своё.
+// Поля, которых нет здесь, интерфейсу не нужны — remaining проходит через
+// `Record<string, unknown>` в SearchPayload, чтобы расхождение схемы не
+// уронило рендер, а не потому что оно неважно.
+// ---------------------------------------------------------------------------
+
+export interface SearchRow {
+  readonly id: string;
+  readonly rank: number;
+  readonly score: number;
+  /** z-оценка уверенности (S47); отсутствует — вектор не участвовал в хите. */
+  readonly confidence?: number;
+  readonly kind: string;
+  readonly type: string;
+  readonly layer: number;
+  readonly updated_at: number;
+  readonly title: string;
+  readonly excerpt: string;
+  readonly content_kind?: "full" | "crux";
+  readonly reach: string;
+  readonly reach_session: string;
+  readonly repo: string;
+  readonly repo_state: string;
+  readonly tier: string;
+  readonly source: string;
+}
+
+export interface SearchPayload extends Record<string, unknown> {
+  readonly query: string;
+  readonly rows: readonly SearchRow[];
+  readonly shown: number;
+  readonly total: number;
+  readonly mode: string;
+  readonly budget: number;
+  readonly used_chars: number;
+  readonly took_ms: number;
+  /** true — выдано не всё: узлы сверх бюджета, таймаут сборки или есть продолжение (§2.7). */
+  readonly partial: boolean;
+  readonly omitted: number;
+  /** Продолжение выдачи: следующий --offset; undefined — выдача исчерпана. */
+  readonly cursor?: string;
+  readonly pool_exhausted: boolean;
+  readonly deduped: number;
+  readonly foreign: number;
+  readonly unknown_reach: number;
+  readonly unknown_repo: number;
+  readonly repo: string;
+}
+
+// ---------------------------------------------------------------------------
+// Решения (W8): supersession-цепочки и открытые противоречия
+// ---------------------------------------------------------------------------
+
+/** Одно решение как оно есть — без места в цепочке. */
+export interface DecisionRef {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  /** nodes.actor — тот же автор, что печатает `myc show`. */
+  readonly author: string;
+  readonly created_at: number;
+}
+
+/** Звено цепочки supersession: решение плюс его место в чужой истории. */
+export interface DecisionLink extends DecisionRef {
+  /** Актуальная версия цепочки — семантика `myc show`, не пересчитана заново. */
+  readonly current: boolean;
+  /** Причина замены из absorb (attrs.absorb.reason), если она есть у ЭТОГО звена. */
+  readonly reason?: string;
+}
+
+export interface DecisionChain {
+  /** id актуальной версии — DecisionLink с этим id несёт current: true. */
+  readonly head: string;
+  /** От старой версии к новой — порядок VersionGraph.chain(). */
+  readonly links: readonly DecisionLink[];
+  /** Развилка цепочки (слияние веток) — больше одной головы; молчать нельзя. */
+  readonly forked?: readonly string[];
+}
+
+/** Открытое противоречие: обе стороны ребра `contradicts`, ни одна не закрыта. */
+export interface DecisionContradiction {
+  readonly a: DecisionRef;
+  readonly b: DecisionRef;
+  /** Причина из absorb.reason той стороны, что была классифицирована contradiction. */
+  readonly reason?: string;
+}
+
+export interface DecisionsPayload {
+  readonly chains: readonly DecisionChain[];
+  readonly contradictions: readonly DecisionContradiction[];
+  readonly total_decisions: number;
+  readonly degraded: readonly Degradation[];
+  readonly took_ms: number;
 }

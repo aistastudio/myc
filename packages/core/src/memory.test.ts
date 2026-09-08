@@ -19,6 +19,9 @@ import {
   entityKey,
   fragmentInput,
   messageInput,
+  commentInput,
+  commentTitle,
+  COMMENT_TYPE,
   noteInput,
   parseFragments,
   sessionInput,
@@ -113,6 +116,69 @@ const SAMPLE_DOC = `# Обзор
 
 Секция без ключевого слова — остаётся одним фрагментом section.
 `;
+
+describe("commentInput — ОДИН вид узла для комментария (S64)", () => {
+  test("kind=note, layer=1, attrs.type='comment'; тело — текст целиком", () => {
+    const input = commentInput({ text: "первая строка\nвторая строка", scope: "ws" });
+    expect(input.kind).toBe("note");
+    expect(input.layer).toBe(1);
+    expect(input.attrs?.["type"]).toBe(COMMENT_TYPE);
+    expect(input.title).toBe("первая строка");
+    // Заголовок — ЧАСТЬ тела, а не отрезанная от него первая строка.
+    expect(input.body).toBe("первая строка\nвторая строка");
+  });
+
+  test("автор источника переживает ввоз; пустой автор не затирает умолчание", () => {
+    expect(commentInput({ text: "т", actor: "alice" }).actor).toBe("alice");
+    // Пустая строка — это «автора нет», и она НЕ должна лечь в actor: узел
+    // без автора перестаёт быть репликой в разговоре.
+    expect(commentInput({ text: "т", actor: "" }).actor).toBeUndefined();
+  });
+
+  test("ссылка и время источника — в attrs; их отсутствие не плодит ключей", () => {
+    const imported = commentInput({
+      text: "реплика",
+      external_ref: "cherry-x1#comment:c9",
+      external_created_at: 1_756_000_000_000,
+    });
+    expect(imported.attrs).toEqual({
+      type: "comment",
+      external_ref: "cherry-x1#comment:c9",
+      external_created_at: 1_756_000_000_000,
+    });
+    expect(commentInput({ text: "своя" }).attrs).toEqual({ type: "comment" });
+  });
+
+  test("заголовок обрезается до 80, тело — нет", () => {
+    const long = "я".repeat(200);
+    expect(commentTitle(long)).toHaveLength(80);
+    expect(commentInput({ text: long }).body).toHaveLength(200);
+  });
+
+  /**
+   * Мутация «а давайте комментарий будет kind='message'». Довод против —
+   * не вкус, а форма: `messageInput` ТРЕБУЕТ сессию, роль и порядковый номер
+   * (§2.3), которых у комментария к задаче нет, и кладёт узел на слой 0, где
+   * тело живёт 14 суток и в векторный индекс не попадает (§5.1). Проверяется
+   * то, что видно из кода: обязательные attrs и слой.
+   */
+  test("kind='message' комментарию не годится: чужие обязательные attrs и слой 0", () => {
+    const draft = messageInput({ id: "s1" }, { role: "user", ord: 0, body: "реплика" });
+    expect(draft.input.kind).toBe("message");
+    expect(Object.keys(draft.input.attrs ?? {}).sort()).toEqual([
+      "ord",
+      "role",
+      "session_id",
+      "thread_root",
+    ]);
+    // Слой у message не задаётся входом — умолчание схемы для L0 равно 0,
+    // тогда как commentInput ставит 1 ЯВНО.
+    expect(draft.input.layer).toBeUndefined();
+    expect(commentInput({ text: "реплика" }).layer).toBe(1);
+    // Комментарий не должен зависеть от сессии: у commentInput её нет вовсе.
+    expect(commentInput({ text: "реплика" }).attrs?.["session_id"]).toBeUndefined();
+  });
+});
 
 describe("parseFragments", () => {
   test("классифицирует секции по ключевым словам заголовка", () => {

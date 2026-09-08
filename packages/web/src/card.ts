@@ -111,14 +111,27 @@ interface CommentRow {
 }
 
 /**
- * Нить: kind='message' узлы с ребром replies_to на эту карточку (W13). Мягко
+ * Нить: узлы с ребром replies_to на эту карточку (W13). Мягко
  * удалённые — ни ребро, ни узел — не попадают: тот же фильтр deleted_at IS
  * NULL, что и у всех остальных связей карточки.
+ */
+/**
+ * Нить определяется РЕБРОМ replies_to, а не видом узла — и это не мелочь.
+ *
+ * Пока здесь стояло `n.kind = 'message'`, карточка не показывала НИ ОДНОГО из
+ * комментариев, накопленных агентами: MCP пишет их видом `note` с
+ * `attrs.type='comment'`, CLI-команда `myc comment` — тоже `note`, а
+ * `myc msg --reply-to` — `message`. Три писателя, один читатель с фильтром по
+ * одному виду. На живой базе это давало «CLI показывает нить, веб — ноль», и
+ * после ввоза 156 комментариев из beads было бы невидимо 156 записей.
+ *
+ * `myc show` с самого начала читает по ребру и потому видит всё; интерфейс
+ * обязан читать так же.
  */
 const COMMENTS_SQL = `
 SELECT n.id, n.title, n.body, n.assignee, n.attrs, n.created_at
   FROM edges e JOIN nodes n ON n.id = e.src
- WHERE e.dst = ?1 AND e.type = 'replies_to' AND n.kind = 'message'
+ WHERE e.dst = ?1 AND e.type = 'replies_to'
    AND e.deleted_at IS NULL AND n.deleted_at IS NULL
  ORDER BY n.created_at ASC, n.id ASC`;
 
@@ -133,7 +146,12 @@ function toComment(r: CommentRow): CardComment {
   // title всегда есть (обязателен у myc create); body — необязательное
   // продолжение markdown. Собираем обратно тем же правилом, что у
   // planCreateNote: заголовок первой строкой, тело — следом.
-  const body = r.body.length > 0 ? `${r.title}\n${r.body}` : r.title;
+  // body БЫВАЕТ NULL: `myc msg --reply-to` кладёт весь текст в title и тела
+  // не пишет вовсе. Пока нить читалась только по kind='message'… точнее,
+  // пока она читалась по виду, такие узлы сюда не доходили, и обращение к
+  // .length молча работало. Чтение по ребру их впустило — и уронило.
+  const text = typeof r.body === "string" ? r.body : "";
+  const body = text.length > 0 ? `${r.title}\n${text}` : r.title;
   return {
     id: r.id,
     author: r.assignee.length > 0 ? r.assignee : "agent",

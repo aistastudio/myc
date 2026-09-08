@@ -23,6 +23,11 @@ import type {
   CardComment,
   CardRef,
   CardView,
+  DecisionChain,
+  DecisionContradiction,
+  DecisionLink,
+  DecisionRef,
+  DecisionsPayload,
   GraphNode,
   GraphPayload,
   HealthPayload,
@@ -34,6 +39,8 @@ import type {
   RoutingArm,
   RoutingClass,
   RoutingPayload,
+  SearchPayload,
+  SearchRow,
   TimelinePayload,
   VizTab,
 } from "../types.ts";
@@ -137,6 +144,29 @@ async function api<T>(path: string): Promise<T> {
 async function apiData<T>(path: string): Promise<T> {
   const env = await api<{ ok: boolean; data: T }>(path);
   return env.data;
+}
+
+interface Envelope<T> {
+  readonly ok: boolean;
+  readonly data: T;
+  readonly meta?: { degraded?: string[] } & Record<string, unknown>;
+  readonly warn?: readonly { code: string; msg: string }[];
+  readonly error?: { code: string; msg: string; hint?: string };
+}
+
+/**
+ * Конверт целиком, включая `warn[]` и `meta.degraded[]` — `apiData` их
+ * отбрасывает, а поиск (W6) обязан показать деградацию так же громко, как её
+ * печатает `myc recall` (И2): молча срезать предупреждение здесь значило бы
+ * сделать интерфейс МЕНЕЕ честным, чем терминал.
+ */
+async function apiEnvelope<T>(path: string): Promise<Envelope<T>> {
+  const res = await fetch(path, { headers: { accept: "application/json" } });
+  const body = (await res.json().catch(() => ({}))) as Envelope<T>;
+  if (!res.ok || body.ok === false) {
+    throw new Error(body.error?.msg ?? `HTTP ${res.status}`);
+  }
+  return body;
 }
 
 /**
@@ -2711,10 +2741,292 @@ async function loadHealth(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Поиск (W6, memory-c7075t2s0nj6): гибридный поиск тем же движком, что
+// `myc recall` — /api/search вызывает `runCli(["recall", …, "--json"])`
+// (search.ts) и отдаёт конверт как есть. Здесь ноль пересчёта: ранг, score,
+// z-оценка уверенности, обрезка бюджетом и предупреждения деградации —
+// печатаются в точности из того, что вернул движок (И2).
+// ---------------------------------------------------------------------------
+
+let searchQueryInput: HTMLInputElement | null = null;
+let searchQuery = "";
+let searchOffset = 0;
+let searchRows: SearchRow[] = [];
+
+/** z-score S47: undefined — вектор не участвовал в ЭТОМ хите, не "0.00" —
+ *  ноль читался бы как измеренное низкое качество, а сигнала вовсе нет. */
+function fmtConfidence(c: number | undefined): string {
+  return c === undefined ? "·" : c.toFixed(2);
+}
+
+function searchReachTag(row: SearchRow): string {
+  if (row.reach === "unknown") return "?";
+  if (row.reach === "session") return row.reach_session.length > 0 ? "ses" : "ses*";
+  return "prj";
+}
+
+function renderSearchRow(row: SearchRow): HTMLElement {
+  const item = el("div", "search-row");
+  const head = el("div", "search-row-head");
+  head.append(el("span", "search-rank", `${row.rank}.`));
+  head.append(
+    el(
+      "span",
+      row.confidence === undefined ? "search-conf search-conf-none" : "search-conf",
+      fmtConfidence(row.confidence),
+    ),
+  );
+  head.append(el("span", "search-id mono", row.id));
+  head.append(el("span", "search-type", row.type));
+  head.append(el("span", "search-layer", `L${row.layer}`));
+  head.append(el("span", "search-reach", searchReachTag(row)));
+  if (row.repo_state === "unknown") head.append(el("span", "search-repo search-repo-unknown", "?"));
+  else if (row.repo.length > 0) head.append(el("span", "search-repo", row.repo));
+  head.append(el("span", "search-title", row.title));
+  item.append(head);
+  const excerpt = row.excerpt.trim();
+  if (excerpt.length > 0) item.append(el("div", "search-excerpt", excerpt));
+  return item;
+}
+
+/** Оговорки поиска — так же заметно, как на «здоровье» и «роутинге» (И2):
+ *  `warn[]` конверта, ровно те строки, что печатает CLI под подвалом. */
+function renderSearchDegraded(warn: readonly { code: string; msg: string }[]): void {
+  const host = $("search-degraded");
+  host.replaceChildren();
+  if (warn.length === 0) return;
+  const box = card(`деградация (${warn.length})`, true);
+  for (const w of warn) {
+    const row = el("div", "deg");
+    row.append(el("code", undefined, w.code), el("span", undefined, w.msg));
+    box.append(row);
+  }
+  host.append(box);
+}
+
+function renderSearchFooter(data: SearchPayload): void {
+  const host = $("search-footer");
+  host.hidden = false;
+  host.replaceChildren();
+  const bits: string[] = [
+    `${fmtInt(data.shown)} из ${fmtInt(data.total)}`,
+    data.mode,
+    `${data.took_ms} мс`,
+    `${fmtInt(data.used_chars)} симв из ${fmtInt(data.budget)}`,
+  ];
+  if (data.deduped > 0) bits.push(`${fmtInt(data.deduped)} дублей свёрнуто`);
+  if (data.foreign > 0) bits.push(`${fmtInt(data.foreign)} из чужих сессий`);
+  if (data.unknown_reach > 0) bits.push(`${fmtInt(data.unknown_reach)} без охвата`);
+  if (data.unknown_repo > 0) bits.push(`${fmtInt(data.unknown_repo)} без охвата репозитория`);
+  if (data.pool_exhausted) bits.push("пул исчерпан, total — нижняя оценка");
+  host.append(el("span", "search-footer-line", bits.join(" · ")));
+  // partial — ГРОМКО, своей строкой, а не спрятано в подсказку (И2): поиск,
+  // который молча отдал не всё, хуже отсутствующего.
+  if (data.partial) {
+    const why: string[] = [];
+    if (data.omitted > 0) why.push(`${fmtInt(data.omitted)} сверх бюджета`);
+    host.append(
+      el("span", "search-partial state warn", `partial: ${why.length > 0 ? why.join(", ") : "выдано не всё"}`),
+    );
+  }
+  if (data.cursor !== undefined) {
+    const more = el("button", "rbtn", "показать ещё");
+    more.addEventListener("click", () => {
+      void runSearch(searchQuery, Number(data.cursor), true);
+    });
+    host.append(more);
+  }
+}
+
+async function runSearch(query: string, offset = 0, append = false): Promise<void> {
+  const q = query.trim();
+  if (q.length === 0) {
+    toast("нужен запрос");
+    return;
+  }
+  searchQuery = q;
+  searchOffset = offset;
+  $("search-sub").textContent = "ищу…";
+  let env: Envelope<SearchPayload>;
+  try {
+    const params = new URLSearchParams({ q });
+    if (offset > 0) params.set("offset", String(offset));
+    env = await apiEnvelope<SearchPayload>(`/api/search?${params.toString()}`);
+  } catch (error) {
+    $("search-sub").textContent = "—";
+    toast(error instanceof Error ? error.message : String(error));
+    return;
+  }
+  const data = env.data;
+  searchRows = append ? [...searchRows, ...data.rows] : [...data.rows];
+
+  $("search-sub").textContent = `«${data.query}»`;
+  renderSearchDegraded(env.warn ?? []);
+
+  const host = $("search-rows");
+  const empty = $("search-empty");
+  if (searchRows.length === 0) {
+    host.replaceChildren();
+    host.hidden = true;
+    $("search-footer").hidden = true;
+    emptyState(empty, "ничего не нашлось", "попробуйте другой запрос или снимите фильтры", "myc recall");
+    return;
+  }
+  empty.hidden = true;
+  host.hidden = false;
+  host.replaceChildren();
+  for (const row of searchRows) host.append(renderSearchRow(row));
+  renderSearchFooter(data);
+}
+
+function initSearchTab(): void {
+  const input = $("search-query") as HTMLInputElement;
+  searchQueryInput = input;
+  const go = $("search-go");
+  const submit = (): void => void runSearch(input.value);
+  go.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  void searchQueryInput;
+}
+
+// ---------------------------------------------------------------------------
+// Решения (W8): supersession-цепочки и открытые противоречия.
+//
+// Голова цепочки, порядок звеньев и «актуальная версия» посчитаны на сервере
+// той же сборкой, что у `myc show` (decisions.ts зовёт collectVersions +
+// VersionGraph из @myc/core, §6.3) — здесь только вёрстка, ничего не
+// пересчитывается заново.
+//
+// «Это верное» НЕ решает противоречие само: кнопка отправляет обычную отмену
+// (POST /api/nodes/<id>/op, op=cancel) с обязательной причиной — тем же
+// путём, что и любая другая кнопка отмены на этом просмотрщике (opBar).
+// Отменяется ДРУГАЯ сторона, а не удаляется ребро contradicts: история
+// остаётся читаемой в `myc show --chain`, и это не тихое угасание, а запись
+// с причиной и автором, которую увидит следующая сессия.
+// ---------------------------------------------------------------------------
+
+function decisionPill(l: DecisionLink): HTMLElement {
+  return el("span", l.current ? "state ok" : "state warn", l.current ? `${l.status} · актуальна` : l.status);
+}
+
+function renderDecisionLink(l: DecisionLink): HTMLElement {
+  const row = el("div", l.current ? "arm-row" : "arm-row arm-row-thin");
+  row.append(decisionPill(l));
+  row.append(el("span", "arm-name mono", l.id));
+  row.append(el("span", undefined, l.title));
+  row.append(el("span", "arm-n", `@${l.author}`));
+  row.append(el("span", "arm-n", fmtDay(l.created_at)));
+  if (l.reason !== undefined) row.append(el("span", "routing-why", l.reason));
+  return row;
+}
+
+function renderDecisionChain(chain: DecisionChain): HTMLElement {
+  const box = card(chain.head, true);
+  for (const l of chain.links) box.append(renderDecisionLink(l));
+  if (chain.forked !== undefined) {
+    // Развилка — след слияния двух веток; молчать об этом нельзя (И2), как и
+    // в `myc show`, откуда взято то же поле.
+    box.append(el("div", "state warn", `развилка цепочки: ${chain.forked.join(", ")}`));
+  }
+  return box;
+}
+
+function decisionRefLine(ref: DecisionRef): HTMLElement {
+  const row = el("div", "arm-row");
+  row.append(el("span", "arm-name mono", ref.id));
+  row.append(el("span", undefined, ref.title));
+  row.append(el("span", "arm-n", ref.status));
+  row.append(el("span", "arm-n", `@${ref.author}`));
+  row.append(el("span", "arm-n", fmtDay(ref.created_at)));
+  return row;
+}
+
+/**
+ * «X верное» отменяет ДРУГУЮ сторону через общий путь записи (mutate ->
+ * POST .../op). cancel требует причину на сервере (mutate.ts) — здесь она
+ * не спрашивается диалогом, а собирается из самого противоречия: кто кого
+ * заменил и почему, и это ровно то, что должна прочитать следующая сессия.
+ */
+function renderContradiction(c: DecisionContradiction, onDone: () => void): HTMLElement {
+  const box = card(`${c.a.id} ↔ ${c.b.id}`, true);
+  if (c.reason !== undefined) box.append(el("div", "routing-why", c.reason));
+
+  const resolve = async (verified: DecisionRef, wrong: DecisionRef): Promise<void> => {
+    const reason = `противоречило ${verified.id} «${verified.title}» — оно признано верным, эта версия отменена`;
+    if (await mutate(`/api/nodes/${encodeURIComponent(wrong.id)}/op`, { op: "cancel", reason })) onDone();
+  };
+
+  for (const [side, other] of [[c.a, c.b] as const, [c.b, c.a] as const]) {
+    const row = decisionRefLine(side);
+    if (writeEnabled) {
+      const btn = el("button", "rbtn", "это верное");
+      btn.addEventListener("click", () => void resolve(side, other));
+      row.append(btn);
+    }
+    box.append(row);
+  }
+  return box;
+}
+
+async function loadDecisions(): Promise<void> {
+  const payload = await api<DecisionsPayload>("/api/decisions");
+  $("decisions-sub").textContent =
+    `решений ${fmtInt(payload.total_decisions)}, цепочек ${fmtInt(payload.chains.length)}, ` +
+    `открытых противоречий ${fmtInt(payload.contradictions.length)} · ${payload.took_ms} мс`;
+
+  const degHost = $("decisions-degraded");
+  degHost.replaceChildren();
+  if (payload.degraded.length > 0) {
+    const deg = card(`оговорки (${payload.degraded.length})`, true);
+    for (const d of payload.degraded) {
+      const box = el("div", "deg");
+      box.append(el("code", undefined, d.code), el("span", undefined, d.msg));
+      deg.append(box);
+    }
+    degHost.append(deg);
+  }
+
+  const refresh = (): void => void loadDecisions();
+
+  const contraHost = $("decisions-contradictions");
+  contraHost.replaceChildren();
+  for (const c of payload.contradictions) contraHost.append(renderContradiction(c, refresh));
+  contraHost.hidden = payload.contradictions.length === 0;
+  if (payload.contradictions.length === 0) {
+    emptyState($("decisions-contradictions-empty"), "Открытых противоречий нет", "Все ребра contradicts либо отсутствуют, либо уже разрешены обычной отменой.");
+  } else {
+    $("decisions-contradictions-empty").hidden = true;
+  }
+
+  const chainsHost = $("decisions-chains");
+  chainsHost.replaceChildren();
+  for (const c of payload.chains) chainsHost.append(renderDecisionChain(c));
+  chainsHost.hidden = payload.chains.length === 0;
+  if (payload.chains.length === 0) {
+    emptyState($("decisions-empty"), "Решений пока нет", "Ни одного узла с attrs.type='decision'.", "myc create --type decision \"…\"");
+  } else {
+    $("decisions-empty").hidden = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Вкладки и старт
 // ---------------------------------------------------------------------------
 
-const TABS = ["graph", "ready", "board", "kb", "timeline", "routing", "bootstrap", "health"] as const;
+const TABS = [
+  "graph",
+  "ready",
+  "board",
+  "kb",
+  "timeline",
+  "search",
+  "routing",
+  "decisions",
+  "bootstrap",
+  "health",
+] as const;
 const DEFAULT_TAB: VizTab = "graph";
 
 const loaded = new Set<VizTab>();
@@ -2765,7 +3077,9 @@ async function applyRoute(): Promise<void> {
     else if (tab === "board") await loadBoard();
     else if (tab === "kb") await loadKb();
     else if (tab === "timeline") await loadTimeline();
+    else if (tab === "search") initSearchTab();
     else if (tab === "routing") await loadRouting();
+    else if (tab === "decisions") await loadDecisions();
     else if (tab === "bootstrap") await loadBootstrap();
     else await loadHealth();
   } catch (error) {
@@ -2833,6 +3147,13 @@ async function main(): Promise<void> {
     if (writeEnabled && parseTab(location.hash) === "bootstrap") {
       await routed;
       await loadBootstrap();
+    }
+    // И для решений: кнопка «это верное» решает по writeEnabled и иначе не
+    // рисуется вовсе — открытие прямо на #decisions до ответа /api/boot
+    // оставило бы противоречия без единственного пути их разрешить.
+    if (writeEnabled && parseTab(location.hash) === "decisions") {
+      await routed;
+      await loadDecisions();
     }
   } catch (error) {
     toast(error instanceof Error ? error.message : String(error));

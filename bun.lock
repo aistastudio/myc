@@ -129,10 +129,8 @@
       "dependencies": {
         "@myc/cli": "workspace:*",
         "@myc/core": "workspace:*",
-        "@myc/swarm": "workspace:*",
-      },
-      "devDependencies": {
         "@myc/store-sqlite": "workspace:*",
+        "@myc/swarm": "workspace:*",
       },
     },
   },

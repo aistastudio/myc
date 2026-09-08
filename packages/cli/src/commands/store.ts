@@ -7,15 +7,36 @@
  * открытие своей базой, не трогаю ФС и процесс.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 // Поиск воркспейса вынесен в ./wsfind.ts и РЕ-ЭКСПОРТИРУЕТСЯ отсюда: его
 // импортируют полтора десятка мест, а платить за граф модулей этого файла
 // ради одного `existsSync` обязан не всякий, кто ищет корень (см. шапку
 // wsfind.ts — цена импорта store.ts в собранном бинаре ~9 мс).
-import { findWorkspaceDb, isRepoDir, personalHome, workspaceDirOfDb } from "./wsfind.ts";
+import {
+  findWorkspaceDb,
+  findWorktreeLink,
+  isRepoDir,
+  mapIntoMain,
+  mapIntoWorktree,
+  personalHome,
+  readWorktreeLink,
+  workspaceDirOfDb,
+  type WorkspaceNotFound,
+  type WorktreeLink,
+} from "./wsfind.ts";
 
-export { findWorkspaceDb, isRepoDir, personalHome, workspaceDirOfDb };
+export {
+  findWorkspaceDb,
+  findWorktreeLink,
+  isRepoDir,
+  mapIntoMain,
+  mapIntoWorktree,
+  personalHome,
+  readWorktreeLink,
+  workspaceDirOfDb,
+};
+export type { WorkspaceFound, WorkspaceNotFound, WorktreeLink } from "./wsfind.ts";
 import { Database, type Statement } from "bun:sqlite";
 import {
   generateId,
@@ -303,6 +324,13 @@ export interface StoreHandle {
   readonly slug: string;
   /** Корень воркспейса — каталог, содержащий `.myc` (R1). */
   readonly wsDir: string;
+  /**
+   * Непусто, когда команду позвали из git worktree: `wsDir` тогда — корень
+   * ОСНОВНОГО дерева, а файлы, которые агент правит, лежат в worktree. Всё,
+   * что и записывает путь, и читает содержимое (якоря), обязано различать эти
+   * две стороны — отсюда и ссылка в хендле.
+   */
+  readonly worktree?: WorktreeLink;
   /**
    * Охват репозитория (S59), выведенный из каталога вызова: он же уходит в
    * `attrs.repo` каждого нового узла и он же — умолчание фильтра `ready`
@@ -636,6 +664,50 @@ async function openWorkspaceAt(
  * Поэтому `repo` здесь не передаётся вовсе: приёмник только применяет
  * операции и не создаёт узлов.
  */
+/**
+ * Отказ «воркспейса нет» — с ПРИЧИНОЙ, когда старт был внутри git worktree.
+ *
+ * Молчаливое «искали восемь путей вверх, попробуйте `myc init`» здесь хуже
+ * самой ошибки: человек послушается подсказки, заведёт в worktree ВТОРОЙ
+ * воркспейс и расколет граф надвое — тот же класс, что memory-6gr1mc91ske3,
+ * где клон советовал `init` вместо `import`. Поэтому обе причины называются
+ * словами, а подсказка ведёт в ОСНОВНОЕ дерево, а не в текущий каталог.
+ */
+function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
+  const link = found.worktree;
+  if (link !== undefined && found.worktreeMiss === "main-missing") {
+    return {
+      ok: false,
+      code: "ws.worktree_main_missing",
+      msg:
+        `git worktree ${link.worktreeDir}: воркспейс принадлежит репозиторию и живёт в ` +
+        `ОСНОВНОМ дереве, но его каталога ${link.mainRoot} нет — перенесли или удалили ` +
+        `(файл .git ведёт в ${link.gitDir})`,
+      exit: ExitCode.NOWS,
+      hint: "git worktree repair <путь к основному дереву>",
+    };
+  }
+  if (link !== undefined) {
+    return {
+      ok: false,
+      code: "ws.not_initialized",
+      msg:
+        `воркспейс не инициализирован: искали ${found.searched.join(", ")}; ` +
+        `${link.worktreeDir} — git worktree, и воркспейс ищется в основном дереве ` +
+        `${link.mainRoot}, а не по каталогам вверх`,
+      exit: ExitCode.NOWS,
+      hint: `myc -C ${link.mainRoot} init`,
+    };
+  }
+  return {
+    ok: false,
+    code: "ws.not_initialized",
+    msg: `воркспейс не инициализирован: искали ${found.searched.join(", ")}`,
+    exit: ExitCode.NOWS,
+    hint: "myc init",
+  };
+}
+
 export async function openWorkspaceByDir(
   dir: string,
   actor: string,
@@ -644,18 +716,7 @@ export async function openWorkspaceByDir(
   | { readonly ok: false; readonly failure: CommandFailure }
 > {
   const found = findWorkspaceDb(resolve(dir));
-  if (!("dbPath" in found)) {
-    return {
-      ok: false,
-      failure: {
-        ok: false,
-        code: "ws.not_initialized",
-        msg: `воркспейс не инициализирован: искали ${found.searched.join(", ")}`,
-        exit: ExitCode.NOWS,
-        hint: "myc init",
-      },
-    };
-  }
+  if (!("dbPath" in found)) return { ok: false, failure: noWorkspaceFailure(found) };
   let config: WorkspaceConfig = { slug: "myc", weights: { ...DEFAULT_READY_WEIGHTS } };
   const tomlPath = join(found.wsDir, ".myc", "workspace.toml");
   if (existsSync(tomlPath)) {
@@ -687,6 +748,59 @@ export async function openWorkspaceByDir(
   };
 }
 
+/** Один и тот же каталог, даже если пути пришли через разные симлинки. */
+function samePath(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Охват репозитория (S59), устойчивый к git worktree.
+ *
+ * Охват выводится из пути ОТНОСИТЕЛЬНО корня воркспейса, а worktree — каталог
+ * рядом с основным деревом, а не внутри него. Без пересчёта у обеих форм
+ * ломается ровно одно и то же: узлы, заведённые из worktree, получают ЧУЖОЙ
+ * охват и перестают быть видимы из основного дерева — раскол графа, только с
+ * другой стороны, чем в самом поиске воркспейса.
+ *
+ * Форма первая — worktree ВНЕ воркспейса (`git worktree add ../wt-feature`).
+ * Воркспейс нашёлся через ссылку; путь «откуда позвали» лежит вне его корня и
+ * дал бы `outside-workspace`. Переносим путь в основное дерево целиком.
+ *
+ * Форма вторая — worktree ВНУТРИ воркспейса-экосистемы: `~/src/cherry/.myc`,
+ * репозиторий `collector`, рядом с ним его worktree `wt-collector`. Подъём по
+ * каталогам нашёл воркспейс сразу, ссылка не понадобилась, и охват вывелся бы
+ * из ИМЕНИ КАТАЛОГА — `wt-collector` вместо `collector`. Но это тот же самый
+ * репозиторий, и называться охват обязан именем основного дерева.
+ *
+ * Цена: одна лишняя `statSync` и только когда охват вообще получился
+ * непустым, то есть в экосистеме из нескольких репозиториев. В одиночном
+ * репозитории (охват «все») и при `--db` не делается ни одной.
+ */
+function deriveRepoAcrossWorktrees(
+  repoRoot: string | undefined,
+  startDir: string,
+  worktree: WorktreeLink | undefined,
+): RepoDerivation {
+  const from = worktree !== undefined ? mapIntoMain(worktree, startDir) : startDir;
+  const derived = deriveRepo(repoRoot, from, isRepoDir);
+  if (repoRoot === undefined || derived.repo === undefined || derived.repo.length === 0) {
+    return derived;
+  }
+  const link = readWorktreeLink(join(repoRoot, derived.repo));
+  if (link === undefined) return derived;
+  // Сравниваются пути из РАЗНЫХ источников: корень воркспейса пришёл из
+  // подъёма по cwd, основное дерево — из файла, который написал git. На macOS
+  // это /tmp против /private/tmp у одного и того же каталога, поэтому
+  // сравнение идёт по realpath, а не по строкам.
+  if (samePath(dirname(link.mainRoot), repoRoot)) return { ...derived, repo: basename(link.mainRoot) };
+  return derived;
+}
+
 /**
  * Открытие проектного яруса. `options.extensions` поднимает рантайм vec0 —
  * его просят команды, которые умеют звать векторный поиск (S45); остальные
@@ -700,6 +814,9 @@ export async function openStore(
 
   let dbPath: string;
   let wsDir: string;
+  // Непусто, если сюда пришли из git worktree: воркспейс взят из основного
+  // дерева, и путь «откуда позвали» надо пересчитать туда же (S59 ниже).
+  let worktree: WorktreeLink | undefined;
   if (ctx.globals.db !== undefined) {
     // Явный `--db` сильнее поиска: ни подъёма, ни альтернативных путей —
     // ровно тот файл, что назвали, с прежним однопутевым сообщением об
@@ -720,20 +837,10 @@ export async function openStore(
     }
   } else {
     const found = findWorkspaceDb(startDir);
-    if (!("dbPath" in found)) {
-      return {
-        ok: false,
-        failure: {
-          ok: false,
-          code: "ws.not_initialized",
-          msg: `воркспейс не инициализирован: искали ${found.searched.join(", ")}`,
-          exit: ExitCode.NOWS,
-          hint: "myc init",
-        },
-      };
-    }
+    if (!("dbPath" in found)) return { ok: false, failure: noWorkspaceFailure(found) };
     dbPath = found.dbPath;
     wsDir = found.wsDir;
+    worktree = found.worktree;
   }
 
   let config: WorkspaceConfig = { slug: "myc", weights: { ...DEFAULT_READY_WEIGHTS } };
@@ -753,7 +860,7 @@ export async function openStore(
   // При явном `--db` поиска каталога не было, и корнем считается каталог над
   // `.myc` самой базы; если база лежит не по этому пути, корня нет вовсе.
   const repoRoot = ctx.globals.db !== undefined ? workspaceDirOfDb(dbPath) : wsDir;
-  const repo = deriveRepo(repoRoot, startDir, isRepoDir);
+  const repo = deriveRepoAcrossWorktrees(repoRoot, startDir, worktree);
   const opened = await openWorkspaceAt(dbPath, {
     slug: config.slug,
     actor,
@@ -772,6 +879,7 @@ export async function openStore(
       scope: config.slug === "myc" ? "" : config.slug,
       slug: config.slug,
       wsDir: repoRoot ?? wsDir,
+      ...(worktree !== undefined ? { worktree } : {}),
       repo,
       weights: config.weights,
       vec0: driver.vec0,

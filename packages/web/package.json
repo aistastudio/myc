@@ -9,13 +9,11 @@
   "dependencies": {
     "@myc/core": "workspace:*",
     "@myc/cli": "workspace:*",
+    "@myc/store-sqlite": "workspace:*",
     "@myc/swarm": "workspace:*"
   },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
-  },
-  "devDependencies": {
-    "@myc/store-sqlite": "workspace:*"
   }
 }

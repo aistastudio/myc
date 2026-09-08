@@ -155,6 +155,7 @@ interface ShowView {
   forked?: string[];
   stale?: string[];
   contradicts: { type: string; id: string }[];
+  thread?: { id: string; actor: string; at: number; title: string; replies: number }[];
   chain?: ChainEntryView[];
 }
 
@@ -307,6 +308,136 @@ describe("contradicts читается симметрично (§4.1, §6.2)", (
     const v = await showJson<ShowView>(dir, a.id);
     expect(v.contradicts).toEqual([]);
     expect(text((await myc(dir, "show", a.id)).stdout)).not.toContain("противоречит");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Нить читается ПО РЕБРУ, а не по виду узла (memory-1nh192mztcqy, S64)
+// ---------------------------------------------------------------------------
+
+/**
+ * Стенд намеренно СМЕШАННЫЙ: в одной нити узлы ОБОИХ видов, которые реально
+ * встречаются в базе, — `note` (mcp addNote, `myc comment`, import-beads) и
+ * `message` (`myc msg`). На однородной нити тест прошёл бы и на сломанном
+ * фильтре: читатель с условием `kind='message'` вернул бы все узлы, если бы
+ * все они были message. Ровно так расхождение и жило: в рабочей базе лежало
+ * девять комментариев kind='note', а веб фильтровал по kind='message' и
+ * показывал НОЛЬ из девяти.
+ */
+describe("нить обсуждения: смешанные виды узлов читаются целиком", () => {
+  interface Mixed {
+    task: string;
+    note1: string;
+    note2: string;
+    message: string;
+  }
+
+  function buildMixedThread(): Mixed {
+    const { store, driver } = storeOf(dir);
+    const task = store.createNode({ kind: "task", scope: "test", title: "задача с обсуждением" });
+    // note — форма mcp addNote / `myc comment` / import-beads
+    const note1 = store.createNode({
+      kind: "note",
+      scope: "test",
+      layer: 1,
+      title: "комментарий агента",
+      body: "комментарий агента",
+      actor: "agent7",
+      attrs: { type: "comment" },
+    });
+    const note2 = store.createNode({
+      kind: "note",
+      scope: "test",
+      layer: 1,
+      title: "ввезённый из beads",
+      body: "ввезённый из beads",
+      actor: "macoeshka",
+      attrs: { type: "comment", external_ref: "cherry-x1#comment:c9" },
+    });
+    // message — форма `myc msg --reply-to`
+    const message = store.createNode({
+      kind: "message",
+      scope: "test",
+      title: "реплика межагентской нити",
+      actor: "agent9",
+    });
+    for (const n of [note1, note2, message]) store.addEdge(n.id, "replies_to", task.id);
+    driver.close();
+    drivers.pop();
+    return { task: task.id, note1: note1.id, note2: note2.id, message: message.id };
+  }
+
+  test("все ТРИ реплики видны; фильтр по виду вернул бы 1 из 3 либо 2 из 3", async () => {
+    const m = buildMixedThread();
+    const v = await showJson<ShowView>(dir, m.task);
+    expect(v.thread).toBeDefined();
+    expect(v.thread!.map((t) => t.id).sort()).toEqual([m.note1, m.note2, m.message].sort());
+    expect(v.thread!).toHaveLength(3);
+
+    // Мутация с числом: тот же стенд, прочитанный С ФИЛЬТРОМ по виду. Так
+    // читал веб — и на этих же данных получал 1 из 3; зеркальный фильтр по
+    // 'note' дал бы 2 из 3. Оба числа меньше трёх, и оба — молчаливая потеря.
+    const { store, driver } = storeOf(dir);
+    const byEdge = store.edgesTo(m.task, "replies_to").map((e) => store.getNode(e.src)!);
+    expect(byEdge).toHaveLength(3);
+    expect(byEdge.filter((n) => n.kind === "message")).toHaveLength(1);
+    expect(byEdge.filter((n) => n.kind === "note")).toHaveLength(2);
+    driver.close();
+    drivers.pop();
+  });
+
+  test("автор каждой реплики — её собственный, а не автор задачи", async () => {
+    const m = buildMixedThread();
+    const v = await showJson<ShowView>(dir, m.task);
+    const byId = new Map(v.thread!.map((t) => [t.id, t.actor]));
+    expect(byId.get(m.note1)).toBe("agent7");
+    expect(byId.get(m.note2)).toBe("macoeshka");
+    expect(byId.get(m.message)).toBe("agent9");
+
+    const out = text((await myc(dir, "show", m.task)).stdout);
+    expect(out).toContain("нить      3");
+    expect(out).toContain("macoeshka");
+    expect(out).toContain("agent7");
+  });
+
+  test("порядок нити — по времени СОБЫТИЯ источника, а не по времени записи", async () => {
+    const { store, driver } = storeOf(dir);
+    const task = store.createNode({ kind: "task", scope: "test", title: "ввезённая задача" });
+    // Записаны в обратном порядке и в один и тот же момент — ровно так и
+    // выглядят 156 комментариев, ввезённых одним прогоном import-beads.
+    const late = store.createNode({
+      kind: "note",
+      scope: "test",
+      layer: 1,
+      title: "вторая реплика",
+      actor: "b",
+      attrs: { type: "comment", external_created_at: Date.parse("2026-09-04T00:00:00Z") },
+    });
+    const early = store.createNode({
+      kind: "note",
+      scope: "test",
+      layer: 1,
+      title: "первая реплика",
+      actor: "a",
+      attrs: { type: "comment", external_created_at: Date.parse("2026-09-01T00:00:00Z") },
+    });
+    store.addEdge(late.id, "replies_to", task.id);
+    store.addEdge(early.id, "replies_to", task.id);
+    driver.close();
+    drivers.pop();
+
+    const v = await showJson<ShowView>(dir, task.id);
+    expect(v.thread!.map((t) => t.title)).toEqual(["первая реплика", "вторая реплика"]);
+    // Мутация: по времени ЗАПИСИ порядок ОБРАТНЫЙ. «Вторая реплика» создана
+    // первой, поэтому её updated_at не больше — и сортировка по нему ставит
+    // её в начало, ровно как было до чтения времени источника.
+    const { store: s2, driver: d2 } = storeOf(dir);
+    const rows = [s2.getNode(late.id)!, s2.getNode(early.id)!];
+    expect(rows[0]!.updated_at).toBeLessThanOrEqual(rows[1]!.updated_at);
+    const byWrite = [...rows].sort((a, b) => a.updated_at - b.updated_at).map((n) => n.title);
+    expect(byWrite).toEqual(["вторая реплика", "первая реплика"]);
+    d2.close();
+    drivers.pop();
   });
 });
 

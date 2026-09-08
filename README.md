@@ -11,6 +11,12 @@ machines through plain git.
 Design docs live in `docs/design/` (start with `00-brief.md`); the measurements
 quoted below are reproducible from `bench/` and `scripts/`.
 
+**Site: <https://aistastudio.github.io/myc/>** — the same measurements as charts,
+in English and Russian, with the command that reproduces each number printed
+next to it. Source in `site/`; `bun run site/build.ts` re-checks every figure
+against the measurement artefacts in this repository and refuses to build on a
+mismatch.
+
 ## Requires Bun — this is not fine print
 
 The runtime is bound to `bun:sqlite` (SQLite and `sqlite-vec` ship inside Bun,
@@ -25,7 +31,7 @@ Once published, installation is one command — the package is built and verifie
 from a tarball today, but nothing has been pushed to the registry yet:
 
 ```bash
-bun add @aistastudio/myc     # 3.16 MB, 9 files, no models pulled at install
+bun install -g @aistastudio/myc   # 3.17 MB, 10 files, no models pulled at install
 bunx myc --version
 ```
 
@@ -63,15 +69,15 @@ Full command list: `./dist/myc --help`.
 
 **Speed is a constraint, not an optimisation.** Every hot path has a budget
 enforced in CI; a p95 regression over 15% fails the build. Measured on 100 000
-nodes (`bun run scripts/bench-latency.ts`):
+nodes, 2026-09-07, darwin-arm64-14 (`bun run scripts/bench-latency.ts`):
 
 | operation | p99 | budget |
 |---|---|---|
-| `prime` (session context) | 0.70 ms | 30 ms |
-| read | 0.011 ms | 3 ms |
-| search | 9.1 ms | 25 ms |
-| write | 0.5 ms | 5 ms |
-| cold start | 24 ms | 60 ms |
+| `prime` (session context) | 0.755 ms | 30 ms |
+| read | 0.012 ms | 3 ms |
+| search | 10.354 ms | 25 ms |
+| write | 0.460 ms | 5 ms |
+| cold start | 23.820 ms | 60 ms |
 
 **Ranking is measured, not asserted.** Two labelled corpora with graded
 relevance, each containing a *control group that gets worse* when the feature
@@ -83,9 +89,10 @@ works — so a gain cannot be manufactured by shaping the corpus:
 
 **Caching that cannot go stale silently.** Result, embedding and hydration
 caches are invalidated by `MAX(oplog.seq)` read *from the database*, so a write
-by another process invalidates them too. A cache hit is 162–198× cheaper than a
-miss (≈25 000× for embeddings) and the ranking is bit-identical: same MRR to
-three decimals, zero rank differences.
+by another process invalidates them too. A cache hit is two orders of magnitude
+cheaper than a miss — 252× in the run of 2026-09-07, ≈27 000× for embeddings;
+the ratio is wall-clock and moves with the machine. The ranking does not: same
+MRR to three decimals, zero rank differences.
 
 **Memory has three independent axes**, and the surface says what it hid:
 tier (project vs personal), session reach, repository reach. `prime` prints
@@ -103,9 +110,12 @@ the first machine's priority and the second's tags. Nothing is lost to
 last-writer-wins over whole records.
 
 **Migration from beads is real, not a demo.** A working project imported in
-684 ms: 796 tasks, 972 dependencies, 265 notes, 41 memories — with unknown
+889 ms: 796 tasks, 972 dependencies, 265 notes, 41 memories — with unknown
 issue types carried over verbatim and named, and out-of-range priorities
-clamped and named, instead of one odd row aborting the import.
+clamped and named, instead of one odd row aborting the import. On that same
+graph `myc ready` offers 195 tasks and `bd ready` offers 144: beads inherits
+blockers down the parent chain and myc does not yet, so beads is right about
+those 51 (open bug `memory-atcm254ry6c7`).
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
@@ -121,10 +131,10 @@ Numbers are closed/total subtasks per milestone (`myc show <epic-id>`), as of
 | **M0** core and tasks | 30 / 33 |
 | **M0.5** self-hosting (myc developed through myc) | **4 / 4 — closed** |
 | **M1** memory | 20 / 23 |
-| **M2** semantics | 15 / 19 |
-| **M7** human interface (board, cards, threads, routing panel) | 11 / 13 |
-| **M3** code intelligence | 0 / 7 |
-| **M4** team: `myc serve`, ACL, network sync, Postgres, containers | 0 / 11 |
+| **M2** semantics | 16 / 19 |
+| **M7** human interface (board, cards, threads, routing panel) | 11 / 14 |
+| **M3** code intelligence | 3 / 9 |
+| **M4** team: `myc serve`, ACL, network sync, Postgres, containers | 1 / 12 |
 | **M5** swarm self-learning: routing by cost and outcome | 0 / 12 |
 | **M6** distillation | 0 / 7 |
 
@@ -154,3 +164,4 @@ sqlite-vec) is permissive too.
 ---
 
 Russian version of this document: [`docs/README.ru.md`](docs/README.ru.md).
+Both languages, with charts: <https://aistastudio.github.io/myc/>.

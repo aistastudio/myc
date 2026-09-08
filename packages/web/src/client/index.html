@@ -17,7 +17,9 @@
     <button class="tab" data-tab="board" aria-selected="false">Доска</button>
     <button class="tab" data-tab="kb" aria-selected="false">База знаний</button>
     <button class="tab" data-tab="timeline" aria-selected="false">Таймлайн</button>
+    <button class="tab" data-tab="search" aria-selected="false">Поиск</button>
     <button class="tab" data-tab="routing" aria-selected="false">Роутинг</button>
+    <button class="tab" data-tab="decisions" aria-selected="false">Решения</button>
     <button class="tab" data-tab="bootstrap" aria-selected="false">Бутстрап</button>
     <button class="tab" data-tab="health" aria-selected="false">Здоровье</button>
   </nav>
@@ -97,6 +99,22 @@
     <div class="empty" id="timeline-empty" hidden></div>
   </section>
 
+  <!-- ПОИСК -->
+  <section class="panel" id="panel-search" hidden>
+    <div class="head">
+      <h2>Поиск</h2>
+      <div class="sub" id="search-sub">—</div>
+    </div>
+    <div class="search-form">
+      <input class="search" id="search-query" type="search" placeholder="запрос — тот же myc recall" autocomplete="off">
+      <button id="search-go">искать</button>
+    </div>
+    <div class="cards" id="search-degraded"></div>
+    <div class="rows" id="search-rows"></div>
+    <div class="search-footer" id="search-footer" hidden></div>
+    <div class="empty" id="search-empty" hidden></div>
+  </section>
+
   <!-- РОУТИНГ -->
   <section class="panel" id="panel-routing" hidden>
     <div class="head">
@@ -106,6 +124,21 @@
     <div class="cards" id="routing-degraded"></div>
     <div class="routing-classes" id="routing-classes"></div>
     <div class="empty" id="routing-empty" hidden></div>
+  </section>
+
+  <!-- РЕШЕНИЯ -->
+  <section class="panel" id="panel-decisions" hidden>
+    <div class="head">
+      <h2>Решения: цепочки и противоречия</h2>
+      <div class="sub" id="decisions-sub">—</div>
+    </div>
+    <div class="cards" id="decisions-degraded"></div>
+    <h3>Открытые противоречия</h3>
+    <div class="rows" id="decisions-contradictions"></div>
+    <div class="empty" id="decisions-contradictions-empty" hidden></div>
+    <h3>Цепочки решений</h3>
+    <div class="rows" id="decisions-chains"></div>
+    <div class="empty" id="decisions-empty" hidden></div>
   </section>
 
   <!-- БУТСТРАП -->

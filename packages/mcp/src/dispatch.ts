@@ -12,6 +12,7 @@
  * structuredContent.meta.degraded и WARN-строк текстового блока.
  */
 
+import { commentInput } from "@myc/core";
 import {
   openMcpStore,
   resolveNode,
@@ -243,16 +244,13 @@ async function addNote(
   return withStore(deps, (h) => {
     const target = resolveNode(h, targetInput);
     if (!target.ok) throw new ToolError(target.failure.code, target.failure.msg, target.failure.hint);
-    const title = text.split("\n")[0]!.slice(0, 80);
-    const node = h.store.createNode({
-      kind: "note",
-      scope: h.scope,
-      layer: 1,
-      title,
-      body: text,
-      actor: h.actor,
-      attrs: { type: "comment" },
-    });
+    // Форму узла задаёт ЯДРО (commentInput, S64), а не эта функция: три
+    // поверхности собирали комментарий каждая по-своему, и ровно так вид
+    // разошёлся — MCP писал note+type='comment', CLI kind='message', веб читал
+    // по kind='message' и показывал ноль из девяти (memory-1nh192mztcqy).
+    // Запись остаётся прямой (тот же процесс, тот же движок, тот же оплог —
+    // второго CRDT здесь нет), но форма — общая, и разойтись ей больше нечем.
+    const node = h.store.createNode(commentInput({ text, scope: h.scope, actor: h.actor }));
     h.store.addEdge(node.id, "replies_to", target.node.id);
     return { noteId: node.id, targetId: target.node.id, meta: storeMeta(h, t0) };
   });

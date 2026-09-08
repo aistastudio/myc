@@ -11,7 +11,7 @@
  * нужные для строки (включая took_ms).
  */
 
-import { REPO_KEY, readRepo, repoReasonText } from "@myc/core";
+import { REPO_KEY, commentInput, readRepo, repoReasonText } from "@myc/core";
 import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
 import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
@@ -335,6 +335,23 @@ function buildCreateCommand(
             return graphFailure(e);
           }
           repliesTo = target.node.id;
+          // Ограждение против повторного расхождения (S64). Вид узла у
+          // комментария ровно один — note+attrs.type='comment'; `message` это
+          // L0, сырой диалог сессии, и его тело через 14 суток уезжает в
+          // bodies_cold, а в векторный индекс L0 не попадает вовсе. Ответ
+          // kind='message' на задачу или заметку — это комментарий, записанный
+          // в вид, который через две недели станет пустой строкой. Отказать
+          // нельзя (нить межагентских сообщений — законное применение), но
+          // молчать здесь значит завести четвёртую поверхность записи.
+          if (spec.kind === "message" && target.node.kind !== "message" && target.node.kind !== "session") {
+            ctx.warn(
+              "comment.kind_wrong",
+              `ответ на ${target.node.kind} записан как kind='message' — это слой L0, сырой диалог ` +
+                `сессии: по проекту его тело через 14 суток уезжает в bodies_cold, а в векторный ` +
+                `индекс L0 не попадает. Комментарий — это ` +
+                `\`myc comment ${target.node.id} <текст>\`: kind=note, attrs.type='comment' (S64)`,
+            );
+          }
         }
 
         const parentInput = flagStr(ctx, "parent");
@@ -390,6 +407,139 @@ export function createEpicCommand(deps: StoreDeps = realStoreDeps): Command {
 
 export function createMsgCommand(deps: StoreDeps = realStoreDeps): Command {
   return buildCreateCommand("msg", "create a message node (inter-agent threads)", CLI_KINDS["message"], deps);
+}
+
+// ---------------------------------------------------------------------------
+// myc comment — единственный вид узла для комментария (S64)
+// ---------------------------------------------------------------------------
+
+interface CommentData {
+  id: string;
+  replies_to: string;
+  target_title: string;
+  kind: string;
+  type: string;
+  title: string;
+  actor: string;
+  body_stdin_chars?: number;
+  took_ms: number;
+}
+
+function renderCommentHuman(raw: unknown): string {
+  const d = raw as CommentData;
+  const lines = [
+    `${d.id}  комментарий  ${d.actor}`,
+    `к         ${d.replies_to}  ${d.target_title}`,
+    `текст     ${d.title}`,
+  ];
+  if (d.body_stdin_chars !== undefined) {
+    lines.push(`body      ${d.body_stdin_chars} симв из stdin`);
+  }
+  lines.push(`${d.took_ms} мс`);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * `myc comment <target> [текст]` — КАНОНИЧЕСКИЙ писатель комментария (S64).
+ *
+ * Вид узла у комментария ровно один: kind='note', layer=1,
+ * attrs.type='comment', ребро `replies_to` на адресата. Это та же форма, что
+ * пишет `mcp addNote` и что ввозит `import-beads`, — то есть все писатели
+ * сошлись, и читателю не приходится угадывать, какая поверхность оставила
+ * запись. Нить при этом определяется РЕБРОМ, а не видом: читатель, который
+ * фильтрует по kind, ломается на первой же чужой записи (memory-1nh192mztcqy —
+ * веб показывал ноль из девяти существовавших комментариев).
+ *
+ * Почему НЕ kind='message', хотя имя ближе. `message` — это L0, сырой диалог
+ * сессии (docs/design/01-core-data-model.md §5.1): его тело через 14 суток
+ * уезжает в bodies_cold, а FTS-строки удаляются; в векторный индекс L0 не
+ * попадает вовсе; обязательные attrs — session_id/role/ord/thread_root,
+ * которых у комментария к задаче нет; статус допустим ровно один — active.
+ * Комментарий к задаче — постоянная история проекта, его ищут через полгода.
+ * `note` L1 хранится бессрочно, индексируется и ищется.
+ */
+export function createCommentCommand(deps: StoreDeps = realStoreDeps): Command {
+  return {
+    name: "comment",
+    summary: "comment on a node: a note joined to it by a replies_to edge",
+    flags: [
+      { name: "body", short: "b", value: "string", description: "comment text; '-' reads stdin" },
+      { name: "acl", value: "string", description: "private|team|restricted|agent" },
+      AS_FLAG,
+    ],
+    help:
+      "myc comment <target> [text] — the one way to write a comment. Creates kind=note, layer=1, " +
+      "attrs.type='comment' and a replies_to edge to the target; the same shape mcp addNote writes " +
+      "and import-beads imports. Threads are read by the EDGE, never by node kind. " +
+      "Text is the positional argument or -b; '-' reads stdin.",
+    handler: async (ctx) => {
+      const t0 = performance.now();
+      const targetInput = ctx.args[0];
+      if (targetInput === undefined || targetInput.trim().length === 0) {
+        return failure("usage.invalid", "нужен адресат: myc comment <target> <текст>", ExitCode.USAGE);
+      }
+      let text = ctx.args.slice(1).join(" ").trim();
+      const bRaw = flagStr(ctx, "body");
+      let fromStdin = false;
+      if (bRaw === "-") {
+        text = (await new Response(Bun.stdin.stream()).text()).trim();
+        fromStdin = true;
+      } else if (bRaw !== undefined) {
+        text = bRaw;
+      }
+      if (text.length === 0) {
+        return failure(
+          "usage.invalid",
+          "нужен текст комментария: myc comment <target> <текст> либо -b -",
+          ExitCode.USAGE,
+        );
+      }
+
+      const opened = await deps.openStore(ctx);
+      if (!opened.ok) return opened.failure;
+      const h = opened.handle;
+      try {
+        const target = resolveId(h, targetInput);
+        if (!target.ok) return target.failure;
+        // Форму узла задаёт ЯДРО (commentInput, S64) — одна на mcp addNote,
+        // на эту команду и на import-beads. Собирать её здесь заново значило
+        // бы завести четвёртый вид комментария при первой же правке.
+        let node: NodeRecord;
+        try {
+          node = h.store.createNode(
+            commentInput({
+              text,
+              scope: h.scope,
+              actor: h.actor,
+              ...(flagStr(ctx, "acl") !== undefined ? { acl: flagStr(ctx, "acl")! } : {}),
+            }),
+          );
+        } catch (e) {
+          return graphFailure(e);
+        }
+        try {
+          h.store.addEdge(node.id, "replies_to", target.node.id);
+        } catch (e) {
+          return graphFailure(e);
+        }
+        const data: CommentData = {
+          id: node.id,
+          replies_to: target.node.id,
+          target_title: target.node.title,
+          kind: node.kind,
+          type: "comment",
+          title: node.title,
+          actor: node.actor,
+          ...(fromStdin ? { body_stdin_chars: text.length } : {}),
+          took_ms: tookMs(t0),
+        };
+        return { ok: true, data, meta: { took_ms: data.took_ms } };
+      } finally {
+        h.close();
+      }
+    },
+    renderHuman: renderCommentHuman,
+  };
 }
 
 // ---------------------------------------------------------------------------

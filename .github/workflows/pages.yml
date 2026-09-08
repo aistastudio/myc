@@ -1,0 +1,74 @@
+# Публикация сайта на GitHub Pages.
+#
+# ПОЧЕМУ ИЗ site/, А НЕ ИЗ docs/ И НЕ ИЗ ВЕТКИ gh-pages
+#
+# docs/ — рабочий каталог проекта: восемь документов проектирования и 36
+# отчётов о замерах. Режим Pages «из папки /docs» опубликовал бы всё это как
+# корень сайта и потребовал бы положить туда docs/index.html — витрина
+# перемешалась бы с внутренними записями, а Jekyll ещё и попытался бы
+# обработать markdown отчётов.
+#
+# Ветка gh-pages завела бы вторую копию содержимого в истории и ручной шаг
+# публикации: источник и опубликованное расходятся ровно в тот день, когда про
+# ручной шаг забыли.
+#
+# Публикация действием оставляет ОДИН источник (site/) и — главное — даёт
+# прогнать site/build.ts прямо в публикации. Скрипт сверяет каждое число
+# страницы с артефактами замеров в репозитории. Разошлось — падает шаг сборки,
+# и сайт с неверным числом не выходит наружу. Ради этого шага всё и затеяно:
+# страница обещает, что числа воспроизводимы, и обещание проверяется машиной.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "bench/boost-eval.json"
+      - "bench/graph-eval.json"
+      - "bench/baseline.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install
+        run: bun install
+
+      # Сверка чисел сайта с артефактами замеров. Ненулевой код — расхождение;
+      # публикация на этом и заканчивается.
+      - name: verify numbers and emit site/data.js
+        run: bun run site/build.ts
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

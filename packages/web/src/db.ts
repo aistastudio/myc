@@ -17,9 +17,24 @@
  * В WAL читатели и писатель не мешают друг другу — но только пока читатель
  * не пытается писать сам и не держит долгую транзакцию. Каждый запрос здесь
  * автономен, длинных транзакций нет вовсе.
+ *
+ * РАНТАЙМ РАСШИРЕНИЙ (S45/S46) — ДО ЭТОГО СОЕДИНЕНИЯ, ИНАЧЕ ПОИСК (W6) ЛЖЁТ.
+ * `Database.setCustomSQLite` обязан выполниться до ПЕРВОГО `new Database` в
+ * процессе (docs/design/01a-ddl-validation.md, К.1) — а `myc viz` открывает
+ * именно это, читающее, соединение первым, при старте сервера, задолго до
+ * первого запроса. Не вызови здесь `ensureSqliteRuntime()`/`applySqliteRuntime` —
+ * и когда search.ts (W6) позже прогонит `myc recall` ВНУТРИ ЭТОГО ЖЕ процесса
+ * (mutate.ts, cliRunner — динамический импорт @myc/cli в тот же процесс, не
+ * подпроцесс), векторная ветка окажется недоступна НАВСЕГДА для всей жизни
+ * `myc viz`, хотя тот же запрос в отдельном терминале её видит: экран поиска
+ * молча оказался бы менее точным, чем CLI, — ровно то, что запрещает И2. При
+ * найденной библиотеке команда честно отчитается деградацией сама
+ * (degraded.vector_runtime, retrieve.ts) — здесь только даём ей шанс НЕ
+ * деградировать.
  */
 
 import { Database } from "bun:sqlite";
+import { applySqliteRuntime, ensureSqliteRuntime } from "@myc/store-sqlite";
 
 /** Пробуем ждать чекпойнт, а не падать: 2 с с запасом на fsync большого WAL. */
 const BUSY_TIMEOUT_MS = 2000;
@@ -66,9 +81,13 @@ export interface ReadOnlyDb {
  * а prepare одного скана графа стоит дороже самого скана.
  */
 export function openReadOnly(path: string): ReadOnlyDb {
+  // Идемпотентно: второй и последующие вызовы (несколько тестов в одном
+  // процессе) возвращают закешированное состояние, а не падают.
+  ensureSqliteRuntime();
   let db: Database;
   try {
     db = new Database(path, { readonly: true });
+    applySqliteRuntime(db);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new VizDbError("db.open", `не удалось открыть базу только на чтение: ${msg}`);
@@ -87,6 +106,7 @@ export function openReadOnly(path: string): ReadOnlyDb {
     db.close();
     try {
       db = new Database(path); // handle читаемый: SQLite сможет создать -shm
+      applySqliteRuntime(db);
       writableHandle = true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
