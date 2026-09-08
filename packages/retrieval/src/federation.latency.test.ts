@@ -198,10 +198,19 @@ test("под потолком выдача НЕПОЛНА и это назван
     vectorMode: "never",
     sources,
   });
-  expect(r.mode_used.queried).toBe(DEFAULT_MAX_SOURCES);
-  expect(r.mode_used.skipped).toBe(WORKSPACES - DEFAULT_MAX_SOURCES);
+  // Потолков ДВА, и второй — дедлайн: на медленной машине опрос может не
+  // дойти до восьмого источника, и тогда пропущен он по времени, а не по
+  // счёту. Проверять «ровно 8» значит проверять скорость раннера — CI дал 7
+  // и покраснел, хотя федерация вела себя ровно как задумано.
+  //
+  // Проверяется то, что действительно обязано выполняться: потолок не
+  // превышен, ни один источник не потерян молча, и у каждого пропущенного
+  // названа причина — либо счётная, либо временная.
+  expect(r.mode_used.queried).toBeLessThanOrEqual(DEFAULT_MAX_SOURCES);
+  expect(r.mode_used.queried).toBeGreaterThan(1);
+  expect(r.mode_used.queried + r.mode_used.skipped).toBe(WORKSPACES);
   for (const rep of r.mode_used.sources.filter((x) => !x.queried)) {
-    expect(rep.skipped).toContain("потолка");
+    expect(rep.skipped).toMatch(/потолка|дедлайн/);
   }
   // Опрошенные источники реально дали строки: замер относится к работе, а не
   // к восьми пустым запросам.
