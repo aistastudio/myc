@@ -560,7 +560,16 @@ textarea.props-input.props-body { resize: vertical; min-height: 54px; font: inhe
   padding: 8px 10px; border-bottom: 1px solid var(--line-soft);
 }
 .board-col-head h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-dim); }
-.board-col-body { flex: 1 1 auto; min-height: 60px; overflow: auto; padding: 8px; display: grid; gap: 6px; }
+/* align-content: start — не косметика. Грид по умолчанию РАСТЯГИВАЕТ строки
+   на всю высоту контейнера, а контейнер здесь `flex: 1 1 auto`, то есть во всю
+   колонку. Пять карточек делили высоту доски между собой, и содержимое внутри
+   каждой разъезжалось по вертикали: id вверху, заголовок посередине, родитель
+   внизу. Карточка обязана быть ростом со своё содержимое, а свободное место —
+   оставаться под ней. */
+.board-col-body {
+  flex: 1 1 auto; min-height: 60px; overflow: auto; padding: 8px;
+  display: grid; gap: 6px; align-content: start;
+}
 .board-card {
   display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
