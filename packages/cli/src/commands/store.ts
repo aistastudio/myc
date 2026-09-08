@@ -7,7 +7,8 @@
  * открытие своей базой, не трогаю ФС и процесс.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 // Поиск воркспейса вынесен в ./wsfind.ts и РЕ-ЭКСПОРТИРУЕТСЯ отсюда: его
 // импортируют полтора десятка мест, а платить за граф модулей этого файла
@@ -1174,11 +1175,31 @@ function readMemoryCounts(db: Database): { ops: number | undefined; nodes: numbe
  */
 function countPersonalMemory(dbPath: string): PersonalMemoryCounts {
   if (sqliteSidecars(dbPath).length === 0) {
+    // База без журнала читается ПО КОПИИ во временном каталоге, а не хитрым
+    // режимом открытия. `immutable=1` обещал то же самое и на macOS работал,
+    // но на Linux из-под Bun открыть такой URI не удаётся вовсе — и вместо
+    // чисел человек получал «база не читается», то есть отказ по незнанию
+    // там, где всё прекрасно читается (поймано прогоном CI, ubuntu-latest).
+    //
+    // Копия честнее любого флага: рядом с оригиналом не появляется ни байта,
+    // спутники создаются возле копии и уходят вместе с ней, а поведение
+    // одинаково на всех платформах. Личный ярус мал, и цена — одно
+    // копирование файла на путь, который ведёт к отказу, а не к работе.
+    let scratch: string | undefined;
     try {
-      const db = new Database(`${fileUri(dbPath)}?immutable=1`, { readonly: true });
+      scratch = mkdtempSync(join(tmpdir(), "myc-mem-"));
+      const copy = join(scratch, "myc.db");
+      copyFileSync(dbPath, copy);
+      // Копия открывается НА ЗАПИСЬ, и это не оплошность. База в режиме WAL
+      // без файла `-wal` не открывается readonly вовсе: соединению негде
+      // построить индекс WAL, и первый же prepare даёт SQLITE_CANTOPEN — та
+      // же стена, из-за которой всё это и затевалось. Копия наша, лежит во
+      // временном каталоге и через несколько строк будет удалена вместе с
+      // тем, что SQLite рядом с ней создаст; оригинала это не касается.
+      const db = new Database(copy);
       try {
         const counts = readMemoryCounts(db);
-        // Журнал мог появиться, пока мы читали: тогда прочитанное — прошлое.
+        // Журнал мог появиться, пока мы копировали: прочитанное — прошлое.
         if (sqliteSidecars(dbPath).length > 0) return unreadableMemory();
         return { ...counts, readable: true };
       } finally {
@@ -1186,9 +1207,13 @@ function countPersonalMemory(dbPath: string): PersonalMemoryCounts {
       }
     } catch {
       return unreadableMemory();
+    } finally {
+      if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
     }
   }
 
+  // Спутники уже на диске — обычное readonly-соединение ничего нового не
+  // создаст, а журнал, в отличие от копии, будет учтён.
   try {
     const db = new Database(dbPath, { readonly: true });
     try {

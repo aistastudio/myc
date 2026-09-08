@@ -211,3 +211,4 @@ export function parseDotPath(path: string): ParsedDotPath | null {
   }
   return { rootShortId, ordinals };
 }
+// проверка сторожа

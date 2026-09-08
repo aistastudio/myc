@@ -24,6 +24,7 @@ import { createRememberCommand, realRememberDeps } from "./remember.ts";
 import { createSearchCommand } from "./search.ts";
 import { discoverRepoWorkspaces, realRetrieveExtras, type RetrieveDeps } from "./retrieve.ts";
 import { realStoreDeps } from "./store.ts";
+import { expectMsWithinBudget } from "@myc/bench";
 
 let root: string;
 let home: string;
@@ -302,7 +303,7 @@ describe("R3: ленивость на настоящей ФС", () => {
     expect(found.map((w) => w.id)).toEqual(names);
     // Перечисление — readdir + по одному existsSync: если бы оно открывало
     // базы, стоило бы миллисекунд, а не долей, и оставило бы WAL-файлы.
-    expect(took).toBeLessThan(5);
+    expectMsWithinBudget(took, 5, "федерация: опрос соседей");
     for (const name of names) {
       expect(existsSync(join(root, name, ".myc", "myc.db-wal"))).toBe(false);
     }

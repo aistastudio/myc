@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { migration001Init, openSqlite, type SqliteDriver } from "@myc/store-sqlite";
 import type { FtsCaller } from "./fts.ts";
 import { vectorSearch, type VectorSearchParams } from "./vector.ts";
+import { expectMsWithinBudget } from "@myc/bench";
 
 const ANON_CALLER: FtsCaller = { ownerId: "", teamId: "", agentId: "", principals: [] };
 
@@ -738,6 +739,6 @@ describe.skipIf(!report.available)("vectorSearch perf @ 100k nodes", () => {
     expect(perf.reranked).toBe(true);
     // бюджет поиска спеки — 25 мс на весь гибрид; векторная ступень обязана
     // быть заведомо ниже. Иначе тест падает — числа в выводе выше.
-    expect(perf.p95).toBeLessThan(25);
+    expectMsWithinBudget(perf.p95, 25, "векторный поиск, p95");
   });
 });

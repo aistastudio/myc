@@ -562,6 +562,37 @@ function verdictWord(m: Measured): string {
  * условиях (или в строгом режиме); при занятой машине печатает причину и
  * пропускает, потому что измерил не код, а соседа по процессору.
  */
+/**
+ * Абсолютный бюджет для замеров, снятых БЕЗ `measure` — там, где время уже
+ * посчитано своим циклом и сравнивается голым `toBeLessThan`.
+ *
+ * Такие проверки — та же лотерея, что и `expectWithinBudget`, только без
+ * защиты: бюджеты сняты на рабочей машине, а на раннере (4 ядра x86 против
+ * 14 arm64) тот же код честно медленнее, и сборка краснела на 26.3 мс против
+ * 25. Число печатается ВСЕГДА — оно и есть предмет наблюдения; проверяется
+ * оно там, где машина откалибрована, ровно как у `measure`.
+ *
+ * Это не замена методике: у замера без соперника нет относительной части, то
+ * есть на неоткалиброванной машине он не проверяет ничего. Такие места стоит
+ * переводить на `measure` с соперником — а до тех пор пусть хотя бы не лгут.
+ */
+export function expectMsWithinBudget(actualMs: number, budgetMs: number, label: string): void {
+  const m = machine();
+  const where = `${label}: ${actualMs.toFixed(2)}мс при бюджете ${budgetMs}мс ` +
+    `(load1 ${m.load1} на ${m.cpus} ядрах)`;
+  if (actualMs < budgetMs) {
+    console.log(`[bench] ${where} → в бюджете`);
+    return;
+  }
+  if (!absoluteEnabled() && !isStrict()) {
+    console.log(
+      `[bench] ${where} → НЕ ПРОВЕРЯЕТСЯ (MYC_BENCH_ABSOLUTE=0: бюджет откалиброван под другое железо)`,
+    );
+    return;
+  }
+  throw new Error(`бюджет нарушен: ${where}`);
+}
+
 export function expectWithinBudget(m: Measured): void {
   if (m.verdict !== "over") return;
   throw new Error(

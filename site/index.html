@@ -36,6 +36,7 @@
       <a href="#speed"><span lang="en">Speed</span><span lang="ru">Скорость</span></a>
       <a href="#ranking"><span lang="en">Ranking</span><span lang="ru">Ранжирование</span></a>
       <a href="#cache"><span lang="en">Cache</span><span lang="ru">Кеш</span></a>
+      <a href="#sessions"><span lang="en">Sessions</span><span lang="ru">Сессии</span></a>
       <a href="#migrate"><span lang="en">Migration</span><span lang="ru">Миграция</span></a>
       <a href="#compare"><span lang="en">Comparison</span><span lang="ru">Сравнение</span></a>
       <a href="#absent"><span lang="en">What it is not</span><span lang="ru">Чего нет</span></a>
@@ -248,11 +249,49 @@ myc prime     <span class="c"># пакет контекста сессии — �
   </div>
 </section>
 
+<!-- ── память между сессиями ─────────────────────────────────────────────── -->
+<section id="sessions">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">05</span>
+      <h2 lang="en">Memory survives compaction, and knows whose it is</h2>
+      <h2 lang="ru">Память переживает сжатие и знает, чья она</h2>
+      <p lang="en">The two moments where agent memory is actually lost: the context window being squeezed, and one conversation's notes leaking into another's. Both are handled, and both say what they did.</p>
+      <p lang="ru">Два момента, в которые память агента на самом деле теряется: сжатие окна контекста и утечка заметок одной беседы в другую. Оба закрыты, и оба сообщают о том, что сделали.</p>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Before the context is squeezed</h3>
+        <h3 lang="ru">Перед тем, как контекст сожмут</h3>
+        <p class="sub" lang="en"><code>myc wire</code> installs a pre-compact hook. The session episode is written to disk first — raw, <code>L0</code>, <code>acl private</code>, secrets masked — and only then a rescue packet is printed back into the context that survives. Distillation is queued, never done on the write path: exceeding the hook's timeout costs the summary, not the record.</p>
+        <p class="sub" lang="ru"><code>myc wire</code> ставит хук pre-compact. Эпизод сессии сначала ложится на диск — сырым, <code>L0</code>, <code>acl private</code>, с замаскированными секретами, — и только потом в выживающий контекст печатается спасательный пакет. Дистилляция уходит в очередь, а не делается на пути записи: превышение таймаута хука стоит выжимки, но не записи.</p>
+        <pre class="code"><code>$ myc absorb-session --reason manual --transcript … --agent claude
+<span class="c"># myc: контекст сжимается — вот что нельзя потерять</span>
+эпизод sess-5jh8je4g050m сохранён (265 Б)
+ДАЛЬШЕ   myc show sess-5jh8je4g050m · myc ready --claim</code></pre>
+      </div>
+
+      <div class="card">
+        <h3 lang="en">Whose note is this</h3>
+        <h3 lang="ru">Чья это заметка</h3>
+        <p class="sub" lang="en">Every note carries a reach: <code>session</code> for this conversation, <code>project</code> for everyone. The automatic context packet — <code>prime</code> — carries only the current session's notes, so another agent's conversation does not leak into yours. An explicit <code>recall</code> still finds them: hiding knowledge is not the same as scoping it. Each row says which it is.</p>
+        <p class="sub" lang="ru">У каждой заметки есть охват: <code>session</code> — эта беседа, <code>project</code> — все. Автоматический пакет контекста <code>prime</code> несёт только заметки текущей сессии, поэтому чужая беседа не протекает в вашу. Явный <code>recall</code> их всё равно найдёт: спрятать знание — не то же самое, что ограничить его охват. И каждая строка говорит, что она такое.</p>
+        <pre class="code"><code><span class="c"># сессия s1                     # сессия s2</span>
+ses  сессионное: ретраи…       ses* сессионное: ретраи…
+prj  проектное: база…          prj  проектное: база…</code></pre>
+        <p class="sub" lang="en"><code>ses</code> own session · <code>ses*</code> someone else's · <code>prj</code> project-wide</p>
+        <p class="sub" lang="ru"><code>ses</code> своя сессия · <code>ses*</code> чужая · <code>prj</code> общее для проекта</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── миграция ──────────────────────────────────────────────────────────── -->
 <section id="migrate">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">05</span>
+      <span class="sec-index">06</span>
       <h2 lang="en">Migration from beads is real, not a demo</h2>
       <h2 lang="ru">Миграция с beads настоящая, а не демонстрационная</h2>
       <p lang="en">A working project imported into an empty workspace. Unknown issue types are carried over verbatim <em>and named</em>; out-of-range priorities are clamped <em>and named</em> — instead of one odd row aborting the import.</p>
@@ -280,7 +319,7 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="compare">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">06</span>
+      <span class="sec-index">07</span>
       <h2 lang="en">Comparison, with the losses included</h2>
       <h2 lang="ru">Сравнение, включая проигрыши</h2>
       <p lang="en">A table where one tool wins every row is an advertisement, not a comparison. Each tool below is compared only where the claim can be checked by a command on your own machine — which is also why some well-known tools are absent: we have not measured them, so they are not here.</p>
@@ -348,7 +387,7 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="absent">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">07</span>
+      <span class="sec-index">08</span>
       <h2 lang="en">What myc is not</h2>
       <h2 lang="ru">Чего в myc нет</h2>
       <p lang="en">Today myc is a <strong>single-user local tool over files in git</strong>. The list below is not a roadmap teaser — it is what does not exist, stated as plainly as what does.</p>
@@ -415,7 +454,7 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="reproduce">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">08</span>
+      <span class="sec-index">09</span>
       <h2 lang="en">Reproduce every number on this page</h2>
       <h2 lang="ru">Повторить каждое число этой страницы</h2>
       <p lang="en">Clone the repository, install, and run the list below. The numbers on this page live in <code>site/measurements.json</code>; <code>site/build.ts</code> checks them against the measurement artefacts in the repository and refuses to build the site on a mismatch.</p>

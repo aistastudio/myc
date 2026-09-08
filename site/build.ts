@@ -28,14 +28,29 @@ const readJson = (rel: string): any => JSON.parse(readFileSync(join(repoRoot, re
 const round = (x: number, d: number) => Math.round(x * 10 ** d) / 10 ** d;
 
 /**
- * Коммит, на котором стоит дерево. Им датируется снимок прогона тестов —
- * единственная величина, которую сборка не может сверить с артефактом:
- * полный прогон стоит три минуты, гонять его на каждой сборке сайта нельзя.
- * Значит снимок обязан устаревать ГРОМКО, а не тихо.
+ * Отпечаток КОДА, к которому относится снимок прогона тестов — единственная
+ * величина, которую сборка не может сверить с артефактом: полный прогон стоит
+ * три минуты, гонять его на каждой сборке сайта нельзя. Значит снимок обязан
+ * устаревать громко, а не тихо.
+ *
+ * Раньше здесь стоял HEAD, и сторож был неисполним по построению: прогон
+ * делается ДО коммита, записанный HEAD — это предыдущий коммит, а после
+ * `git commit` он перестаёт совпадать. Сборка Pages падала на каждом пуше,
+ * сообщая «перегоните bun test» тому, кто только что его перегнал.
+ *
+ * Отпечаток берётся от содержимого файлов, которые влияют на результат
+ * прогона: правка кода делает снимок устаревшим (и это ловится), а правка
+ * README, сайта или самого measurements.json — нет.
  */
-function headCommit(): string {
-  const p = Bun.spawnSync(["git", "rev-parse", "HEAD"], { stdout: "pipe", stderr: "ignore" });
-  return new TextDecoder().decode(p.stdout).trim();
+function sourceFingerprint(): string {
+  const p = Bun.spawnSync(
+    ["git", "ls-files", "-s", "packages", "db", "scripts", "bunfig.toml", "package.json"],
+    { stdout: "pipe", stderr: "ignore" },
+  );
+  const listing = new TextDecoder().decode(p.stdout);
+  // Индекс git даёт хеш содержимого каждого файла; нам нужна их сумма, а не
+  // порядок — но `ls-files` уже сортирован, так что хеш строки устойчив.
+  return Bun.SHA256.hash(listing, "hex").slice(0, 16);
 }
 
 function same(where: string, expected: number, actual: number, digits = 3): void {
@@ -200,16 +215,20 @@ const m = readJson("site/measurements.json");
   }
   // `tests` — единственная величина, которую нельзя сверить с артефактом:
   // прогон стоит три минуты, и гонять его на каждой сборке сайта нельзя.
-  // Значит она обязана нести КОММИТ, на котором снята, и устаревать громко.
-  // Поймано на живом: снимок обещал 2131 pass и одно падение, а на HEAD было
-  // 2139 и ноль — сайт сообщал бы о несуществующей поломке.
-  if (m.tests.commit === undefined) {
-    problems.push({ where: "tests/commit", expected: "коммит, на котором снят прогон", actual: "нет" });
-  } else if (m.tests.commit !== headCommit()) {
+  // Значит она обязана нести отпечаток КОДА, на котором снята, и устаревать
+  // громко. Поймано на живом: снимок обещал 2131 pass и одно падение, а в
+  // дереве было 2139 и ноль — сайт сообщал бы о несуществующей поломке.
+  if (m.tests.sources === undefined) {
     problems.push({
-      where: "tests/commit",
-      expected: `снимок на HEAD (${headCommit().slice(0, 8)})`,
-      actual: `снят на ${String(m.tests.commit).slice(0, 8)} — перегоните \`bun test\` и обновите tests в measurements.json`,
+      where: "tests/sources",
+      expected: "отпечаток кода, на котором снят прогон",
+      actual: `нет — добавьте "sources": "${sourceFingerprint()}" в tests`,
+    });
+  } else if (m.tests.sources !== sourceFingerprint()) {
+    problems.push({
+      where: "tests/sources",
+      expected: `отпечаток кода ${sourceFingerprint()}`,
+      actual: `снимок снят на ${String(m.tests.sources)} — код с тех пор менялся: перегоните \`bun test\` и обновите tests в measurements.json`,
     });
   }
   if (m.tests.fail === 0 || m.tests.failing_test) {

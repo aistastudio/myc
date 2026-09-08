@@ -94,6 +94,34 @@ cheaper than a miss — 252× in the run of 2026-09-07, ≈27 000× for embeddin
 the ratio is wall-clock and moves with the machine. The ranking does not: same
 MRR to three decimals, zero rank differences.
 
+**Memory survives context compaction.** `myc wire` installs a pre-compact hook,
+so the moment before an agent's context is squeezed the session episode is
+written to disk — raw, `L0`, `acl private`, secrets masked — and a rescue
+packet is printed back into the context that survives. Distillation is queued,
+never done on the write path. The episode is on disk before anything else is
+attempted, so exceeding the hook's timeout costs the summary, not the record:
+
+```
+$ myc absorb-session --reason manual --transcript … --agent claude
+# myc: контекст сжимается — вот что нельзя потерять
+эпизод sess-5jh8je4g050m сохранён (265 Б)
+ДАЛЬШЕ   myc show sess-5jh8je4g050m · myc ready --claim
+```
+
+**Memory is separated by session, and the separation is visible.** Every note
+carries a reach: `session` (this conversation) or `project` (everyone). The
+automatic context packet — `prime` — only carries the current session's notes;
+another agent's session does not leak into yours. An explicit `myc recall`
+still finds them, because hiding knowledge is not the same as scoping it, and
+marks each row for what it is: `ses` own session, `ses*` someone else's, `prj`
+project-wide.
+
+```
+$ MYC_SESSION_ID=s1 myc recall "ретраи"      $ MYC_SESSION_ID=s2 myc recall "ретраи"
+1.30 … ses  сессионное: ретраи…              1.30 … ses* сессионное: ретраи…
+1.10 … ses* в сессии один: ретраи…           1.10 … ses* в сессии один: ретраи…
+```
+
 **Memory has three independent axes**, and the surface says what it hid:
 tier (project vs personal), session reach, repository reach. `prime` prints
 `N notes from other repositories hidden` rather than quietly narrowing results.

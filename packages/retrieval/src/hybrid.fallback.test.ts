@@ -47,6 +47,7 @@ import { migration001Init, openSqlite, type SqliteDriver } from "@myc/store-sqli
 import type { FtsCaller } from "./fts.ts";
 import { analyzeFtsQuery } from "./fts.ts";
 import { hybridSearch, type HybridConfig } from "./hybrid.ts";
+import { expectMsWithinBudget } from "@myc/bench";
 
 const ANON: FtsCaller = { ownerId: "", teamId: "", agentId: "", principals: [] };
 
@@ -876,7 +877,7 @@ describe("S44 при 100k узлов: цена второго прохода и 
     console.log(lines.join("\n"));
 
     // Бюджет И1 — приёмка, а не наблюдение.
-    expect(f.p95).toBeLessThan(25);
+    expectMsWithinBudget(f.p95, 25, "S44 гибрид @100k, p95");
     expect(f.found).toBeGreaterThan(a.found);
     db.close();
   }, 300_000);
