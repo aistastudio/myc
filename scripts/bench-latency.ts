@@ -38,6 +38,7 @@ import { openSqlite, migrate, migrations, GraphStore, type SqliteDriver } from "
 import { hybridSearch, type FtsCaller } from "@myc/retrieval";
 import {
   JITTER_MAX,
+  absoluteEnabled,
   isStrict,
   machine,
   measure,
@@ -301,8 +302,15 @@ function primeOp(driver: SqliteDriver): void {
     .all();
   const ready = driver.database
     .query<Record<string, unknown>, [string]>(
+      // `anc_blockers = 0` — не украшение: с миграции 010 частичный индекс
+      // ix_nodes_ready включает это условие, и запрос без него ПОД ИНДЕКС НЕ
+      // ПОДХОДИТ — SQLite отвечает «no query solution», а не выбирает другой
+      // план, потому что индекс здесь навязан через INDEXED BY. Замер горячего
+      // пути обязан повторять условия настоящего `ready`
+      // (packages/cli/src/commands/ready.ts), иначе он мерит не то.
       `SELECT * FROM nodes INDEXED BY ix_nodes_ready
-        WHERE scope=? AND priority >= 0 AND kind='task' AND status='open' AND open_blockers=0 AND deleted_at IS NULL
+        WHERE scope=? AND priority >= 0 AND kind='task' AND status='open'
+          AND open_blockers=0 AND anc_blockers=0 AND deleted_at IS NULL
         ORDER BY priority DESC, updated_at DESC LIMIT 8`,
     )
     .all(SCOPE);
@@ -488,7 +496,12 @@ function fmt(n: number): string {
 
 /** Роняет ли этот вердикт прогон. Разбор — в комментарии к `main`. */
 export function fails(v: Verdict, updateBaseline: boolean): boolean {
-  const budgetFails = !v.budgetOk && (v.quiet || isStrict());
+  // `absoluteEnabled()` — та же калибровка, что в `bun test`: на общем раннере
+  // (4 ядра x86 против 14 arm64, на которых сняты бюджеты) абсолют роняет
+  // сборку за то, что машина другая, а не за то, что код медленнее. Регрессия
+  // к СВОЕЙ секции baseline при этом остаётся обязательной — она сравнивает
+  // раннер с раннером, и калибровка ей не нужна.
+  const budgetFails = !v.budgetOk && (v.quiet || isStrict()) && (absoluteEnabled() || isStrict());
   return budgetFails || (!updateBaseline && !v.regressionOk);
 }
 

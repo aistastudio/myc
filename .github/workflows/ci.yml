@@ -56,4 +56,6 @@ jobs:
       # часть проверки — относительные утверждения внутри `bun test` выше;
       # абсолюты добираются ночным прогоном (.github/workflows/nightly-bench.yml).
       - name: bench:latency (бюджеты И1 + регрессия к baseline)
+        env:
+          MYC_BENCH_ABSOLUTE: "0"
         run: bun run bench:latency
