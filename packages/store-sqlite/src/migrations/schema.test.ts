@@ -85,7 +85,7 @@ describe("миграция 1 — базовая схема", () => {
   test("чистая БД поднимается одной командой, все заявленные объекты в sqlite_master", async () => {
     store = open();
     const result = await migrate(store, { migrations, writable: true });
-    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(result.pendingVersions).toEqual([]);
     expect(result.degraded).toEqual([]);
 
@@ -292,7 +292,7 @@ describe("план запроса ready", () => {
   const READY_SQL = `SELECT id, title, priority, updated_at
        FROM nodes
       WHERE scope = ?1 AND kind = 'task' AND status = 'open'
-        AND open_blockers = 0 AND deleted_at IS NULL
+        AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
         AND (lease_expires = 0 OR lease_expires < ?2)
       ORDER BY priority ASC, updated_at ASC
       LIMIT 20`;

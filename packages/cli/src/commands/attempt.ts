@@ -72,6 +72,7 @@ import {
   type CompareReport,
   type LaunchContext,
   type LiveState,
+  type OrphanContext,
   type RunRecord,
   type TranscriptUsage,
 } from "@myc/swarm";
@@ -655,8 +656,16 @@ export function observe(
   probe: LaunchProbe,
   now: number,
 ): LiveRow[] {
+  // Pid того, кто СЕЙЧАС спрашивает — из его собственного окружения, не из
+  // записанного запуска. Один и тот же на все строки: спрашивающий не
+  // меняется в середине наблюдения.
+  const selfPid = launchContext(probe.env()).agentPid;
   return rows.map(({ attempt, run }) => {
-    const state = liveStateOf(attempt, probe.alive(run?.agentPid ?? null));
+    const orphanCtx: OrphanContext | undefined =
+      run === undefined
+        ? undefined
+        : { dispatchSource: run.dispatchSource, agentPid: run.agentPid, selfPid };
+    const state = liveStateOf(attempt, probe.alive(run?.agentPid ?? null), orphanCtx);
     return {
       attempt: attemptView(attempt),
       run: runView(run),

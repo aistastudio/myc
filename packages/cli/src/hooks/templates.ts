@@ -253,6 +253,137 @@ export const MycPlugin = async ({ client }: { client: any }) => ({
 `;
 }
 
+/**
+ * Kimi Code (`~/.kimi-code/bin/kimi`) — helper и блок хуков.
+ *
+ * Всё ниже установлено ЧТЕНИЕМ САМОГО БИНАРЯ (сборка 2026-09-04), а не
+ * догадкой; выдуманный конфиг здесь хуже отсутствия, потому что молча не
+ * работает:
+ *
+ * 1. КОНФИГ ХУКОВ У KIMI ТОЛЬКО ПОЛЬЗОВАТЕЛЬСКИЙ. `resolveConfigPath()`
+ *    внутри kimi — это `join(KIMI_CODE_HOME ?? ~/.kimi-code, "config.toml")`
+ *    и ничего больше: проектного config.toml нет. Поэтому `myc wire`, который
+ *    по D10 пишет только внутрь проекта, поставить хук Kimi НЕ МОЖЕТ и не
+ *    делает вид, что может. Он ставит исполняемую половину — этот helper — и
+ *    печатает блок, который человек один раз вставляет себе в
+ *    `~/.kimi-code/config.toml`.
+ * 2. Схема записи хука (HookDefSchema, strict): `event` из закрытого списка
+ *    (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop,
+ *    PreCompact, …), необязательный `matcher` — РЕГУЛЯРКА по строке события,
+ *    `command` — строка, запускаемая через shell, `timeout` — целые СЕКУНДЫ
+ *    1..600 (у Claude Code миллисекунды; перепутать — значит получить хук,
+ *    который живёт в 1000 раз дольше или короче задуманного).
+ * 3. Вход хука — JSON на stdin, ключи snake_case (`toHookInputData`
+ *    приводит camelCase к snake_case на ВЕРХНЕМ уровне): `hook_event_name`,
+ *    `session_id`, `cwd`, плюс поля события — `source` у SessionStart,
+ *    `trigger` и `token_count` у PreCompact.
+ * 4. Выход: код 0 и stdout, РАЗОБРАННЫЙ КАК JSON; в контекст попадает
+ *    `message` (или `hookSpecificOutput.message`). Обычный текст на stdout
+ *    Kimi молча игнорирует — поэтому helper заворачивает вывод myc в
+ *    `{"message": …}` сам и зовёт absorb-session с `--hook-output text`:
+ *    форма `hookSpecificOutput.additionalContext`, которую понимает Claude
+ *    Code, для Kimi пустая. Код 2 — блокировка, поэтому helper не выходит
+ *    им никогда.
+ *
+ * Событий здесь ДВА, и это не лень. `session-start` и `pre-compact` — те, чей
+ * вход проверен по коду. Хук на правку файла (`myc anchor touch`) не ставится:
+ * его матчер — имя инструмента Kimi, а форма `tool_input` зависит от схемы
+ * инструмента, и ни того ни другого подтвердить чтением не удалось. Хук,
+ * который не сработает ни разу, хуже отсутствующего: он создаёт уверенность.
+ */
+export function kimiHelper(opts: HelperOptions): string {
+  const wanted: readonly HookEvent[] = ["session-start", "pre-compact"];
+  const specs = HOOK_SPECS.filter((s) => opts.events.includes(s.event) && wanted.includes(s.event));
+  const limits = specs.map((s) => `  "${s.event}": ${s.innerMs},`).join("\n");
+  const args = specs
+    .map((s) =>
+      s.event === "session-start"
+        ? `  "session-start": ["prime", "--budget", "2000", "--format", "agent", "--session", payload.session_id ?? ""],`
+        : `  "pre-compact": ["absorb-session", "--reason", payload.trigger ?? "auto", "--transcript", "-", "--budget", payload.trigger === "manual" ? "2000" : "1200", "--agent", "kimi", "--session", payload.session_id ?? "", "--hook-output", "text"],`,
+    )
+    .join("\n");
+  return `#!/usr/bin/env node
+// .kimi-code/myc-hooks.mjs — ${GENERATED}.
+//
+// Правило то же, что у Claude Code и Codex: myc НИКОГДА не валит сессию
+// агента. Любая ошибка, таймаут, отсутствие бинаря — выход 0 и пустой
+// stdout. Кодом 2 Kimi блокирует ход, поэтому им мы не выходим никогда.
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const EV = process.argv[2];
+
+let payload = {};
+try {
+  payload = JSON.parse(readFileSync(0, "utf8") || "{}");
+} catch {}
+
+// Kimi запускает хук из каталога сессии и кладёт его же в payload.cwd.
+const DIR = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+
+const LIMIT = {
+${limits}
+}[EV] ?? 2000;
+
+${BIN_LOOKUP}
+
+const ARGS = {
+${args}
+}[EV];
+
+if (!ARGS) process.exit(0);
+
+try {
+  const r = spawnSync(bin(), ARGS, {
+    cwd: DIR,
+    timeout: LIMIT,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, MYC_HOOK: EV },
+  });
+  // В контекст Kimi попадает только JSON с полем message — обычный stdout
+  // он разбирает и молча выбрасывает.
+  if (r.status === 0 && r.stdout && r.stdout.trim()) {
+    process.stdout.write(JSON.stringify({ message: r.stdout }) + "\\n");
+  }
+} catch {}
+
+process.exit(0);
+`;
+}
+
+/** Что Kimi проверяет у записи хука: секунды, не миллисекунды (schema выше). */
+const KIMI_EVENTS: ReadonlyMap<HookEvent, string> = new Map([
+  ["session-start", "SessionStart"],
+  ["pre-compact", "PreCompact"],
+]);
+
+/**
+ * Блок для `~/.kimi-code/config.toml`. Команда ОТНОСИТЕЛЬНАЯ и защищена
+ * проверкой существования файла: конфиг у Kimi один на все проекты, и хук,
+ * прибитый к абсолютному пути одного репозитория, срабатывал бы в каждой
+ * чужой сессии. `cat >/dev/null` в ветке else — чтобы Kimi не ждал на
+ * незакрытом stdin.
+ */
+export function kimiHooksToml(events: readonly HookEvent[]): string {
+  const lines: string[] = ["# myc:kimi:start"];
+  for (const [event, kimiEvent] of KIMI_EVENTS) {
+    if (!events.includes(event)) continue;
+    const spec = HOOK_SPECS.find((s) => s.event === event);
+    const seconds = Math.max(1, Math.ceil((spec?.timeoutMs ?? 3000) / 1000));
+    lines.push(
+      "[[hooks]]",
+      `event = "${kimiEvent}"`,
+      `command = "if [ -f .kimi-code/myc-hooks.mjs ]; then node .kimi-code/myc-hooks.mjs ${event}; else cat >/dev/null 2>&1 || true; fi"`,
+      `timeout = ${seconds}`,
+      "",
+    );
+  }
+  lines.push("# myc:kimi:end");
+  return lines.join("\n");
+}
+
 /** Вся инструкция агенту живёт в скилле, а не в CLAUDE.md (D10). */
 export function skillMd(): string {
   return `---

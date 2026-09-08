@@ -848,3 +848,112 @@ describe("claim: срок аренды берётся из оценки зада
     expect(d.data.lease_source).toBe("flag");
   });
 });
+
+// ---------------------------------------------------------------------------
+// --anchor: привязка, а не «отложено»
+// ---------------------------------------------------------------------------
+
+describe("create --anchor", () => {
+  test("привязывает по тому же пути, что myc anchor add: узел, строка, ребро", async () => {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "fuse.ts"), "export function fuse(a: number) {\n  return a;\n}\n");
+
+    const r = await myc("task", "Исправить падение fuse", "--anchor", "src/fuse.ts:1-3");
+    expect(r.code).toBe(ExitCode.OK);
+    const text = r.stdout as string;
+    const id = idOf(r.stdout);
+    // Строка «якорь отложен до myc anchor bind» врала дважды: откладывать
+    // нечего, а команды `anchor bind` не существует.
+    expect(text).not.toContain("отложен");
+    expect(text).not.toContain("anchor bind");
+    expect(text).toMatch(/anchor\s+src\/fuse\.ts:1-3 → \S+ fresh/);
+
+    const raw = new Database(db, { readonly: true });
+    const anchor = raw
+      .query(
+        `SELECT a.node_id AS id, a.path AS path, a.state AS state, n.kind AS kind
+           FROM edges e JOIN anchors a ON a.node_id = e.dst JOIN nodes n ON n.id = a.node_id
+          WHERE e.src = ?1 AND e.type = 'touches' AND e.deleted_at IS NULL`,
+      )
+      .get(id) as { id: string; path: string; state: string; kind: string } | null;
+    const attrs = raw.query("SELECT attrs FROM nodes WHERE id = ?1").get(id) as { attrs: string };
+    raw.close();
+    expect(anchor).not.toBeNull();
+    expect(anchor!.kind).toBe("anchor");
+    expect(anchor!.path).toBe("src/fuse.ts");
+    expect(anchor!.state).toBe("fresh");
+    // Второй копии в attrs нет: иначе show печатал бы один якорь дважды.
+    expect(JSON.parse(attrs.attrs)["anchors"]).toBeUndefined();
+  });
+
+  test("ready видит якорь ЗАДАЧИ, а не только объявленный путь", async () => {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "fuse.ts"), "export function fuse(a: number) {\n  return a;\n}\n");
+    await createTask("С якорем", "--anchor", "src/fuse.ts:1-3");
+    await createTask("Без якоря");
+
+    const { env } = await mycJson("ready", "--why");
+    const rows = (env["data"] as Record<string, unknown>)["items"] as Array<Record<string, unknown>>;
+    const withAnchor = rows.find((x) => String(x["title"]) === "С якорем")!;
+    const without = rows.find((x) => String(x["title"]) === "Без якоря")!;
+    const term = (x: Record<string, unknown>): number =>
+      Number(((x["terms"] ?? {}) as Record<string, unknown>)["anchors"] ?? 0);
+    // Вес якорей у привязанной задачи ВЫШЕ: ANCHOR_SUBQ идёт по рёбрам
+    // touches к узлам kind='anchor', и объявленного пути в attrs не видит.
+    expect(term(withAnchor)).toBeGreaterThan(term(without));
+  });
+
+  test("файла нет: задача записана, причина названа, привязка осталась намерением", async () => {
+    const r = await myc("task", "Починить пропажу", "--anchor", "src/нет.ts:1-2");
+    expect(r.code).toBe(ExitCode.OK);
+    const text = r.stdout as string;
+    expect(text).toContain("@— не привязан:");
+    expect(text).toContain("(myc anchor add)");
+    const id = idOf(r.stdout);
+
+    const raw = new Database(db, { readonly: true });
+    const attrs = JSON.parse(
+      (raw.query("SELECT attrs FROM nodes WHERE id = ?1").get(id) as { attrs: string }).attrs,
+    ) as Record<string, unknown>;
+    raw.close();
+    // Намерение сохранено: ось scope класса задачи (anchorPathsOf) не теряется.
+    expect(attrs["anchors"]).toEqual([{ path: "src/нет.ts", start: 1, end: 2, state: "pending" }]);
+  });
+
+  test("--anchor без строк берёт файл целиком, а не первую строку", async () => {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "whole.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+    const id = await createTask("Целый файл", "--anchor", "src/whole.ts");
+    const raw = new Database(db, { readonly: true });
+    const row = raw
+      .query(
+        `SELECT a.span_start AS s, a.span_end AS e FROM edges g JOIN anchors a ON a.node_id = g.dst
+          WHERE g.src = ?1 AND g.type = 'touches'`,
+      )
+      .get(id) as { s: number; e: number };
+    raw.close();
+    expect(row.s).toBe(1);
+    expect(row.e).toBeGreaterThan(1);
+  });
+});
+
+describe("--anchor вне корня репозитория", () => {
+  test("путь, уходящий выше корня, не привязывается: строка `../x` не резолвится нигде", async () => {
+    // Личный ярус (`remember --global`) приходит сюда штатно: его воркспейс —
+    // ~/.myc, и код репозитория не лежит под ним никогда.
+    const outside = mkdtempSync(join(tmpdir(), "myc-outside-"));
+    writeFileSync(join(outside, "x.ts"), "const x = 1;\n");
+    try {
+      const r = await myc("task", "Чужой файл", "--anchor", join(outside, "x.ts"));
+      expect(r.code).toBe(ExitCode.OK);
+      expect(r.stdout as string).toContain("файл вне корня");
+
+      const raw = new Database(db, { readonly: true });
+      const n = raw.query("SELECT count(*) AS n FROM anchors").get() as { n: number };
+      raw.close();
+      expect(n.n).toBe(0);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});

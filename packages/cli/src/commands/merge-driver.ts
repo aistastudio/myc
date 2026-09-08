@@ -7,6 +7,11 @@
  * Регистрация (один раз на клон):
  *   git config merge.myc-oplog.driver "myc merge-driver %O %A %B %L %P"
  * Атрибуты в .myc/graph/.gitattributes пишет `myc export`.
+ *
+ * Ненулевой код — всегда «слить нельзя, разбирайтесь руками»: либо строка не
+ * разбирается как оплог, либо один op_id пришёл с двух сторон с разным
+ * содержимым (S65). Второе значит, что под одним site_id пишут две живые
+ * базы; тихая дедупликация тут стоила бы операции.
  */
 
 import { existsSync } from "node:fs";
@@ -26,13 +31,19 @@ interface MergeDriverData {
   message: string;
 }
 
+const COLLISION_HINT =
+  "две живые базы под одним site_id — обычно копия каталога воркспейса (cp -R/rsync), " +
+  "а не клон; см. S65 в docs/design/ARCHITECTURE.md";
+
 export function createMergeDriverCommand(): Command {
   return {
     name: "merge-driver",
     summary: "git merge driver for .myc/graph oplog files: union by op_id",
     help:
       "Arguments as git passes them: %O (base) %A (ours, rewritten in place) %B (theirs) " +
-      "[%L marker size] [%P path]. Register once per clone:\n  " +
+      "[%L marker size] [%P path]. Exit 4 (conflict) when a line does not parse or when one " +
+      "op_id arrives from both sides with different content — the latter means two live " +
+      "databases share a site_id (S65). Register once per clone:\n  " +
       GIT_SETUP_HINT,
     handler: (ctx) => {
       const parsed = parseMergeDriverArgs(ctx.args);
@@ -52,7 +63,13 @@ export function createMergeDriverCommand(): Command {
         return failure("precond.merge_io", msg, ExitCode.PRECOND);
       }
       if (run.code !== 0 || run.outcome === undefined) {
-        // Нечитаемая строка оплога: конфликт остаётся человеку (И2).
+        // Конфликт остаётся человеку (И2) — по одной из двух причин, и они
+        // разные для того, кто читает вывод: нечитаемая строка означает
+        // испорченный (или чужой) файл, коллизия op_id — что где-то есть
+        // вторая живая база с тем же site_id, и чинить надо её.
+        if (run.reason === "collision") {
+          return failure("conflict.op_id", run.message, ExitCode.CONFLICT, COLLISION_HINT);
+        }
         return failure("conflict.oplog_line", run.message, ExitCode.CONFLICT);
       }
       const data: MergeDriverData = {

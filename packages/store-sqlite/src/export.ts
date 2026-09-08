@@ -6,6 +6,8 @@
  * объединение строк, сортировка и дедупликация по op_id (./merge-driver.ts),
  * а расхождения разрешает не git, а воспроизведение CRDT при импорте
  * (./import.ts), где per-field LWW, OR-Set и G-counter делают свою работу.
+ * Уникальность op_id при этом не предполагается, а ПРОВЕРЯЕТСЯ: один op_id
+ * с разным содержимым — OplogCollisionError, а не тихая дедупликация (S65).
  *
  * Проекции узлов и рёбер (nodes-<c>.jsonl, edges-<c>.jsonl) в git НЕ идут.
  * Первая редакция S42 коммитила их ради читаемого диффа; замер это отменил:
@@ -595,7 +597,24 @@ export function exportGraph(driver: DbDriver, dir: string): ExportResult {
       pendingImport += splitLines(text).length;
       continue;
     }
-    const merged = unionOplogText(rendered, text);
+    // Экспорт видит ту же коллизию, что и драйвер слияния, только раньше и
+    // без git: в файле каталога лежит op_id, который база считает СВОИМ, но с
+    // другим содержимым. Записать файл нельзя ни в одну сторону — победившая
+    // строка вытеснит чужую операцию, а `myc import` с `ON CONFLICT DO
+    // NOTHING` потерю от повтора уже не отличит. Поэтому экспорт падает
+    // ЦЕЛИКОМ и до записи хотя бы одного файла (writeGraphFiles ниже ещё не
+    // вызывался): каталог остаётся ровно таким, каким был, — и называет файл
+    // и op_id. Экспорт не имеет права проглотить операцию не меньше драйвера
+    // (И2); чинится не здесь, а перевыпуском site_id копии (S65).
+    let merged: { text: string; added: number };
+    try {
+      merged = unionOplogText(rendered, text);
+    } catch (error) {
+      if (error instanceof OplogCollisionError) {
+        throw new OplogCollisionError(error.opId, error.kept, error.dropped, rel);
+      }
+      throw error;
+    }
     if (merged.text !== rendered) {
       pendingImport += merged.added;
       oplog.set(rel, merged.text);
@@ -643,10 +662,49 @@ export function writeProjectionCache(driver: DbDriver, dir: string): ProjectionC
 }
 
 /**
+ * Один op_id, две РАЗНЫЕ операции. `op_id` = `<site_id>:<seq>` — это и есть
+ * идентичность операции, и на её уникальности держится весь обмен через git:
+ * объединение по op_id здесь, `ON CONFLICT DO NOTHING` при импорте, per-site
+ * курсоры. Столкновение означает, что под одним `site_id` пишут ДВЕ живые
+ * базы — практически всегда это копия каталога воркспейса (`cp -R`, `rsync`,
+ * восстановление из бэкапа рядом с оригиналом), унёсшая `site_id` вместе с
+ * базой; честный `git clone` так не умеет, он получает свой `site_id` (S65).
+ *
+ * Пропустить вторую строку как «повтор» значило бы потерять операцию, и
+ * потерять молча: после дедупликации ни git, ни `import` уже не отличат
+ * потерю от повтора. Поэтому это ошибка, а не выбор, — И2.
+ */
+export class OplogCollisionError extends Error {
+  readonly opId: string;
+  /** строка, которая уже была принята (сторона `base`/`ours`) */
+  readonly kept: string;
+  /** строка с тем же op_id и другим содержимым (сторона `extra`/`theirs`) */
+  readonly dropped: string;
+  /** файл оплога, если вызывающий его знает */
+  readonly path?: string;
+
+  constructor(opId: string, kept: string, dropped: string, path?: string) {
+    super(
+      `коллизия op_id ${opId}${path === undefined ? "" : ` в ${path}`}: ` +
+        `одна и та же операция с разным содержимым с двух сторон\n  A: ${kept}\n  B: ${dropped}`,
+    );
+    this.name = "OplogCollisionError";
+    this.opId = opId;
+    this.kept = kept;
+    this.dropped = dropped;
+    if (path !== undefined) this.path = path;
+  }
+}
+
+/**
  * Объединение двух текстов оплога по op_id: строки `base` идут первыми, из
  * `extra` добавляются только новые; итог отсортирован по (site_id, seq).
  * `added` — сколько строк пришло из `extra`. Используется и экспортом, и
  * драйвером слияния — это и есть весь «мерж» оплога.
+ *
+ * Повтор op_id пропускается, только если обе строки описывают ОДНУ операцию;
+ * иначе — `OplogCollisionError`. Обязанность вызывающего — не проглотить её:
+ * см. `exportGraph` ниже и `runMergeDriver` в ./merge-driver.ts.
  */
 export function unionOplogText(
   base: string,
@@ -657,7 +715,18 @@ export function unionOplogText(
   const take = (text: string, counting: boolean): void => {
     for (const line of splitLines(text)) {
       const row = lineToRow(line);
-      if (seen.has(row.op_id)) continue;
+      const prev = seen.get(row.op_id);
+      if (prev !== undefined) {
+        // Побайтовое совпадение — нормальный повтор общей истории, и это
+        // подавляющее большинство сравнений: обе стороны несут одни и те же
+        // строки. Разошедшиеся байты ещё не коллизия — строку мог записать
+        // другой порядок ключей или более старый формат, — поэтому спорный
+        // случай решает канонический вид ЗАПИСИ, а не текст файла.
+        if (prev.line !== line && rowToLine(lineToRow(prev.line)) !== rowToLine(row)) {
+          throw new OplogCollisionError(row.op_id, prev.line, line);
+        }
+        continue;
+      }
       const { siteId, seq } = splitOpId(row.op_id);
       seen.set(row.op_id, { site: siteId, seq, line });
       if (counting) added++;

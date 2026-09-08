@@ -34,7 +34,13 @@
 import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
-import type { AnchorCheck, AnchorState, MaxLevel } from "@myc/code-intel/anchors";
+import type {
+  AnchorBinding,
+  AnchorCheck,
+  AnchorState,
+  MaxLevel,
+  StatLike,
+} from "@myc/code-intel/anchors";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
@@ -64,7 +70,67 @@ async function engine(): Promise<typeof import("@myc/code-intel/anchors")> {
 }
 
 /** Батч пере-проверки за один прогон (§7.5). Дублировать нельзя — только читать. */
-const ANCHOR_CHECK_BATCH_DEFAULT = 256;
+export const ANCHOR_CHECK_BATCH_DEFAULT = 256;
+
+/**
+ * Дебаунс §7.5: файл, изменённый меньше двух секунд назад, фон НЕ трогает.
+ * Причина не в экономии — в правдивости. Агент правит файл посимвольно, и
+ * якорь, проверенный в середине правки, честно объявляется `stale` по
+ * недописанному тексту; следующий прогон вернёт `fresh`, а между ними
+ * `ready` понизит задачу и покажет плашку «требует проверки» на ровном
+ * месте. Ручной `myc anchor check` дебаунса НЕ ЗНАЕТ: пользователь спросил
+ * про СЕЙЧАС, и ответ про «две секунды назад» ему не нужен.
+ */
+export const ANCHOR_DEBOUNCE_MS = 2_000;
+
+/**
+ * ПОРОГ, ВЫШЕ КОТОРОГО ЗАПИСЬ НЕ НОРМАЛИЗУЕТ ФАЙЛ, А ОТКЛАДЫВАЕТ ЭТО В ФОН
+ * (решение S66). Цена привязки линейна по размеру файла и почти вся сидит в
+ * `normalizeStream`. Замер @myc/bench на этой машине (3 прогона по 60
+ * итераций, синтетический ts, p50):
+ *
+ *   файл       bindAnchor   из него normalizeStream   hashText   split
+ *   8.5 КБ     0.151 мс     0.112 мс                  0.001 мс   0.002 мс
+ *   42.8 КБ    0.561 мс     0.560 мс                  0.005 мс   0.015 мс
+ *   172.8 КБ   2.448 мс     2.357 мс                  0.021 мс   0.052 мс
+ *
+ * То есть ~14 мкс на килобайт, и 96 % из них — нормализация; хеш файла и
+ * разбиение на строки не стоят ничего и потому НЕ откладываются. Бюджет
+ * записи (И1) — 5 мс на всю команду, из которых сама запись узла занимает
+ * ~1.2 мс; 32 КБ выбраны по правилу «нормализация съедает не больше 10 %
+ * бюджета» (0.45 мс). Корпус этого репозитория: 364 исходника, медиана
+ * 10.6 КБ, p90 29.9 КБ, порог переходят 32 файла (8.8 %). Типичный якорь
+ * платит полную цену и получает точный crux сразу; редкий большой файл не
+ * заставляет запись платить вдвое.
+ */
+export const ANCHOR_INLINE_MAX_BYTES = 32 * 1024;
+
+/**
+ * Порог с правом переопределения из окружения. Существует ради МУТАЦИЙ
+ * приёмки, а не ради режимов работы: `off` — «порога нет», то есть в точности
+ * поведение до S66, когда запись нормализовала файл любого размера.
+ *
+ * Читается ПРОЦЕССНОЕ окружение, а не `env` вызова, и по той же причине, что
+ * `NODE_ENV` в drain.ts: до `bindAnchorAt` доходят три входа
+ * (`anchor add`, `remember --anchor`, `task --anchor`), и два из них зовут
+ * `attachAnchorFlag`, у которой окружения нет и добавлять его ради
+ * переменной-мутации значило бы тащить его через две чужие команды. В боевом
+ * CLI это одно и то же окружение; расходится оно только в тестовом харнессе,
+ * который передаёт вызову белый список.
+ */
+export function anchorInlineMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MYC_ANCHOR_INLINE_MAX_BYTES;
+  if (raw === undefined) return ANCHOR_INLINE_MAX_BYTES;
+  if (raw.trim() === "off") return Number.POSITIVE_INFINITY;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : ANCHOR_INLINE_MAX_BYTES;
+}
+
+/** Размер файла для человеческой строки — одинаковый у всех трёх входов. */
+function kb(bytes: number): string {
+  return `${Math.round(bytes / 1024)} КБ`;
+}
+
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
@@ -106,9 +172,12 @@ export function repoRelative(repoRoot: string, input: string, cwd: string): stri
  * Отсюда две функции: `mainCwd` для вычисления пути, `localFile` для чтения.
  * Вне worktree обе — тождество, ни одного лишнего вызова.
  */
-function mainCwd(h: StoreHandle, ctx: CommandContext): string {
-  const cwd = ctx.globals.directory ?? process.cwd();
+export function mainCwdOf(h: StoreHandle, cwd: string): string {
   return h.worktree === undefined ? cwd : mapIntoMain(h.worktree, resolve(cwd));
+}
+
+function mainCwd(h: StoreHandle, ctx: CommandContext): string {
+  return mainCwdOf(h, ctx.globals.directory ?? process.cwd());
 }
 
 function localFile(h: StoreHandle, absInMain: string): string {
@@ -346,7 +415,241 @@ export interface AddData {
   state: AnchorState;
   crux_lines: number;
   file_hash: string;
+  /** Файл больше порога S66: crux снимет фон, а не эта команда. */
+  deferred: boolean;
+  size_bytes: number;
   took_ms: number;
+}
+
+// ---------------------------------------------------------------------------
+// Привязка — ЕДИНСТВЕННЫЙ путь, которым якорь появляется в базе
+// ---------------------------------------------------------------------------
+
+/**
+ * ОДНА ФУНКЦИЯ НА ВСЕ ВХОДЫ, И ЭТО ГЛАВНОЕ ЗДЕСЬ. Якорь ставили тремя
+ * способами, и совпадал из них один: `myc anchor add` заводил узел, строку и
+ * ребро, а `myc remember --anchor` и `myc task --anchor` писали в `attrs`
+ * запись `state:'pending'` и печатали «якорь отложен». Отложен он был
+ * навсегда: разобрать `attrs.anchors` не умеет ничто, `anchor of` такого
+ * якоря не находит, лестница §7.2 его не проверяет, а `ready` (ANCHOR_SUBQ
+ * идёт по рёбрам `touches` к узлам `kind='anchor'`) не видит вовсе.
+ *
+ * Поэтому «отложенного» пути больше нет: `--anchor` зовёт ЭТУ функцию, и
+ * мутация в ней обязана ломать все три входа сразу. Расхождение трёх копий
+ * одного правила — тот же класс дефекта, что S43 (PRAGMA в трёх местах) и
+ * S64 (комментарий в двух видах), и лечится он так же — сведением в одну.
+ *
+ * Цена — чтение файла и нормализация спана: это уровень 3 лестницы, ~14 мкс
+ * на килобайт файла. Она платится ТОЛЬКО когда назван `--anchor`, и ровно её
+ * раньше «откладывали», не получая взамен ничего.
+ *
+ * НО НЕ ЛЮБОЙ ЦЕНОЙ (S66). На файле в 173 КБ нормализация стоит 2.4 мс при
+ * бюджете записи 5 мс — то есть редкий большой файл молча пробивал бюджет,
+ * ничего об этом не говоря. Выше `ANCHOR_INLINE_MAX_BYTES` нормализация
+ * уходит в фон: строка якоря пишется сразу и честно (спан, хеш файла, mtime,
+ * размер), `span_hash` остаётся пустым как метка недовязанности,
+ * `checked_at = 0` ставит якорь первым в очередь §7.5, а вывод команды
+ * ГОВОРИТ ВСЛУХ, что crux снимет фон. Точность догоняет, бюджет цел.
+ */
+export interface BoundAnchor {
+  readonly anchorId: string;
+  readonly path: string;
+  readonly start: number;
+  readonly end: number;
+  readonly state: AnchorState;
+  readonly cruxLines: number;
+  readonly fileHash: string;
+  /** Файл больше порога: crux снимет фон (§7.5), а не запись — S66. */
+  readonly deferred: boolean;
+  /** Размер файла — то самое число, по которому принято решение. */
+  readonly sizeBytes: number;
+}
+
+export type BindResult =
+  | { readonly ok: true; readonly anchor: BoundAnchor }
+  | {
+      readonly ok: false;
+      readonly code: "notfound.file" | "outside.repo" | "store.error";
+      readonly msg: string;
+      readonly cause?: unknown;
+    };
+
+const SQL_ANCHOR_INSERT = `INSERT INTO anchors (node_id, repo_id, repo_root, path, lang, symbol,
+                      span_start, span_end, file_hash, span_hash, crux, crux_norm,
+                      state, drift, mtime_ms, size_bytes, bound_at, checked_at)
+ VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'fresh',1.0,?13,?14,?15,?16)`;
+
+/**
+ * ПРИВЯЗКА БЕЗ НОРМАЛИЗАЦИИ — та же строка якоря, минус crux (S66).
+ * Записывается всё, что известно точно и даром: спан, приведённый к границам
+ * файла, хеш содержимого, mtime и размер. Отложена ровно нормализация, то
+ * есть 96 % цены.
+ *
+ * `span_hash` остаётся ПУСТЫМ, и это не недосмотр, а МЕТКА. Настоящая
+ * привязка кладёт туда `wy:…` ВСЕГДА — даже у пустого спана, потому что
+ * `hashText('')` возвращает непустую строку, — поэтому пустой `span_hash` не
+ * может появиться никаким другим путём: ни привязкой, ни проверкой, ни
+ * ввозом чужой строки. По нему фон отличает «привязку не довели» от «якорь
+ * пора проверить» (`isDeferredBind`), и второй метки для этого не нужно.
+ */
+function deferredBinding(
+  hashText: (text: string) => string,
+  source: string,
+  lineCount: number,
+  spanStart: number,
+  spanEnd: number,
+  st: StatLike,
+): AnchorBinding {
+  const start = Math.max(1, Math.min(spanStart, lineCount));
+  const end = Math.max(start, Math.min(spanEnd, lineCount));
+  return {
+    spanStart: start,
+    spanEnd: end,
+    fileHash: hashText(source),
+    spanHash: "",
+    crux: "",
+    cruxNorm: "",
+    mtimeMs: Math.floor(st.mtimeMs),
+    sizeBytes: st.size,
+  };
+}
+
+export async function bindAnchorAt(
+  h: StoreHandle,
+  nodeId: string,
+  target: AnchorTarget,
+  cwd: string,
+  opts: {
+    readonly symbol?: string;
+    readonly actor?: string;
+    readonly now?: number;
+    /** Порог S66; по умолчанию — `anchorInlineMaxBytes()`. */
+    readonly inlineMaxBytes?: number;
+  } = {},
+): Promise<BindResult> {
+  const { repoId, repoRoot } = anchorRepo(h);
+  const path = repoRelative(repoRoot, target.path, mainCwdOf(h, cwd));
+  // ПУТЬ ОБЯЗАН ЛЕЖАТЬ В КОРНЕ. Иначе в `anchors` уезжает строка вида
+  // `../demo/src/fuse.ts` — она резолвится только на этой машине и только из
+  // этого каталога, а `anchor of` по ней не найдётся никогда (запрос идёт по
+  // паре repo_id+path). Ловится это в первую очередь личным ярусом: `myc
+  // remember --global --anchor` открывает воркспейс ~/.myc, у которого код
+  // репозитория не лежит нигде.
+  if (path.startsWith("../")) {
+    return {
+      ok: false,
+      code: "outside.repo",
+      msg: `файл вне корня ${repoRoot}: ${path} — якорь такому пути привязать нельзя`,
+    };
+  }
+  const abs = localFile(h, join(repoRoot, path));
+  // Один stat вместо existsSync + statSync: строке якоря он нужен всё равно,
+  // а его `size` — то единственное, что требуется знать ДО чтения файла.
+  let st: StatLike;
+  try {
+    st = statSync(abs);
+  } catch {
+    return {
+      ok: false,
+      code: "notfound.file",
+      msg: `файла нет: ${path} (корень репозитория ${repoRoot})`,
+    };
+  }
+
+  const deferred = st.size > (opts.inlineMaxBytes ?? anchorInlineMaxBytes());
+  const source = readFileSync(abs, "utf8");
+  const lang = langOf(path);
+  const lines = source.split("\n").length;
+  const end = target.whole ? lines : target.end;
+  const E = await engine();
+  const b = deferred
+    ? deferredBinding(E.hashText, source, lines, target.start, end, st)
+    : E.bindAnchor(source, lang, target.start, end, st);
+
+  const now = opts.now ?? Date.now();
+  const symbol = opts.symbol ?? "";
+  try {
+    const anchorNode = h.store.createNode({
+      kind: "anchor",
+      scope: h.scope,
+      status: "fresh",
+      title: `${path}:${spanLabel(b.spanStart, b.spanEnd)}`,
+      body: b.crux.length > 0 ? b.crux : null,
+      actor: opts.actor ?? h.actor,
+    });
+    h.driver.database
+      .query(SQL_ANCHOR_INSERT)
+      .run(
+        anchorNode.id,
+        repoId,
+        repoRoot,
+        path,
+        lang,
+        symbol,
+        b.spanStart,
+        b.spanEnd,
+        b.fileHash,
+        b.spanHash,
+        b.crux,
+        b.cruxNorm,
+        b.mtimeMs,
+        b.sizeBytes,
+        now,
+        // `checked_at = 0` у отложенной привязки — не украшение: порядок
+        // §7.5 идёт по `checked_at ASC`, и недовязанный якорь встаёт первым
+        // в очередь фона сам, без отдельного признака приоритета.
+        deferred ? 0 : now,
+      );
+    h.store.addEdge(nodeId, "touches", anchorNode.id);
+    if (deferred) {
+      // Работа в очереди — чтобы фон случился на СЛЕДУЮЩЕЙ команде, а не
+      // через период §7.5 (300 с). Потеря очереди привязку не теряет:
+      // `checked_at = 0` доведёт её периодом, просто позже.
+      //
+      // `run_after` СДВИНУТ НА ДЕБАУНС ФАЙЛА, и это не осторожность, а
+      // наблюдение живьём: якорь обычно ставят на файл, который агент правит
+      // прямо сейчас, а фон такой файл не трогает (§7.5, дебаунс 2 с). Работа
+      // при этом СНИМАЛАСЬ БЫ ВСЁ РАВНО — строки очереди завершаются после
+      // прогона независимо от того, что он успел, — и подсказка сгорала бы в
+      // прогоне, который заведомо не мог её выполнить: привязка ждала бы
+      // периода 300 с. Сдвиг ровно на окно дебаунса от mtime ФАЙЛА, а не от
+      // «сейчас»: на давно не менявшемся файле он равен нулю и ничего не
+      // откладывает.
+      try {
+        const { jobs } = await import("@myc/store-sqlite");
+        jobs.enqueue(h.driver.database, "anchor_check", {
+          entityId: anchorNode.id,
+          scope: h.scope,
+          payload: { path },
+          now,
+          runAfter: Math.max(now, Math.floor(st.mtimeMs) + ANCHOR_DEBOUNCE_MS),
+        });
+      } catch {
+        /* очередь недоступна — см. выше, привязку доведёт период */
+      }
+    }
+    return {
+      ok: true,
+      anchor: {
+        anchorId: anchorNode.id,
+        path,
+        start: b.spanStart,
+        end: b.spanEnd,
+        state: "fresh",
+        cruxLines: b.crux.length === 0 ? 0 : b.crux.split("\n").length,
+        fileHash: b.fileHash,
+        deferred,
+        sizeBytes: b.sizeBytes,
+      },
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      code: "store.error",
+      msg: e instanceof Error ? e.message : String(e),
+      cause: e,
+    };
+  }
 }
 
 function buildAnchorAdd(deps: StoreDeps | undefined): Command {
@@ -387,78 +690,45 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
         if (!resolved.ok) return resolved.failure;
         const node = resolved.node;
 
-        const { repoId, repoRoot } = anchorRepo(h);
-        const path = repoRelative(repoRoot, target.path, mainCwd(h, ctx));
-        const abs = localFile(h, join(repoRoot, path));
-        if (!existsSync(abs)) {
-          return failure(
-            "notfound.file",
-            `файла нет: ${path} (корень репозитория ${repoRoot})`,
-            ExitCode.NOTFOUND,
-          );
-        }
-
-        const source = readFileSync(abs, "utf8");
-        const lang = langOf(path);
-        const lines = source.split("\n").length;
-        const end = target.whole ? lines : target.end;
-        const b = (await engine()).bindAnchor(source, lang, target.start, end, statSync(abs));
-
-        const now = Date.now();
+        const { repoId } = anchorRepo(h);
         const symbol = S.flagStr(ctx, "symbol") ?? "";
-        let anchorId: string;
-        try {
-          const anchorNode = h.store.createNode({
-            kind: "anchor",
-            scope: h.scope,
-            status: "fresh",
-            title: `${path}:${spanLabel(b.spanStart, b.spanEnd)}`,
-            body: b.crux.length > 0 ? b.crux : null,
-            actor: S.flagStr(ctx, "as") ?? h.actor,
-          });
-          anchorId = anchorNode.id;
-          h.driver.database
-            .query(
-              `INSERT INTO anchors (node_id, repo_id, repo_root, path, lang, symbol,
-                                    span_start, span_end, file_hash, span_hash, crux, crux_norm,
-                                    state, drift, mtime_ms, size_bytes, bound_at, checked_at)
-               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'fresh',1.0,?13,?14,?15,?15)`,
-            )
-            .run(
-              anchorId,
-              repoId,
-              repoRoot,
-              path,
-              lang,
-              symbol,
-              b.spanStart,
-              b.spanEnd,
-              b.fileHash,
-              b.spanHash,
-              b.crux,
-              b.cruxNorm,
-              b.mtimeMs,
-              b.sizeBytes,
-              now,
-            );
-          h.store.addEdge(node.id, "touches", anchorId);
-        } catch (e) {
-          return S.graphFailure(e);
+        const bound = await bindAnchorAt(h, node.id, target, ctx.globals.directory ?? process.cwd(), {
+          symbol,
+          ...(S.flagStr(ctx, "as") !== undefined ? { actor: S.flagStr(ctx, "as")! } : {}),
+        });
+        if (!bound.ok) {
+          if (bound.code === "notfound.file") {
+            return failure("notfound.file", bound.msg, ExitCode.NOTFOUND);
+          }
+          if (bound.code === "outside.repo") {
+            return failure("usage.outside_repo", bound.msg, ExitCode.USAGE);
+          }
+          return S.graphFailure(bound.cause);
         }
+        const a = bound.anchor;
 
         const data: AddData = {
-          anchor_id: anchorId,
+          anchor_id: a.anchorId,
           node_id: node.id,
           repo: repoId,
-          path,
-          start: b.spanStart,
-          end: b.spanEnd,
+          path: a.path,
+          start: a.start,
+          end: a.end,
           symbol,
-          state: "fresh",
-          crux_lines: b.crux.length === 0 ? 0 : b.crux.split("\n").length,
-          file_hash: b.fileHash,
+          state: a.state,
+          crux_lines: a.cruxLines,
+          file_hash: a.fileHash,
+          deferred: a.deferred,
+          size_bytes: a.sizeBytes,
           took_ms: Math.round((performance.now() - t0) * 10) / 10,
         };
+        if (a.deferred) {
+          ctx.warn(
+            "anchor.deferred",
+            `crux отложен в фон: ${kb(a.sizeBytes)} больше порога ${kb(anchorInlineMaxBytes())} — ` +
+              `запись осталась в бюджете, точность догонит фоновая проверка (myc anchor check)`,
+          );
+        }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
       } finally {
         h.close();
@@ -467,14 +737,109 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
     renderHuman: (raw) => {
       const d = raw as AddData;
       const sym = d.symbol.length > 0 ? ` (${d.symbol})` : "";
+      const crux = d.deferred
+        ? `crux      отложен в фон: ${kb(d.size_bytes)} > ${kb(anchorInlineMaxBytes())} · ${d.file_hash}`
+        : `crux      ${d.crux_lines} строк · ${d.file_hash}`;
       return (
         `${d.anchor_id} anchor fresh · ${d.path}:${spanLabel(d.start, d.end)}${sym}\n` +
         `touches   ${d.node_id}\n` +
-        `crux      ${d.crux_lines} строк · ${d.file_hash}\n` +
+        `${crux}\n` +
         `${d.took_ms} мс\n`
       );
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// `--anchor` у remember и task: тот же путь, что `anchor add`
+// ---------------------------------------------------------------------------
+
+/**
+ * Строка якоря в выводе `remember`/`task`. Раньше здесь всегда стояло
+ * «якорь отложен до myc anchor bind» — фраза неверная дважды: откладывать
+ * больше нечего, а команды `myc anchor bind` не существует (она `add`).
+ */
+export interface AnchorFlagResult {
+  readonly path: string;
+  readonly start: number;
+  readonly end: number;
+  /** Узел якоря; отсутствует — привязать не удалось. */
+  readonly anchor_id?: string;
+  readonly state: string;
+  /** Почему не привязан. Пусто — привязан. */
+  readonly reason?: string;
+  /** Привязан, но crux снимет фон: файл больше порога S66. */
+  readonly deferred?: boolean;
+  /** Размер файла в байтах — число, по которому принято решение. */
+  readonly size_bytes?: number;
+}
+
+/**
+ * ПРИВЯЗАТЬ ИЛИ СКАЗАТЬ ВСЛУХ, ПОЧЕМУ НЕТ. Отказать целиком нельзя: узел уже
+ * записан, и уронить запись из-за опечатки в пути значило бы потерять текст,
+ * который агент только что сформулировал. Поэтому неудача — это громкая
+ * деградация (И2): намерение остаётся в `attrs.anchors` со `state='pending'`
+ * (оттуда его читает `anchorPathsOf`, и класс задачи не теряет ось scope),
+ * а причина уходит в WARN и в строку вывода.
+ *
+ * При УСПЕХЕ `attrs.anchors` НЕ ПИШЕТСЯ: якорь есть в базе настоящий, и
+ * вторая его копия в attrs дала бы `show` две строки об одном якоре, а
+ * `anchorPathsOf` — один и тот же путь дважды.
+ */
+export async function attachAnchorFlag(
+  h: StoreHandle,
+  nodeId: string,
+  target: AnchorTarget,
+  cwd: string,
+  warn: (code: string, msg: string) => void,
+): Promise<AnchorFlagResult> {
+  const bound = await bindAnchorAt(h, nodeId, target, cwd);
+  if (bound.ok) {
+    const a = bound.anchor;
+    if (a.deferred) {
+      // И2: заплатить меньше и промолчать об этом — то же, что заплатить
+      // больше и промолчать. Цена названа числом, и названо, кто её доплатит.
+      warn(
+        "anchor.deferred",
+        `crux отложен в фон: ${kb(a.sizeBytes)} больше порога ${kb(anchorInlineMaxBytes())} — ` +
+          `запись осталась в бюджете, точность догонит фоновая проверка (myc anchor check)`,
+      );
+    }
+    return {
+      path: a.path,
+      start: a.start,
+      end: a.end,
+      anchor_id: a.anchorId,
+      state: a.state,
+      ...(a.deferred ? { deferred: true, size_bytes: a.sizeBytes } : {}),
+    };
+  }
+  const end = target.whole ? target.start : target.end;
+  const pending = { path: target.path, start: target.start, end, state: "pending" };
+  try {
+    h.store.updateNode(nodeId, { attrs: { anchors: [pending] } });
+  } catch {
+    // Узел записан, намерение — нет. Причина всё равно прозвучит в WARN.
+  }
+  warn(
+    "anchor.unbound",
+    `якорь не привязан: ${bound.msg}; узел записан, привязка осталась намерением — ` +
+      `myc anchor add ${nodeId} ${target.path}`,
+  );
+  return { path: target.path, start: target.start, end, state: "pending", reason: bound.msg };
+}
+
+/** Строка вывода. Одна на `remember` и `task` — расходиться им больше нечем. */
+export function anchorFlagLine(a: AnchorFlagResult): string {
+  const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
+  if (a.anchor_id !== undefined) {
+    const later =
+      a.deferred === true
+        ? ` · crux отложен в фон (${kb(a.size_bytes ?? 0)} > ${kb(anchorInlineMaxBytes())})`
+        : "";
+    return `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state}${later}`;
+  }
+  return `anchor    ${a.path}:${span} @— не привязан: ${a.reason ?? "причина не названа"} (myc anchor add)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -765,9 +1130,85 @@ export interface CheckData {
   from_dirty: number;
   /** На каком уровне лестницы остановилась проверка — цена в одной строке. */
   by_level: Record<string, number>;
+  /** Отложено дебаунсом §7.5: файл правится прямо сейчас. */
+  skipped_debounce: number;
+  /** Доведено отложенных привязок (S66): crux снят фоном, а не записью. */
+  bound: number;
+  /** Прогон упёрся в бюджет и батч разобран не весь (фон). */
+  budget_hit: boolean;
   changed: CheckLine[];
   dry_run: boolean;
   took_ms: number;
+}
+
+/**
+ * НЕДОВЯЗАННЫЙ ЯКОРЬ — тот, у которого пустой `span_hash` (S66). Настоящая
+ * привязка и любая проверка кладут туда `wy:…` всегда, поэтому предикат
+ * однозначен и не зависит ни от `state`, ни от `checked_at`: строка, ввезённая
+ * извне или засеянная тестом, под него не попадает — у неё хеш есть.
+ */
+export function isDeferredBind(row: { readonly span_hash: string }): boolean {
+  return row.span_hash.length === 0;
+}
+
+/**
+ * ДОВЕСТИ ОТЛОЖЕННУЮ ПРИВЯЗКУ — не лестница, а та самая нормализация, за
+ * которую запись отказалась платить. Лестницу тут звать нельзя, и это не
+ * вкусовщина: уровень 1 сравнил бы mtime и размер, увидел совпадение (файл с
+ * момента записи не менялся — обычный случай) и объявил якорь свежим, НЕ
+ * посчитав crux. Якорь остался бы без текста навсегда, то есть не пережил бы
+ * ни одного рефакторинга — ровно та точность, ради которой crux и заведён.
+ *
+ * Результат отдаётся в форме `AnchorCheck`, чтобы писала его та же
+ * `applyCheck`: две разные записи одной строки — это два места, где можно
+ * разойтись.
+ */
+function finishBind(
+  row: AnchorRow,
+  abs: string,
+  bind: typeof import("@myc/code-intel/anchors").bindAnchor,
+): AnchorCheck {
+  let source: string;
+  let st: StatLike;
+  try {
+    st = statSync(abs);
+    source = readFileSync(abs, "utf8");
+  } catch {
+    // Файл исчез между записью и фоном. `span_hash` остаётся пустым — якорь
+    // остаётся недовязанным, и следующий прогон попробует снова, если файл
+    // вернётся. Врать про `fresh` на пропавшем файле нельзя.
+    return {
+      state: "stale",
+      level: 0,
+      moved: false,
+      spanStart: row.span_start,
+      spanEnd: row.span_end,
+      drift: 0,
+      fileHash: row.file_hash,
+      spanHash: "",
+      crux: "",
+      cruxNorm: "",
+      mtimeMs: row.mtime_ms,
+      sizeBytes: row.size_bytes,
+      reason: "привязку не довести: файл не найден",
+    };
+  }
+  const b = bind(source, row.lang, row.span_start, row.span_end, st);
+  return {
+    state: "fresh",
+    level: 3,
+    moved: false,
+    spanStart: b.spanStart,
+    spanEnd: b.spanEnd,
+    drift: 1,
+    fileHash: b.fileHash,
+    spanHash: b.spanHash,
+    crux: b.crux,
+    cruxNorm: b.cruxNorm,
+    mtimeMs: b.mtimeMs,
+    sizeBytes: b.sizeBytes,
+    reason: "привязка довязана: crux снят с файла",
+  };
 }
 
 function applyCheck(
@@ -807,6 +1248,180 @@ function applyCheck(
   }
 }
 
+/**
+ * ПРОГОН ЛЕСТНИЦЫ ПО БАТЧУ — общее тело ручного `myc anchor check` и фонового
+ * потребителя `jobs(kind='anchor_check')` (drain.ts). Разница между ними —
+ * ТОЛЬКО в аргументах: фон приходит с дебаунсом 2 с и бюджетом времени,
+ * человек — без обоих и, как правило, с охватом одного репозитория.
+ *
+ * ПОРЯДОК §7.5: `checked_at ASC` среди `state <> 'lost'`, батч ≤ 256. Грязные
+ * пути (журнал хука post-edit плюс payload работ очереди) идут ПЕРВЫМИ, и
+ * берутся они ОТДЕЛЬНЫМ запросом, а не сортировкой прочитанной таблицы:
+ * `.all()` по всей `anchors` стоил бы 50k прочитанных строк на репозиторий с
+ * 50k якорей, тогда как приёмка §7.5 обещает батч, а не скан.
+ *
+ * БЮДЖЕТ ПРОВЕРЯЕТСЯ ПЕРЕД КАЖДЫМ ЯКОРЕМ, и недоразобранный батч — это норма,
+ * а не потеря: следующий прогон возьмёт те же строки, потому что их
+ * `checked_at` не сдвинулся, и порядок `checked_at ASC` ставит их первыми.
+ *
+ * ДВЕ РАБОТЫ, А НЕ ОДНА (S66). Строка с пустым `span_hash` — это не «якорь,
+ * который надо проверить», а «привязка, которую запись не довела»: ей нужна
+ * нормализация файла, а не лестница. Обе живут в одном батче и в одном
+ * порядке (`checked_at = 0` ставит недовязанные первыми), но идут разными
+ * путями и считаются раздельно — `bound` против `checked`.
+ */
+export interface SweepOptions {
+  /** Охват одного репозитория; пусто — все репозитории воркспейса (фон). */
+  readonly repoId?: string;
+  /** Корень для строк со старым пустым `repo_root`. */
+  readonly repoRoot: string;
+  /** Корень воркспейса — там лежит `.myc/anchor-dirty.log`. */
+  readonly wsDir: string;
+  readonly limit?: number;
+  readonly pathPrefix?: string;
+  readonly dryRun?: boolean;
+  readonly maxLevel?: MaxLevel;
+  /** Дебаунс §7.5; 0 — проверять всё (ручной вызов). */
+  readonly debounceMs?: number;
+  /** Потолок времени на прогон; 0 — без потолка (ручной вызов). */
+  readonly budgetMs?: number;
+  /** Пути-подсказки поверх журнала: payload работ `anchor_check`. */
+  readonly hintPaths?: readonly string[];
+  readonly now?: number;
+}
+
+/**
+ * Один запрос на обе половины батча. `?3 = 1` — только грязные пути,
+ * `?3 = 0` — все; фильтры репозитория и префикса выключаются пустой строкой,
+ * чтобы у ручного и фонового вызова был ОДИН план, а не два похожих.
+ */
+export const SQL_SWEEP_BATCH = `SELECT * FROM anchors
+ WHERE state <> 'lost'
+   AND (?1 = '' OR repo_id = ?1)
+   AND (?2 = '' OR path LIKE ?2)
+   AND (?3 = 0 OR path IN (SELECT value FROM json_each(?4)))
+ ORDER BY checked_at ASC, node_id ASC
+ LIMIT ?5`;
+
+export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<CheckData> {
+  const t0 = performance.now();
+  const { bindAnchor, checkAnchor } = await engine();
+  const db = h.driver.database;
+  const limit = opts.limit ?? ANCHOR_CHECK_BATCH_DEFAULT;
+  const repoId = opts.repoId ?? "";
+  const like = opts.pathPrefix === undefined ? "" : `${opts.pathPrefix}%`;
+  const debounceMs = opts.debounceMs ?? 0;
+  const budgetMs = opts.budgetMs ?? 0;
+  const now = opts.now ?? Date.now();
+  const dryRun = opts.dryRun === true;
+  const maxLevel = opts.maxLevel ?? 3;
+
+  // Журнал грязных файлов — подсказка «сюда раньше», не источник истины:
+  // потеряв его целиком, система теряет очерёдность и ничего больше.
+  const dirty = new Set(
+    drainDirtyLog(opts.wsDir).map((abs) => repoRelative(opts.repoRoot, abs, opts.repoRoot)),
+  );
+  for (const p of opts.hintPaths ?? []) if (p.length > 0) dirty.add(p);
+  const dirtyJson = JSON.stringify([...dirty]);
+
+  const q = db.query(SQL_SWEEP_BATCH);
+  const batch: AnchorRow[] = [];
+  const taken = new Set<string>();
+  if (dirty.size > 0) {
+    for (const r of q.all(repoId, like, 1, dirtyJson, limit) as AnchorRow[]) {
+      batch.push(r);
+      taken.add(r.node_id);
+    }
+  }
+  if (batch.length < limit) {
+    for (const r of q.all(repoId, like, 0, "[]", limit) as AnchorRow[]) {
+      if (taken.has(r.node_id)) continue;
+      batch.push(r);
+      if (batch.length >= limit) break;
+    }
+  }
+
+  const data: CheckData = {
+    checked: 0,
+    fresh: 0,
+    drifted: 0,
+    stale: 0,
+    lost: 0,
+    moved: 0,
+    from_dirty: batch.filter((r) => dirty.has(r.path)).length,
+    by_level: { "0": 0, "1": 0, "2": 0, "3": 0 },
+    skipped_debounce: 0,
+    bound: 0,
+    budget_hit: false,
+    changed: [],
+    dry_run: dryRun,
+    took_ms: 0,
+  };
+
+  for (const row of batch) {
+    if (budgetMs > 0 && performance.now() - t0 >= budgetMs) {
+      data.budget_hit = true;
+      break;
+    }
+    const root = row.repo_root.length > 0 ? row.repo_root : opts.repoRoot;
+    const abs = join(root, row.path);
+    // Дебаунс: файл, изменённый только что, честнее не трогать вовсе, чем
+    // объявить `stale` по недописанному тексту. Один stat — та же цена, что
+    // уровень 1 лестницы, и платится он только фоном (debounceMs > 0).
+    if (debounceMs > 0) {
+      try {
+        if (now - statSync(abs).mtimeMs < debounceMs) {
+          data.skipped_debounce++;
+          continue;
+        }
+      } catch {
+        // Файла нет — это работа лестницы (уровень 0), не дебаунса.
+      }
+    }
+    const deferred = isDeferredBind(row);
+    const r = deferred
+      ? finishBind(row, abs, bindAnchor)
+      : checkAnchor(toAnchorLike(row), abs, undefined, maxLevel);
+    data.checked++;
+    if (deferred && r.state === "fresh") data.bound++;
+    data[r.state]++;
+    data.by_level[String(r.level)] = (data.by_level[String(r.level)] ?? 0) + 1;
+    if (r.moved) data.moved++;
+    // Довязанный якорь попадает в список изменённых, даже когда состояние не
+    // сдвинулось (`fresh` → `fresh`): без строки вывод сообщал бы «довязано 1»,
+    // не называя, какой именно, — счётчик без имени нечем проверить.
+    if (r.state !== row.state || r.moved || deferred) {
+      data.changed.push({
+        anchor_id: row.node_id,
+        path: row.path,
+        from: spanLabel(row.span_start, row.span_end),
+        to: spanLabel(r.spanStart, r.spanEnd),
+        state: r.state,
+        was: row.state,
+        level: r.level,
+        moved: r.moved,
+        reason: r.reason,
+      });
+    }
+    if (!dryRun) {
+      applyCheck(db, h, row, r, now);
+      // Тело anchor-узла — это crux; у отложенной привязки его не было вовсе
+      // (`null`), и `applyCheck` про узлы знает только статус. Без этой
+      // строки `show` и `recall` показывали бы пустой якорь навсегда.
+      if (deferred && r.crux.length > 0) {
+        try {
+          h.store.updateNode(row.node_id, { body: r.crux });
+        } catch {
+          // Узел якоря мог быть удалён вручную: строка обновлена, тело — нет.
+        }
+      }
+    }
+  }
+
+  data.took_ms = Math.round((performance.now() - t0) * 10) / 10;
+  return data;
+}
+
 function buildAnchorCheck(deps: StoreDeps | undefined): Command {
   return {
     name: "check",
@@ -818,77 +1433,25 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
       "moved, finds it by its crux text and re-points the anchor. Files marked by the post-edit " +
       "hook are checked first.",
     handler: async (ctx) => {
-      const t0 = performance.now();
       const S = await heavy();
-      const { checkAnchor } = await engine();
       const opened = await (deps ?? S.realStoreDeps).openStore(ctx);
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const db = h.driver.database;
         const { repoId, repoRoot } = anchorRepo(h);
-        const limit = S.flagNum(ctx, "limit") ?? ANCHOR_CHECK_BATCH_DEFAULT;
-        const dryRun = ctx.flags["dry-run"] === true;
         const levelRaw = S.flagNum(ctx, "level");
-        const maxLevel = (levelRaw === 1 || levelRaw === 2 ? levelRaw : 3) as MaxLevel;
-        const prefix = S.flagStr(ctx, "path");
-
-        // Журнал грязных файлов — подсказка «сюда раньше», не источник истины.
-        const dirty = drainDirtyLog(h.wsDir).map((abs) => repoRelative(repoRoot, abs, repoRoot));
-        const dirtySet = new Set(dirty);
-
-        const all = db
-          .query(
-            `SELECT * FROM anchors
-              WHERE repo_id = ?1 AND state <> 'lost'
-              ORDER BY checked_at ASC, node_id ASC`,
-          )
-          .all(repoId) as AnchorRow[];
-
-        const wanted = all.filter(
-          (r) => prefix === undefined || r.path.startsWith(prefix),
-        );
-        // Грязные вперёд, остальные по checked_at — порядок §7.5.
-        wanted.sort((a, b) => Number(dirtySet.has(b.path)) - Number(dirtySet.has(a.path)));
-        const batch = wanted.slice(0, limit);
-
-        const now = Date.now();
-        const data: CheckData = {
-          checked: 0,
-          fresh: 0,
-          drifted: 0,
-          stale: 0,
-          lost: 0,
-          moved: 0,
-          from_dirty: batch.filter((r) => dirtySet.has(r.path)).length,
-          by_level: { "0": 0, "1": 0, "2": 0, "3": 0 },
-          changed: [],
-          dry_run: dryRun,
-          took_ms: 0,
-        };
-
-        for (const row of batch) {
-          const root = row.repo_root.length > 0 ? row.repo_root : repoRoot;
-          const r = checkAnchor(toAnchorLike(row), join(root, row.path), undefined, maxLevel);
-          data.checked++;
-          data[r.state]++;
-          data.by_level[String(r.level)] = (data.by_level[String(r.level)] ?? 0) + 1;
-          if (r.moved) data.moved++;
-          if (r.state !== row.state || r.moved) {
-            data.changed.push({
-              anchor_id: row.node_id,
-              path: row.path,
-              from: spanLabel(row.span_start, row.span_end),
-              to: spanLabel(r.spanStart, r.spanEnd),
-              state: r.state,
-              was: row.state,
-              level: r.level,
-              moved: r.moved,
-              reason: r.reason,
-            });
-          }
-          if (!dryRun) applyCheck(db, h, row, r, now);
-        }
+        // Ручной вызов — БЕЗ дебаунса и БЕЗ бюджета: спросили про сейчас.
+        const data = await sweepAnchors(h, {
+          repoId,
+          repoRoot,
+          wsDir: h.wsDir,
+          limit: S.flagNum(ctx, "limit") ?? ANCHOR_CHECK_BATCH_DEFAULT,
+          ...(S.flagStr(ctx, "path") !== undefined
+            ? { pathPrefix: S.flagStr(ctx, "path")! }
+            : {}),
+          dryRun: ctx.flags["dry-run"] === true,
+          maxLevel: (levelRaw === 1 || levelRaw === 2 ? levelRaw : 3) as MaxLevel,
+        });
 
         if (data.stale > 0 || data.lost > 0) {
           ctx.warn(
@@ -896,8 +1459,6 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
             `${data.stale + data.lost} якорей протухло — привязка больше не указывает на живой код`,
           );
         }
-
-        data.took_ms = Math.round((performance.now() - t0) * 10) / 10;
         return { ok: true, data, meta: { took_ms: data.took_ms } };
       } finally {
         h.close();
@@ -911,7 +1472,10 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
         `${d.checked} якорей · fresh ${d.fresh} · drifted ${d.drifted} · stale ${d.stale} · lost ${d.lost}${dry}`,
       );
       lines.push(
-        `уровни: 1 ${d.by_level["1"] ?? 0} · 2 ${d.by_level["2"] ?? 0} · 3 ${d.by_level["3"] ?? 0} · нет файла ${d.by_level["0"] ?? 0} · из журнала ${d.from_dirty}`,
+        `уровни: 1 ${d.by_level["1"] ?? 0} · 2 ${d.by_level["2"] ?? 0} · 3 ${d.by_level["3"] ?? 0} · нет файла ${d.by_level["0"] ?? 0} · из журнала ${d.from_dirty}` +
+          (d.bound > 0 ? ` · довязано ${d.bound}` : "") +
+          (d.skipped_debounce > 0 ? ` · отложено дебаунсом ${d.skipped_debounce}` : "") +
+          (d.budget_hit ? " · упёрлось в бюджет" : ""),
       );
       for (const c of d.changed) {
         const span = c.from === c.to ? c.from : `${c.from} → ${c.to}`;

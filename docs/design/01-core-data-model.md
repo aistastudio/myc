@@ -190,7 +190,7 @@ ordinal(n) = позиция n среди детей parent(n), сортиров�
 | Две ветки правили один узел | Разрешение по полям (§9.2), ID не трогается |
 | Реальная коллизия ID при импорте | `myc import` детектирует: PK совпал, `content_hash` разный. Действие: узлу **из импортируемой стороны** назначается новый ID (перегенерация с добавлением `site_id` в seed), все его рёбра и оплог-записи переписываются, в `myc doctor` пишется отчёт. Локальная сторона не трогается — так операция идемпотентна при повторном импорте |
 | Иерархия перестроилась (задачу перевесили под другого родителя) | Дотовые пути всех потомков меняются, канонические ID — нет. Ни одно ребро не ломается |
-| Несколько агентов в одном процессе/машине | Один `site_id` на БД-реплику, конкуренция снимается транзакцией `BEGIN IMMEDIATE`; ID независимы (в seed входит `random_bytes(8)` + `now_ns`) |
+| Несколько агентов в одном процессе/машине | Один `site_id` на ФИЗИЧЕСКИЙ ЭКЗЕМПЛЯР базы (§9.2.1, S65), конкуренция снимается транзакцией `BEGIN IMMEDIATE`; ID независимы (в seed входит `random_bytes(8)` + `now_ns`) |
 
 ---
 
@@ -203,15 +203,15 @@ ordinal(n) = позиция n среди детей parent(n), сортиров�
 
 | Тип | Читается как | Обратное (виртуальное) | Транзитивно | Ациклично (проверяем) | Материализуем | Кто ставит | Что делает в ретривале |
 |---|---|---|---|---|---|---|---|
-| `blocks` | **src** блокирует **dst** | `blocked_by` | да (для готовности) | да, глубина ≤ 64 | **счётчик `nodes.open_blockers`** | человек/агент | `ready` = `open_blockers=0` |
-| `parent` | **src** — ребёнок **dst** | `children` | да | да, глубина ≤ 32 | **`parent_closure(ancestor,descendant,depth)`** | человек/агент/парсер `doc` | поддерево, дотовые пути, наследование `scope`/`acl` |
+| `blocks` | **src** блокирует **dst** | `blocked_by` | да (для готовности) | да, глубина ≤ 64 | **счётчики `nodes.open_blockers` и `nodes.anc_blockers`** | человек/агент | `ready` = `open_blockers=0 AND anc_blockers=0` |
+| `parent` | **src** — ребёнок **dst** | `children` | да | да, глубина ≤ 32 | **`parent_closure(ancestor,descendant,depth)`**, поверх него `nodes.anc_blockers` | человек/агент/парсер `doc` | поддерево, дотовые пути, наследование `scope`/`acl` **и блокеров** |
 | `relates` | связано с | `relates` (симметрично) | **нет** | нет | — | absorb, человек | расширение выдачи на 1 хоп, вес = косинус |
 | `duplicates` | **src** — дубликат канонического **dst** | `duplicated_by` | да, но **схлопывается**: при вставке путь сжимается до корня | да | путь сжат ⇒ глубина всегда 1 | absorb | `src` скрыт из выдачи, `dst.seen_count++` |
 | `supersedes` | **src** заменяет **dst** | `superseded_by` | да (цепочка) | да | **`nodes.head_id`** у всех, кроме головы | absorb, человек | режим `active` показывает только голову |
 | `replies_to` | **src** — ответ на **dst** | `replies` | да (тред) | да | `attrs.thread_root` (generated column `g_thread_root`) | слой сообщений | тред целиком одним индекс-сканом |
 | `derived_from` | **src** выведен из **dst** | `derives` | да (провенанс) | да | — (обход по требованию, глубина ≤ 8) | дистиллятор, absorb | «покажи источники» для L2/L3; блокирует decay источника |
 | `mentions` | **src** упоминает сущность **dst** | `mentioned_by` | **нет** | нет | — | извлекатель сущностей | вход в граф по имени сущности |
-| `touches` | **src** привязан к якорю **dst** | `touched_by` | **нет** | нет | — | `myc anchor bind`, агент | код↔память в обе стороны; протухание якоря помечает ребро подозрительным |
+| `touches` | **src** привязан к якорю **dst** | `touched_by` | **нет** | нет | — | `myc anchor add`, `myc remember\|task --anchor`, агент | код↔память в обе стороны; протухание якоря помечает ребро подозрительным |
 | `evidence` | **src** обоснован **dst** (фрагмент/лог/тест) | `evidence_for` | **нет** | нет | — | absorb, агент | пересчёт `confidence`; показ «на чём основано» |
 | `contradicts` | **src** противоречит **dst** | `contradicts` (симметрично) | **нет** | нет | — | absorb (класс `contradiction`) | оба узла показываются вместе и помечаются в выдаче |
 
@@ -226,6 +226,14 @@ ordinal(n) = позиция n среди детей parent(n), сортиров�
 * `blocks` → `nodes.open_blockers`. `ready` становится сканом частичного индекса.
   Стоимость поддержки: 1 `UPDATE` по PK на вставку ребра и на смену статуса
   (амортизированно ≤ 30 мкс). Пересборка при подозрении: `myc doctor --recount`.
+* `blocks` + `parent` → `nodes.anc_blockers` (миграция 10): сколько ПРЕДКОВ узла
+  держат открытый блокер. Готовность — `open_blockers=0 AND anc_blockers=0`, оба
+  терма в предикате `ix_nodes_ready`, скан по-прежнему один. Причина: без
+  наследования блокер на эпике не блокирует ничего — у контейнера нет своей
+  работы, а дети выдавались все (на снимке cherry — 51 задача из 195, и ровно
+  на эти 51 `myc ready` расходился с `bd ready`). Цена на чтении нулевая, на
+  записи — ±1 по всему поддереву: 100 потомков 0.28 мс, 1 000 — 1.96 мс,
+  5 000 — 9.4 мс (мимо бюджета записи; вынос в `jobs` — memory-sj70gctz88y1).
 * `parent` → `parent_closure`. Вставка ребра `(c → p)` добавляет
   `|ancestors(p)|+1 × |descendants(c)|+1` строк; при глубине ≤ 32 и типичной
   ширине это < 200 строк.
@@ -721,6 +729,10 @@ CREATE TABLE myc_meta (
 ) WITHOUT ROWID;
 -- обязательные ключи: schema_version, site_id, id_prefix, id_len,
 --                     embed_model, embed_dim, acl_enforced, created_at, myc_version
+-- личность реплики (S65, §9.2): site_instance — JSON {host,dev,ino,path}
+--   физического файла базы, за которым закреплён нынешний site_id;
+--   site_id_prev — JSON-массив прежних site_id этой реплики, старейший первым;
+--   last_seq — локальный счётчик seq; при перевыпуске site_id обнуляется
 
 CREATE TABLE schema_migrations (
   version    INTEGER PRIMARY KEY,
@@ -800,7 +812,8 @@ CREATE UNIQUE INDEX ux_nodes_content
 -- ready-очередь: один скан частичного индекса
 CREATE INDEX ix_nodes_ready
     ON nodes(scope, priority, updated_at)
- WHERE kind='task' AND status='open' AND open_blockers=0 AND deleted_at IS NULL;
+ WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
+   AND deleted_at IS NULL;
 
 -- prime: L2+L3 по scope, по убыванию salience
 CREATE INDEX ix_nodes_prime
@@ -1123,7 +1136,8 @@ CREATE TABLE nodes (
 
 CREATE UNIQUE INDEX ux_nodes_content ON nodes(scope, kind, content_hash) WHERE deleted_at IS NULL;
 CREATE INDEX ix_nodes_ready ON nodes(scope, priority, updated_at)
-  WHERE kind='task' AND status='open' AND open_blockers=0 AND deleted_at IS NULL;
+  WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
+   AND deleted_at IS NULL;
 CREATE INDEX ix_nodes_prime ON nodes(scope, layer, salience DESC)
   WHERE layer >= 2 AND head_id IS NULL AND deleted_at IS NULL;
 CREATE INDEX ix_nodes_tsv   ON nodes USING gin(tsv);
@@ -1390,8 +1404,59 @@ recv_hlc(state, phys_ms, remote_hlc):
 
 Защита от съехавших часов: если `r_ts > phys_ms + 300000` (5 мин вперёд) — операция
 принимается, но в `myc_health` пишется `sync: degraded (peer clock skew +Xс)`.
-`site_id` — UUIDv4, генерируется при `myc init` на **реплику БД**, а не на человека:
-две копии базы на одной машине — два сайта.
+#### 9.2.1 `site_id` — свойство физического экземпляра базы (решение S65)
+
+`site_id` (форма `local-<slug>-<base36>`, минтится при `myc init`) принадлежит не
+воркспейсу и не человеку, а **физическому файлу `myc.db`**. Две копии базы —
+два сайта, и это не пожелание, а проверяемое при каждом открытии свойство.
+
+Почему так, а не «один воркспейс — один site_id». `op_id = <site_id>:<seq>`, и
+весь обмен через git держится на том, что под одним `site_id` пишет ровно одна
+база. `cp -R` каталога воркспейса уносит `site_id` внутри `myc.db`: обе копии
+продолжают нумерацию с того же `seq`, и РАЗНЫЕ операции приезжают под
+ОДИНАКОВЫМИ op_id. Найдено живьём (memory-5xm01a8bkbvn): merge печатал
+«объединение по op_id, +0 строк» и код 0, а три узла исчезали молча.
+
+**Как проверяется.** Рядом с `site_id` в `myc_meta` лежит `site_instance` —
+`{host, dev, ino, path}` того файла, за которым идентификатор закреплён. При
+КАЖДОМ открытии базы наблюдаемый экземпляр сверяется с записанным
+(`packages/store-sqlite/src/site-identity.ts`):
+
+| что видно | решение | что записывается |
+|---|---|---|
+| `site_id` нет | `minted` | новый `site_id` + `site_instance` |
+| `site_instance` нет (база старше S65) | `adopted` | `site_instance`; `site_id` не трогается |
+| экземпляр совпал | `existing` | ничего, либо обновлённый путь после `mv` |
+| экземпляр другой | `reissued` | новый `site_id`, прежний → `site_id_prev`, `last_seq` → 0, **WARN человеку** |
+
+Равенство экземпляров: `host` обязателен всегда, `ino` обязателен, плюс `dev`
+**или** `path` (смена `dev` без смены пути — перемонтирование или перезагрузка,
+а не копия). Путь в равенство не входит: `mv` каталога проекта — законная
+операция. Правило выведено замером на Darwin 25.6/APFS, не рассуждением;
+таблица замеров и разбор цены ошибки — в шапке `site-identity.ts` и в S65
+(`docs/design/ARCHITECTURE.md`).
+
+**Где подключено.** Пять мест, где база открывается или создаётся, — все через
+`ensureSiteId`: `cli/src/commands/store.ts` (`openWorkspaceAt`,
+`createPersonalWorkspace`), `cli/src/commands/init.ts` (`createWorkspaceDb`),
+`cli/src/drain.ts` (`openDrainHandle`), `mcp/src/store.ts` (`openMcpStore`).
+Полноту стережёт `cli/src/site-identity.wiring.test.ts`: он сам находит места,
+где `site_id` может родиться, и требует, чтобы каждое прошло через проверку —
+подключение четырёх из пяти давало бы перевыпуск через раз, в зависимости от
+того, кто открыл базу первым.
+
+**Что происходит с уже записанными операциями: ничего.** Перевыпуск не
+переписывает историю. Файл `oplog/<прежний site_id>/NNNNN.jsonl` в копии просто
+перестаёт расти, оставаясь ПРЕФИКСОМ файла оригинала, и объединение по op_id
+дедуплицирует общую часть как обычный повтор. Форкается только `seq`: под новым
+именем в оплоге ещё нет ни одной операции, поэтому `last_seq` обнуляется, иначе
+нумерация началась бы с чужого места. HLC не задет — монотонность держится на
+хвосте того же оплога, тай-брейк по `site_id` остаётся детерминированным.
+
+Операции, выписанные копией МЕЖДУ `cp -R` и первым открытием после S65,
+перевыпуск уже не спасает: они выписаны под общим именем. Их делает громкими
+вторая половина решения — сравнение содержимого при совпадении op_id в
+`unionOplogText` (§экспорт) и отказ драйвера слияния с `conflict.op_id`.
 
 ### 9.3 Применение операции
 
@@ -1463,7 +1528,7 @@ COMMIT;
 ```sql
 WITH cand AS (
   SELECT id FROM nodes
-   WHERE scope=$1 AND kind='task' AND status='open' AND open_blockers=0
+   WHERE scope=$1 AND kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
      AND deleted_at IS NULL AND (lease_expires=0 OR lease_expires<$4)
    ORDER BY priority, updated_at
    LIMIT $7 FOR UPDATE SKIP LOCKED)

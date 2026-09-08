@@ -84,6 +84,8 @@ import {
   type ReachInfo,
 } from "@myc/core";
 import type { QueryDef } from "@myc/core";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { ExitCode } from "../exit.ts";
 import { CLI_VERSION } from "../index.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
@@ -433,6 +435,12 @@ export interface PrimeData {
   readonly idx_ok: boolean;
   readonly now: number;
   readonly empty: boolean;
+  /**
+   * Рядом лежит `.beads/` — есть что импортировать. Считается ТОЛЬКО для
+   * пустого воркспейса: совет про импорт печатается лишь новичку, а один
+   * `existsSync` в этой ветке горячему пути (бюджет prime 30 мс) не мешает.
+   */
+  readonly beads: boolean;
   readonly role: Role;
   readonly ready_total: number;
   readonly ready: readonly PrimeReadyRow[];
@@ -591,6 +599,9 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
         const now = Date.now();
         const nodeCount = h.driver.one<{ n: number }>(QP.prime_node_count, [h.scope])?.n ?? 0;
         const empty = nodeCount === 0;
+        // Проверяем, а не советуем «(если есть)»: условие, которое человек
+        // должен проверить сам, — это не подсказка, а перекладывание работы.
+        const beads = empty && existsSync(join(h.wsDir, ".beads"));
 
         // Тот же охват репозитория (S59), что и `ready`: своё плюс общее,
         // скрытое названо числом в подвале. Разошедшиеся умолчания двух
@@ -650,6 +661,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
           idx_ok: true,
           now,
           empty,
+          beads,
           role,
           ready_total: readyCollected.total,
           ready: readyCollected.items.map(toReadyRow),
@@ -794,9 +806,9 @@ function buildSections(d: Omit<PrimeData, "chars" | "truncated" | "cut">, md: bo
       key: "next",
       text: [
         `${h1}NEXT`,
+        ...(d.beads ? ["myc import --from beads       рядом .beads/ — задачи можно перенести"] : []),
         'myc create "<первая задача>" -p P1',
         'myc remember "<что важно знать о проекте>"',
-        "myc import --from beads       найдено .beads/ (если есть)",
       ].join("\n"),
     });
     return sections;

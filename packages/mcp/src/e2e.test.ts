@@ -6,6 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { CLI_VERSION } from "@myc/cli";
 import { cliTestEnv } from "@myc/core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -137,6 +138,13 @@ describe("myc mcp: stdio end-to-end", () => {
           clientInfo: { name: "e2e", version: "0" },
         });
         expect(init.error).toBeUndefined();
+        // serverInfo.version — единственное место, где клиент узнаёт версию
+        // сервера. Сверяем с CLI_VERSION, а не с «не 0.0.0»: дефолт сервера
+        // именно "0.0.0", и проверка на неравенство пропустила бы любую
+        // другую неправду.
+        const info = init.result!["serverInfo"] as Record<string, unknown>;
+        expect(info["name"]).toBe("myc");
+        expect(info["version"]).toBe(CLI_VERSION);
         const instructions = String(init.result!["instructions"] ?? "");
         expect(instructions).toContain("myc — память и задачи");
         expect(instructions).toContain("MYC BOOTSTRAP");

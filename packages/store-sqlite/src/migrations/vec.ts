@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { SchemaError, type Migration } from "../migrate.ts";
+import { SchemaError, SCHEMA_UPGRADE_HINT, type Migration } from "../migrate.ts";
 import { vecMigration001Init } from "./vec-001-init.ts";
 import { vecMigration002RerankF32 } from "./vec-002-rerank-f32.ts";
 import { vecMigration003RerankF32LruIndex } from "./vec-003-rerank-f32-lru-index.ts";
@@ -136,7 +136,7 @@ export async function migrateVectors(
     throw new SchemaError(
       "schema.newer",
       `векторная схема БД (${maxApplied}) новее известной бинарю (${maxKnown}). ` +
-        "Обновите myc: `myc self-update`.",
+        SCHEMA_UPGRADE_HINT,
     );
   }
 

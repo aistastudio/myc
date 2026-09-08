@@ -37,7 +37,14 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
-import { migrate, migrations, Q } from "@myc/store-sqlite";
+import {
+  databaseMeta,
+  ensureSiteId,
+  migrate,
+  migrations,
+  mintSiteId,
+  Q,
+} from "@myc/store-sqlite";
 import {
   DEFAULT_CODE_INTEL_MODE,
   probeGraftPresence,
@@ -49,6 +56,7 @@ import {
 import { ExitCode } from "../exit.ts";
 import { CLI_VERSION } from "../index.ts";
 import { plural } from "../render.ts";
+import { maybeSpawnUpdateCheck, updateCheckMode, updateNoticeFor } from "../update-check.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import {
   createPersonalWorkspace,
@@ -321,8 +329,16 @@ async function createWorkspaceDb(
     for (const pragma of PRAGMAS) db.exec(pragma);
     await migrate(db, { migrations, writable: true });
     const schemaVersion = migrations.reduce((m, mig) => Math.max(m, mig.version), 0);
-    const siteId = `local-${slug}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36)}`;
-    db.prepare(Q.meta_set.sql).run("site_id", siteId);
+    // Минт первого site_id идёт тем же путём, что и все прочие открытия
+    // (S65): вместе с идентификатором записывается физический экземпляр, к
+    // которому он привязан. Без этой записи копия, снятая с только что
+    // созданного воркспейса, была бы неотличима от оригинала — усыновление
+    // (origin "adopted") сработало бы для обеих.
+    const { siteId } = ensureSiteId({
+      meta: databaseMeta(db),
+      dbPath,
+      mint: () => mintSiteId(slug),
+    });
     db.prepare(Q.meta_set.sql).run("slug", slug);
     return { siteId, schemaVersion };
   } finally {
@@ -468,6 +484,19 @@ function worktreeLine(w: NonNullable<InitData["worktree"]>, idempotent: boolean)
   );
 }
 
+/**
+ * Строка «сеть» в выводе init. Раньше здесь стояло безусловное «сеть не
+ * использовалась» — и это перестало бы быть правдой ровно в тот момент, когда
+ * появилась проверка обновлений: при MYC_UPDATE_CHECK=1 init поднимает
+ * отсоединённый процесс, который в сеть идёт. Утверждение, которое врёт в
+ * одном из режимов, хуже отсутствующего (И2), поэтому оно теперь ЧИТАЕТ режим.
+ */
+function networkClaim(env: NodeJS.ProcessEnv = process.env): string {
+  return updateCheckMode(env) === "auto"
+    ? "сама команда сеть не трогала (проверка обновлений — в отдельном процессе)"
+    : "сеть не использовалась";
+}
+
 function renderInitHuman(raw: unknown): string {
   const d = raw as InitData;
   const lines: string[] = [];
@@ -501,7 +530,7 @@ function renderInitHuman(raw: unknown): string {
     lines.push("дальше:");
     lines.push(`  ${d.next}`);
     lines.push("");
-    lines.push(`готово за ${d.took_ms} мс · сеть не использовалась`);
+    lines.push(`готово за ${d.took_ms} мс · ${networkClaim()}`);
     return `${lines.join("\n")}\n`;
   }
 
@@ -533,7 +562,7 @@ function renderInitHuman(raw: unknown): string {
   lines.push("дальше:");
   lines.push(`  ${d.next}`);
   lines.push("");
-  lines.push(`готово за ${d.took_ms} мс · сеть не использовалась`);
+  lines.push(`готово за ${d.took_ms} мс · ${networkClaim()}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -662,7 +691,9 @@ export function createInitCommand(): Command {
       },
     ],
     help:
-      "Zero questions, zero network calls. Autodetects the git root and slug from the " +
+      "Zero questions, and no network call of its own: the update check is off by default " +
+      "(MYC_UPDATE_CHECK=1 turns it on, and even then it runs as a detached process this " +
+      "command never waits for). Autodetects the git root and slug from the " +
       "directory name; both are shown, never confirmed. Re-running on an existing " +
       "workspace is a no-op (exit 0) unless --force is given. The embeddings model is " +
       "not downloaded here — that's `myc models fetch`, and its absence never blocks task work. " +
@@ -673,6 +704,12 @@ export function createInitCommand(): Command {
       "without a terminal.",
     handler: async (ctx: CommandContext): Promise<CommandResult> => {
       const t0 = performance.now();
+
+      // Проверка обновлений: НИЧЕГО не ждём. По умолчанию (режим `manual`)
+      // это no-op — ни файла, ни процесса; при MYC_UPDATE_CHECK=1 и кеше
+      // старше суток поднимается ОТСОЕДИНЁННЫЙ `myc version --check`, который
+      // пишет только в кеш. Латентность init не меняется: spawn без await.
+      maybeSpawnUpdateCheck();
 
       if (flagBool(ctx, "global")) {
         const home = personalHome();
@@ -911,9 +948,16 @@ export function createInitCommand(): Command {
       };
       return { ok: true, data, meta: { took_ms: data.took_ms, idempotent: false } };
     },
-    renderHuman: (raw, _ctx) =>
-      typeof raw === "object" && raw !== null && "git" in (raw as object)
-        ? renderInitHuman(raw)
-        : renderGlobalInitHuman(raw),
+    renderHuman: (raw, _ctx) => {
+      const body =
+        typeof raw === "object" && raw !== null && "git" in (raw as object)
+          ? renderInitHuman(raw)
+          : renderGlobalInitHuman(raw);
+      // Строка об обновлении — ТОЛЬКО в человеческом выводе и ТОЛЬКО из кеша
+      // (решение 2: конверт --json читает агент, обновление касается
+      // человека; сети здесь нет, это чтение файла на сотню байт).
+      const notice = updateNoticeFor(CLI_VERSION);
+      return notice === null ? body : `${body}${notice}\n`;
+    },
   };
 }

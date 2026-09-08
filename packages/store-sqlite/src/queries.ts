@@ -152,6 +152,7 @@ const NODE_COLUMNS = [
   "salience",
   "seen_count",
   "open_blockers",
+  "anc_blockers",
   "head_id",
   "content_hash",
   "acl",
@@ -176,9 +177,9 @@ const NODE_SELECT = NODE_COLUMNS.join(", ");
 const EDGE_SELECT =
   "src, type, dst, weight, add_tag, actor, created_at, hlc, site_id, deleted_at, attrs";
 
-/** Колонки INSERT'а узла — все, кроме материализуемого триггерами счётчика. */
+/** Колонки INSERT'а узла — все, кроме материализуемых триггерами счётчиков. */
 const NODE_INSERT_COLUMNS: readonly string[] = NODE_COLUMNS.filter(
-  (c) => c !== "open_blockers",
+  (c) => c !== "open_blockers" && c !== "anc_blockers",
 );
 
 export const Q = defineQueries({
@@ -507,6 +508,48 @@ export const Q = defineQueries({
              WHERE e.dst = nodes.id AND e.type = 'blocks' AND e.deleted_at IS NULL
                AND s.status NOT IN ('closed','cancelled','superseded','retracted'))`,
     params: [],
+  },
+  // Наследование блокеров вниз по parent (миграция 10). Пересчёт идёт ВТОРЫМ,
+  // после recount_open_blockers: он читает уже исправленные open_blockers
+  // предков, и запись сюда триггеров не будит (в UPDATE OF нет anc_blockers).
+  recount_anc_blockers: {
+    name: "recount_anc_blockers",
+    sql: `UPDATE nodes SET anc_blockers = (
+            SELECT count(*) FROM parent_closure pc JOIN nodes a ON a.id = pc.ancestor
+             WHERE pc.descendant = nodes.id AND a.open_blockers > 0)`,
+    params: [],
+  },
+  // Сверка идёт с ГРАФОМ, а не с соседним счётчиком: если бы «actual»
+  // читался из nodes.open_blockers предка, то разъехавшийся open_blockers
+  // делал бы anc_blockers «сходящимся» — две поломки взаимно замаскировались
+  // бы, и жёсткое удаление ребра осталось бы незамеченным (проверено
+  // мутацией в anc-blockers.test.ts).
+  anc_blockers_drift: {
+    name: "anc_blockers_drift",
+    sql: `SELECT id, anc_blockers AS stored, actual FROM (
+            SELECT n.id AS id, n.anc_blockers AS anc_blockers, (
+              SELECT count(*) FROM parent_closure pc
+               WHERE pc.descendant = n.id
+                 AND (SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.src
+                       WHERE e.dst = pc.ancestor AND e.type = 'blocks'
+                         AND e.deleted_at IS NULL
+                         AND s.status NOT IN ('closed','cancelled','superseded','retracted')
+                     ) > 0) AS actual
+               FROM nodes n)
+            WHERE anc_blockers <> actual`,
+    params: [],
+  },
+  // Кто именно наследует блокировку (И2). `anc_blockers` — число, а человеку
+  // нужен виновник: у самой задачи в `deps` нет ни следа, блокер висит на
+  // эпике. Не горячий путь — один спуск по ix_pc_desc на показ узла.
+  anc_blocking: {
+    name: "anc_blocking",
+    sql: `SELECT a.id AS id, a.title AS title, a.status AS status,
+                 a.open_blockers AS open_blockers, pc.depth AS depth
+            FROM parent_closure pc JOIN nodes a ON a.id = pc.ancestor
+           WHERE pc.descendant = ?1 AND a.open_blockers > 0
+           ORDER BY pc.depth ASC, a.id ASC`,
+    params: ["id"],
   },
   open_blockers_drift: {
     name: "open_blockers_drift",
@@ -1581,15 +1624,41 @@ export class GraphStore {
    */
   recountOpenBlockers(): number {
     return this.driver.tx("immediate", (tx) => {
+      // Оба расхождения меряются ДО любого ремонта: пересчёт open_blockers
+      // пересекает нули и будит trg_anc_*, и замер после него не увидел бы
+      // наследованного расхождения вовсе.
       const drift = tx.all<{ id: string }>(Q.open_blockers_drift, []).length;
+      const ancDrift = tx.all<{ id: string }>(Q.anc_blockers_drift, []).length;
       tx.run(Q.recount_open_blockers, []);
-      return drift;
+      // Наследование пишется ПОСЛЕ и в той же транзакции: оно читает уже
+      // исправленные open_blockers предков и перезаписывает счётчик целиком,
+      // а не досчитывает то, что успели натворить триггеры.
+      tx.run(Q.recount_anc_blockers, []);
+      return drift + ancDrift;
     });
   }
 
   /** Узлы, у которых счётчик разошёлся с пересчётом. Пусто ⇒ сходится. */
   openBlockersDrift(): Array<{ id: string; stored: number; actual: number }> {
     return this.driver.all(Q.open_blockers_drift, []);
+  }
+
+  /**
+   * То же для наследованного счётчика (миграция 10): узлы, у которых
+   * `anc_blockers` разошёлся с пересчётом по `parent_closure`. Пусто ⇒ сходится.
+   */
+  ancBlockersDrift(): Array<{ id: string; stored: number; actual: number }> {
+    return this.driver.all(Q.anc_blockers_drift, []);
+  }
+
+  /**
+   * Предки узла по `parent`, держащие открытый блокер, ближний первым.
+   * Ровно те, из-за кого `anc_blockers > 0` и задача не в очереди.
+   */
+  blockingAncestors(
+    id: string,
+  ): Array<{ id: string; title: string; status: string; open_blockers: number; depth: number }> {
+    return this.driver.all(Q.anc_blocking, [id]);
   }
 
   // -------------------------------------------------------------------------

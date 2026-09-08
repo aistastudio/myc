@@ -84,7 +84,8 @@ function scoredTopSql(anchorTerm: string, withRepo: boolean): string {
        count(*) OVER () AS total_ready
     FROM nodes AS n INDEXED BY ${withRepo ? "ix_nodes_ready_repo" : "ix_nodes_ready"}
    WHERE n.scope = ?1 AND n.kind = 'task' AND n.status = 'open'
-     AND n.open_blockers = 0 AND n.deleted_at IS NULL${withRepo ? repoClause("n", 9) : ""}
+     AND n.open_blockers = 0 AND n.anc_blockers = 0
+     AND n.deleted_at IS NULL${withRepo ? repoClause("n", 9) : ""}
    ORDER BY score DESC, n.priority ASC, n.id ASC
    LIMIT ?7`;
 }
@@ -144,6 +145,17 @@ export const readyQueries = defineQueries({
              AND ${repoPredicate("nodes", 2)}`,
     params: ["scope", "repo"],
   },
+  // И2: задачи, ушедшие из очереди ТОЛЬКО по наследованию (миграция 10).
+  // Считаются отдельно от blocked, потому что пользователь ищет их у себя в
+  // deps и не находит: блокер висит на эпике, а не на самой задаче.
+  ready_stats_blocked_anc: {
+    name: "ready_stats_blocked_anc",
+    sql: `SELECT count(*) AS n FROM nodes
+           WHERE scope = ?1 AND kind = 'task' AND status = 'open'
+             AND open_blockers = 0 AND anc_blockers > 0 AND deleted_at IS NULL
+             AND ${repoPredicate("nodes", 2)}`,
+    params: ["scope", "repo"],
+  },
   ready_stats_in_progress: {
     name: "ready_stats_in_progress",
     sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_lease
@@ -161,7 +173,7 @@ export const readyQueries = defineQueries({
     name: "ready_repo_unknown",
     sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_ready_repo
            WHERE scope = ?1 AND kind = 'task' AND status = 'open'
-             AND open_blockers = 0 AND deleted_at IS NULL
+             AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
              AND json_extract(nodes.attrs,'$.repo') IS NULL`,
     params: ["scope"],
   },
@@ -169,7 +181,7 @@ export const readyQueries = defineQueries({
     name: "ready_repo_foreign",
     sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_ready_repo
            WHERE scope = ?1 AND kind = 'task' AND status = 'open'
-             AND open_blockers = 0 AND deleted_at IS NULL
+             AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
              AND NOT ${repoPredicate("nodes", 2)}`,
     params: ["scope", "repo"],
   },
@@ -178,7 +190,7 @@ export const readyQueries = defineQueries({
     sql: `SELECT id, priority, status, assignee, title, updated_at, created_at, attrs
             FROM nodes
            WHERE scope = ?1 AND kind = 'task' AND status = 'open'
-             AND open_blockers = 0 AND deleted_at IS NULL
+             AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
              AND ${repoPredicate("nodes", 2)}`,
     params: ["scope", "repo"],
   },
@@ -194,7 +206,8 @@ export const readyQueries = defineQueries({
                  lease_holder, lease_expires
             FROM nodes INDEXED BY ix_nodes_lease
            WHERE status = 'in_progress' AND lease_expires > 0 AND lease_expires < ?2
-             AND scope = ?1 AND kind = 'task' AND open_blockers = 0 AND deleted_at IS NULL
+             AND scope = ?1 AND kind = 'task' AND open_blockers = 0 AND anc_blockers = 0
+             AND deleted_at IS NULL
              AND ${repoPredicate("nodes", 3)}`,
     params: ["scope", "now", "repo"],
   },
@@ -481,6 +494,8 @@ interface ReadyData {
   items: ReadyItem[];
   ready: number;
   blocked: number;
+  /** Скрыто наследованием: свой блокер пуст, открытый висит на предке. */
+  blocked_by_ancestor: number;
   in_progress: number;
   top_blocker?: { id: string; priority: number; title: string; assignee: string; blocks: number };
   claimed?: {
@@ -587,7 +602,7 @@ function renderReadyHuman(raw: unknown): string {
   lines.push(
     [
       `${d.ready} ready`,
-      `${d.blocked} blocked`,
+      blockedFooter(d),
       `${d.in_progress} in_progress`,
       `${d.took_ms} мс`,
       ...repoFooter(d),
@@ -602,6 +617,20 @@ function renderReadyHuman(raw: unknown): string {
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * И2: наследование обязано быть НАЗВАНО, а не подразумеваться. Задача, у
+ * которой блокер висит на эпике, исчезает из очереди, и в её собственных
+ * `deps` этому нет никакого следа — подвал единственное место, где число
+ * видно без запроса. Поэтому `blocked` и «через предка» стоят рядом:
+ * `144 ready · 62 blocked (51 через предка)`.
+ */
+function blockedFooter(d: ReadyData): string {
+  const anc = d.blocked_by_ancestor;
+  return anc > 0
+    ? `${d.blocked + anc} blocked (${anc} через предка)`
+    : `${d.blocked} blocked`;
+}
+
 function renderReadyWhyHuman(raw: unknown): string {
   const d = raw as ReadyData;
   if (d.claimed !== undefined) return renderReadyHuman(raw);
@@ -609,7 +638,7 @@ function renderReadyWhyHuman(raw: unknown): string {
   lines.push(
     [
       `${d.ready} ready`,
-      `${d.blocked} blocked`,
+      blockedFooter(d),
       `${d.in_progress} in_progress`,
       `${d.took_ms} мс`,
       ...repoFooter(d),
@@ -708,6 +737,13 @@ function hasFilters(ctx: CommandContext): boolean {
  */
 export interface ReadyStats {
   readonly blocked: number;
+  /**
+   * Открытые задачи БЕЗ своего блокера, ушедшие из очереди по наследованию
+   * (блокер на предке, миграция 10). Отдельное число, а не слагаемое
+   * `blocked`: искать его пользователь будет в `deps` самой задачи и не
+   * найдёт, поэтому подвал обязан назвать его словом «через предка» (И2).
+   */
+  readonly blockedByAncestor: number;
   readonly inProgress: number;
   /** Готовых задач без записанного охвата репозитория (S59, И2). */
   readonly repoUnknown: number;
@@ -722,9 +758,11 @@ export function readyStats(h: StoreHandle, repo = ""): ReadyStats {
   // prime.ts: версия живёт в варианте, а не в имени профиля).
   return digestCached<ReadyStats>(
     h.driver,
-    { scope: h.scope, profile: DIGEST_PROFILE_READY, variant: `v3:${repo}` },
+    { scope: h.scope, profile: DIGEST_PROFILE_READY, variant: `v4:${repo}` },
     () => ({
       blocked: h.driver.one<{ n: number }>(QR.ready_stats_blocked, [h.scope, repo])?.n ?? 0,
+      blockedByAncestor:
+        h.driver.one<{ n: number }>(QR.ready_stats_blocked_anc, [h.scope, repo])?.n ?? 0,
       inProgress:
         h.driver.one<{ n: number }>(QR.ready_stats_in_progress, [h.scope, repo])?.n ?? 0,
       repoUnknown: h.driver.one<{ n: number }>(QR.ready_repo_unknown, [h.scope])?.n ?? 0,
@@ -784,7 +822,7 @@ export function createReadyCommand(deps: StoreDeps = realStoreDeps): Command {
       try {
         const repo = repoTarget(h, flagStr(ctx, "repo"));
         const stats = readyStats(h, repo);
-        const { blocked, inProgress } = stats;
+        const { blocked, blockedByAncestor, inProgress } = stats;
         const repoFields = {
           repo,
           repo_undetermined: h.repo.repo === undefined,
@@ -822,6 +860,7 @@ export function createReadyCommand(deps: StoreDeps = realStoreDeps): Command {
               items: [],
               ready: readyTotal,
               blocked,
+              blocked_by_ancestor: blockedByAncestor,
               in_progress: inProgress,
               ...repoFields,
               claimed: {
@@ -844,6 +883,7 @@ export function createReadyCommand(deps: StoreDeps = realStoreDeps): Command {
             items: [],
             ready: 0,
             blocked,
+            blocked_by_ancestor: blockedByAncestor,
             in_progress: inProgress,
             ...repoFields,
             took_ms: Math.round(performance.now() - t0),
@@ -872,6 +912,7 @@ export function createReadyCommand(deps: StoreDeps = realStoreDeps): Command {
           items: filtered ? items.slice(0, limit) : items,
           ready: readyTotal,
           blocked,
+          blocked_by_ancestor: blockedByAncestor,
           in_progress: inProgress,
           ...repoFields,
           ...(topBlocker !== undefined ? { top_blocker: topBlocker } : {}),

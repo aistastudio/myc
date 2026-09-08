@@ -4,7 +4,7 @@
  * диспетчер ходил в тот же движок команд, что и человек.
  */
 
-import { run } from "@myc/cli";
+import { run, CLI_VERSION } from "@myc/cli";
 import type { RunOptions, RunResult } from "@myc/cli";
 import { ensureSqliteRuntime } from "@myc/store-sqlite";
 import { createDispatcher, type CliOutcome } from "./dispatch.ts";
@@ -133,6 +133,11 @@ export function createMcpCommand(registry?: Registry) {
       const runCli = makeRunCli(registry, ctx.globals);
       const server = new McpServer({
         tools,
+        // Версия объявляется клиенту в serverInfo и это ЕДИНСТВЕННОЕ место,
+        // где агент видит, какой myc к нему подключён: `myc --version` он не
+        // запускает. Без неё сервер представлялся дефолтом "0.0.0" — то есть
+        // врал про версию всякому клиенту, включая проверку обновлений.
+        version: CLI_VERSION,
         dispatch: createDispatcher({
           runCli,
           openStore: () => openMcpStore(ctx.globals.directory, { extensions: wantsVector }),

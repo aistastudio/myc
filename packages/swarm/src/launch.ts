@@ -212,17 +212,59 @@ export const LIVE_STATE_MEANING: Readonly<Record<LiveState, string>> = {
 };
 
 /**
+ * Различение «настоящего сироты» от записи, которую координатор завёл
+ * ВРУЧНУЮ постфактум (memory-kgnyph7x367v). У ручной записи `agentPid` и
+ * `dispatchId` взяты из окружения того, кто набрал команду, а не из
+ * агентского процесса — pid к попытке отношения не имеет.
+ *
+ * Два независимых признака, оба нужны:
+ *   1. `dispatchSource === "none"` — оркестратор не подтвердил диспетчера.
+ *      У настоящего агентского запуска он есть ("env"/"flag"/"lookup");
+ *      пустой диспетчер на завершённой попытке — сильный признак ручной
+ *      записи координатором.
+ *   2. `agentPid === selfPid` — pid совпадает с pid ТОГО, КТО СЕЙЧАС
+ *      спрашивает. Спрашивающий про себя и так знает, что он не сирота, и
+ *      этот признак не ломается, даже если диспетчер оказался проставлен.
+ *
+ * Первый ломается, если оркестратор не проставил диспетчера настоящему
+ * агенту; второй — если спрашивают из другого процесса. Нужны оба.
+ */
+export interface OrphanContext {
+  readonly dispatchSource: DispatchSource;
+  readonly agentPid: number | null;
+  /** Pid процесса, который сейчас спрашивает — из его собственного окружения. */
+  readonly selfPid: number | null;
+}
+
+/** true — процесс отвечает за самого себя, а не за чужого сироту. */
+export function isSelfAttributed(ctx: OrphanContext): boolean {
+  if (ctx.dispatchSource === "none") return true;
+  if (ctx.selfPid !== null && ctx.agentPid === ctx.selfPid) return true;
+  return false;
+}
+
+/**
  * Классификация запуска. `alive === null` значит «спросить было не о чем»
  * (pid не записан) — и тогда ответ `unknown`, а не `done`: молча выдать
  * закрытую попытку без pid за «всё в порядке» значит спрятать ровно те
  * строки, ради которых всё затевалось.
+ *
+ * `orphan` без `orphanCtx` — старое поведение (обратная совместимость
+ * вызовов, которым различение не нужно или недоступно). С `orphanCtx`
+ * самоприписанные записи (см. `isSelfAttributed`) классифицируются как
+ * `done`: работа закрыта, а тревога о чужом висящем процессе не по адресу.
  */
 export function liveStateOf(
   attempt: { readonly finishedAt: number | null },
   alive: boolean | null,
+  orphanCtx?: OrphanContext,
 ): LiveState {
   if (alive === null) return "unknown";
-  if (alive) return attempt.finishedAt === null ? "working" : "orphan";
+  if (alive) {
+    if (attempt.finishedAt === null) return "working";
+    if (orphanCtx !== undefined && isSelfAttributed(orphanCtx)) return "done";
+    return "orphan";
+  }
   return attempt.finishedAt === null ? "lost" : "done";
 }
 

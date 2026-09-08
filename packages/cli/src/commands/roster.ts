@@ -2,7 +2,7 @@
  * `myc model …` — ростер моделей роя как данные (задача W10,
  * docs/design/04-swarm-learning-and-routing.md §2.2, §2.10.1).
  *
- *   myc model add <id> --family F --harness claude|opencode|kimi
+ *   myc model add <id> --family F --harness <любой из HARNESSES, @myc/swarm>
  *        [--effort low|medium|high] --price-in X --price-out Y
  *        [--price-cache-read X] [--price-cache-write Y]
  *        [--price-date YYYY-MM-DD] [--version V] [--parent <id>]

@@ -156,7 +156,14 @@ export function rememberText(d: {
   acl: string;
   tags: string[];
   source?: string;
-  anchors: { path: string; start: number; end: number }[];
+  anchors: {
+    path: string;
+    start: number;
+    end: number;
+    anchor_id?: string;
+    state?: string;
+    reason?: string;
+  }[];
   queue: string[];
   absorb_heuristic: boolean;
   took_ms: number;
@@ -168,9 +175,16 @@ export function rememberText(d: {
   bits.push(`acl ${d.acl}`);
   if (d.source !== undefined) bits.push(`source ${d.source}`);
   const lines = [`${head.join(" ")} · ${bits.join(" · ")}`];
+  // Форма строки — anchorFlagLine (packages/cli/src/commands/anchor.ts): якорь
+  // теперь ПРИВЯЗЫВАЕТСЯ при записи, и «отложен до myc anchor bind» здесь
+  // врало дважды — откладывать нечего, а команда называется `anchor add`.
   for (const a of d.anchors) {
     const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
-    lines.push(`anchor    ${a.path}:${span} @— (якорь отложен до myc anchor bind)`);
+    lines.push(
+      a.anchor_id !== undefined
+        ? `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state ?? "fresh"}`
+        : `anchor    ${a.path}:${span} @— не привязан: ${a.reason ?? "причина не названа"} (myc anchor add)`,
+    );
   }
   const queue = d.queue.map((k) =>
     k === "absorb" && d.absorb_heuristic ? "absorb(эвристика — chat-LLM выключен)" : k,

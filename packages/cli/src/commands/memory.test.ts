@@ -93,9 +93,11 @@ interface Envelope {
   error?: { code: string; exit: number };
 }
 
-async function mycJson(...args: string[]): Promise<{ code: number; env: Envelope }> {
+async function mycJson(
+  ...args: string[]
+): Promise<{ code: number; env: Envelope; r: RunResult }> {
   const r = await myc(...args, "--json");
-  return { code: r.code, env: JSON.parse(text(r.stdout)) as Envelope };
+  return { code: r.code, env: JSON.parse(text(r.stdout)) as Envelope, r };
 }
 
 // ===========================================================================
@@ -164,15 +166,61 @@ describe("myc remember", () => {
     expect(text(r2.stdout)).not.toContain("эвристика");
   });
 
-  test("--anchor попадает в attrs и ставит anchor_check", async () => {
+  test("--anchor ПРИВЯЗЫВАЕТ, а не откладывает: узел, строка anchors, ребро touches", async () => {
+    mkdirSync(join(dir, "src", "retrieval"), { recursive: true });
+    writeFileSync(
+      join(dir, "src", "retrieval", "fuse.ts"),
+      `${Array.from({ length: 60 }, (_, i) => `const l${i} = ${i};`).join("\n")}\n`,
+    );
     const { env } = await mycJson(
       "remember",
       "факт про слияние",
       "--anchor",
       "src/retrieval/fuse.ts:40-58",
     );
-    expect(env.data["anchors"]).toEqual([{ path: "src/retrieval/fuse.ts", start: 40, end: 58 }]);
-    expect(env.data["queue"]).toEqual(["embed", "absorb", "anchor_check"]);
+    const anchors = env.data["anchors"] as Array<Record<string, unknown>>;
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]!["path"]).toBe("src/retrieval/fuse.ts");
+    expect(anchors[0]!["state"]).toBe("fresh");
+    const anchorId = anchors[0]!["anchor_id"] as string;
+    expect(typeof anchorId).toBe("string");
+    // Якорь свеж по построению — работа `anchor_check` на ровном месте не ставится.
+    expect(env.data["queue"]).toEqual(["embed", "absorb"]);
+
+    const db = new Database(join(dir, ".myc", "myc.db"), { readonly: true });
+    const node = db.query("SELECT kind, status FROM nodes WHERE id = ?1").get(anchorId) as {
+      kind: string;
+      status: string;
+    };
+    const row = db
+      .query("SELECT path, span_start, span_end, state FROM anchors WHERE node_id = ?1")
+      .get(anchorId) as { path: string; span_start: number; span_end: number; state: string };
+    const edge = db
+      .query(
+        "SELECT count(*) AS n FROM edges WHERE src = ?1 AND dst = ?2 AND type = 'touches' AND deleted_at IS NULL",
+      )
+      .get(env.data["id"] as string, anchorId) as { n: number };
+    db.close();
+    expect(node).toEqual({ kind: "anchor", status: "fresh" });
+    expect(row.path).toBe("src/retrieval/fuse.ts");
+    expect(row.state).toBe("fresh");
+    expect(edge.n).toBe(1);
+  });
+
+  test("--anchor на несуществующий файл: узел записан, причина названа вслух (И2)", async () => {
+    const { env } = await mycJson("remember", "факт про пропажу", "--anchor", "src/нет.ts:1-2");
+    const anchors = env.data["anchors"] as Array<Record<string, unknown>>;
+    expect(anchors[0]!["anchor_id"]).toBeUndefined();
+    expect(anchors[0]!["state"]).toBe("pending");
+    expect(String(anchors[0]!["reason"])).toContain("файла нет");
+    expect(env.warn.map((w) => w.code)).toContain("anchor.unbound");
+    // Человеческий вывод — отдельным вызовом: в --json строка не рендерится.
+    const human = await myc("remember", "второй факт про пропажу", "--anchor", "src/нет.ts:1-2");
+    expect(text(human.stdout)).toContain("@— не привязан:");
+    expect(text(human.stdout)).toContain("(myc anchor add)");
+    expect(text(human.stdout)).not.toContain("anchor bind");
+    // Узел записан: опечатка в пути не имеет права стоить текста факта.
+    expect(typeof env.data["id"]).toBe("string");
   });
 
   test("длинный факт: заголовок обрезан, тело сохранено целиком", async () => {

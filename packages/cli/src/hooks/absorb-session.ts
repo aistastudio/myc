@@ -38,6 +38,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { redactSecrets, type JsonValue } from "@myc/core";
+import { HARNESSES } from "@myc/swarm";
 import {
   defineQueries,
   episodeSessionKey,
@@ -133,7 +134,9 @@ const ABSORB_FLAGS: readonly FlagSpec[] = [
   { name: "budget", value: "number", description: "rescue packet size in characters" },
   { name: "hook-output", value: "string", description: "json|text (default text)" },
   { name: "timeout", value: "number", description: `whole-hook budget in ms (default ${HOOK_TIMEOUT_MS})` },
-  { name: "agent", value: "string", description: "host that fired the hook: claude|codex|opencode" },
+  // Список харнессов один на весь myc (@myc/swarm): вписанный сюда руками
+  // он уже отставал — kimi звал этот хук, а в подсказке его не было.
+  { name: "agent", value: "string", description: `host that fired the hook: ${HARNESSES.join("|")}` },
   { name: "no-candidates", description: "do not write pending_review candidates" },
   {
     name: "session",

@@ -182,7 +182,10 @@ function buildDepRm(deps: StoreDeps): Command {
         }
 
         const after = h.store.getNode(dst.id)!;
-        const backReady = after.open_blockers === 0 && after.status === "open";
+        // anc_blockers входит в условие: снятие своего блокера не вернёт в
+        // очередь задачу, у которой блокер остался на эпике (миграция 10).
+        const backReady =
+          after.open_blockers === 0 && after.anc_blockers === 0 && after.status === "open";
         const data: DepEdgeData = {
           src: from.node.id,
           dst: to.node.id,
@@ -347,6 +350,12 @@ interface DepWhyData {
   priority: number;
   status: string;
   open_blockers: number;
+  /**
+   * Предки по `parent`, держащие открытый блокер (миграция 10). Без них
+   * `dep why` отвечал бы «не заблокирована» задаче, которой нет в `ready`, —
+   * а именно на эту команду ссылается отказ захвата.
+   */
+  blocked_via: { id: string; title: string; open_blockers: number }[];
   chain: WhyChainNode[];
   critical_path: { open: number; estimate_min: number };
   took_ms: number;
@@ -416,17 +425,35 @@ function nodeTypeWord(n: WhyChainNode): string {
   return n.kind;
 }
 
+/** Русское согласование числительного: 1 предок, 2 предка, 5 предков. */
+function plural(n: number, one: string, few: string, many: string): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return `${n} ${many}`;
+  if (mod10 === 1) return `${n} ${one}`;
+  if (mod10 >= 2 && mod10 <= 4) return `${n} ${few}`;
+  return `${n} ${many}`;
+}
+
 function renderDepWhyHuman(raw: unknown): string {
   const d = raw as DepWhyData;
   const lines: string[] = [];
   const head = [`${d.id} ${fmtPriority(d.priority)} ${d.type} ${d.status}`];
   if (d.open_blockers > 0) {
     head.push(`— заблокирована ${d.open_blockers} открытой зависимостью`);
+  } else if (d.blocked_via.length > 0) {
+    head.push(`— своих блокеров нет, ${plural(d.blocked_via.length, "предок держит", "предка держат", "предков держат")} открытый`);
   } else {
     head.push("— не заблокирована");
   }
   lines.push(head.join(" "));
   renderChain(d.chain, "", lines);
+  for (const a of d.blocked_via) {
+    const n = a.open_blockers;
+    lines.push(
+      `предок    ${a.id} (${plural(n, "открытый блокер", "открытых блокера", "открытых блокеров")}) — ${a.title}`,
+    );
+  }
   if (d.critical_path.open > 0) {
     const est = d.critical_path.estimate_min > 0 ? `, оценка ${fmtEstimate(d.critical_path.estimate_min)}` : "";
     lines.push(`критический путь: ${d.critical_path.open} узел${est}`);
@@ -459,6 +486,9 @@ function buildDepWhy(deps: StoreDeps): Command {
           priority: node.priority,
           status: node.status,
           open_blockers: node.open_blockers,
+          blocked_via: h.store
+            .blockingAncestors(node.id)
+            .map((a) => ({ id: a.id, title: a.title, open_blockers: a.open_blockers })),
           chain,
           critical_path: criticalPath(chain),
           took_ms: Math.round(performance.now() - t0),

@@ -72,6 +72,13 @@ export function registerAll(registry: Registry): void {
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("absorb-session", () =>
     import("./hooks/absorb-session.ts").then((m) => m.createAbsorbSessionCommand()));
+  // doctor строится ОТ реестра: разделу `--hooks` нужно знать, есть ли в ЭТОЙ
+  // сборке команда, на которую хук ставится, — иначе «не срабатывал» и «не на
+  // что ставить» стали бы неразличимы.
+  lazy("doctor", () => import("./commands/doctor.ts").then((m) => m.createDoctorCommand(registry)));
+  // `version` стоит рядом с wire/init — это команды человека, а не агента,
+  // и проверка обновлений живёт только здесь (единственная сеть во всём CLI).
+  lazy("version", () => import("./commands/version.ts").then((m) => m.createVersionCommand()));
   // wire и mcp строятся ОТ реестра (им нужен его состав), поэтому загрузчик
   // замыкает тот самый registry, в который регистрируется.
   lazy("wire", () => import("./commands/wire.ts").then((m) => m.createWireCommand(registry)));

@@ -64,6 +64,14 @@ function refusalToFailure(r: MoveRefusal): CommandFailure {
   if (r.code === "chain_truncated") {
     return failure("precond.chain_truncated", r.msg, ExitCode.PRECOND);
   }
+  if (r.code === "cross_boundary_parent") {
+    return failure(
+      "precond.cross_boundary_parent",
+      r.msg,
+      ExitCode.PRECOND,
+      "снимите блокер с эпика, или увезите поддерево целиком, или снимите ребро parent",
+    );
+  }
   if (r.code === "leased") {
     return failure("precond.leased", r.msg, ExitCode.PRECOND, "дождитесь конца аренды или myc release");
   }
@@ -123,8 +131,9 @@ export function createMoveCommand(deps: StoreDeps = realStoreDeps): Command {
       "operations — scope and attrs.moved_from — and no new operation kind. The source keeps a " +
       "tombstone row: edges that stayed behind still point at it, and hard deletion would " +
       "cascade them away silently. Refuses while a live blocks edge would cross the boundary " +
-      "(open_blockers is materialised by triggers inside one database) or while the node is " +
-      "under a live lease (leases do not replicate).",
+      "(open_blockers is materialised by triggers inside one database), while the node would " +
+      "leave a blocked ancestor behind (anc_blockers is materialised the same way), or while " +
+      "the node is under a live lease (leases do not replicate).",
     handler: async (ctx) => {
       const t0 = performance.now();
       const opened = await deps.openStore(ctx);

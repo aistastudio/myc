@@ -27,6 +27,9 @@ import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure, Registry } from "../registry.ts";
 import { flagStr } from "./store.ts";
+import { maybeSpawnUpdateCheck, updateNoticeFor } from "../update-check.ts";
+import { CLI_VERSION } from "../index.ts";
+import { HARNESSES, type Harness } from "@myc/swarm";
 import {
   AGENTS_END,
   AGENTS_START,
@@ -34,6 +37,8 @@ import {
   claudeHelper,
   codexNotify,
   HOOK_SPECS,
+  kimiHelper,
+  kimiHooksToml,
   opencodePlugin,
   skillMd,
   type HookEvent,
@@ -49,8 +54,13 @@ const TOML_NOTIFY_END = "# myc:notify:end";
 const TOML_MCP_START = "# myc:mcp:start";
 const TOML_MCP_END = "# myc:mcp:end";
 
-type AgentName = "claude" | "codex" | "opencode";
-const ALL_AGENTS: readonly AgentName[] = ["claude", "codex", "opencode"];
+/**
+ * Кого обслуживаем — ОДИН список на весь myc (@myc/swarm, harness.ts).
+ * Своего списка здесь больше нет: до memory-7vywv63wma61 он был вторым и
+ * молча разошёлся с ростером — wire ставил конфиг Codex, которого ростер не
+ * знал, и не ставил ничего для Kimi, который в ростере был. Сторож —
+ * ../harness.wiring.test.ts.
+ */
 type HookMode = "append" | "replace" | "skip";
 
 // ---------------------------------------------------------------------------
@@ -449,6 +459,62 @@ function planOpencode(plan: Plan, o: WireOptions): void {
   });
 }
 
+/**
+ * Kimi Code. Что он читает — установлено чтением его же бинаря
+ * (`~/.kimi-code/bin/kimi`, сборка 2026-09-04), а не догадкой:
+ *
+ *   - `resolveMcpJsonPaths()` возвращает ТРИ файла — `~/.kimi-code/mcp.json`,
+ *     `<корень репозитория>/.mcp.json` и `<cwd>/.kimi-code/mcp.json`, причём
+ *     последний перекрывает предыдущие по одноимённому ключу. Пишем СВОЙ,
+ *     `.kimi-code/mcp.json`: проектный `.mcp.json` — файл Claude Code, и
+ *     занимать его ради Kimi значило бы трогать чужое (Kimi прочитает и его,
+ *     если рядом стоит claude, — ключ `myc` один и тот же, дубля не будет).
+ *   - Форма записи — `{command, args}` без `transport`: препроцессор
+ *     `McpServerConfigSchema` сам выводит stdio по наличию `command`.
+ *   - Скиллы проекта Kimi ищет в `.kimi-code/skills/` (PROJECT_BRAND_DIRS) и
+ *     требует у SKILL.md фронтматтер с непустыми `name` и `description` —
+ *     тот же формат, что у Claude Code, поэтому skillMd() общий.
+ *   - Хуки — ТОЛЬКО пользовательские: `config.toml` резолвится как
+ *     `KIMI_CODE_HOME ?? ~/.kimi-code`, проектного нет. `myc wire` за
+ *     пределы проекта не выходит (D10), поэтому ставит исполняемую половину
+ *     (helper) и печатает готовый блок для человека. Молчать здесь нельзя:
+ *     без хука Kimi не получит ни prime на старте, ни эпизода перед сжатием.
+ */
+function planKimi(plan: Plan, o: WireOptions): void {
+  planOwnFile(plan, o.root, ".kimi-code/skills/myc/SKILL.md", skillMd());
+  planOwnFile(
+    plan,
+    o.root,
+    ".kimi-code/myc-hooks.mjs",
+    kimiHelper({ events: o.events, hookOutput: o.hookOutput }),
+  );
+  planJsonMerge(plan, o.root, ".kimi-code/mcp.json", (source) => {
+    const value = { ...source.value };
+    const servers = asRecord(value["mcpServers"]);
+    servers["myc"] = { command: o.mycBin.command, args: ["mcp", "--profile", "agent"] };
+    value["mcpServers"] = servers;
+    return { nodes: ["mcpServers.myc"], conflicts: [], value };
+  });
+  plan.untouched.push("~/.kimi-code/config.toml (у Kimi конфиг хуков только пользовательский)");
+  plan.notes.push(
+    "Kimi читает хуки только из ~/.kimi-code/config.toml — проектного конфига у него нет, " +
+      "и myc за пределы проекта не пишет. Скилл и MCP уже на месте; чтобы был ещё prime на " +
+      "старте и эпизод перед сжатием, вставь себе один раз:\n" +
+      kimiHooksToml(o.events),
+  );
+}
+
+/**
+ * Кто чем настраивается. Ключи — ВЕСЬ список харнессов и ровно он: тип
+ * Record<Harness, …> не даст ни забыть нового, ни оставить выдуманного.
+ */
+const PLANNERS: Record<Harness, (plan: Plan, o: WireOptions) => void> = {
+  claude: planClaude,
+  codex: planCodex,
+  opencode: planOpencode,
+  kimi: planKimi,
+};
+
 function planAgentsMd(plan: Plan, o: WireOptions): void {
   const rel = "AGENTS.md";
   const abs = join(o.root, rel);
@@ -510,7 +576,7 @@ function applyAction(root: string, action: Action): void {
 // ---------------------------------------------------------------------------
 
 const WIRE_FLAGS: readonly FlagSpec[] = [
-  { name: "agents", value: "string", description: "claude,codex,opencode (default: all three)" },
+  { name: "agents", value: "string", description: `${HARNESSES.join(",")} (default: all ${HARNESSES.length})` },
   { name: "dry-run", description: "print every file and change, write nothing" },
   { name: "agents-md", description: "also insert the myc block into AGENTS.md (opt-in)" },
   { name: "hook-mode", value: "string", description: "append|replace|skip — what to do when a foreign hook is already there" },
@@ -534,12 +600,12 @@ function failure(code: string, msg: string, exit: ExitCode, hint?: string): Comm
   return { ok: false, code, msg, exit, hint };
 }
 
-function parseAgents(raw: string | undefined): AgentName[] | null {
-  if (raw === undefined) return [...ALL_AGENTS];
-  const out: AgentName[] = [];
+function parseAgents(raw: string | undefined): Harness[] | null {
+  if (raw === undefined) return [...HARNESSES];
+  const out: Harness[] = [];
   for (const part of raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)) {
-    if (!(ALL_AGENTS as readonly string[]).includes(part)) return null;
-    out.push(part as AgentName);
+    if (!(HARNESSES as readonly string[]).includes(part)) return null;
+    out.push(part as Harness);
   }
   return out.length > 0 ? out : null;
 }
@@ -547,7 +613,7 @@ function parseAgents(raw: string | undefined): AgentName[] | null {
 export function createWireCommand(registry: Registry): Command {
   return {
     name: "wire",
-    summary: "install myc hooks for Claude Code, Codex and opencode without touching foreign files",
+    summary: "install myc hooks and MCP for Claude Code, Codex, opencode and Kimi without touching foreign files",
     flags: WIRE_FLAGS,
     help:
       "Writes only its own files in full (helper, skill, plugin); JSON configs are merged node by " +
@@ -555,10 +621,15 @@ export function createWireCommand(registry: Registry): Command {
       "--agents-md. A foreign hook on the same event is a conflict: nothing is written until " +
       "--hook-mode says what to do. Running wire twice changes nothing.",
     handler: (ctx) => {
+      // Фоновая проверка обновлений: no-op по умолчанию, при
+      // MYC_UPDATE_CHECK=1 — отсоединённый процесс, которого wire не ждёт.
+      // `wire` выбран точкой подключения потому, что это церемония ЧЕЛОВЕКА
+      // (настройка агента в проекте), а не команда, которую агент зовёт в работе.
+      maybeSpawnUpdateCheck();
       const root = resolve(ctx.globals.directory ?? process.cwd());
       const agents = parseAgents(flagStr(ctx, "agents"));
       if (agents === null) {
-        return failure("usage.invalid", `--agents принимает ${ALL_AGENTS.join(", ")}`, ExitCode.USAGE);
+        return failure("usage.invalid", `--agents принимает ${HARNESSES.join(", ")}`, ExitCode.USAGE);
       }
 
       const modeRaw = flagStr(ctx, "hook-mode");
@@ -598,10 +669,12 @@ export function createWireCommand(registry: Registry): Command {
         mycBin,
       };
 
+      // Порядок обхода — порядок HARNESSES, а не порядок в --agents: отчёт
+      // должен читаться одинаково при любом написании флага.
       const plan = emptyPlan();
-      if (agents.includes("claude")) planClaude(plan, options);
-      if (agents.includes("codex")) planCodex(plan, options);
-      if (agents.includes("opencode")) planOpencode(plan, options);
+      for (const harness of HARNESSES) {
+        if (agents.includes(harness)) PLANNERS[harness](plan, options);
+      }
       planAgentsMd(plan, options);
 
       if (plan.conflicts.length > 0) {
@@ -694,6 +767,10 @@ export function createWireCommand(registry: Registry): Command {
       if (d.journal !== null) lines.push(`журнал: ${d.journal} (для myc unwire)`);
       if (d.dry_run) lines.push("ничего не записано (--dry-run)");
       else if (d.changed === 0) lines.push("всё уже на месте, файлы не тронуты");
+      // Обновление — новость для человека, и только для него: в конверте
+      // --json этой строки нет (решение 2). Сети здесь тоже нет — кеш.
+      const notice = updateNoticeFor(CLI_VERSION);
+      if (notice !== null) lines.push(notice);
       return `${lines.join("\n")}\n`;
     },
   };

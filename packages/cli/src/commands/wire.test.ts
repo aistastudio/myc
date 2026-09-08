@@ -117,6 +117,9 @@ describe("чистая установка", () => {
     expect(has(".claude/settings.json")).toBe(true);
     expect(has(".codex/myc-notify.mjs")).toBe(true);
     expect(has(".opencode/plugin/myc.ts")).toBe(true);
+    expect(has(".kimi-code/skills/myc/SKILL.md")).toBe(true);
+    expect(has(".kimi-code/myc-hooks.mjs")).toBe(true);
+    expect(has(".kimi-code/mcp.json")).toBe(true);
     expect(has(".myc/wire.json")).toBe(true);
     expect(has("CLAUDE.md")).toBe(false);
     expect(has("AGENTS.md")).toBe(false);
@@ -161,6 +164,8 @@ describe("чистая установка", () => {
       read(".mcp.json"),
       read(".codex/config.toml"),
       read("opencode.json"),
+      read(".kimi-code/mcp.json"),
+      read(".kimi-code/myc-hooks.mjs"),
     ];
     const r = await myc("wire", "--json");
     const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
@@ -171,6 +176,8 @@ describe("чистая установка", () => {
       read(".mcp.json"),
       read(".codex/config.toml"),
       read("opencode.json"),
+      read(".kimi-code/mcp.json"),
+      read(".kimi-code/myc-hooks.mjs"),
     ]).toEqual(before);
   });
 });
@@ -287,6 +294,8 @@ describe("unwire", () => {
     expect(has(".claude/helpers/myc-hooks.mjs")).toBe(false);
     expect(has(".codex/myc-notify.mjs")).toBe(false);
     expect(has(".opencode/plugin/myc.ts")).toBe(false);
+    expect(has(".kimi-code/myc-hooks.mjs")).toBe(false);
+    expect(has(".kimi-code/skills/myc/SKILL.md")).toBe(false);
   });
 
   test("файл, изменённый после нас, не трогается", async () => {
@@ -302,5 +311,90 @@ describe("unwire", () => {
   test("без журнала — честный отказ, а не угадывание", async () => {
     const r = await myc("unwire");
     expect(r.code).toBe(3); // NOTFOUND
+  });
+});
+
+/**
+ * Kimi Code. Что он читает — установлено чтением его бинаря
+ * (`~/.kimi-code/bin/kimi`), а не догадкой; здесь закреплены ровно те факты,
+ * на которые опирается planKimi, чтобы правка «по памяти» их уронила.
+ */
+describe("kimi", () => {
+  test("--agents kimi пишет только под .kimi-code и не трогает чужого", async () => {
+    const r = await myc("wire", "--agents", "kimi");
+    expect(r.code).toBe(0);
+    expect(has(".kimi-code/skills/myc/SKILL.md")).toBe(true);
+    expect(has(".kimi-code/myc-hooks.mjs")).toBe(true);
+    expect(has(".kimi-code/mcp.json")).toBe(true);
+    // Ни файла Claude Code, ни Codex, ни opencode: попросили одного.
+    expect(has(".claude/settings.json")).toBe(false);
+    expect(has(".mcp.json")).toBe(false);
+    expect(has(".codex/config.toml")).toBe(false);
+    expect(has("opencode.json")).toBe(false);
+    expect(has("CLAUDE.md")).toBe(false);
+    expect(has("AGENTS.md")).toBe(false);
+  });
+
+  test("MCP-запись в форме, которую Kimi разбирает без transport", async () => {
+    await myc("wire", "--agents", "kimi");
+    // McpServerConfigSchema выводит stdio по наличию command; лишний
+    // transport здесь не нужен, а вот отсутствие command — молчаливый отказ.
+    const mcp = JSON.parse(read(".kimi-code/mcp.json"));
+    expect(typeof mcp.mcpServers.myc.command).toBe("string");
+    expect(mcp.mcpServers.myc.args).toEqual(["mcp", "--profile", "agent"]);
+  });
+
+  test("скилл лежит там, где Kimi ищет проектные, и с обязательным фронтматтером", async () => {
+    await myc("wire", "--agents", "kimi");
+    // PROJECT_BRAND_DIRS = [".kimi-code/skills"]; у directory-скилла Kimi
+    // ТРЕБУЕТ непустые name и description, иначе SkillParseError.
+    const skill = read(".kimi-code/skills/myc/SKILL.md");
+    expect(skill.startsWith("---\n")).toBe(true);
+    expect(skill).toContain("name: myc");
+    expect(skill).toContain("description:");
+  });
+
+  test("helper заворачивает вывод в {message}: обычный stdout Kimi выбрасывает", async () => {
+    await myc("wire", "--agents", "kimi");
+    const helper = read(".kimi-code/myc-hooks.mjs");
+    expect(helper).toContain('JSON.stringify({ message: r.stdout })');
+    // Форма hookSpecificOutput.additionalContext — это Claude Code; для Kimi
+    // она пуста, поэтому absorb-session зовётся с текстовым выводом.
+    expect(helper).toContain('"--hook-output", "text"');
+    expect(helper).toContain('"--agent", "kimi"');
+    expect(helper).toContain("process.exit(0)");
+    // Кодом 2 Kimi блокирует ход агента — им не выходим никогда.
+    expect(helper).not.toContain("process.exit(2)");
+  });
+
+  test("про пользовательский config.toml сказано вслух, а не поставлено втихую", async () => {
+    const r = await myc("wire", "--agents", "kimi", "--json");
+    const data = JSON.parse(r.stdout as string).data as {
+      notes: string[];
+      untouched: string[];
+    };
+    const note = data.notes.join("\n");
+    expect(note).toContain("~/.kimi-code/config.toml");
+    expect(note).toContain("[[hooks]]");
+    // Таймаут у Kimi в СЕКУНДАХ (1..600), у Claude Code — в миллисекундах.
+    expect(note).toContain("timeout = 8");
+    expect(note).not.toContain("timeout = 8000");
+    expect(data.untouched.join(" ")).toContain("~/.kimi-code/config.toml");
+  });
+
+  test("--dry-run печатает ровно то, что потом записывается", async () => {
+    const dry = await myc("wire", "--dry-run", "--json");
+    const planned = (JSON.parse(dry.stdout as string).data as {
+      actions: { path: string; action: string }[];
+    }).actions;
+    expect(has(".kimi-code/mcp.json")).toBe(false);
+
+    const real = await myc("wire", "--json");
+    const written = (JSON.parse(real.stdout as string).data as {
+      actions: { path: string; action: string }[];
+    }).actions;
+    expect(written).toEqual(planned);
+    // И это не просто совпадение отчётов: каждый обещанный файл на диске.
+    for (const a of planned) expect([a.path, has(a.path)]).toEqual([a.path, true]);
   });
 });

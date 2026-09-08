@@ -78,6 +78,10 @@ import {
   type WalGuard,
   type WalGuardOptions,
   ClosureError,
+  databaseMeta,
+  driverMeta,
+  ensureSiteId,
+  mintSiteId,
 } from "@myc/store-sqlite";
 import { ExitCode } from "../exit.ts";
 import type { CommandContext, CommandFailure } from "../registry.ts";
@@ -581,13 +585,19 @@ async function openWorkspaceAt(
     };
   }
 
-  // site_id: живёт в myc_meta (его пишет myc init); если база создана мимо
-  // init, выдаём и фиксируем свой — иначе GraphStore не откроется.
-  let siteId = driver.one<{ value: string }>(Q.meta_get, ["site_id"])?.value;
-  if (siteId === undefined) {
-    siteId = `local-${opts.slug}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36)}`;
-    driver.run(Q.meta_set, ["site_id", siteId]);
-  }
+  // site_id живёт в myc_meta (его пишет `myc init`), но принадлежит не
+  // воркспейсу, а ФИЗИЧЕСКОМУ экземпляру базы (решение S65): каталог,
+  // размноженный `cp -R`, обязан разъехаться по site_id при первом же
+  // открытии, иначе обе копии продолжают нумерацию с одного места и два
+  // разных набора операций приезжают под одинаковыми op_id. Здесь же
+  // покрывается и прежний случай «база создана мимо init»: тогда решение —
+  // «minted». Проверка стоит одного statSync (0.59 мкс) и пишет в myc_meta
+  // только при изменении.
+  const { siteId } = ensureSiteId({
+    meta: driverMeta(driver),
+    dbPath,
+    mint: () => mintSiteId(opts.slug),
+  });
   // HLC-join нового одноразового соединения: часы стартуют от последней
   // записи оплога (PK-lookup, бесплатно). Иначе create в одном соединении
   // и update/close в следующем в пределах той же миллисекунды дают равные
@@ -909,10 +919,6 @@ export async function openStore(
 
 export const PERSONAL_SLUG = "me";
 
-/** Ключ личности сайта в myc_meta: читается и пишется только парой. */
-const SITE_ID_KEY = "site_id";
-
-
 export interface PersonalWorkspaceStatus {
   readonly dir: string;
   readonly dbPath: string;
@@ -1021,16 +1027,17 @@ export async function createPersonalWorkspace(
     // База могла пережить `--force`: он стирает кеши, а память — только по
     // явному `--wipe-memory`. Тогда это не создание, а открытие, и выдавать
     // новый site_id нельзя: под старым уже подписаны операции в оплоге, и
-    // смена личности сайта разорвала бы его же историю.
-    const existingSite = (db.prepare(Q.meta_get.sql).get(SITE_ID_KEY) as { value?: string } | null)
-      ?.value;
-    if (typeof existingSite === "string" && existingSite.length > 0) {
-      siteId = existingSite;
-    } else {
-      siteId = `local-${PERSONAL_SLUG}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36)}`;
-      db.prepare(Q.meta_set.sql).run(SITE_ID_KEY, siteId);
-      db.prepare(Q.meta_set.sql).run("slug", PERSONAL_SLUG);
-    }
+    // смена личности сайта разорвала бы его же историю. Ровно это и решает
+    // ensureSiteId (S65) — плюс тот случай, который «взять старый» разбирал
+    // неверно: ~/.myc, приехавший с другой машины или из копии, обязан
+    // получить свой site_id, а не подписываться чужим.
+    const decided = ensureSiteId({
+      meta: databaseMeta(db),
+      dbPath: status.dbPath,
+      mint: () => mintSiteId(PERSONAL_SLUG),
+    });
+    siteId = decided.siteId;
+    if (decided.origin === "minted") db.prepare(Q.meta_set.sql).run("slug", PERSONAL_SLUG);
   } finally {
     db.close();
   }

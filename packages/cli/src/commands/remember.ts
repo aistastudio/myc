@@ -47,6 +47,13 @@ import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import {
+  anchorFlagLine,
+  attachAnchorFlag,
+  parseTarget,
+  type AnchorFlagResult,
+  type AnchorTarget,
+} from "./anchor.ts";
+import {
   flagStr,
   graphFailure,
   openPersonalStore,
@@ -154,20 +161,6 @@ function splitList(text: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
-interface AnchorRequest {
-  readonly path: string;
-  readonly start: number;
-  readonly end: number;
-}
-
-function parseAnchor(text: string): AnchorRequest | undefined {
-  const m = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(text.trim());
-  if (!m) return undefined;
-  const start = m[2] !== undefined ? Number(m[2]) : 1;
-  const end = m[3] !== undefined ? Number(m[3]) : start;
-  return { path: m[1]!, start, end };
-}
-
 function parseLayer(raw: string): Layer | undefined {
   const m = /^L?([0-3])$/i.exec(raw.trim());
   return m ? (Number(m[1]) as Layer) : undefined;
@@ -255,7 +248,7 @@ export interface RememberData {
   acl: string;
   tags: string[];
   source?: string;
-  anchors: AnchorRequest[];
+  anchors: AnchorFlagResult[];
   queue: string[];
   /** absorb поставлен на эвристике: chat-LLM выключен (И2). */
   absorb_heuristic: boolean;
@@ -292,10 +285,7 @@ function renderRememberHuman(raw: unknown): string {
   bits.push(`acl ${d.acl}`);
   if (d.source !== undefined) bits.push(`source ${d.source}`);
   const lines = [`${head.join(" ")} · ${bits.join(" · ")}`];
-  for (const a of d.anchors) {
-    const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
-    lines.push(`anchor    ${a.path}:${span} @— (якорь отложен до myc anchor bind)`);
-  }
+  for (const a of d.anchors) lines.push(anchorFlagLine(a));
   const queue = d.queue.map((k) =>
     k === "absorb" && d.absorb_heuristic ? "absorb(эвристика — chat-LLM выключен)" : k,
   );
@@ -376,10 +366,10 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
       const session = resolveSession(flagStr(ctx, "session"));
       const reachKnown = wantedReach === "project" || session.length > 0;
 
-      let anchor: AnchorRequest | undefined;
+      let anchor: AnchorTarget | undefined;
       const anchorRaw = flagStr(ctx, "anchor");
       if (anchorRaw !== undefined) {
-        anchor = parseAnchor(anchorRaw);
+        anchor = parseTarget(anchorRaw);
         if (anchor === undefined || anchor.path.length === 0) {
           return failure(
             "usage.invalid",
@@ -436,11 +426,6 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           );
         }
         if (source !== undefined) attrs["provenance"] = source;
-        if (anchor !== undefined) {
-          attrs["anchors"] = [
-            { path: anchor.path, start: anchor.start, end: anchor.end, state: "pending" },
-          ];
-        }
 
         // ФАЗА 0 absorb (§6.1): точный дубликат не плодит узел — растёт
         // seen_count у существующего, и работа в очередь не ставится. Без
@@ -541,12 +526,6 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
         if (ctx.flags["no-absorb"] !== true) {
           jobs.push({ kind: "absorb", payload: { reason: "remember" } });
         }
-        if (anchor !== undefined) {
-          jobs.push({
-            kind: "anchor_check",
-            payload: { path: anchor.path, start: anchor.start, end: anchor.end },
-          });
-        }
         let queue: string[] = jobs.map((j) => j.kind);
         try {
           enqueueAll(h, node.id, h.scope, jobs, now);
@@ -559,6 +538,24 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           );
         }
 
+        // ЯКОРЬ ПРИВЯЗЫВАЕТСЯ ЗДЕСЬ, а не «откладывается»: тот же путь, что у
+        // `myc anchor add` (узел kind=anchor, строка anchors, ребро touches).
+        // Работа `anchor_check` при этом НЕ ставится — якорь только что снят с
+        // живого файла и свеж по определению; пере-проверку ведёт фон по
+        // `checked_at ASC` (§7.5, drain.ts), а не постановка на ровном месте.
+        const anchors: AnchorFlagResult[] =
+          anchor === undefined
+            ? []
+            : [
+                await attachAnchorFlag(
+                  h,
+                  node.id,
+                  anchor,
+                  ctx.globals.directory ?? process.cwd(),
+                  (code, msg) => ctx.warn(code, msg),
+                ),
+              ];
+
         const absorbHeuristic = queue.includes("absorb") && !deps.chatLlm();
         const data: RememberData = {
           id: node.id,
@@ -570,7 +567,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           acl: node.acl,
           tags,
           ...(source !== undefined ? { source } : {}),
-          anchors: anchor !== undefined ? [anchor] : [],
+          anchors,
           queue,
           absorb_heuristic: absorbHeuristic,
           body_chars: text.length,

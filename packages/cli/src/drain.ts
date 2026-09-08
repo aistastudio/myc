@@ -28,10 +28,25 @@
  * паре «SELECT кандидатов, потом UPDATE» этот репозиторий дважды терял
  * записи молча (S38, S40).
  *
- * ЧЕГО ЗДЕСЬ НЕТ. Классов `distill` и `anchor_check` здесь НЕТ исполнителей:
- * packages/anchors и packages/distiller — заглушки, их работы в очереди
- * лежат незабранными (наблюдаемо через jobs.stats, не молча). Появится
- * исполнитель — добавится строка в INLINE_JOB_KINDS и executor.
+ * ТРЕТИЙ ПУТЬ — БАТЧЕВЫЙ, и он появился здесь для `anchor_check`. Этот класс
+ * не «одна строка очереди = одна работа»: строка означает «вот эти файлы
+ * изменились, посмотри туда раньше», а работа — прогон лестницы §7.2 по батчу
+ * якорей в порядке `checked_at ASC`. Поэтому anchor_check НЕ в INLINE_JOB_KINDS:
+ * все его строки снимаются разом, их payload'ы сливаются с журналом грязных
+ * файлов в один набор подсказок, и прогон случается ОДИН. Иначе семь строк в
+ * очереди означали бы семь одинаковых прогонов внутри одного бюджета.
+ *
+ * И у него есть ПЕРИОД: §7.5 требует пере-проверки каждые 300 с даже когда в
+ * очереди пусто — файлы меняет не только агент (git checkout, соседний
+ * процесс, редактор человека), и ни одна такая правка строки в jobs не
+ * ставит. Отметка последнего прогона живёт в `myc_meta.anchor_swept_at`:
+ * durable, общая для всех процессов воркспейса и не требующая ни файла, ни
+ * демона. Две гонки безвредны — прогон идемпотентен, а строки очереди
+ * захватываются атомарно (jobs.claim).
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ. У класса `distill` исполнителя по-прежнему нет:
+ * packages/distiller — заглушка, его работы лежат в очереди незабранными
+ * (наблюдаемо через jobs.stats, не молча).
  *
  * БЕЗОПАСНОСТЬ ВЫЗОВА. Дренаж — фон: он не имеет права уронить или заметно
  * задержать команду, ради которой случился. Под команду, уже открывшую базу
@@ -41,7 +56,10 @@
  * деградация, И2), и это не ошибка дренажа. busy_timeout укорочен до 250 мс:
  * ждать чужой write-lock секундами фон не будет никогда.
  *
- * ПЕРЕМЕННЫЕ (тесты): MYC_DRAIN=0 — выключить дренаж; MYC_DRAIN_BUDGET_MS —
+ * ПЕРЕМЕННЫЕ (тесты): MYC_DRAIN=0 — выключить дренаж; MYC_ANCHOR_CHECK=0 —
+ * выключить ТОЛЬКО фон якорей, оставив разбор очереди (оба — в реестре
+ * BACKGROUND_SWITCHES, @myc/core/test-env.ts); MYC_ANCHOR_PERIOD_MS и
+ * MYC_ANCHOR_BUDGET_MS — период и бюджет прогона; MYC_DRAIN_BUDGET_MS —
  * бюджет; MYC_DRAIN_FAKE=1 — исполнитель-заглушка (та же механика, что
  * MYC_EMBED_FAKE в reindex.ts): работа не выполняется, а пишется строкой в
  * MYC_DRAIN_FAKE_LOG, чтобы многопроцессный тест считал выполнения по
@@ -58,8 +76,11 @@ import {
 } from "@myc/core";
 import {
   Claims,
+  driverMeta,
+  ensureSiteId,
   GraphStore,
   jobs,
+  mintSiteId,
   Q,
   runWalCheckpointJob,
 } from "@myc/store-sqlite";
@@ -104,6 +125,48 @@ export function queueDrainEnabled(env: NodeJS.ProcessEnv = process.env): boolean
   if (env.NODE_ENV === "test") return false;
   const raw = (env.MYC_DRAIN ?? "").trim().toLowerCase();
   return raw !== "0" && raw !== "off" && raw !== "false" && raw !== "no";
+}
+
+/**
+ * ЦЕНА ФОНА ЯКОРЕЙ, названная числом. Прогон ограничен И батчем (256 якорей,
+ * §7.5), И временем: 20 мс — это меньше половины бюджета дренажа, то есть
+ * даже упёршийся в потолок прогон оставляет absorb'у больше, чем тот тратит
+ * на одну работу (~8 мс). Недоразобранный батч не теряется: `checked_at` тех
+ * якорей не сдвинулся, и следующий прогон возьмёт их первыми.
+ */
+export const ANCHOR_SWEEP_BUDGET_MS = 20;
+
+/**
+ * Период §7.5: не чаще раза в 300 с на воркспейс. Живёт ЗДЕСЬ, а не рядом с
+ * лестницей: «когда проверять» — вопрос расписания, и отвечает на него
+ * дренаж; «как проверять» (дебаунс, уровни, батч) — вопрос лестницы, и он
+ * остался в commands/anchor.ts.
+ */
+export const ANCHOR_SWEEP_PERIOD_MS = 300_000;
+
+/** Сколько строк `anchor_check` снимается за раз; все они дают ОДИН прогон. */
+export const ANCHOR_JOB_CLAIM_LIMIT = 32;
+
+/** Ключ отметки последнего прогона в `myc_meta`. */
+export const ANCHOR_SWEPT_AT_KEY = "anchor_swept_at";
+
+/**
+ * Включён ли фон якорей. Отдельный выключатель от MYC_DRAIN, а не общий:
+ * лестница §7.2 читает ФАЙЛЫ РЕПОЗИТОРИЯ, а не только базу, и тесту, который
+ * правит файлы под собой, нужно уметь погасить именно её, оставив разбор
+ * очереди. Имя — в реестре BACKGROUND_SWITCHES (@myc/core/test-env.ts):
+ * иначе тест на исчерпывающность краснеет, и правильно делает.
+ */
+export function anchorSweepEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NODE_ENV === "test") return false;
+  const raw = (env.MYC_ANCHOR_CHECK ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "off" && raw !== "false" && raw !== "no";
+}
+
+function numFromEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim().length === 0) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
 export function drainBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {
@@ -192,8 +255,16 @@ const SQL_EMBED_LEASED = `SELECT 1 AS x FROM jobs
  * узла из двух соединений в пределах миллисекунды молча проигрывает LWW
  * (решения S38/S40 — этот класс дефекта здесь недопустим вдвойне, потому что
  * дренаж пишет в теневой зоне видимости).
+ *
+ * @internal Экспортируется ради сторожа полноты подключения S65
+ * (site-identity.wiring.test.ts): точку открытия базы он обязан гонять
+ * НАСТОЯЩУЮ, а иначе прувер проверял бы свою копию логики, а не эту.
  */
-function openDrainHandle(driver: CliDriver, dbPath: string, env: NodeJS.ProcessEnv): StoreHandle {
+export function openDrainHandle(
+  driver: CliDriver,
+  dbPath: string,
+  env: NodeJS.ProcessEnv,
+): StoreHandle {
   const dir = dirname(dbPath);
   let slug = "myc";
   const tomlPath = join(dir, "workspace.toml");
@@ -205,11 +276,15 @@ function openDrainHandle(driver: CliDriver, dbPath: string, env: NodeJS.ProcessE
     }
   }
   const actor = env.MYC_ACTOR ?? env.USER ?? "agent";
-  let siteId = driver.one<{ value: string }>(Q.meta_get, ["site_id"])?.value;
-  if (siteId === undefined) {
-    siteId = `local-${slug}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36)}`;
-    driver.run(Q.meta_set, ["site_id", siteId]);
-  }
+  // S65 — дословно те же правила, что у openWorkspaceAt: site_id принадлежит
+  // физическому экземпляру базы. Дренаж поднимается ФОНОМ и вполне может
+  // оказаться первым, кто откроет свежую копию каталога; пропусти проверку
+  // здесь — и перевыпуск стал бы зависеть от того, кто успел раньше.
+  const { siteId } = ensureSiteId({
+    meta: driverMeta(driver),
+    dbPath,
+    mint: () => mintSiteId(slug),
+  });
   let clock: HlcClock | undefined;
   const lastOp = driver.database
     .query("SELECT CAST(hlc AS TEXT) AS hlc FROM oplog ORDER BY seq DESC LIMIT 1")
@@ -281,6 +356,24 @@ export interface DrainOptions {
   readonly now?: () => number;
 }
 
+/** Что сделал фон якорей за этот вызов. `null` — не запускался. */
+export interface AnchorStepReport {
+  /** Что позвало прогон: строки очереди или наступивший период §7.5. */
+  readonly triggered: "jobs" | "period";
+  /** Снято строк `anchor_check` (все они дают ОДИН прогон). */
+  readonly jobs: number;
+  readonly checked: number;
+  /** Доведено отложенных привязок (S66) — они внутри `checked`. */
+  readonly bound: number;
+  readonly fresh: number;
+  readonly stale: number;
+  readonly moved: number;
+  readonly fromDirty: number;
+  readonly skippedDebounce: number;
+  readonly budgetHit: boolean;
+  readonly tookMs: number;
+}
+
 export interface DrainReport {
   readonly dbPath: string;
   readonly budgetMs: number;
@@ -290,9 +383,121 @@ export interface DrainReport {
   readonly failed: number;
   readonly byKind: Record<string, number>;
   readonly embedWorkerSpawned: boolean;
+  readonly anchor: AnchorStepReport | null;
   readonly skipped: "no_db" | null;
   /** Первые ошибки fail — наблюдаемость без WARN в чужом выводе. */
   readonly errors: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Фоновый потребитель jobs(kind='anchor_check') — §7.5
+// ---------------------------------------------------------------------------
+
+/**
+ * Пути-подсказки из payload'ов снятых работ. Формы две и обе живые:
+ * `{paths:[…]}` ставит хук absorb-session (файлы эпизода), `{path,…}` —
+ * всё, что знает про один файл. Неразобранный payload не роняет прогон:
+ * строка очереди — подсказка, а порядок по `checked_at` есть и без неё.
+ */
+function hintPathsOf(rows: readonly jobs.JobRow[]): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    try {
+      const p = JSON.parse(r.payload) as Record<string, unknown>;
+      const many = p["paths"];
+      if (Array.isArray(many)) {
+        for (const v of many) if (typeof v === "string") out.push(v);
+      }
+      const one = p["path"];
+      if (typeof one === "string") out.push(one);
+    } catch {
+      // payload не JSON — подсказки нет, работа всё равно будет снята
+    }
+  }
+  return out;
+}
+
+interface AnchorStepOptions {
+  readonly dbPath: string;
+  readonly holder: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly now: number;
+  /** Остаток бюджета дренажа: фон якорей не имеет права его перешагнуть. */
+  readonly budgetMs: number;
+  readonly leaseMs?: number;
+  readonly handle: () => StoreHandle;
+}
+
+/**
+ * ОДИН ПРОГОН ЛЕСТНИЦЫ НА ВЫЗОВ, и только если есть повод. Повода два:
+ * снятые строки `anchor_check` или наступивший период §7.5 (300 с). Нет ни
+ * того ни другого — функция стоит один SELECT из `myc_meta` (это и есть цена
+ * фона на 99 из 100 вызовов) и уходит.
+ */
+async function runAnchorStep(driver: CliDriver, opts: AnchorStepOptions): Promise<AnchorStepReport | null> {
+  const t0 = performance.now();
+  const db = driver.database;
+  const periodMs = numFromEnv(opts.env.MYC_ANCHOR_PERIOD_MS, ANCHOR_SWEEP_PERIOD_MS);
+  const budgetMs = Math.min(
+    numFromEnv(opts.env.MYC_ANCHOR_BUDGET_MS, ANCHOR_SWEEP_BUDGET_MS),
+    Math.max(1, Math.floor(opts.budgetMs)),
+  );
+
+  const sweptRaw = driver.one<{ value: string }>(Q.meta_get, [ANCHOR_SWEPT_AT_KEY])?.value;
+  const sweptAt = Number(sweptRaw ?? 0);
+  const periodDue = !Number.isFinite(sweptAt) || opts.now - sweptAt >= periodMs;
+
+  const claimed = jobs.claim(db, ["anchor_check"], opts.holder, {
+    limit: ANCHOR_JOB_CLAIM_LIMIT,
+    now: opts.now,
+    ...(opts.leaseMs !== undefined ? { leaseMs: opts.leaseMs } : {}),
+  });
+  if (claimed.length === 0 && !periodDue) return null;
+
+  const { sweepAnchors, ANCHOR_DEBOUNCE_MS } = await import("./commands/anchor.ts");
+  const { workspaceDirOfDb } = await import("./commands/wsfind.ts");
+  const wsDir = workspaceDirOfDb(opts.dbPath) ?? dirname(dirname(opts.dbPath));
+  const h = opts.handle();
+  const data = await sweepAnchors(h, {
+    // Репозиторий не сужается: фон обходит ВЕСЬ воркспейс по `checked_at ASC`,
+    // а какому репозиторию принадлежит строка — известно из неё самой
+    // (`repo_root` машинозависим и живёт в строке, §7.1).
+    repoRoot: wsDir,
+    wsDir,
+    debounceMs: ANCHOR_DEBOUNCE_MS,
+    budgetMs,
+    hintPaths: hintPathsOf(claimed),
+    now: opts.now,
+  });
+
+  // Строки снимаются ПОСЛЕ прогона: упади он — аренда истечёт и работа
+  // вернётся в очередь, а не исчезнет тихо (правило S7).
+  for (const job of claimed) {
+    try {
+      jobs.complete(db, job.id, opts.holder);
+    } catch {
+      // Чужой holder или гонка — строку заберёт следующий прогон.
+    }
+  }
+  try {
+    driver.run(Q.meta_set, [ANCHOR_SWEPT_AT_KEY, String(opts.now)]);
+  } catch {
+    // Отметка не записалась — следующий вызов просто прогонит снова.
+  }
+
+  return {
+    triggered: claimed.length > 0 ? "jobs" : "period",
+    jobs: claimed.length,
+    checked: data.checked,
+    bound: data.bound,
+    fresh: data.fresh,
+    stale: data.stale + data.lost,
+    moved: data.moved,
+    fromDirty: data.from_dirty,
+    skippedDebounce: data.skipped_debounce,
+    budgetHit: data.budget_hit,
+    tookMs: Math.round((performance.now() - t0) * 10) / 10,
+  };
 }
 
 /**
@@ -313,6 +518,7 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
     failed: 0,
     byKind: {} as Record<string, number>,
     embedWorkerSpawned: false,
+    anchor: null as AnchorStepReport | null,
     skipped: null as DrainReport["skipped"],
     errors: [] as string[],
   };
@@ -358,6 +564,29 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
     const fake = fakeExecutorFromEnv(env);
     let handle: StoreHandle | null = null;
     let session: Session | null = null;
+    const handleOf = (): StoreHandle => (handle ??= openDrainHandle(driver, opts.dbPath, env));
+
+    // Якоря — ПЕРЕД разбором очереди: шаг дешёвый ровно тогда, когда повода
+    // нет (один SELECT), а когда повод есть — его результат нужен `ready` и
+    // `prime` этого же вызова, а не следующего.
+    if (anchorSweepEnabled(env)) {
+      try {
+        report.anchor = await runAnchorStep(driver, {
+          dbPath: opts.dbPath,
+          holder,
+          env,
+          now: now(),
+          budgetMs,
+          ...(opts.leaseMs !== undefined ? { leaseMs: opts.leaseMs } : {}),
+          handle: handleOf,
+        });
+      } catch (e) {
+        // Лестница ходит по ФАЙЛАМ: битая ссылка, пропавший каталог, гонка с
+        // git checkout. Отказ фона не имеет права стать отказом команды.
+        report.errors.push(`anchor: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     // БЮДЖЕТ ПРОВЕРЯЕТСЯ ПЕРЕД КАЖДЫМ ЗАХВАТОМ. Убрать условие — значит
     // разбирать до конца очереди ценой чужого вызова (мутация 1 при сдаче).
     while (performance.now() - t0 < budgetMs) {
@@ -380,8 +609,7 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
         } else if (job.kind === "absorb") {
           // Работа без сущности — пристрелить немедленно: classify нечего.
           if (job.entity_id !== null) {
-            handle ??= openDrainHandle(driver, opts.dbPath, env);
-            session ??= drainAbsorbSession(handle, now());
+            session ??= drainAbsorbSession(handleOf(), now());
             await absorbOne(session, job.entity_id);
           }
         } else if (job.kind === "compact") {

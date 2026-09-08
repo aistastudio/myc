@@ -108,6 +108,14 @@ CREATE TABLE nodes (
   g_scen_key    TEXT    GENERATED ALWAYS AS (json_extract(attrs,'$.scenario_key')) VIRTUAL,
   g_pinned      INTEGER GENERATED ALWAYS AS (coalesce(json_extract(attrs,'$.pinned'),0)) VIRTUAL,
 
+  -- Число предков по `parent` (строк parent_closure), у которых
+  -- open_blockers > 0. Ведут триггеры trg_anc_* (§8.1.11); готовность —
+  -- open_blockers=0 AND anc_blockers=0. Миграция 10, memory-atcm254ry6c7.
+  -- Стоит ПОСЛЕ виртуальных колонок и до CHECK'ов не по вкусу, а потому что
+  -- ровно туда её кладёт ALTER TABLE ADD COLUMN: этот файл обязан совпадать
+  -- с текстом DDL в рабочей базе дословно (schema-parity.test.ts).
+  anc_blockers  INTEGER NOT NULL DEFAULT 0,
+
   CHECK (kind IN ('task','note','doc','fragment','session','message','entity','anchor','skill')),
   CHECK (layer BETWEEN 0 AND 3),
   CHECK (priority BETWEEN 0 AND 3),
@@ -134,7 +142,8 @@ CREATE UNIQUE INDEX ux_nodes_external
 -- ready-очередь: один скан частичного индекса
 CREATE INDEX ix_nodes_ready
     ON nodes(scope, priority, updated_at)
- WHERE kind='task' AND status='open' AND open_blockers=0 AND deleted_at IS NULL;
+ WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
+   AND deleted_at IS NULL;
 
 -- prime: L2+L3 по scope, по убыванию salience
 CREATE INDEX ix_nodes_prime
@@ -434,6 +443,56 @@ BEGIN
                  WHERE src=new.id AND type='blocks' AND deleted_at IS NULL);
 END;
 
+-- НАСЛЕДОВАНИЕ БЛОКЕРОВ ВНИЗ ПО parent (миграция 10, memory-atcm254ry6c7).
+-- `ready` = open_blockers=0 AND anc_blockers=0: задача не готова, если
+-- открытый блокер есть у неё ИЛИ у любого её предка. Причина — блокер на
+-- эпике иначе не блокирует ничего: у контейнера собственной работы нет,
+-- а его дети при старом правиле выдавались все (на снимке cherry — 51 из
+-- 195). Счётчик, а не подъём по предкам на выдачу: обещание И1 «ready —
+-- один скан частичного индекса» подъёма не переживает (замер ×4.9,
+-- packages/cli/src/commands/ready.inherit-latency.test.ts).
+--
+-- Два источника изменений, отсюда четыре триггера: пересечение нуля у
+-- open_blockers предка (поддерево целиком ±1 одним UPDATE по ix_pc_desc) и
+-- появление/исчезновение строки parent_closure (узел вошёл в поддерево или
+-- вышел). Второй обязателен: parent_closure пишет только closure.ts, и все
+-- его пути — вставка ребра, перенос, снятие, полный пересчёт — это
+-- INSERT/DELETE по этой таблице.
+--
+-- Вложенность законна и проверена: SQLite при recursive_triggers=0 запрещает
+-- повторный вход в ТОТ ЖЕ триггер, а не срабатывание другого, поэтому
+-- trg_anc_* видит записи open_blockers из trg_blk_*/trg_st_*. Цикла нет по
+-- построению: trg_anc_* пишет только anc_blockers, которого нет ни в одном
+-- UPDATE OF.
+--
+-- ВНИМАНИЕ: как и open_blockers, жёсткий DELETE триггерами не покрыт —
+-- после purge пересчитать GraphStore.recountAncBlockers.
+CREATE TRIGGER trg_anc_block AFTER UPDATE OF open_blockers ON nodes
+WHEN old.open_blockers = 0 AND new.open_blockers > 0
+BEGIN
+  UPDATE nodes SET anc_blockers = anc_blockers + 1
+   WHERE id IN (SELECT descendant FROM parent_closure WHERE ancestor = new.id);
+END;
+
+CREATE TRIGGER trg_anc_unblock AFTER UPDATE OF open_blockers ON nodes
+WHEN old.open_blockers > 0 AND new.open_blockers = 0
+BEGIN
+  UPDATE nodes SET anc_blockers = max(0, anc_blockers - 1)
+   WHERE id IN (SELECT descendant FROM parent_closure WHERE ancestor = new.id);
+END;
+
+CREATE TRIGGER trg_anc_pc_ins AFTER INSERT ON parent_closure
+WHEN (SELECT open_blockers FROM nodes WHERE id = new.ancestor) > 0
+BEGIN
+  UPDATE nodes SET anc_blockers = anc_blockers + 1 WHERE id = new.descendant;
+END;
+
+CREATE TRIGGER trg_anc_pc_del AFTER DELETE ON parent_closure
+WHEN (SELECT open_blockers FROM nodes WHERE id = old.ancestor) > 0
+BEGIN
+  UPDATE nodes SET anc_blockers = max(0, anc_blockers - 1) WHERE id = old.descendant;
+END;
+
 -- ============================ 8.1.9 покрывающие индексы горячих путей ========
 -- Добавлены после первой редакции файла (S58, S59). Выражения json_extract
 -- обязаны совпадать с запросами СИМВОЛ В СИМВОЛ — иначе SQLite не подаёт
@@ -453,7 +512,8 @@ CREATE INDEX ix_nodes_ready_repo ON nodes(
   json_extract(attrs,'$.repo'),
   priority,
   updated_at
-) WHERE kind='task' AND status='open' AND open_blockers=0 AND deleted_at IS NULL;
+) WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
+    AND deleted_at IS NULL;
 
 -- ============================ 8.1.10 код-интеллект (И3, S52) ================
 -- Собственный текстовый индекс кода: graft опционален, без него всё работает.

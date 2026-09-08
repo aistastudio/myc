@@ -18,6 +18,13 @@ import { ExitCode } from "../exit.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import {
+  anchorFlagLine,
+  attachAnchorFlag,
+  parseTarget,
+  type AnchorFlagResult,
+  type AnchorTarget,
+} from "./anchor.ts";
+import {
   attemptFailure,
   caveatArgs,
   recordedSpend,
@@ -131,20 +138,6 @@ function tookMs(t0: number): number {
 // create
 // ---------------------------------------------------------------------------
 
-interface AnchorRequest {
-  readonly path: string;
-  readonly start: number;
-  readonly end: number;
-}
-
-function parseAnchor(text: string): AnchorRequest | undefined {
-  const m = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(text.trim());
-  if (!m) return undefined;
-  const start = m[2] !== undefined ? Number(m[2]) : 1;
-  const end = m[3] !== undefined ? Number(m[3]) : start;
-  return { path: m[1]!, start, end };
-}
-
 interface CreateData {
   id: string;
   kind: string;
@@ -153,7 +146,7 @@ interface CreateData {
   status: string;
   priority: number;
   blocked_by: string[];
-  anchors: AnchorRequest[];
+  anchors: AnchorFlagResult[];
   /** Узел, которому это ответ: нить обсуждения видна сразу при создании. */
   replies_to?: string;
   /**
@@ -175,10 +168,7 @@ function renderCreateHuman(raw: unknown): string {
   head.push(d.status);
   head.push(d.blocked_by.length > 0 ? `blocked-by ${d.blocked_by.join(", ")}` : "free");
   const lines = [head.join("  ")];
-  for (const a of d.anchors) {
-    const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
-    lines.push(`anchor    ${a.path}:${span} @— (якорь отложен до myc anchor bind)`);
-  }
+  for (const a of d.anchors) lines.push(anchorFlagLine(a));
   // Охват репозитория печатается, когда он ОТЛИЧАЕТСЯ от общего или не
   // выведен вовсе. Общий охват — норма для корня экосистемы и строкой в
   // каждой выдаче быть не должен; неудача вывода, наоборот, обязана быть
@@ -261,10 +251,10 @@ function buildCreateCommand(
         estimateMin = Math.round(dur / 60_000);
       }
 
-      let anchor: AnchorRequest | undefined;
+      let anchor: AnchorTarget | undefined;
       const aRaw = flagStr(ctx, "anchor");
       if (aRaw !== undefined) {
-        anchor = parseAnchor(aRaw);
+        anchor = parseTarget(aRaw);
         if (anchor === undefined || anchor.path.length === 0) {
           return failure("usage.invalid", `неверный якорь '${aRaw}'; формат file[:a-b]`, ExitCode.USAGE);
         }
@@ -283,11 +273,6 @@ function buildCreateCommand(
         const tags = splitList(flagStr(ctx, "tag"));
         if (tags.length > 0) attrs["tags"] = tags;
         if (estimateMin !== undefined) attrs["estimate_min"] = estimateMin;
-        if (anchor !== undefined) {
-          attrs["anchors"] = [
-            { path: anchor.path, start: anchor.start, end: anchor.end, state: "pending" },
-          ];
-        }
 
         let node: NodeRecord;
         try {
@@ -305,6 +290,23 @@ function buildCreateCommand(
         } catch (e) {
           return graphFailure(e);
         }
+
+        // ЯКОРЬ ПРИВЯЗЫВАЕТСЯ ЗДЕСЬ, тем же путём, что `myc anchor add`. Раньше
+        // здесь лежала запись `state:'pending'` в attrs и строка «якорь отложен»:
+        // `ready` (ANCHOR_SUBQ идёт по рёбрам touches) такой задачи не видел, а
+        // ось scope класса держалась только на объявленном пути.
+        const anchors: AnchorFlagResult[] =
+          anchor === undefined
+            ? []
+            : [
+                await attachAnchorFlag(
+                  h,
+                  node.id,
+                  anchor,
+                  ctx.globals.directory ?? process.cwd(),
+                  (code, msg) => ctx.warn(code, msg),
+                ),
+              ];
 
         const blockedBy: string[] = [];
         for (const depInput of splitList(flagStr(ctx, "dep"))) {
@@ -374,7 +376,7 @@ function buildCreateCommand(
           status: node.status,
           priority: node.priority,
           blocked_by: blockedBy,
-          anchors: anchor !== undefined ? [anchor] : [],
+          anchors,
           repo: readRepo(node.attrs).by === "absent" ? null : readRepo(node.attrs).repo,
           repo_reason: repoReasonText(h.repo),
           ...(bRaw === "-" ? { body_stdin_chars: body!.length } : {}),
@@ -841,7 +843,15 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
         if (updated.status === "cancelled" && updated.kind === "task") {
           for (const edge of h.store.edgesFrom(updated.id, "blocks")) {
             const dependent = h.store.getNode(edge.dst);
-            if (dependent !== undefined && dependent.status === "open" && dependent.open_blockers === 0) {
+            // anc_blockers тоже проверяется: задача, у которой блокер остался
+            // на эпике, в очередь НЕ вышла, и называть её разблокированной
+            // значило бы обещать работу, которой в `ready` нет (миграция 10).
+            if (
+              dependent !== undefined &&
+              dependent.status === "open" &&
+              dependent.open_blockers === 0 &&
+              dependent.anc_blockers === 0
+            ) {
               unblocked.push(dependent.id);
             }
           }
@@ -1057,6 +1067,24 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
             `${node.id} заблокирована ${node.open_blockers} открытыми зависимостями`,
             ExitCode.PRECOND,
             `myc dep why ${node.id}`,
+          );
+        }
+        // НАСЛЕДОВАННАЯ блокировка (миграция 10) захват НЕ запрещает, но
+        // обязана быть названа. Разница с прямым блокером не в силе, а в том,
+        // кто принимает решение: очередь такую задачу не предлагает (агент её
+        // и не увидит), а `myc claim <id>` — это явный приказ человека или
+        // координатора «делай именно это», и отменять его молчаливым отказом
+        // не за что. Молчать тоже нельзя: в собственных deps задачи блокера
+        // нет вовсе, и без этой строки исполнитель не узнает, что работает
+        // внутри эпика, который ещё ждёт (И2).
+        if (node.anc_blockers > 0) {
+          const via = h.store
+            .blockingAncestors(node.id)
+            .map((a) => `${a.id} (${a.open_blockers})`)
+            .join(", ");
+          ctx.warn(
+            "task.blocked_via_parent",
+            `${node.id} не в ready: блокер на предке ${via} — работа встанет на неготовое основание`,
           );
         }
 
@@ -1609,11 +1637,19 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
         }
 
         // Кого разблокировало закрытие: прямые зависимые, для которых это был
-        // последний открытый блокер (open_blockers уже пересчитан движком).
+        // последний открытый блокер (счётчики уже пересчитаны движком).
+        // anc_blockers входит в условие по той же причине, что и в `ready`:
+        // задача с блокером на эпике в очередь не вышла, и называть её
+        // разблокированной — обещать работу, которой там нет (миграция 10).
         const unblocked: string[] = [];
         for (const edge of h.store.edgesFrom(node.id, "blocks")) {
           const dependent = h.store.getNode(edge.dst);
-          if (dependent !== undefined && dependent.status === "open" && dependent.open_blockers === 0) {
+          if (
+            dependent !== undefined &&
+            dependent.status === "open" &&
+            dependent.open_blockers === 0 &&
+            dependent.anc_blockers === 0
+          ) {
             unblocked.push(dependent.id);
           }
         }

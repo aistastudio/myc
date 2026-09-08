@@ -171,6 +171,31 @@ export function machine(): Machine {
  */
 export const JITTER_MAX = 2.5;
 
+/**
+ * Во сколько раз хвост САМОГО замера может превышать его медиану, прежде чем
+ * абсолютный вердикт станет недостоверным.
+ *
+ * `JITTER_MAX` стережёт дрожание эталона — занятость процессора. Он слеп к
+ * шуму, который живёт ВНУТРИ измеряемой операции: страница, которую SQLite
+ * подтянул с диска, сборка мусора, промах кеша. Замеренное на этом стенде
+ * (`ready` с фильтром на 100 000 узлов, n=600, дрожание эталона ×1.12–1.27,
+ * то есть «условия годны»):
+ *
+ *   p50 1.477–1.562 мс — стоит как вкопанный
+ *   p99 3.832–6.414 мс — гуляет вдвое
+ *   отношение к сопернику ×3.86–3.95 — неизменно
+ *
+ * p50 и отношение к сопернику неизменны: код тот же, шумит хвост. Прежняя
+ * логика объявляла это «регрессией, а не загрузкой машины» — ровно та ложная
+ * тревога, ради которой методика и писалась, только зашедшая с другой стороны.
+ *
+ * Порог 2.0 лежит выше наблюдённого покоя (×1.2 на том же замере с чистым
+ * хвостом) и ниже наблюдённого шума (×2.5 и выше). Регрессию он не маскирует:
+ * настоящая регрессия сдвигает p50 и отношение к сопернику, а их стережёт
+ * `expectAheadOfRival`, обязательный в каждом замере.
+ */
+export const TAIL_MAX = 2.0;
+
 export function isStrict(): boolean {
   return process.env.MYC_BENCH_STRICT === "1";
 }
@@ -297,7 +322,8 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
   // Дрожание — ХУДШЕЕ по прогонам, а не медианное: если машина была занята
   // хоть в одном из них, условия замера негодны, и молчать об этом нельзя.
   const jitter = Math.max(...refRuns.map((r) => (r.p50 > 0 ? r.p99 / r.p50 : 1)));
-  const quiet = jitter <= JITTER_MAX;
+  // Вторая половина «годных условий» — хвост САМОГО замера (см. TAIL_MAX).
+  const quiet = jitter <= JITTER_MAX && (stats.p50 > 0 ? stats.p99 / stats.p50 : 1) <= TAIL_MAX;
   const strict = isStrict();
   const verdict: Verdict =
     budgetMs === null
@@ -387,7 +413,8 @@ export async function measureAsync(
   const stats = medianOfTrials(runs);
   const ref = medianOfTrials(refRuns);
   const jitter = Math.max(...refRuns.map((r) => (r.p50 > 0 ? r.p99 / r.p50 : 1)));
-  const quiet = jitter <= JITTER_MAX;
+  // Вторая половина «годных условий» — хвост САМОГО замера (см. TAIL_MAX).
+  const quiet = jitter <= JITTER_MAX && (stats.p50 > 0 ? stats.p99 / stats.p50 : 1) <= TAIL_MAX;
   const strict = isStrict();
   const rivalStats = rival ? medianOfTrials(rivalRuns) : null;
   return {
@@ -481,8 +508,16 @@ function verdictWord(m: Measured): string {
       return "в бюджете";
     case "over":
       return "НАРУШЕН";
-    case "unreliable":
-      return "НЕДОСТОВЕРНО (машина занята, абсолют не проверяется)";
+    case "unreliable": {
+      // Причин недостоверности две, и человеку нужна именно та, что сработала:
+      // «машина занята» посылает разгружать стенд, «шумит хвост» — смотреть на
+      // саму операцию. Одно сообщение на два случая отправляло бы половину
+      // читателей не туда.
+      const tail = m.stats.p50 > 0 ? m.stats.p99 / m.stats.p50 : 1;
+      return m.jitter > JITTER_MAX
+        ? "НЕДОСТОВЕРНО (машина занята, абсолют не проверяется)"
+        : `НЕДОСТОВЕРНО (шумит хвост замера: p99/p50 ×${tail.toFixed(2)} > ${TAIL_MAX}, абсолют не проверяется; p50 и отношение к сопернику ниже — достоверны)`;
+    }
     default:
       return "нет бюджета";
   }

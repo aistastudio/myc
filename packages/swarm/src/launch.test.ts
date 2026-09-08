@@ -18,9 +18,11 @@ import {
   EMPTY_LAUNCH,
   isAlive,
   isEmptyLaunch,
+  isSelfAttributed,
   launchContext,
   LIVE_STATES,
   liveStateOf,
+  type OrphanContext,
   overrideLaunch,
   parsePid,
   pidAlive,
@@ -144,6 +146,82 @@ describe("liveStateOf", () => {
       liveStateOf(closed, false),
     ];
     expect(new Set(states).size).toBe(4);
+  });
+});
+
+/**
+ * memory-kgnyph7x367v: `attempt list --live` печатало `kill 6706 6706
+ * 6706` — три записи, которые координатор завёл ВРУЧНУЮ постфактум своим
+ * собственным `myc attempt start`, а не агентский процесс. 6706 —
+ * настоящий pid координатора из того инцидента, взят намеренно, а не как
+ * абстрактное число: тест обязан ловить именно этот случай, а не его
+ * упрощение.
+ */
+describe("isSelfAttributed / liveStateOf с orphanCtx", () => {
+  const closed = { finishedAt: 1 };
+  const COORDINATOR_PID = 6706;
+  const AGENT_PID = 9320;
+
+  test("dispatchId пуст (ручная запись координатором) — не сирота, даже с чужим pid", () => {
+    const ctx: OrphanContext = {
+      dispatchSource: "none",
+      agentPid: COORDINATOR_PID,
+      selfPid: 1, // спрашивает заведомо другой процесс
+    };
+    expect(isSelfAttributed(ctx)).toBe(true);
+    expect(liveStateOf(closed, true, ctx)).toBe("done");
+  });
+
+  test("pid записи совпадает с pid спрашивающего — не сирота, даже с диспетчером", () => {
+    const ctx: OrphanContext = {
+      dispatchSource: "lookup",
+      agentPid: COORDINATOR_PID,
+      selfPid: COORDINATOR_PID, // координатор спрашивает про самого себя
+    };
+    expect(isSelfAttributed(ctx)).toBe(true);
+    expect(liveStateOf(closed, true, ctx)).toBe("done");
+  });
+
+  test("настоящий агентский запуск: диспетчер есть, pid чужой — сирота остаётся сиротой", () => {
+    const ctx: OrphanContext = {
+      dispatchSource: "env",
+      agentPid: AGENT_PID,
+      selfPid: COORDINATOR_PID,
+    };
+    expect(isSelfAttributed(ctx)).toBe(false);
+    expect(liveStateOf(closed, true, ctx)).toBe("orphan");
+  });
+
+  test("без orphanCtx поведение не меняется: старые вызовы остаются сиротами", () => {
+    expect(liveStateOf(closed, true)).toBe("orphan");
+  });
+
+  test("МУТАЦИЯ 1 — убрать проверку dispatchSource === 'none' роняет первый тест", () => {
+    // Тот же контекст, что в первом тесте: dispatchSource пуст, pid чужой.
+    // Урезанная (мутировавшая) версия, что смотрит ТОЛЬКО на pid, не отличила
+    // бы эту запись от настоящего сироты.
+    const ctx: OrphanContext = {
+      dispatchSource: "none",
+      agentPid: COORDINATOR_PID,
+      selfPid: 1,
+    };
+    const mutatedIgnoringDispatch = ctx.selfPid !== null && ctx.agentPid === ctx.selfPid;
+    expect(mutatedIgnoringDispatch).toBe(false); // мутация сказала бы «сирота» — неверно
+    expect(isSelfAttributed(ctx)).toBe(true); // настоящая функция — верно
+  });
+
+  test("МУТАЦИЯ 2 — убрать проверку pid === selfPid роняет второй тест", () => {
+    // Тот же контекст, что во втором тесте: диспетчер есть, pid — свой.
+    // Урезанная версия, что смотрит ТОЛЬКО на dispatchSource, не отличила бы
+    // эту запись от настоящего сироты.
+    const ctx: OrphanContext = {
+      dispatchSource: "lookup",
+      agentPid: COORDINATOR_PID,
+      selfPid: COORDINATOR_PID,
+    };
+    const mutatedIgnoringPid = ctx.dispatchSource === "none";
+    expect(mutatedIgnoringPid).toBe(false); // мутация сказала бы «сирота» — неверно
+    expect(isSelfAttributed(ctx)).toBe(true); // настоящая функция — верно
   });
 });
 

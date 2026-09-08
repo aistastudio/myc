@@ -194,7 +194,11 @@ describe("attempt list --live", () => {
     clock += 60_000;
     await json("attempt", "finish", "--task", id, "--verdict", "accepted");
 
-    // Работа принята, а процесс жив — ровно те 6 ч 52 мин.
+    // Работа принята, а процесс жив — ровно те 6 ч 52 мин. Спрашивает о нём
+    // ДРУГОЙ процесс (координатор из своего терминала, pid 6706) — не тот,
+    // что записан агентским запуском (81610): настоящий сирота отличают
+    // именно так, не подделанной записью на себя.
+    env = { ...env, CLAUDE_PID: "6706" };
     clock += 6 * 3_600_000 + 52 * 60_000;
     const orphan = await json("attempt", "list", "--live");
     expect(orphan.envelope.data).toHaveLength(1);
@@ -214,11 +218,36 @@ describe("attempt list --live", () => {
     const id = await setup();
     await json("attempt", "start", id, "--model", "p/big");
     await json("attempt", "finish", "--task", id, "--verdict", "accepted");
+    // Спрашивает другой процесс — иначе это была бы запись координатором о
+    // самом себе, а не настоящий сирота (memory-kgnyph7x367v).
+    env = { ...env, CLAUDE_PID: "6706" };
     clock += 3_600_000;
     const r = await myc("attempt", "list", "--live");
     expect(r.stdout as string).toContain("ОСИРОТЕЛО 1");
     expect(r.stdout as string).toContain("kill 81610");
     expect(r.stdout as string).toContain("снимает тот, кто запускал");
+  });
+
+  test("ложный сирота memory-kgnyph7x367v: попытка, записанная координатором постфактум своим attempt start, не сирота", async () => {
+    const id = await setup();
+    // Оркестратор не подтвердил диспетчера — ровно то, что бывает, когда
+    // координатор сам набирает `myc attempt start` из своей сессии уже
+    // ПОСЛЕ того, как агент закончил: dispatchTable пуст → dispatchSource
+    // "none". Pid в записи — pid координатора, и он же спрашивает --live.
+    dispatchTable = new Map();
+    env = { ...env, CLAUDE_PID: "6706" };
+    aliveSet = new Set([6706]);
+    await json("attempt", "start", id, "--model", "p/big");
+    await json("attempt", "finish", "--task", id, "--verdict", "accepted");
+    clock += 49 * 60_000; // как в инциденте: висело 49 минут в выдаче
+
+    const r = await json("attempt", "list", "--live");
+    expect(r.envelope.data).toHaveLength(0);
+    expect(r.envelope.meta).toMatchObject({ count: 0, orphans: 0 });
+
+    const human = await myc("attempt", "list", "--live");
+    expect(human.stdout as string).not.toContain("ОСИРОТЕЛО");
+    expect(human.stdout as string).not.toContain("kill 6706");
   });
 
   test("смерть процесса записывается: proc_state и время выхода", async () => {

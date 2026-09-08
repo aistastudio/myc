@@ -124,24 +124,32 @@ is treated as absent.
 ## Roadmap
 
 Numbers are closed/total subtasks per milestone (`myc show <epic-id>`), as of
-2026-09-07. Done and not-done are shown the same way on purpose.
+2026-09-08. Done and not-done are shown the same way on purpose. Totals grow
+when work uncovers work: M0 went 33 → 39 because measuring it found four real
+defects, not because the plan changed.
 
 | milestone | status |
 |---|---|
-| **M0** core and tasks | 30 / 33 |
+| **M0** core and tasks | 35 / 39 |
 | **M0.5** self-hosting (myc developed through myc) | **4 / 4 — closed** |
-| **M1** memory | 20 / 23 |
-| **M2** semantics | 16 / 19 |
-| **M7** human interface (board, cards, threads, routing panel) | 11 / 14 |
-| **M3** code intelligence | 3 / 9 |
-| **M4** team: `myc serve`, ACL, network sync, Postgres, containers | 1 / 12 |
+| **M1** memory | 21 / 23 |
+| **M2** semantics | 17 / 20 |
+| **M7** human interface (board, cards, threads, routing panel) | 13 / 14 |
+| **M3** code intelligence | 5 / 9 |
+| **M4** team: `myc serve`, ACL, network sync, Postgres, containers | 3 / 14 |
 | **M5** swarm self-learning: routing by cost and outcome | 0 / 12 |
 | **M6** distillation | 0 / 7 |
 
 What that means in practice: **today myc is a single-user local tool over files
-in git.** There is no server, no ACL, no team mode, and no code↔knowledge
-anchors yet. Those are designed (`docs/design/03…`, `04…`, `05…`) and tracked,
-not implemented.
+in git.** There is no server, no ACL and no team mode. Those are designed
+(`docs/design/03…`, `04…`, `05…`) and tracked, not implemented.
+
+Code↔knowledge anchors now work: `myc task "…" --anchor src/file.ts:10-20`
+binds a task to a span, and the anchor follows the code as it moves. The
+binding is language-agnostic — it was verified on Python as well as
+TypeScript. What is *not* there yet is symbol-level understanding: parsing
+functions and classes covers `ts/tsx/js/jsx` only, and the symbol index is
+built but not yet wired to any command (tracked, not hidden).
 
 ## Syncing between machines
 

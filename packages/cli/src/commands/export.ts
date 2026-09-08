@@ -14,12 +14,14 @@
 import { resolve, join } from "node:path";
 import {
   exportGraph,
+  OplogCollisionError,
   OPLOG_FILE_OPS,
   OPLOG_MERGE_DRIVER,
   PROJECTION_CACHE_DIR,
   type ExportResult,
 } from "@myc/store-sqlite";
 import type { Command, CommandContext } from "../registry.ts";
+import { ExitCode } from "../exit.ts";
 import { flagStr, type StoreDeps, realStoreDeps } from "./store.ts";
 
 export const GRAPH_DIR = join(".myc", "graph");
@@ -80,7 +82,26 @@ export function createExportCommand(deps: StoreDeps = realStoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const result = exportGraph(h.driver, resolveGraphDir(ctx));
+        let result: ExportResult;
+        try {
+          result = exportGraph(h.driver, resolveGraphDir(ctx));
+        } catch (e) {
+          // Коллизия op_id — не сбой программы, а состояние каталога, которое
+          // человек может разобрать (S65). Общий обработчик выдавал за неё
+          // `internal.unexpected`, то есть «myc сломался» вместо «две базы
+          // делят site_id». Код тот же, что у драйвера слияния на том же
+          // событии: расходиться им незачем.
+          if (e instanceof OplogCollisionError) {
+            return {
+              ok: false,
+              code: "conflict.op_id",
+              msg: e.message,
+              exit: ExitCode.CONFLICT,
+              hint: "две живые базы под одним site_id — обычно копия каталога воркспейса (cp -R/rsync), а не клон; см. S65 в docs/design/ARCHITECTURE.md",
+            };
+          }
+          throw e;
+        }
         if (result.pendingImport > 0) {
           ctx.warn(
             "export.pending_import",

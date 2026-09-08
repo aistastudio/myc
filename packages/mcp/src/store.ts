@@ -27,12 +27,14 @@ import {
   GraphStore,
   Claims,
   SchemaError,
-  Q,
   STORE_PRAGMAS,
   createWalGuard,
+  driverMeta,
+  ensureSiteId,
   ensureSqliteRuntime,
   applySqliteRuntime,
   getSqliteRuntimeState,
+  mintSiteId,
   type WalGuard,
   type WalGuardOptions,
 } from "@myc/store-sqlite";
@@ -304,11 +306,14 @@ export async function openMcpStore(
   }
 
   try {
-    let siteId = driver.one<{ value: string }>(Q.meta_get, ["site_id"])?.value;
-    if (siteId === undefined) {
-      siteId = `local-${slug}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36)}`;
-      driver.run(Q.meta_set, ["site_id", siteId]);
-    }
+    // S65: те же правила, что в cli/commands/store.ts. Долгоживущий
+    // MCP-сервер — самый вероятный первый читатель скопированного каталога,
+    // и WARN о перевыпуске уходит на stderr, где он не мешает JSON-RPC.
+    const { siteId } = ensureSiteId({
+      meta: driverMeta(driver),
+      dbPath,
+      mint: () => mintSiteId(slug),
+    });
     let clock: HlcClock | undefined;
     const lastOp = driver.one<{ hlc: string }>(QL.oplog_last_hlc, []);
     if (lastOp !== undefined) {

@@ -145,6 +145,13 @@ interface NodeView {
   updated_at: number;
   blocked_by: DepRef[];
   blocks: DepRef[];
+  /**
+   * Предки по `parent`, держащие открытый блокер (миграция 10). Из-за них
+   * задача не попадает в `ready`, а в её собственных `deps` этому нет
+   * никакого следа — И2 требует назвать виновника, а не оставить очередь
+   * молча короче.
+   */
+  blocked_via?: { id: string; title: string; open_blockers: number }[];
   /** Эпик, в который входит узел: ребро parent ведёт ОТ ребёнка К родителю. */
   parent?: { id: string; title: string };
   /** Состав узла: дети плюс счётчик закрытых — прогресс эпика виден сразу. */
@@ -341,6 +348,14 @@ function buildView(
     .filter((id) => id !== head && (graph.node(id)?.head_id ?? null) === null);
 
   const lease = h.store.leaseOf(node.id);
+  // Наследованная блокировка спрашивается только у задач: у заметки её нет
+  // по построению, а лишний спуск по замыканию платить не за что.
+  const blockedVia =
+    node.kind === "task"
+      ? h.store
+          .blockingAncestors(node.id)
+          .map((a) => ({ id: a.id, title: a.title, open_blockers: a.open_blockers }))
+      : [];
   const view: NodeView = {
     id: node.id,
     kind: node.kind,
@@ -355,6 +370,7 @@ function buildView(
     updated_at: node.updated_at,
     blocked_by: blockedBy,
     blocks,
+    ...(blockedVia.length > 0 ? { blocked_via: blockedVia } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(children.length > 0 ? { children } : {}),
     ...(thread.length > 0 ? { thread } : {}),
@@ -446,6 +462,10 @@ function renderNodeFull(v: NodeView, now: number): string[] {
     );
   }
   if (deps.length > 0) lines.push(`deps      ${deps.join(" · ")}`);
+  if (v.blocked_via !== undefined && v.blocked_via.length > 0) {
+    const via = v.blocked_via.map((a) => `${a.id} (${a.open_blockers})`).join(", ");
+    lines.push(`ждёт      блокер на предке: ${via} — поэтому не в ready`);
+  }
 
   if (v.parent !== undefined) {
     lines.push(`входит в  ${v.parent.id}  ${v.parent.title}`);

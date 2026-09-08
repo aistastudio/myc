@@ -101,6 +101,21 @@ export const QMV: Record<string, QueryDef> = {
            ORDER BY id`,
     params: ["scope"],
   },
+  /**
+   * Предки узла по `parent`, держащие открытый блокер (миграция 10).
+   * `anc_blockers` материализуется триггерами ВНУТРИ одной базы — ровно как
+   * `open_blockers`, — поэтому уехавший из-под заблокированного эпика узел в
+   * приёмнике насчитал бы ноль и попал в `ready` готовым. Это тот же класс
+   * молчаливой лжи, что и `cross_boundary`, и закрывается он так же.
+   */
+  blocking_ancestors: {
+    name: "mv_blocking_ancestors",
+    sql: `SELECT pc.ancestor AS ancestor, a.open_blockers AS open_blockers
+            FROM parent_closure pc JOIN nodes a ON a.id = pc.ancestor
+           WHERE pc.descendant = ?1 AND a.open_blockers > 0
+           ORDER BY pc.depth, pc.ancestor`,
+    params: ["id"],
+  },
   /** Аренда узла — она в NodeRecord не входит. */
   lease_of: {
     name: "mv_lease_of",
@@ -154,6 +169,8 @@ export type MoveRefusalCode =
   | "leased"
   /** Живой blocks пересёк бы границу баз. */
   | "cross_boundary"
+  /** Узел уезжает из-под заблокированного предка: наследование границу не переживёт. */
+  | "cross_boundary_parent"
   /** Источник и приёмник — один и тот же воркспейс. */
   | "same_workspace"
   /** Цепочка версий длиннее бюджета чтения: половину истории увозить нельзя. */
@@ -271,6 +288,33 @@ export function planMove(
         `open_blockers ведут триггеры внутри одной базы, и в приёмнике задача попала бы в ready как готовая`,
       crossing: set.crossing,
     };
+  }
+
+  // Наследованная блокировка границу не переживает — по той же причине, что и
+  // прямая: `anc_blockers` ведут триггеры в ОДНОЙ базе, а `parent` на переезде
+  // остаётся в источнике. Уехавший потомок заблокированного эпика насчитал бы
+  // в приёмнике ноль и встал бы в очередь готовым. Проверяется по ВСЕМУ
+  // набору и НЕ снимается флагом --with-blockers: тот расширяет набор по
+  // `blocks`, а утащить сам эпик значило бы разорвать наследование у ОСТАВШИХСЯ
+  // его детей — то есть поменять одну молчаливую ложь на другую.
+  for (const member of set.members) {
+    const anc = source.driver.all<{ ancestor: string; open_blockers: number }>(
+      QMV.blocking_ancestors!,
+      [member],
+    );
+    const staying = anc.filter((a) => !set.members.includes(a.ancestor));
+    if (staying.length > 0) {
+      const a = staying[0]!;
+      return {
+        ok: false,
+        code: "cross_boundary_parent",
+        msg:
+          `${member} уезжает из-под заблокированного предка ${a.ancestor} ` +
+          `(${a.open_blockers} открытых блокеров): наследование ведут триггеры внутри одной ` +
+          `базы, и в приёмнике задача попала бы в ready как готовая`,
+        crossing: [],
+      };
+    }
   }
 
   const members = new Set(set.members);

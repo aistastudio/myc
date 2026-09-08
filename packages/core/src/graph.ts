@@ -323,7 +323,7 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 1,
       materializes: null,
       expandsRetrieval: true,
-      writtenBy: "myc anchor bind, агент",
+      writtenBy: "myc anchor add, myc remember|task --anchor, агент",
     },
     evidence: {
       type: "evidence",
@@ -457,6 +457,7 @@ export interface NodeFieldSpec {
  *    движка, они едут в самой записи оплога (ts_ms, hlc, site_id);
  *  - `seen_count` — G-counter, живёт в таблице counters (§9.3, ветка 'inc');
  *  - `open_blockers` — материализация рёбер blocks, её ведут триггеры (§4.2);
+ *  - `anc_blockers` — то же наследование блокеров вниз по parent (миграция 10);
  *  - `lease_holder`/`lease_epoch`/`lease_expires` — атомарный claim (§9.4),
  *    отдельная операция 'claim' и отдельная задача.
  */
@@ -719,6 +720,12 @@ export interface NodeRecord {
   readonly salience: number;
   readonly seen_count: number;
   readonly open_blockers: number;
+  /**
+   * Сколько предков по `parent` держат открытый блокер (миграция 10).
+   * `ready` = `open_blockers = 0 AND anc_blockers = 0`: блокер на эпике
+   * обязан останавливать его подзадачи, иначе он не блокирует ничего.
+   */
+  readonly anc_blockers: number;
   readonly head_id: string | null;
   readonly content_hash: string;
   readonly acl: string;

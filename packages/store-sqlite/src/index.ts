@@ -248,7 +248,7 @@ export type {
 export * as jobs from "./jobs.ts";
 export { Claims, ClaimTicket } from "./claim.ts";
 export type { ClaimsOptions } from "./claim.ts";
-export { migrate, SchemaError } from "./migrate.ts";
+export { migrate, SchemaError, SCHEMA_UPGRADE_HINT } from "./migrate.ts";
 export type { MigrateOptions, MigrateResult } from "./migrate.ts";
 
 // Обмен через git (решение S42): в git только оплог, проекции — локальный кеш.
@@ -261,6 +261,7 @@ export {
   readOplogFiles,
   writeGraphFiles,
   unionOplogText,
+  OplogCollisionError,
   rowToLine,
   lineToRow,
   splitOpId,
@@ -320,12 +321,59 @@ export {
   type MergeDriverArgs,
   type MergeDriverRun,
   type MergeOutcome,
+  type MergeRefusal,
 } from "./merge-driver.ts";
+// Идентичность реплики привязана к физическому экземпляру базы (решение S65).
+// `ensureSiteId` — единственная форма подключения: все пути открытия базы
+// (cli/commands/store.ts, cli/drain.ts, cli/commands/init.ts, mcp/store.ts)
+// решают вопрос про `site_id` через неё, и полноту этого стережёт
+// ./site-identity.wiring.test.ts.
+export {
+  databaseMeta,
+  decideSiteId,
+  driverMeta,
+  ensureSiteId,
+  machineId,
+  mintSiteId,
+  observeInstance,
+  parseInstance,
+  renderInstance,
+  sameInstance,
+  META_LAST_SEQ,
+  META_SITE_ID,
+  META_SITE_INSTANCE,
+  META_SITE_PREV,
+  type EnsureSiteIdOptions,
+  type EnsureSiteIdResult,
+  type SiteIdDecision,
+  type SiteIdInput,
+  type SiteIdOrigin,
+  type SiteInstance,
+  type SiteMetaIo,
+} from "./site-identity.ts";
 export {
   ClosureError,
   MAX_PARENT_DEPTH,
+  applyRebuild,
+  dumpParentClosure,
   type ClosureErrorCode,
+  type ClosureRow,
 } from "./closure.ts";
+// Сравнение схем — общее у schema-parity.test.ts (файл против миграций) и
+// у `myc doctor --schema` (рабочая база против миграций). Одна арифметика на
+// оба вопроса: две копии нормализации DDL разъехались бы молча.
+export {
+  diffColumns,
+  diffSchema,
+  normalizeDdl,
+  schemaConverges,
+  schemaObjects,
+  tableColumns,
+  type ColumnDiff,
+  type DiffOptions,
+  type SchemaDiff,
+  type SchemaObject,
+} from "./schema-diff.ts";
 export {
   checkEdgeAcyclic,
   cycleQueries,

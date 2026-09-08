@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { HARNESSES, type Harness } from "./harness.ts";
 
 /**
  * Ростер моделей роя — домен поверх таблиц swarm_model / swarm_model_price
@@ -23,8 +24,11 @@ import type { Database } from "bun:sqlite";
  *    поэтому не молчит — читатель видит cacheUnpriced и обязан его показать.
  */
 
-export const HARNESSES = ["claude", "opencode", "kimi"] as const;
-export type Harness = (typeof HARNESSES)[number];
+// Список харнессов — общий на весь myc и живёт в ./harness.ts: ростеру он
+// нужен для атрибуции, `myc wire` — для установки, и разъехаться они не
+// имеют права. Реэкспорт здесь оставлен, чтобы @myc/swarm по-прежнему
+// отдавал HARNESSES одним импортом.
+export { HARNESSES, type Harness } from "./harness.ts";
 
 export const EFFORTS = ["low", "medium", "high"] as const;
 export type Effort = (typeof EFFORTS)[number];

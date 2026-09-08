@@ -335,8 +335,8 @@ window.MYC_DATA = {
         "key": "M0",
         "title_en": "core and tasks",
         "title_ru": "ядро и задачи",
-        "done": 30,
-        "total": 33
+        "done": 35,
+        "total": 39
       },
       {
         "id": "memory-ancs66k238nv",
@@ -351,7 +351,7 @@ window.MYC_DATA = {
         "key": "M1",
         "title_en": "memory",
         "title_ru": "память",
-        "done": 20,
+        "done": 21,
         "total": 23
       },
       {
@@ -359,15 +359,15 @@ window.MYC_DATA = {
         "key": "M2",
         "title_en": "semantics",
         "title_ru": "семантика",
-        "done": 16,
-        "total": 19
+        "done": 17,
+        "total": 20
       },
       {
         "id": "memory-cmg64b6vrw0b",
         "key": "M7",
         "title_en": "human interface: board, cards, threads",
         "title_ru": "человек в интерфейсе: доска, карточки, нити",
-        "done": 11,
+        "done": 13,
         "total": 14
       },
       {
@@ -375,7 +375,7 @@ window.MYC_DATA = {
         "key": "M3",
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
-        "done": 3,
+        "done": 5,
         "total": 9
       },
       {
@@ -383,8 +383,8 @@ window.MYC_DATA = {
         "key": "M4",
         "title_en": "team: myc serve, ACL, network sync, Postgres",
         "title_ru": "команда: myc serve, ACL, сетевая синхронизация, Postgres",
-        "done": 1,
-        "total": 12
+        "done": 3,
+        "total": 14
       },
       {
         "id": "memory-0dm3hdvdmr5c",
@@ -406,15 +406,13 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 2139,
+    "pass": 2438,
     "fail": 0,
     "skip": 16,
-    "files": 144,
-    "assertions": 27696,
-    "seconds": 181.88,
-    "failing_note_en": "One test is red as of this run: it belongs to packages/web, where interface search (W6) is still open work. It is named here rather than hidden — a page that claims measurement cannot round a failing test down to zero.",
-    "failing_note_ru": "Один тест на этот прогон красный: он живёт в packages/web, где ещё идёт работа над поиском в интерфейсе (W6). Он назван здесь, а не спрятан: страница, которая ссылается на замеры, не имеет права округлить падение до нуля.",
-    "commit": "776b2dbe9d536bd8dae9c8f24160229e3d71c50d"
+    "files": 164,
+    "assertions": 30245,
+    "seconds": 207.11,
+    "commit": "aac5d1fba34fde8c68e7e25a0c0f5f8d75a0d114"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-07T21:05:05.854Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-08T11:51:28.926Z", assertions: 67 };

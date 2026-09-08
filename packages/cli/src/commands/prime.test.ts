@@ -87,6 +87,23 @@ describe("myc prime — пустой воркспейс", () => {
     expect(d["empty"]).toBe(true);
     expect(d["node_count"]).toBe(0);
   });
+
+  // Совет про импорт beads раньше печатался всегда, с оговоркой «(если
+  // есть)» — то есть проверку перекладывали на человека, который myc видит
+  // впервые. Обе стороны проверяются, потому что мутация «печатать всегда»
+  // и мутация «не печатать никогда» — разные, и одна проверка ловит только одну.
+  test("совет про .beads печатается ровно когда каталог есть", async () => {
+    const without = text((await myc("prime")).stdout);
+    expect(without).toContain("NEXT");
+    expect(without).not.toContain("beads");
+    expect((await data("prime"))["beads"]).toBe(false);
+
+    mkdirSync(join(dir, ".beads"), { recursive: true });
+    const with_ = text((await myc("prime")).stdout);
+    expect(with_).toContain("myc import --from beads");
+    expect(with_).not.toContain("если есть");
+    expect((await data("prime"))["beads"]).toBe(true);
+  });
 });
 
 describe("myc prime — наполненный воркспейс", () => {

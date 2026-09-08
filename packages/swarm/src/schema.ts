@@ -3,6 +3,8 @@ import type { Database } from "bun:sqlite";
 import {
   BOOKKEEPING_DDL,
   BOOKKEEPING_TABLE,
+  migrationStatements,
+  migrationText,
   swarmMigrations,
   type SwarmMigration,
 } from "./migrations/index.ts";
@@ -63,7 +65,7 @@ function alreadyApplied(db: Database, sorted: readonly SwarmMigration[]): boolea
     ).map((r) => [r.version, r.checksum]),
   );
   if (applied.size !== sorted.length) return false;
-  return sorted.every((m) => applied.get(m.version) === checksum(m.sql));
+  return sorted.every((m) => applied.get(m.version) === checksum(migrationText(m)));
 }
 
 export function ensureSwarmSchema(
@@ -98,7 +100,7 @@ export function ensureSwarmSchema(
     for (const migration of sorted) {
       const appliedChecksum = applied.get(migration.version);
       if (appliedChecksum !== undefined) {
-        if (appliedChecksum !== checksum(migration.sql)) {
+        if (appliedChecksum !== checksum(migrationText(migration))) {
           throw new SwarmSchemaError(
             "schema.checksum",
             `миграция ${migration.version} (${migration.name}) изменилась после применения`,
@@ -107,7 +109,7 @@ export function ensureSwarmSchema(
         continue;
       }
 
-      db.exec(migration.sql);
+      for (const statement of migrationStatements(migration)) db.exec(statement);
       const present = new Set(
         (
           db.query("SELECT name FROM sqlite_master").all() as Array<{ name: string }>
@@ -123,7 +125,7 @@ export function ensureSwarmSchema(
       db.query(
         `INSERT INTO ${BOOKKEEPING_TABLE} (version, name, checksum, applied_at)
          VALUES (?1, ?2, ?3, ?4)`,
-      ).run(migration.version, migration.name, checksum(migration.sql), now);
+      ).run(migration.version, migration.name, checksum(migrationText(migration)), now);
     }
     db.exec("COMMIT");
   } catch (e) {

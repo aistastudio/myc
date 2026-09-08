@@ -71,7 +71,7 @@ function readyIds(ws: Ws, scope = ws.scope): string[] {
     .query(
       `SELECT id FROM nodes
         WHERE scope = ? AND kind='task' AND status='open'
-          AND open_blockers = 0 AND deleted_at IS NULL
+          AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
         ORDER BY id`,
     )
     .all(scope)
@@ -232,6 +232,58 @@ describe("R4 защиты", () => {
     expect(a.store.getNode(blocker)!.status).toBe("open");
     expect(b.store.getNode(blocked)!.open_blockers).toBe(0);
     expect(readyIds(b)).toEqual([blocked]);
+  });
+
+  test("уехать из-под заблокированного эпика — отказ: наследование границу не переживёт", async () => {
+    const a = await makeWs("a", "aaa");
+    const b = await makeWs("b", "bbb");
+    const epic = task(a, "эпик");
+    const kid = task(a, "подзадача эпика");
+    const blocker = task(a, "предусловие эпика");
+    a.store.addEdge(kid, "parent", epic);
+    a.store.addEdge(blocker, "blocks", epic);
+    expect(a.store.getNode(kid)!.anc_blockers).toBe(1);
+    expect(readyIds(a)).toEqual([blocker]);
+
+    const plan = planMove(a, kid, a.scope, b.scope);
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(plan.code).toBe("cross_boundary_parent");
+    expect(plan.msg).toContain(epic);
+    expect(b.store.getNode(kid)).toBeUndefined();
+
+    // --with-blockers эту защиту НЕ снимает: он расширяет набор по blocks, а
+    // эпик связан с задачей ребром parent и в набор не попадает.
+    const forced = planMove(a, kid, a.scope, b.scope, { withBlockers: true });
+    expect(forced.ok).toBe(false);
+    if (forced.ok) return;
+    expect(forced.code).toBe("cross_boundary_parent");
+  });
+
+  test("ВРЕД, который снимает ЭТА защита: приёмник показал бы подзадачу готовой", async () => {
+    const a = await makeWs("a", "aaa");
+    const b = await makeWs("b", "bbb");
+    const epic = task(a, "эпик остаётся дома");
+    const kid = task(a, "подзадача уехала одна");
+    const blocker = task(a, "предусловие эпика");
+    a.store.addEdge(kid, "parent", epic);
+
+    // Переезд, пока эпик ещё не заблокирован, — законный и проходит: ребро
+    // parent остаётся в источнике вместе с эпиком (`staying`).
+    const plan = planMove(a, kid, a.scope, b.scope);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.staying).toEqual([`${kid}|parent|${epic}`]);
+    executeMove(a, b, plan);
+
+    // А теперь эпик блокируют. В источнике наследование отработало (надгробие
+    // получило счётчик), но приёмник об этом не знает и предлагает подзадачу
+    // как готовую — ровно то состояние, которое отказ выше не даёт создать.
+    a.store.addEdge(blocker, "blocks", epic);
+    expect(a.store.getNode(epic)!.open_blockers).toBe(1);
+    expect(a.store.getNode(kid)!.anc_blockers).toBe(1);
+    expect(b.store.getNode(kid)!.anc_blockers).toBe(0);
+    expect(readyIds(b)).toEqual([kid]);
   });
 
   test("--with-blockers увозит связный кусок, и open_blockers в приёмнике сходится", async () => {

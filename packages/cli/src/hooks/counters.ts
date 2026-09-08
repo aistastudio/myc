@@ -11,8 +11,25 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { HookEvent } from "./templates.ts";
 
 export const COUNTERS_FILE = "hooks.json";
+
+/**
+ * События, которые СЕБЯ ОТМЕЧАЮТ, то есть про которые счётчик вообще может
+ * что-то сказать. Сегодня это ровно одно — pre-compact (`absorb-session`).
+ *
+ * Список существует затем, чтобы `myc doctor --hooks` не врал. Для события
+ * из этого списка «счётчика нет» значит «не срабатывал». Для события ВНЕ
+ * списка то же самое значит «не знаю»: `myc prime` вызывают и хуком на старте
+ * сессии, и руками, и отличить одно от другого нечем (memory-q9k2zxfx2mcm),
+ * а `anchor touch` в горячем пути правки намеренно не открывает ничего лишнего.
+ * Разница принципиальна (И2): «не срабатывал» — утверждение, «не знаю» — нет.
+ *
+ * Стережётся тестом: событие попадает сюда только вместе с вызовом
+ * {@link recordHook} в его обработчике, и наоборот.
+ */
+export const SELF_REPORTING_HOOKS: readonly HookEvent[] = ["pre-compact"];
 
 export interface HookCounter {
   readonly count: number;

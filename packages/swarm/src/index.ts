@@ -49,6 +49,7 @@ export {
   EMPTY_LAUNCH,
   isAlive,
   isEmptyLaunch,
+  isSelfAttributed,
   launchContext,
   LINK_SOURCES,
   LIVE_STATE_MEANING,
@@ -63,6 +64,7 @@ export {
   type LaunchContext,
   type LinkSource,
   type LiveState,
+  type OrphanContext,
   type PidSource,
   type ProcState,
 } from "./launch.ts";
@@ -94,7 +96,16 @@ export {
   type TaskClassResult,
 } from "./taskclass.ts";
 export { ensureSwarmSchema, SwarmSchemaError, type SwarmSchemaErrorCode } from "./schema.ts";
-export { swarmMigrations, type SwarmMigration } from "./migrations/index.ts";
+// BOOKKEEPING_TABLE публично затем, что `myc doctor --schema` обязан назвать
+// ТРИ версии схемы, а не одну: у swarm свой набор и своя таблица учёта, и
+// без неё его таблицы читались бы как «лишние объекты» в базовой сверке.
+export {
+  swarmMigrations,
+  BOOKKEEPING_TABLE,
+  migrationStatements,
+  migrationText,
+  type SwarmMigration,
+} from "./migrations/index.ts";
 export {
   findSessionTranscript,
   findTaskTranscripts,

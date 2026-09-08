@@ -24,6 +24,8 @@ import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
 import { collectTop, createReadyCommand } from "./ready.ts";
 import { createClaimCommand, createCreateCommand, createTaskCommand } from "./tasks.ts";
+import { createDepCommand } from "./dep.ts";
+import { createShowCommand } from "./show.ts";
 import {
   openDriver,
   DEFAULT_READY_WEIGHTS,
@@ -219,6 +221,8 @@ function makeRegistry(): Registry {
   r.register(createTaskCommand());
   r.register(createClaimCommand());
   r.register(createReadyCommand());
+  r.register(createDepCommand());
+  r.register(createShowCommand());
   return r;
 }
 
@@ -250,6 +254,58 @@ describe("ready: интеграция через живой CLI", () => {
   afterEach(() => {
     delete process.env.MYC_ACTOR;
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Наследование блокеров вниз по `parent` (миграция 10). Проверяется не
+   * счётчик (это делает store-sqlite/anc-blockers.test.ts), а ПОВЕДЕНИЕ
+   * команды: что выдаёт очередь и что она об этом ГОВОРИТ.
+   *
+   * Числа взяты с настоящего снимка ~/src/cherry (796 задач): там прежнее
+   * правило давало 195 задач против 144 у `bd ready`, а все 51 «лишние» —
+   * потомки заблокированных эпиков. Здесь та же форма в миниатюре.
+   */
+  test("подзадачи заблокированного эпика уходят из очереди, и подвал это НАЗЫВАЕТ", async () => {
+    const epic = idOf((await myc("agent", "task", "эпик")).stdout);
+    const kid1 = idOf((await myc("agent", "task", "подзадача 1", "--parent", epic)).stdout);
+    const kid2 = idOf((await myc("agent", "task", "подзадача 2", "--parent", epic)).stdout);
+    const blocker = idOf((await myc("agent", "task", "предусловие эпика")).stdout);
+
+    const before = JSON.parse((await myc("agent", "ready", "--json")).stdout as string) as {
+      data: { ready: number; blocked: number; blocked_by_ancestor: number };
+    };
+    expect(before.data.ready).toBe(4);
+    expect(before.data.blocked_by_ancestor).toBe(0);
+
+    expect((await myc("agent", "dep", "add", blocker, "blocks", epic)).code).toBe(ExitCode.OK);
+
+    const after = JSON.parse((await myc("agent", "ready", "--json")).stdout as string) as {
+      data: { ready: number; blocked: number; blocked_by_ancestor: number; items: Array<{ id: string }> };
+    };
+    // Осталась одна задача — сам блокер. Эпик убран своим блокером, обе
+    // подзадачи — наследованием.
+    expect(after.data.ready).toBe(1);
+    expect(after.data.items.map((i) => i.id)).toEqual([blocker]);
+    expect(after.data.blocked).toBe(1);
+    expect(after.data.blocked_by_ancestor).toBe(2);
+
+    // И2: число обязано быть НАЗВАНО, иначе две задачи исчезают молча.
+    const human = (await myc("agent", "ready")).stdout as string;
+    expect(human).toContain("3 blocked (2 через предка)");
+
+    // А `myc show` обязан назвать виновника: в собственных deps подзадачи
+    // блокера нет вовсе, и без этой строки искать его негде.
+    const shown = (await myc("agent", "show", kid1)).stdout as string;
+    expect(shown).toContain("блокер на предке");
+    expect(shown).toContain(epic);
+
+    // Снятие блокера возвращает поддерево целиком.
+    expect((await myc("agent", "dep", "rm", blocker, "blocks", epic)).code).toBe(ExitCode.OK);
+    const back = JSON.parse((await myc("agent", "ready", "--json")).stdout as string) as {
+      data: { ready: number; blocked_by_ancestor: number };
+    };
+    expect(back.data.ready).toBe(4);
+    expect(back.data.blocked_by_ancestor).toBe(0);
   });
 
   test("задача с истёкшей арендой попадает в ready с пометкой и её забирает --claim", async () => {
