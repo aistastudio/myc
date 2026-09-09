@@ -305,18 +305,21 @@ window.MYC_DATA = {
       }
     ],
     "ready_gap": {
-      "myc": 195,
-      "bd": 144,
-      "diff": 51,
+      "myc": 152,
+      "bd": 152,
+      "diff": 0,
       "myc_command": "myc ready --json",
       "bd_command": "bd ready",
-      "issue": "memory-atcm254ry6c7"
+      "issue": "memory-atcm254ry6c7",
+      "issue_closed": "memory-atcm254ry6c7",
+      "note_en": "Measured again on 2026-09-09 after the fix: both queues return 152. Before it, myc offered 195 against beads' 144 — 51 tasks inside a still-blocked epic, which beads was right to hide. myc now materialises anc_blockers and says so: 281 blocked (51 through an ancestor).",
+      "note_ru": "Перемерено 2026-09-09 после исправления: обе очереди дают 152. До него myc предлагал 195 против 144 у beads — 51 задача внутри ещё заблокированного эпика, и beads был прав, что их прятал. Теперь myc материализует anc_blockers и говорит об этом: 281 заблокировано (51 через предка)."
     }
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.17,
-    "unpacked_mb": 11.92,
+    "compressed_mb": 3.2,
+    "unpacked_mb": 12.03,
     "files": 10,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -325,7 +328,8 @@ window.MYC_DATA = {
       "seconds": 7.3,
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
-    }
+    },
+    "version": "0.2.1"
   },
   "roadmap": {
     "command": "myc show <epic-id>",
@@ -415,4 +419,4 @@ window.MYC_DATA = {
     "sources": "2a5a81a3ba0f7261"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-09T04:27:09.305Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-09T04:42:55.907Z", assertions: 67 };

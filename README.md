@@ -27,19 +27,18 @@ Install Bun: https://bun.sh
 
 ## Install
 
-Once published, installation is one command — the package is built and verified
-from a tarball today, but nothing has been pushed to the registry yet:
+Installation is one command:
 
 ```bash
-bun install -g @aistastudio/myc   # 3.17 MB, 10 files, no models pulled at install
-bunx myc --version
+bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
+myc --version                     # myc 0.2.1 (schema 1)
 ```
 
 The embedding model is **not** downloaded during install. Semantic search is
 opt-in and explicit: `myc models fetch` (129 MB, ~7 s). Until then search is
 lexical and says so.
 
-Until it is published, build from source:
+To run the newest code instead of the published release, build from source:
 
 ```bash
 git clone <repo> && cd myc
@@ -56,11 +55,12 @@ writing a config that silently won't start.
 
 ```bash
 ./dist/myc init                     # .myc/ + SQLite + migrations in this repo
-./dist/myc wire                     # hooks for Claude Code / Codex / opencode
+./dist/myc wire                     # hooks for Claude Code / Codex / opencode / Kimi
 ./dist/myc ready                    # what can be picked up right now
 ./dist/myc remember "why X, not Y"  # record a fact or decision
 ./dist/myc recall "how retrieval works"
 ./dist/myc prime                    # session context packet (agents call it)
+./dist/myc doctor                   # schema, counters, hooks — says "don't know" where it doesn't
 ```
 
 Full command list: `./dist/myc --help`.
@@ -141,9 +141,12 @@ last-writer-wins over whole records.
 889 ms: 796 tasks, 972 dependencies, 265 notes, 41 memories — with unknown
 issue types carried over verbatim and named, and out-of-range priorities
 clamped and named, instead of one odd row aborting the import. On that same
-graph `myc ready` offers 195 tasks and `bd ready` offers 144: beads inherits
-blockers down the parent chain and myc does not yet, so beads is right about
-those 51 (open bug `memory-atcm254ry6c7`).
+graph both queues now return the same 152 tasks. They did not always: myc used
+to offer 195 against beads' 144, because beads inherits blockers down the
+parent chain and myc looked only at a task's own. Those 51 were inside a
+still-blocked epic and beads was right to hide them; `memory-atcm254ry6c7` is
+closed, `anc_blockers` is materialised by trigger, and the queue now says
+`281 blocked (51 through an ancestor)` rather than quietly offering them.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test

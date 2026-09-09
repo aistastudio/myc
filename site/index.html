@@ -121,13 +121,13 @@
         <p class="sub" lang="en">Five commands is the whole loop an agent lives in.</p>
         <p class="sub" lang="ru">Пять команд — весь цикл, в котором живёт агент.</p>
 <pre class="block" lang="en"><code>myc init      <span class="c"># .myc/ + SQLite + migrations in this repo</span>
-myc wire      <span class="c"># hooks for Claude Code / Codex / opencode</span>
+myc wire      <span class="c"># hooks for Claude Code / Codex / opencode / Kimi</span>
 myc ready     <span class="c"># what can be picked up right now</span>
 myc remember "why X, not Y"
 myc recall   "how retrieval works"
 myc prime     <span class="c"># session context packet — agents call this</span></code></pre>
 <pre class="block" lang="ru"><code>myc init      <span class="c"># .myc/ + SQLite + миграции в этом репозитории</span>
-myc wire      <span class="c"># хуки для Claude Code / Codex / opencode</span>
+myc wire      <span class="c"># хуки для Claude Code / Codex / opencode / Kimi</span>
 myc ready     <span class="c"># что можно взять прямо сейчас</span>
 myc remember "почему X, а не Y"
 myc recall   "как устроен ретривал"
@@ -341,8 +341,8 @@ prj  проектное: база…          prj  проектное: база�
             <tr>
               <td>beads<br><span class="muted tnum" style="font-size:.8rem">1.0.5</span></td>
               <td>
-                <span lang="en"><strong class="win">Its ready queue is more correct than ours.</strong> <code>bd ready</code> inherits blockers down the parent chain; <code>myc ready</code> only looks at a task's own blockers. On the same imported graph that is 144 against 195 — 51 tasks myc offers that are inside a still-blocked epic. Open bug <code>memory-atcm254ry6c7</code>.<br><br>Also: a 1.0 release against our 0.1.1; a Go binary with no Bun requirement; multi-machine sync through Dolt, which is a real database protocol rather than a merge driver over text.</span>
-                <span lang="ru"><strong class="win">Его очередь готовых задач корректнее нашей.</strong> <code>bd ready</code> наследует блокеры вниз по цепочке parent, <code>myc ready</code> смотрит только на собственные блокеры задачи. На одном и том же ввезённом графе это 144 против 195 — 51 задача, которую myc предлагает внутри ещё заблокированного эпика. Открытый баг <code>memory-atcm254ry6c7</code>.<br><br>Ещё: релиз 1.0 против нашего 0.1.1; бинарь на Go без требования Bun; синхронизация между машинами через Dolt — это настоящий протокол базы, а не merge-драйвер поверх текста.</span>
+                <span lang="en"><strong class="win">A 1.0 release against our 0.2.1</strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
+                <span lang="ru"><strong class="win">Релиз 1.0 против нашего 0.2.1</strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
               </td>
               <td>
                 <span lang="en">Hybrid search over memory with a measured MRR@10 and labelled corpora; latency budgets enforced in CI on 100 000 nodes; facts and decisions as first-class nodes next to tasks, not only issues.</span>
@@ -353,8 +353,8 @@ prj  проектное: база…          prj  проектное: база�
             <tr>
               <td>graft<br><span class="muted tnum" style="font-size:.8rem">0.16.0</span></td>
               <td>
-                <span lang="en"><strong class="win">It builds a real call graph; we have a text index.</strong> <code>graft callers &lt;symbol&gt;</code> answers "who calls this" with exact edges. myc cannot answer that at all: our code-intelligence milestone (M3) stands at 3 of 9, and anchors do not yet bind code to knowledge. For "where does this code live and what breaks if I change it", graft wins outright.</span>
-                <span lang="ru"><strong class="win">Он строит настоящий граф вызовов, у нас текстовый индекс.</strong> <code>graft callers &lt;symbol&gt;</code> отвечает «кто это зовёт» точными рёбрами. myc на такой вопрос не отвечает вовсе: веха кодового интеллекта (M3) стоит на 3 из 9, якоря ещё не связывают код со знанием. На вопросе «где живёт этот код и что сломается, если его тронуть» graft выигрывает без оговорок.</span>
+                <span lang="en"><strong class="win">It builds a real call graph; we have a text index.</strong> <code>graft callers &lt;symbol&gt;</code> answers "who calls this" with exact edges. myc cannot answer that at all: our code-intelligence milestone (M3) stands at 5 of 9, and while anchors now bind knowledge to a span and follow it as the code moves, the symbol index behind "who calls this" is built and not yet wired to any command. For "where does this code live and what breaks if I change it", graft wins outright.</span>
+                <span lang="ru"><strong class="win">Он строит настоящий граф вызовов, у нас текстовый индекс.</strong> <code>graft callers &lt;symbol&gt;</code> отвечает «кто это зовёт» точными рёбрами. myc на такой вопрос не отвечает вовсе: веха кодового интеллекта (M3) стоит на 5 из 9, и хотя якоря теперь привязывают знание к участку кода и едут за ним при правках, индекс символов, на котором держится «кто это зовёт», построен и ещё не подключён ни к одной команде. На вопросе «где живёт этот код и что сломается, если его тронуть» graft выигрывает без оговорок.</span>
               </td>
               <td>
                 <span lang="en">Different job, and honestly so: graft indexes code, myc keeps tasks, decisions and attempts. Where they overlap — recall of project knowledge — myc has a measured ranking and a queue; graft has neither, and does not claim to.</span>
@@ -407,12 +407,10 @@ prj  проектное: база…          prj  проектное: база�
           <li lang="ru">Нет сетевой синхронизации. Машины обмениваются оплогом через git, и это единственный путь.</li>
           <li lang="en">No Postgres, no containers, no hosted anything.</li>
           <li lang="ru">Нет Postgres, нет контейнеров, нет ничего размещённого.</li>
-          <li lang="en">No code ↔ knowledge anchors in daily use: M3 stands at 3 of 9.</li>
-          <li lang="ru">Нет якорей код ↔ знание в повседневной работе: M3 стоит на 3 из 9.</li>
+          <li lang="en">No symbol-level code understanding: anchors bind and follow the code, but parsing functions and classes covers ts/tsx/js/jsx only, and the symbol index is built and not yet wired to any command. M3 stands at 5 of 9.</li>
+          <li lang="ru">Нет понимания кода на уровне символов: якоря привязываются и едут за кодом, но разбор функций и классов покрывает только ts/tsx/js/jsx, а индекс символов построен и ещё не подключён ни к одной команде. M3 стоит на 5 из 9.</li>
           <li lang="en">No routing by cost and outcome, no distillation: M5 and M6 have not started.</li>
           <li lang="ru">Нет роутинга по цене и результату, нет дистилляции: M5 и M6 не начаты.</li>
-          <li lang="en">Not published to the registry yet — the package is built and verified from a tarball.</li>
-          <li lang="ru">Ещё не опубликован в реестре — пакет собирается и проверяется из тарбола.</li>
         </ul>
       </div>
       <div class="card">
