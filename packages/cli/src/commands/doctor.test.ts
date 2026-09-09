@@ -89,12 +89,12 @@ function writeWireJournal(events: readonly string[], ageMs = 7 * 24 * 60 * 60 * 
   );
 }
 
-function writeCounters(key: string, count: number): void {
+function writeCounters(key: string, count: number, status = "ok"): void {
   writeFileSync(
     join(dir, ".myc", "hooks.json"),
     JSON.stringify({
       v: 1,
-      hooks: { [key]: { count, last_at: 1_700_000_000_000, last_ms: 12, last_status: "ok" } },
+      hooks: { [key]: { count, last_at: 1_700_000_000_000, last_ms: 12, last_status: status } },
     }),
   );
 }
@@ -311,6 +311,29 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"], 2 * 24 * 60 * 60 * 1000);
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
     expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("не срабатывал ни разу");
+  });
+
+  /**
+   * «Срабатывал» и «работал» — разные вещи, и разница видна только в статусе.
+   * На живом проекте pre-compact отработал 11 раз со статусом `empty`: эпизод
+   * не создан ни разу, память сжатие не пережила, а doctor писал `ok` —
+   * подтверждая ровно то обещание, которое не выполнялось.
+   */
+  test("сработавший, но пустой хук — расхождение, а не здоровье", async () => {
+    writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
+    writeCounters("opencode:pre-compact", 11, "empty");
+    expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
+    const line = hookLine(await envelope("--hooks"), "pre-compact");
+    expect(line).toContain("сохранять было нечего");
+    expect(line).toContain("empty");
+
+    // И обратная сторона: успешный хук по-прежнему здоровье, иначе «починка»
+    // свелась бы к тому, что pre-compact не может быть зелёным никогда.
+    writeCounters("opencode:pre-compact", 11, "ok");
+    expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("срабатывал 11 раз");
+    expect(
+      (await envelope("--hooks")).data?.hooks?.hooks.find((h) => h.event === "pre-compact")?.verdict,
+    ).toBe("ok");
   });
 
   test("не поставленное событие названо не поставленным, а не «не срабатывало»", async () => {

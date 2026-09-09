@@ -510,12 +510,26 @@ function checkHooks(mycDir: string, registry: Registry, now: number = Date.now()
       continue;
     }
     if (count > 0 && last !== undefined) {
+      // «Срабатывал» и «работал» — разные вещи. Хук pre-compact пишет статус
+      // `empty`, когда сохранять было нечего: эпизод не создан, память сжатие
+      // НЕ пережила. Считать это здоровьем — то же самое, что считать
+      // здоровьем пустой ответ поиска.
+      //
+      // Поймано на живом проекте (docs-rag): 11 срабатываний подряд, все
+      // `empty`, ни одного узла kind='session' в базе — плагин opencode зовёт
+      // `absorb-session` без транскрипта. doctor при этом печатал `ok`, то
+      // есть подтверждал ровно то обещание, которое не выполнялось.
+      const empty = last.last_status === "empty";
       reports.push({
         event: spec.event,
         command: spec.command,
         installed,
-        verdict: "ok",
-        detail: `срабатывал ${count} раз, последний ${when(last.last_at)} (${last.last_status}, ${last.last_ms} мс)${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}`,
+        verdict: empty ? "drift" : "ok",
+        detail: empty
+          ? `срабатывал ${count} раз, но последний раз сохранять было нечего ` +
+            `(${when(last.last_at)}, статус empty${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}) — ` +
+            "эпизод не создан, проверьте, что хук передаёт транскрипт"
+          : `срабатывал ${count} раз, последний ${when(last.last_at)} (${last.last_status}, ${last.last_ms} мс)${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}`,
         count,
         last_at: last.last_at,
       });
