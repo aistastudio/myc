@@ -31,11 +31,19 @@
  * цену отказа от хеша и от инкрементальности. По умолчанию выключены.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { jobs } from "@myc/store-sqlite";
-import { listDefs, loadLangs, type Def, type LangId } from "./symbols.ts";
+import {
+  listDefs,
+  loadLangs,
+  treeSitterDirs,
+  type Def,
+  type LangId,
+  type TreeSitterDirs,
+} from "./symbols.ts";
+import { PARSE_WORKER_IN_BINARY } from "./parse_worker_entry.ts";
 import { L1_LANGS, langOf, walkFiles } from "./langs.ts";
 
 // Языки, обход дерева и список пропускаемых каталогов живут в `./langs.ts`:
@@ -122,6 +130,12 @@ export interface DrainStats {
   readonly cleaned: number;
   readonly failed: number;
   readonly batches: number;
+  /**
+   * Файлов, разобранных ПУЛОМ (остальные — в своём потоке). Число здесь не
+   * ради отчёта: пул, который молча не завёлся, от пула, который отработал,
+   * иначе неотличим — а именно так он и был сломан в бинаре.
+   */
+  readonly pooled: number;
   /** Миллисекунды собственно разбора, без чтения и записи. */
   readonly parseMs: number;
   readonly applyMs: number;
@@ -148,15 +162,97 @@ function wyhash(data: Uint8Array): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * МУТАЦИИ ПРИЁМКИ пула — единственный способ дотянуться до этой развилки в
+ * СОБРАННОМ БИНАРЕ: флага командной строки у неё нет, а тест обязан проверять
+ * бинарь, а не исходники (`bun test` видит node_modules, бинарь — нет).
+ *
+ *   entry-from-source  вход воркера снова берётся из `import.meta.url` —
+ *                      резолвинг МОДУЛЯ возвращается за границу потока;
+ *   resolve-in-worker  каталоги wasm воркеру не передаются — резолвинг
+ *                      КАТАЛОГОВ возвращается за границу потока.
+ *
+ * Обе роняют бинарь и обе обязаны его ронять: это ровно те два способа, какими
+ * пул был сломан до сих пор.
+ */
+export type PoolMutation = "none" | "entry-from-source" | "resolve-in-worker";
+
+export const POOL_MUTATION_ENV = "MYC_PARSE_POOL_MUTATION";
+
+function poolMutation(): PoolMutation {
+  const v = process.env[POOL_MUTATION_ENV];
+  return v === "entry-from-source" || v === "resolve-in-worker" ? v : "none";
+}
+
+/** Окружение воркера: пути, которые главный поток УЖЕ нашёл. */
+function workerEnv(dirs: TreeSitterDirs, mutation: PoolMutation): Record<string, string | undefined> {
+  const env = { ...process.env } as Record<string, string | undefined>;
+  if (mutation === "resolve-in-worker") {
+    // Мутация обязана быть мутацией и у того, кто эти переменные выставил
+    // руками, — иначе она молча превратилась бы в пустую проверку.
+    delete env.MYC_TREE_SITTER_DIR;
+    delete env.MYC_TREE_SITTER_GRAMMAR_DIR;
+    return env;
+  }
+  env.MYC_TREE_SITTER_DIR = dirs.runtime;
+  env.MYC_TREE_SITTER_GRAMMAR_DIR = dirs.grammar;
+  return env;
+}
+
+/**
+ * Модуль воркера разбора: то, что получит `new Worker`. null — воркера в этой
+ * сборке нет, и пул заводить не на чем.
+ *
+ * Порядок проверок не косметический. Вшитый в bunfs бандл идёт ПЕРВЫМ: в
+ * собранном бинаре `import.meta.url` указывает на .ts сборочной машины, и на
+ * ней самой такой воркер запустится — а потом упадёт на первом же импорте,
+ * которого standalone-рантайм не резолвит. Развилка обязана решаться по тому,
+ * что в сборке ЕСТЬ, а не по тому, что случайно лежит на диске.
+ */
+export function parseWorkerEntry(mutation: PoolMutation = poolMutation()): string | null {
+  const fromSource = new URL("./code_index_worker.ts", import.meta.url).href;
+  if (mutation === "entry-from-source") return fromSource;
+  if (existsSync(PARSE_WORKER_IN_BINARY)) return PARSE_WORKER_IN_BINARY;
+  // Бинарь без вшитого воркера — не место для догадок: разбор идёт в своём
+  // потоке, и это честнее восьми воркеров, падающих по очереди.
+  return Bun.main.startsWith("/$bunfs/") ? null : fromSource;
+}
+
+/**
+ * Каталоги wasm для воркеров — или null, если их нет и у главного потока.
+ *
+ * Молчаливое null здесь не прячет беду: без грамматик тот же `loadLangs`
+ * уронит батч в главном потоке и назовёт причину. Пул просто не заводится на
+ * том, чего нет.
+ */
+function safeTreeSitterDirs(): TreeSitterDirs | null {
+  try {
+    return treeSitterDirs();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Пул воркеров listDefs. Один воркер на свободное ядро (потолок 8), живёт
  * ровно столько, сколько идёт большой прогон. Подменный `parse` из опций в
  * воркер не уносится — функция не переходит границу потока; пул включается
  * только для разбора по умолчанию.
  *
- * Пул — ОПТИМИЗАЦИЯ, а не условие корректности: каждый разбор стоит под
- * сторожевым таймером (POOL_WATCHDOG_MS); не дождались — пул гасится, файл
- * разбирается в своём потоке. Под нагрузкой CI воркер может стартовать
- * дольше обычного, и индексация не имеет права из-за этого застревать.
+ * НИЧТО НЕ РЕЗОЛВИТСЯ ЗА ГРАНИЦЕЙ ПОТОКА. Воркер получает готовыми ОБА пути —
+ * модуль (`entry`) и каталоги wasm (`dirs`, через окружение). Так это устроено
+ * не из аккуратности: в собранном бинаре у воркера нет ни node_modules, ни
+ * каталога, относительно которого искал главный поток, и любой резолвинг там
+ * кончается стеком резолвера. См. `parse_worker_entry.ts` — там же замер.
+ *
+ * ПУЛ — ОПТИМИЗАЦИЯ, НО НЕ ВСЯКИЙ ЕГО ОТКАЗ ОДИНАКОВ.
+ *   - сторож (POOL_WATCHDOG_MS) не дождался ответа: под нагрузкой CI воркер
+ *     стартует дольше обычного, пул гасится, файл разбирается в своём потоке,
+ *     команда об этом молчит — это НЕ дефект;
+ *   - воркер УПАЛ (`onerror`): его окружение сломано, и оно сломано у всех
+ *     восьми — упадут и они. Работа доделывается в своём потоке (терять файлы
+ *     не за что), но причина запоминается и уходит наверх отказом команды.
+ *     Тихий неуспех тут хуже громкого: индекс, собранный в один поток вместо
+ *     восьми, — полбеды, а сборка, в которой воркера нет вовсе, — беда.
  *
  * ЦЕНА СТАРТА ВЫРОСЛА ВМЕСТЕ С ПЕРЕХОДОМ НА TREE-SITTER, и на восьми воркерах
  * пул на этом репозитории перестал окупаться: 778 мс против 648 мс без пула
@@ -175,13 +271,19 @@ class ParsePool {
     { resolve: (defs: Def[]) => void; reject: (e: Error) => void }
   >();
   #nextId = 0;
-  /** true — сторож погасил пул, дальнейшие батчи идут без него. */
+  /** true — пул погашен: сторожем или падением воркера. */
   broken = false;
+  /**
+   * Причина, если пул погас из-за ПАДЕНИЯ воркера, а не по сторожу. null у
+   * живого пула и у погашенного сторожем — разница между «медленно» и
+   * «сломано» и есть разница между молчанием и отказом команды.
+   */
+  crash: string | null = null;
 
-  constructor(size: number) {
-    const url = new URL("./code_index_worker.ts", import.meta.url);
+  constructor(size: number, entry: string, dirs: TreeSitterDirs, mutation: PoolMutation) {
+    const env = workerEnv(dirs, mutation);
     for (let i = 0; i < size; i++) {
-      const w = new Worker(url);
+      const w = new Worker(entry, { env } as WorkerOptions);
       w.onmessage = (e: MessageEvent<{ id: number; defs?: Def[]; error?: string }>) => {
         const waiter = this.#pending.get(e.data.id);
         if (waiter === undefined) return;
@@ -189,12 +291,19 @@ class ParsePool {
         if (e.data.error !== undefined) waiter.reject(new Error(e.data.error));
         else waiter.resolve(e.data.defs ?? []);
       };
-      w.onerror = () => {
-        // Воркер умер: его ждущие получат отказ и разберутся фолбэком в своём
-        // потоке. Остальные воркеры продолжают.
-        for (const [id, waiter] of this.#pending) {
-          waiter.reject(new Error(`воркер разбора ${i} упал`));
+      w.onerror = (e: unknown) => {
+        // Сообщение воркера — единственное, что объясняет причину: без него
+        // «воркер разбора 7 упал» не отличает сломанный резолвинг от OOM.
+        const why = (e as { message?: string } | null)?.message ?? "без сообщения";
+        this.crash ??= `воркер разбора ${i} упал: ${why}`;
+        const reason = new Error(this.crash);
+        this.broken = true;
+        // Гасим ВЕСЬ пул: окружение у восьми воркеров одно, и остальные
+        // повторят это же падение на своих файлах.
+        this.close();
+        for (const [id, waiter] of [...this.#pending]) {
           this.#pending.delete(id);
+          waiter.reject(reason);
         }
       };
       this.#workers.push(w);
@@ -202,6 +311,11 @@ class ParsePool {
   }
 
   parse(source: string, lang: LangId): Promise<Def[]> {
+    // Пул уже погас: посылать некому. Раньше здесь считался остаток по длине
+    // пустого массива, и `#workers[NaN]!` падал TypeError прямо в разборе.
+    if (this.broken || this.#workers.length === 0) {
+      return Promise.reject(new Error(this.crash ?? "пул разбора погашен"));
+    }
     const id = ++this.#nextId;
     return new Promise<Def[]>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -476,6 +590,7 @@ export async function drainCodeIndex(
     cleaned: 0,
     failed: 0,
     batches: 0,
+    pooled: 0,
     parseMs: 0,
     applyMs: 0,
     waitedMs: 0,
@@ -489,6 +604,8 @@ export async function drainCodeIndex(
   // старт воркера — миллисекунды, на инкрементальном прогоне (десяток файлов)
   // он не окупил бы себя, на полном — окупает многократно.
   let pool: ParsePool | null = null;
+  /** Причина падения воркера — она же причина отказа команды в самом конце. */
+  let poolCrash: string | null = null;
   try {
     for (;;) {
       const now = opts.now ?? Date.now();
@@ -509,19 +626,49 @@ export async function drainCodeIndex(
 
       if (
         pool === null &&
+        poolCrash === null &&
         batchRows.length >= poolMinFiles &&
         opts.parse === undefined &&
         (navigator.hardwareConcurrency ?? 2) > 2
       ) {
-        pool = new ParsePool(Math.max(2, Math.min(8, (navigator.hardwareConcurrency ?? 2) - 2)));
+        // Воркер и каталоги wasm ищутся ЗДЕСЬ, в главном потоке, и уезжают в
+        // воркер готовыми. Не нашлись — пула просто нет: разбор в своём потоке
+        // медленнее, но он есть, а восемь падающих воркеров — это ноль.
+        const entry = parseWorkerEntry();
+        const dirs = entry === null ? null : safeTreeSitterDirs();
+        if (entry !== null && dirs !== null) {
+          pool = new ParsePool(
+            Math.max(2, Math.min(8, (navigator.hardwareConcurrency ?? 2) - 2)),
+            entry,
+            dirs,
+            poolMutation(),
+          );
+        }
       }
 
       await drainBatch(db, opts, { holder, now }, batchRows, st, pool);
       st.claimed += batchRows.length;
-      if (pool !== null && pool.broken) pool = null; // сторож погасил — добираем в своём потоке
+      if (pool !== null && pool.broken) {
+        // Сторож погасил — добираем в своём потоке молча. Воркер УПАЛ —
+        // добираем так же, но команда об этом скажет (см. ниже).
+        poolCrash ??= pool.crash;
+        pool = null;
+      }
     }
   } finally {
     pool?.close();
+  }
+
+  // Очередь разобрана и записана — и только теперь про сломанный пул. Порядок
+  // именно такой: файлы не теряются из-за того, что сборка неисправна, но и
+  // «готово» про неисправную сборку не говорится. Образец рядом: `drainBatch`
+  // уводит работу в fail очереди и не притворяется.
+  if (poolCrash !== null) {
+    throw new Error(
+      `${poolCrash}. Очередь разобрана в один поток, индекс на месте — но пул разбора ` +
+        "в этой сборке нерабочий: воркер обязан находить и модуль, и грамматики " +
+        "внутри бинаря (см. packages/code-intel/src/parse_worker_entry.ts)",
+    );
   }
 
   return {
@@ -531,11 +678,22 @@ export async function drainCodeIndex(
     cleaned: st.cleaned,
     failed: st.failed,
     batches: st.batches,
+    pooled: st.pooled,
     parseMs: st.parseMs,
     applyMs: st.applyMs,
     waitedMs: st.waitedMs,
     drainMs: performance.now() - t0,
   };
+}
+
+/** Ответ пула, уже без отказа: промис от `pool.parse` не остаётся висеть. */
+type PoolReply = { readonly ok: true; readonly defs: Def[] } | { readonly ok: false };
+
+function settle(p: Promise<Def[]>): Promise<PoolReply> {
+  return p.then(
+    (defs) => ({ ok: true, defs }) as PoolReply,
+    () => ({ ok: false }) as PoolReply,
+  );
 }
 
 /** Разбор и запись одного батча. Работы, чей разбор упал, уходят в fail. */
@@ -551,6 +709,7 @@ async function drainBatch(
     cleaned: number;
     failed: number;
     batches: number;
+    pooled: number;
     parseMs: number;
     applyMs: number;
     waitedMs: number;
@@ -589,7 +748,7 @@ async function drainBatch(
     size: number;
     hash: string;
     source: string;
-    pending: Promise<Def[]> | null;
+    pending: Promise<PoolReply> | null;
   }> = [];
   for (const job of batchRows) {
     const path = job.entity_id;
@@ -626,7 +785,12 @@ async function drainBatch(
       size,
       hash,
       source: sourceText,
-      pending: isL1 && pool !== null ? pool.parse(sourceText, lang as LangId) : null,
+      // Обработчик вешается ЗДЕСЬ, в момент посылки, а не там, где результат
+      // понадобится. Иначе падение воркера отклоняет три сотни промисов, до
+      // которых очередь ожидания ещё не дошла, — и Bun убивает процесс
+      // необработанным отказом, называя случайный номер воркера. Это и был
+      // тот самый «exit=1, упал воркер 7» с плавающим номером.
+      pending: isL1 && pool !== null ? settle(pool.parse(sourceText, lang as LangId)) : null,
     });
   }
 
@@ -659,9 +823,11 @@ async function drainBatch(
     try {
       let defs: Def[];
       if (e.pending !== null) {
-        try {
-          defs = await e.pending;
-        } catch {
+        const reply = await e.pending;
+        if (reply.ok) {
+          defs = reply.defs;
+          st.pooled++;
+        } else {
           // Пул не ответил (сторож) или воркер умер — файл не теряем.
           defs = parse(e.source, e.lang as LangId);
         }

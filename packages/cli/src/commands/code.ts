@@ -96,6 +96,12 @@ interface CodeIndexData {
     cleaned: number;
     failed: number;
     batches: number;
+    /**
+     * Разобрано ПУЛОМ воркеров (остальное — в этом же потоке). Число здесь не
+     * для красоты: пул, который молча не завёлся, от пула, который отработал,
+     * по `parsed` неотличим — и ровно так он год не работал в бинаре.
+     */
+    pooled: number;
     parse_ms: number;
     drain_ms: number;
   };
@@ -139,7 +145,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
         const scan = scanCodeIndex(db, opts, !dryRun);
         const batchRaw = flagNum(ctx, "batch");
         const drain = dryRun
-          ? { claimed: 0, parsed: 0, written: 0, cleaned: 0, failed: 0, batches: 0, parseMs: 0, drainMs: 0 }
+          ? { claimed: 0, parsed: 0, written: 0, cleaned: 0, failed: 0, batches: 0, pooled: 0, parseMs: 0, drainMs: 0 }
           : await drainCodeIndex(db, opts, {
               holder: `code-index-${process.pid}`,
               ...(batchRaw !== undefined && batchRaw > 0 ? { batch: Math.floor(batchRaw) } : {}),
@@ -166,6 +172,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
             cleaned: drain.cleaned,
             failed: drain.failed,
             batches: drain.batches,
+            pooled: drain.pooled,
             parse_ms: Math.round(drain.parseMs),
             drain_ms: Math.round(drain.drainMs),
           },
@@ -205,8 +212,8 @@ function buildCodeIndex(deps: StoreDeps): Command {
         `репозиторий ${d.repo.length > 0 ? d.repo : "(корень воркспейса)"}  ${d.root}`,
         `скан      файлов ${d.scan.files}, без изменений ${d.scan.unchanged}, тач ${d.scan.touched}, ` +
           `в работу ${d.scan.enqueued}, убрано ${d.scan.removed}  ${d.scan.scan_ms} мс`,
-        `разбор    взято ${d.drain.claimed}, разобрано ${d.drain.parsed}, записано ${d.drain.written}, ` +
-          `отказов ${d.drain.failed}  ${d.drain.drain_ms} мс`,
+        `разбор    взято ${d.drain.claimed}, разобрано ${d.drain.parsed} (пулом ${d.drain.pooled}), ` +
+          `записано ${d.drain.written}, отказов ${d.drain.failed}  ${d.drain.drain_ms} мс`,
         `индекс    ${d.files} файлов, ${d.defs} символов${langs.length > 0 ? `  [${langs}]` : ""}`,
         `${d.dry_run ? "dry-run: ничего не записано  " : ""}${d.took_ms} мс`,
       ];

@@ -9,6 +9,36 @@
 
 import { listDefs, loadLang, type Def, type LangId } from "./symbols.ts";
 
+/**
+ * КАТАЛОГИ WASM ВОРКЕР НЕ ИЩЕТ — их выставляет главный поток (`ParsePool`).
+ *
+ * Не осторожность, а единственное, что здесь работает. `Bun.resolveSync` за
+ * границей потока опирается на путь модуля, а модуль этого воркера в собранном
+ * бинаре лежит в bunfs: node_modules рядом нет и быть не может. На сборочной
+ * машине резолвер иногда всё-таки попадает в чужой node_modules по путям,
+ * впечённым в бандл, — и именно это делало поломку невидимой в тестах: у себя
+ * работает, у скачавшего бинарь нет.
+ *
+ * Поэтому отсутствие переменных — отказ СРАЗУ и с именем причины, а не тихий
+ * поиск, который на одной машине найдёт, а на другой развалится стеком
+ * резолвера. Бросок на загрузке модуля доходит до `onerror` пула, а тот
+ * превращает его в отказ команды.
+ */
+const runtimeDir = process.env.MYC_TREE_SITTER_DIR;
+const grammarDir = process.env.MYC_TREE_SITTER_GRAMMAR_DIR;
+if (
+  runtimeDir === undefined ||
+  runtimeDir === "" ||
+  grammarDir === undefined ||
+  grammarDir === ""
+) {
+  throw new Error(
+    "воркер разбора запущен без каталогов tree-sitter: MYC_TREE_SITTER_DIR и " +
+      "MYC_TREE_SITTER_GRAMMAR_DIR выставляет главный поток (ParsePool). Искать их " +
+      "здесь нечем — за границей потока node_modules нет",
+  );
+}
+
 interface ParseRequest {
   readonly id: number;
   readonly source: string;

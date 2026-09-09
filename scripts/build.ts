@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
 import { mkdir } from "node:fs/promises";
+import {
+  PARSE_WORKER_ENTRY_NAMING,
+  PARSE_WORKER_SOURCE,
+} from "../packages/code-intel/src/parse_worker_entry.ts";
 
 /**
  * ЕДИНСТВЕННОЕ место, где записан рецепт сборки бинаря. Импортируется теми,
@@ -22,6 +26,18 @@ export const BUILD_ARGS: readonly string[] = [
   // Без него каждый запуск платит за разбор всего бандла — те самые ~12 мс.
   "--bytecode",
   "packages/cli/src/main.ts",
+  // ВТОРОЙ ВХОД — воркер пула разбора. Без него в бинаре воркера НЕТ: `bun
+  // build` конструкцию `new Worker(new URL(...))` не видит и ничего по ней не
+  // вшивает, а сохранённый в бандле `import.meta.url` ведёт на .ts сборочной
+  // машины. Отдельным входом воркер попадает в bunfs самодостаточным бандлом,
+  // с web-tree-sitter внутри. Путь берётся из `parse_worker_entry.ts` — оттуда
+  // же рантайм берёт имя, под которым его искать.
+  PARSE_WORKER_SOURCE,
+  // Имя воркера в bunfs — не то, что вычислит бандлер по общему предку входов,
+  // а то, что рантайм пойдёт искать. Без этой строки имя зависит от места
+  // ДРУГОГО входа, и любой переезд гасит пул молча.
+  "--entry-naming",
+  PARSE_WORKER_ENTRY_NAMING,
   "--outfile",
   "dist/myc",
 ];

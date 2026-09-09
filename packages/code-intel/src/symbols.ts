@@ -151,15 +151,33 @@ let runtimeInit: Promise<void> | null = null;
 const grammars = new Map<LangId, Promise<TSParser>>();
 const ready = new Map<LangId, TSParser>();
 
-/** Каталог web-tree-sitter (там лежит tree-sitter.wasm рантайма). */
+/**
+ * Каталог web-tree-sitter (там лежит tree-sitter.wasm рантайма).
+ *
+ * `MYC_TREE_SITTER_DIR` — не отладочный крючок: это КАНАЛ, по которому
+ * главный поток передаёт воркеру уже найденный путь (`treeSitterDirs` →
+ * `ParsePool`). Резолвер за границей потока не работает — в бинаре у воркера
+ * нет ни node_modules, ни того каталога, из которого искал главный поток.
+ *
+ * Отсутствие каталога обязано называть себя, а не разваливаться стеком
+ * резолвера, — ровно как у грамматик ниже.
+ */
 function runtimeDir(): string {
   const fromEnv = process.env.MYC_TREE_SITTER_DIR;
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  const pkgJson = Bun.resolveSync(
-    "web-tree-sitter/package.json",
-    dirname(fileURLToPath(import.meta.url)),
-  );
-  return dirname(pkgJson);
+  try {
+    const pkgJson = Bun.resolveSync(
+      "web-tree-sitter/package.json",
+      dirname(fileURLToPath(import.meta.url)),
+    );
+    return dirname(pkgJson);
+  } catch {
+    throw new Error(
+      "рантайм tree-sitter не найден: пакета web-tree-sitter нет рядом с @myc/code-intel. " +
+        "Укажите каталог с tree-sitter.wasm в MYC_TREE_SITTER_DIR " +
+        "или установите зависимости (bun install)",
+    );
+  }
 }
 
 /**
@@ -170,6 +188,9 @@ function runtimeDir(): string {
  * грамматики придут откуда-то ещё. Пока их туда никто не кладёт (это
  * memory-be3k1np40sag, грамматики по требованию), и здесь важно только одно —
  * чтобы отсутствие каталога называло себя, а не разваливалось стеком резолвера.
+ *
+ * Через эту же переменную главный поток передаёт путь ВОРКЕРУ пула: искать
+ * заново за границей потока он не может и не должен (`treeSitterDirs`).
  */
 function grammarDir(): string {
   const fromEnv = process.env.MYC_TREE_SITTER_GRAMMAR_DIR;
@@ -192,6 +213,29 @@ function grammarDir(): string {
 /** Путь к .wasm грамматики языка — он же аргумент для загрузки по требованию. */
 export function grammarPath(lang: LangId): string {
   return join(grammarDir(), `tree-sitter-${LANG_RULES[lang].grammar}.wasm`);
+}
+
+/** Каталоги рантайма и грамматик — то, что этот поток УЖЕ нашёл. */
+export interface TreeSitterDirs {
+  /** Каталог с tree-sitter.wasm рантайма. */
+  readonly runtime: string;
+  /** Каталог с файлами tree-sitter-<язык>.wasm. */
+  readonly grammar: string;
+}
+
+/**
+ * Разрешить оба каталога ЗДЕСЬ И СЕЙЧАС — чтобы отдать их тому, кто разрешить
+ * их не может.
+ *
+ * Единственный вызывающий — `ParsePool`: воркер получает эти строки готовыми
+ * (через `MYC_TREE_SITTER_DIR`/`MYC_TREE_SITTER_GRAMMAR_DIR`) и `Bun.resolveSync`
+ * за границей потока не зовёт вовсе. В бинаре у него нет ни node_modules, ни
+ * каталога, относительно которого искал главный поток: его `import.meta.url`
+ * ведёт в bunfs. Бросает — значит грамматик нет и у главного потока тоже, и
+ * пул заводить не на чем.
+ */
+export function treeSitterDirs(): TreeSitterDirs {
+  return { runtime: runtimeDir(), grammar: grammarDir() };
 }
 
 async function initRuntime(): Promise<void> {
