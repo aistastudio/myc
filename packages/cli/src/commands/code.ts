@@ -84,7 +84,7 @@ async function missingResource(e: unknown): Promise<{ message: string; hint: str
  * не приезжает из базы. Дублировать логику нельзя: индекс и якоря обязаны
  * писать ОДИН И ТОТ ЖЕ `repo_id`, иначе `defsInSpan` не найдёт ничего.
  */
-async function codeRepo(
+export async function codeRepo(
   h: StoreHandle,
   explicit: string | undefined,
 ): Promise<{ repoId: string; repoRoot: string }> {

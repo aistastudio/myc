@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { runCodeIndex } from "./code_index.ts";
-import { defsInSpan, fanIn, fileDefs, indexScope, symbolDefs } from "./read.ts";
+import { defsInSpan, fanIn, fileDefs, indexScope, SQL_REFS_TO, symbolDefs } from "./read.ts";
 
 const A = `export function alpha(): number {
   return 1;
@@ -140,5 +140,36 @@ describe("fan_in: счёт по требованию, кеш — в code_refs", 
     const after = fanIn(db, "r", "alpha", dir);
     expect(after.cached).toBe(false);
     expect(after.n).toBe(5);
+  });
+});
+
+/**
+ * План запроса — предмет проверки, а не следствие удачи.
+ *
+ * `ix_code_ref_sites_name` существовал и раньше, но SQLite шёл сканом по
+ * `repo_id`: 7.5 мс на запрос вместо 0.03, и `--depth all` — 13.4 с вместо
+ * 62 мс. Лечится это `INDEXED BY`, но лечение держалось ни на чём: снятие
+ * подсказки не роняло ни одного теста, и возврат к тринадцати секундам
+ * произошёл бы молча.
+ *
+ * Проверяется ПЛАН, а не время: время меряет машину, план — код. Образец
+ * рядом — `packages/cli/src/commands/ready.repo-latency.test.ts`, где так же
+ * пришпилен `ix_nodes_ready`.
+ */
+describe("план запроса ссылок", () => {
+  test("поиск по имени идёт индексом, а не сканом таблицы", async () => {
+    const db = new Database(":memory:");
+    try {
+      await migrate(db, { migrations, writable: true });
+      const plan = db
+        .query(`EXPLAIN QUERY PLAN ${SQL_REFS_TO}`)
+        .all("repo", "name") as Array<{ detail: string }>;
+      const detail = plan.map((r) => r.detail).join(" | ");
+      expect(detail).toContain("ix_code_ref_sites_name");
+      // И обратная сторона: скана таблицы в плане быть не должно вовсе.
+      expect(detail).not.toMatch(/SCAN code_ref_sites(?! USING)/);
+    } finally {
+      db.close();
+    }
   });
 });

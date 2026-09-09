@@ -71,6 +71,8 @@ export function registerAll(registry: Registry): void {
   lazy("reindex", () => import("./commands/reindex.ts").then((m) => m.createReindexCommand()));
   lazy("anchor", () => import("./commands/anchor.ts").then((m) => m.createAnchorCommand()));
   lazy("code", () => import("./commands/code.ts").then((m) => m.createCodeCommand()));
+  lazy("callers", () => import("./commands/callers.ts").then((m) => m.createCallersCommand()));
+  lazy("skeleton", () => import("./commands/skeleton.ts").then((m) => m.createSkeletonCommand()));
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("absorb-session", () =>
     import("./hooks/absorb-session.ts").then((m) => m.createAbsorbSessionCommand()));

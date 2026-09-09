@@ -410,13 +410,13 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 2607,
+    "pass": 2650,
     "fail": 0,
     "skip": 16,
-    "files": 180,
-    "assertions": 30803,
-    "seconds": 200.72,
-    "sources": "281de24f935a1e64"
+    "files": 182,
+    "assertions": 30962,
+    "seconds": 212.9,
+    "sources": "6f8db949fdbfe2b3"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-09T18:44:36.721Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-09T19:45:09.611Z", assertions: 67 };
