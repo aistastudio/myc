@@ -35,9 +35,17 @@
  * остаются валидными, ломается рантайм. Сторож — `treesitter_abi.test.ts`.
  */
 
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { delimiter, join } from "node:path";
 import Parser from "web-tree-sitter";
+import {
+  RUNTIME_WASM,
+  findGrammar,
+  findRuntime,
+  formatBytes,
+  grammarSearchPath,
+  grammarSpecFor,
+  runtimeSearchPath,
+} from "./grammars.ts";
 
 // Пин версий живёт в отдельном модуле без импортов — иначе сторож ABI падал бы
 // вместе с тем, что он стережёт. См. `treesitter_pin.ts`.
@@ -47,7 +55,13 @@ export { PINNED_TREE_SITTER } from "./treesitter_pin.ts";
 // Контракт (тот же, что был у defs.ts)
 // ---------------------------------------------------------------------------
 
-export type LangId = "ts" | "tsx" | "js" | "jsx" | "py";
+/**
+ * Тип живёт в `grammars.ts` — модуле без `web-tree-sitter`, который читают и
+ * команда загрузки, и путь индексации до того, как решит платить за рантайм.
+ * Здесь только реэкспорт: у потребителей ничего не меняется.
+ */
+export type { LangId } from "./grammars.ts";
+import type { LangId } from "./grammars.ts";
 
 export type DefKind = "function" | "class" | "method" | "type" | "interface" | "enum";
 
@@ -113,8 +127,6 @@ const JSTS_FUNCTION_VALUES: ReadonlySet<string> = new Set([
 ]);
 
 interface LangRule {
-  /** Имя .wasm в tree-sitter-wasms (без префикса и расширения). */
-  readonly grammar: string;
   readonly kinds: Readonly<Record<string, DefKind>>;
   /**
    * `const f = () => {}` — определение, `const n = 5` — нет. Отдельная ветка
@@ -126,17 +138,19 @@ interface LangRule {
 }
 
 const LANG_RULES: Readonly<Record<LangId, LangRule>> = {
-  ts: { grammar: "typescript", kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
-  tsx: { grammar: "tsx", kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
-  js: { grammar: "javascript", kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
-  jsx: { grammar: "javascript", kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
-  py: { grammar: "python", kinds: PY_KINDS, declarators: false, methodByParent: ["block"] },
+  ts: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
+  tsx: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
+  js: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
+  jsx: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
+  py: { kinds: PY_KINDS, declarators: false, methodByParent: ["block"] },
 };
 
 /**
  * Языки, для которых у нас есть грамматика. Считается ИЗ таблицы правил, а не
  * пишется рядом с ней: список, объявленный отдельно, — это второе место, где
- * можно забыть язык. Совпадение с `L1_LANGS` (`langs.ts`) сторожит тест.
+ * можно забыть язык. Совпадение с `L1_LANGS` (`langs.ts`) и с каталогом
+ * грамматик (`GRAMMAR_BY_LANG`) сторожит тест: правило разбора без грамматики
+ * и грамматика без правила одинаково бесполезны, и разъезжаются они молча.
  */
 export const DEF_LANGS: readonly LangId[] = Object.keys(LANG_RULES) as LangId[];
 
@@ -152,90 +166,105 @@ const grammars = new Map<LangId, Promise<TSParser>>();
 const ready = new Map<LangId, TSParser>();
 
 /**
- * Каталог web-tree-sitter (там лежит tree-sitter.wasm рантайма).
- *
- * `MYC_TREE_SITTER_DIR` — не отладочный крючок: это КАНАЛ, по которому
- * главный поток передаёт воркеру уже найденный путь (`treeSitterDirs` →
- * `ParsePool`). Резолвер за границей потока не работает — в бинаре у воркера
- * нет ни node_modules, ни того каталога, из которого искал главный поток.
- *
- * Отсутствие каталога обязано называть себя, а не разваливаться стеком
- * резолвера, — ровно как у грамматик ниже.
+ * ОТСУТСТВУЮЩИЙ РЕСУРС — ЭТО НЕ СБОЙ ПРОГРАММЫ, И КОД ОШИБКИ ДОЛЖЕН ЭТО
+ * ГОВОРИТЬ. Раньше здесь бросался голый `Error`, CLI не умел его опознать и
+ * печатал `internal.unexpected` — то есть «myc сломался» вместо «myc не
+ * хватает файла, вот команда». Разница не косметическая: на код ошибки
+ * ветвятся хуки и агенты, и `internal.*` заставляет их считать myc
+ * неисправным. Оба класса ниже несут `hint` — готовую команду, — и CLI
+ * превращает их в `precond.*` (exit 5).
  */
-function runtimeDir(): string {
-  const fromEnv = process.env.MYC_TREE_SITTER_DIR;
-  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  try {
-    const pkgJson = Bun.resolveSync(
-      "web-tree-sitter/package.json",
-      dirname(fileURLToPath(import.meta.url)),
+export class MissingResourceError extends Error {
+  constructor(
+    message: string,
+    /** Команда, которая ресурс добудет. */
+    readonly hint: string,
+  ) {
+    super(message);
+    this.name = "MissingResourceError";
+  }
+}
+
+/** Нет рантайма `tree-sitter.wasm` — без него не работает ни один язык. */
+export class RuntimeMissingError extends MissingResourceError {
+  constructor(readonly searched: readonly string[]) {
+    super(
+      `рантайм tree-sitter не найден: ${RUNTIME_WASM} нет ни в одном из каталогов ` +
+        `[${searched.join(", ")}]. Он поставляется вместе с myc, и его отсутствие ` +
+        "означает повреждённую установку: переустановите пакет либо укажите каталог " +
+        "с файлом в MYC_TREE_SITTER_DIR",
+      "bun add -g @aistastudio/myc",
     );
-    return dirname(pkgJson);
-  } catch {
-    throw new Error(
-      "рантайм tree-sitter не найден: пакета web-tree-sitter нет рядом с @myc/code-intel. " +
-        "Укажите каталог с tree-sitter.wasm в MYC_TREE_SITTER_DIR " +
-        "или установите зависимости (bun install)",
-    );
+    this.name = "RuntimeMissingError";
   }
 }
 
 /**
- * Каталог с .wasm грамматик.
- *
- * `MYC_TREE_SITTER_GRAMMAR_DIR` — не отладочный крючок, а тот же приём, что у
- * `MYC_ORT_WASM_DIR` в эмбеддере: в собранном бинаре node_modules нет, и
- * грамматики придут откуда-то ещё. Пока их туда никто не кладёт (это
- * memory-be3k1np40sag, грамматики по требованию), и здесь важно только одно —
- * чтобы отсутствие каталога называло себя, а не разваливалось стеком резолвера.
- *
- * Через эту же переменную главный поток передаёт путь ВОРКЕРУ пула: искать
- * заново за границей потока он не может и не должен (`treeSitterDirs`).
+ * Нет грамматики конкретного языка. Сообщение называет ЯЗЫК, ВЕС и КОМАНДУ —
+ * три вещи, без которых отказ «не найдено» заставляет читать исходники.
  */
-function grammarDir(): string {
-  const fromEnv = process.env.MYC_TREE_SITTER_GRAMMAR_DIR;
-  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  try {
-    const pkgJson = Bun.resolveSync(
-      "tree-sitter-wasms/package.json",
-      dirname(fileURLToPath(import.meta.url)),
+export class GrammarMissingError extends MissingResourceError {
+  constructor(
+    readonly lang: LangId,
+    readonly searched: readonly string[],
+  ) {
+    const spec = grammarSpecFor(lang);
+    super(
+      `грамматика tree-sitter для "${lang}" не скачана: ${spec.file} ` +
+        `(${formatBytes(spec.bytes)}) нет ни в одном из каталогов [${searched.join(", ")}]`,
+      `myc code fetch ${lang}`,
     );
-    return join(dirname(pkgJson), "out");
-  } catch {
-    throw new Error(
-      "грамматики tree-sitter не найдены: пакета tree-sitter-wasms нет рядом с @myc/code-intel. " +
-        "Укажите каталог с файлами tree-sitter-<язык>.wasm в MYC_TREE_SITTER_GRAMMAR_DIR " +
-        "или установите зависимости (bun install)",
-    );
+    this.name = "GrammarMissingError";
   }
 }
 
-/** Путь к .wasm грамматики языка — он же аргумент для загрузки по требованию. */
+/** Каталог рантайма: тот, в котором `tree-sitter.wasm` действительно лежит. */
+function runtimeDir(): string {
+  const path = findRuntime();
+  if (path === null) throw new RuntimeMissingError(runtimeSearchPath());
+  return path.slice(0, path.length - RUNTIME_WASM.length - 1);
+}
+
+/**
+ * Путь к .wasm грамматики языка. Ищется ПОФАЙЛОВО по списку каталогов, а не
+ * складывается из одного «каталога грамматик»: с загрузкой по требованию
+ * typescript лежит в пользовательском кеше, а javascript может остаться в
+ * node_modules разработчика — одной строкой это перестало выражаться.
+ */
 export function grammarPath(lang: LangId): string {
-  return join(grammarDir(), `tree-sitter-${LANG_RULES[lang].grammar}.wasm`);
+  const path = findGrammar(lang);
+  if (path === null) throw new GrammarMissingError(lang, grammarSearchPath());
+  return path;
 }
 
 /** Каталоги рантайма и грамматик — то, что этот поток УЖЕ нашёл. */
 export interface TreeSitterDirs {
   /** Каталог с tree-sitter.wasm рантайма. */
   readonly runtime: string;
-  /** Каталог с файлами tree-sitter-<язык>.wasm. */
+  /**
+   * Каталоги с файлами tree-sitter-<язык>.wasm, СПИСКОМ через разделитель
+   * путей платформы. Список, а не строка: кеш и node_modules сосуществуют.
+   */
   readonly grammar: string;
 }
 
 /**
- * Разрешить оба каталога ЗДЕСЬ И СЕЙЧАС — чтобы отдать их тому, кто разрешить
- * их не может.
+ * Разрешить каталоги ЗДЕСЬ И СЕЙЧАС — чтобы отдать их тому, кто разрешить их
+ * не может.
  *
  * Единственный вызывающий — `ParsePool`: воркер получает эти строки готовыми
  * (через `MYC_TREE_SITTER_DIR`/`MYC_TREE_SITTER_GRAMMAR_DIR`) и `Bun.resolveSync`
  * за границей потока не зовёт вовсе. В бинаре у него нет ни node_modules, ни
  * каталога, относительно которого искал главный поток: его `import.meta.url`
- * ведёт в bunfs. Бросает — значит грамматик нет и у главного потока тоже, и
+ * ведёт в bunfs. Бросает — значит рантайма нет и у главного потока тоже, и
  * пул заводить не на чем.
+ *
+ * Грамматики здесь НЕ проверяются на наличие: какие языки понадобятся, знает
+ * батч, а не пул. Воркеру уезжает список каталогов, в котором он найдёт то,
+ * что к тому моменту скачано.
  */
 export function treeSitterDirs(): TreeSitterDirs {
-  return { runtime: runtimeDir(), grammar: grammarDir() };
+  return { runtime: runtimeDir(), grammar: grammarSearchPath().join(delimiter) };
 }
 
 async function initRuntime(): Promise<void> {
@@ -316,6 +345,29 @@ function isMethodByParent(node: TSNode, parents: readonly string[]): boolean {
 }
 
 /**
+ * Определение ли этот узел — и какого вида. ЕДИНСТВЕННОЕ место, где живёт
+ * это решение: по нему `listDefs` строит список определений, а `listRefs`
+ * (`refs.ts`) — стек охватывающих символов для ссылок. Две копии правил
+ * разошлись бы молча, и ссылка получила бы владельца, которого нет в
+ * `code_defs`: строка `callers` указывала бы на символ, которого индекс не
+ * знает.
+ */
+export function defAt(node: TSNode, lang: LangId): DefKind | null {
+  const rule = LANG_RULES[lang];
+  const kind = rule.kinds[node.type];
+  if (kind !== undefined) return isMethodByParent(node, rule.methodByParent) ? "method" : kind;
+  if (rule.declarators && node.type === "variable_declarator" && declaratorIsFunction(node)) {
+    return "function";
+  }
+  return null;
+}
+
+/** Имя узла-определения (поле `name`); null — имени нет (анонимная форма). */
+export function defNameOf(node: TSNode): string | null {
+  return nameOf(node);
+}
+
+/**
  * Определения файла в порядке появления (обход в глубину, предзаказ).
  *
  * Вложенные определения — свои: `inner` внутри `outer` попадёт в список
@@ -325,7 +377,6 @@ function isMethodByParent(node: TSNode, parents: readonly string[]): boolean {
  */
 export function listDefs(source: string, lang: LangId, opts: DefsOptions = {}): Def[] {
   const parser = parserFor(lang);
-  const rule = LANG_RULES[lang];
   const tree = parser.parse(source);
   // Дерево живёт в куче wasm, и сборщик JS его не трогает: не освободить —
   // значит течь на каждом файле в воркере, который живёт весь прогон.
@@ -333,15 +384,10 @@ export function listDefs(source: string, lang: LangId, opts: DefsOptions = {}): 
     const defs: Def[] = [];
 
     const visit = (node: TSNode): void => {
-      const kind = rule.kinds[node.type];
-      if (kind !== undefined) {
+      const kind = defAt(node, lang);
+      if (kind !== null) {
         const name = nameOf(node);
-        if (name !== null) {
-          push(defs, name, isMethodByParent(node, rule.methodByParent) ? "method" : kind, node, opts);
-        }
-      } else if (rule.declarators && node.type === "variable_declarator" && declaratorIsFunction(node)) {
-        const name = nameOf(node);
-        if (name !== null) push(defs, name, "function", node, opts);
+        if (name !== null) push(defs, name, kind, node, opts);
       }
       for (let i = 0; i < node.namedChildCount; i++) {
         const child = node.namedChild(i);
@@ -357,13 +403,23 @@ export function listDefs(source: string, lang: LangId, opts: DefsOptions = {}): 
 }
 
 function push(out: Def[], name: string, kind: DefKind, node: TSNode, opts: DefsOptions): void {
+  out.push(defOf(name, kind, node, opts));
+}
+
+/**
+ * Определение из узла — спан как есть. Отдельная функция, потому что тот же
+ * спан строит `refs.ts`, когда собирает определения и ссылки за ОДИН обход:
+ * второй способ посчитать конец спана означал бы, что `code_defs` из
+ * индексатора и `code_defs` из тестов расходятся на многострочных формах.
+ */
+export function defOf(name: string, kind: DefKind, node: TSNode, opts: DefsOptions = {}): Def {
   const startLine = node.startPosition.row + 1;
-  out.push({
+  return {
     name,
     kind,
     startLine,
     endLine: opts.naiveEnd === true ? startLine : node.endPosition.row + 1,
-  });
+  };
 }
 
 /**
@@ -405,4 +461,27 @@ export function findBlockEnd(source: string, startLine: number, opts: DefsOption
   } finally {
     tree.delete();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Внутренний доступ для `refs.ts`
+// ---------------------------------------------------------------------------
+
+/**
+ * Узел дерева разбора — тип, выведенный из web-tree-sitter. Экспортируется
+ * ради `refs.ts`: тот ходит по ТОМУ ЖЕ дереву и обязан называть узлы тем же
+ * типом, а не своей копией `any`.
+ */
+export type { TSNode };
+
+/**
+ * Готовый парсер языка — тот же, что у `listDefs`, один на процесс.
+ *
+ * `refs.ts` берёт его отсюда, а не заводит свой: второй парсер означал бы
+ * вторую загрузку грамматики (≈4-5 мс на язык) и, что хуже, второй экземпляр
+ * рантайма wasm на процесс. Не загружено — та же громкая ошибка
+ * (`GrammarNotLoadedError`), что у определений.
+ */
+export function parserForLang(lang: LangId): TSParser {
+  return parserFor(lang);
 }

@@ -2,12 +2,13 @@
  * Воркер пула разбора для code_index (см. ./code_index.ts).
  *
  * Пул заводится только на большом батче (≥ PARSE_POOL_MIN_FILES работ):
- * полный индекс репозитория — это сотни миллисекунд чистого listDefs, и они
+ * полный индекс репозитория — это сотни миллисекунд чистого разбора, и они
  * честно делятся по ядрам. Пул живёт внутри одного drainCodeIndex и гаснет
  * вместе с ним — это НЕ демон (решение S8), постоянного процесса нет.
  */
 
-import { listDefs, loadLang, type Def, type LangId } from "./symbols.ts";
+import { loadLang, type Def, type LangId } from "./symbols.ts";
+import { listDefsAndRefs, type Ref } from "./refs.ts";
 
 /**
  * КАТАЛОГИ WASM ВОРКЕР НЕ ИЩЕТ — их выставляет главный поток (`ParsePool`).
@@ -45,9 +46,15 @@ interface ParseRequest {
   readonly lang: LangId;
 }
 
+/**
+ * Ответ воркера. Определения и ссылки едут ВМЕСТЕ и разбираются за один
+ * проход дерева: посылать файл дважды ради второго ответа значило бы
+ * построить дерево дважды, а построение дерева и есть вся цена разбора.
+ */
 interface ParseReply {
   readonly id: number;
   readonly defs?: Def[];
+  readonly refs?: Ref[];
   readonly error?: string;
 }
 
@@ -61,7 +68,7 @@ const ctx = globalThis as unknown as {
 /**
  * ГРАММАТИКА ГРУЗИТСЯ ОДИН РАЗ НА ВОРКЕР И ЖИВЁТ В ПАМЯТИ.
  *
- * `listDefs` синхронна, а `.wasm` грузится промисом — стык лёг сюда. Первый
+ * Разбор синхронен, а `.wasm` грузится промисом — стык лёг сюда. Первый
  * файл каждого языка ждёт загрузку (Parser.init ~7 мс + грамматика ~4 мс);
  * `loadLang` идемпотентна и отдаёт один промис на все параллельные вызовы,
  * поэтому остальные файлы того же языка встают за тем же ожиданием, а не
@@ -76,7 +83,8 @@ ctx.onmessage = (e: MessageEvent<ParseRequest>) => {
   void (async () => {
     try {
       await loadLang(lang);
-      ctx.postMessage({ id, defs: listDefs(source, lang) });
+      const { defs, refs } = listDefsAndRefs(source, lang);
+      ctx.postMessage({ id, defs, refs });
     } catch (err) {
       ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
     }

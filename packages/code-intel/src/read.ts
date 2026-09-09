@@ -18,6 +18,11 @@
  * поиска по имени — он полный скан `code_defs` по repo_id, и это осознанно:
  * корпус репозитория — десятки тысяч строк, а второй индекс на (repo, name)
  * стоил бы записи при каждом разборе файла.
+ *
+ * ССЫЛКИ (`code_ref_sites`, миграция 011, memory-e34bfse29jdw) читаются в
+ * конце файла — `refsTo`/`refsFrom`/`refsIndexed`. Там расклад другой и
+ * обратный: строк не тысячи, а сотни тысяч, и полный скан по имени
+ * недопустим — поэтому у той таблицы индекс по (repo_id, name) есть.
  */
 
 import { readFileSync } from "node:fs";
@@ -229,4 +234,119 @@ export function fanIn(
     read,
     tookMs: performance.now() - t0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Ссылки: вхождения с местом и владельцем (`code_ref_sites`, миграция 011)
+// ---------------------------------------------------------------------------
+
+/**
+ * Одно вхождение имени. `from` пуст — верхний уровень файла (импорт,
+ * объявление константы), и это НЕ «владелец не найден»: у строки на верхнем
+ * уровне владельца нет, и подставлять сюда имя файла — работа отображения, а
+ * не хранения.
+ */
+export interface RefSite {
+  readonly path: string;
+  readonly line: number;
+  readonly kind: string;
+  /** Имя охватывающего определения; "" — верхний уровень файла. */
+  readonly from: string;
+  /** `span_start` охватывающего определения; 0 — верхний уровень файла. */
+  readonly fromStart: number;
+}
+
+interface RefRow {
+  path: string;
+  line: number;
+  kind: string;
+  from_name: string;
+  from_start: number;
+}
+
+function toRef(r: RefRow): RefSite {
+  return {
+    path: r.path,
+    line: Number(r.line),
+    kind: r.kind,
+    from: r.from_name,
+    fromStart: Number(r.from_start),
+  };
+}
+
+const SQL_REFS_TO = `SELECT path, line, kind, from_name, from_start FROM code_ref_sites
+  WHERE repo_id = ?1 AND name = ?2
+  ORDER BY path, line`;
+
+/**
+ * Кто ссылается на имя — сырьё для `myc callers` (задача memory-wrntvzwx8dh0;
+ * саму команду здесь НЕ делаем).
+ *
+ * Идёт по индексу `ix_code_ref_sites_name`, а не сканом: определений в
+ * репозитории тысячи и скан по ним допустим, ссылок — сотни тысяч, и «кто
+ * зовёт» это как раз запрос по имени.
+ *
+ * ОТВЕТ ЗАВЫШАЕТ И ЗАНИЖАЕТ, И ОБА НАПРАВЛЕНИЯ НАДО ЗНАТЬ. Завышает:
+ * одноимённые символы разных файлов и классов сливаются в одно имя (`close`
+ * есть у всех). Занижает: имя, упомянутое только в комментарии или собранное
+ * динамически (`obj[name]()`), сюда не попадает — грамматика их
+ * идентификаторами не называет. Полный список того, чего разбор не
+ * различает, — в шапке `refs.ts`.
+ */
+export function refsTo(
+  db: Database,
+  repoId: string,
+  name: string,
+  opts: { readonly kinds?: readonly string[] } = {},
+): RefSite[] {
+  const rows = (db.query(SQL_REFS_TO).all(repoId, name) as RefRow[]).map(toRef);
+  if (opts.kinds === undefined) return rows;
+  const want = new Set(opts.kinds);
+  return rows.filter((r) => want.has(r.kind));
+}
+
+/**
+ * На что ссылается символ — обратное направление (`--direction out` у graft).
+ *
+ * ИДЁТ ЧЕРЕЗ `code_defs`, А НЕ ЧЕРЕЗ ТРЕТИЙ ИНДЕКС. Прямой запрос
+ * `WHERE from_name = ?` потребовал бы индекса по (repo_id, from_name) —
+ * третьей копии таблицы на сотни тысяч строк (замер: +7 МБ на этом
+ * репозитории) ради направления, которое спрашивают реже. Вместо этого:
+ * определения символа (их единицы) дают (path, span_start), а по ним ссылки
+ * достаются префиксом первичного ключа (repo_id, path) — то есть тем же
+ * ключом, которым файл переиндексируется.
+ *
+ * Возвращаются вхождения, ПРИНАДЛЕЖАЩИЕ телу символа; имя, на которое
+ * ссылаются, — в поле `name`, поэтому здесь тип шире, чем у `refsTo`.
+ */
+export function refsFrom(
+  db: Database,
+  repoId: string,
+  name: string,
+): Array<RefSite & { readonly name: string }> {
+  const out: Array<RefSite & { readonly name: string }> = [];
+  const q = db.query(
+    `SELECT path, line, name, kind, from_name, from_start FROM code_ref_sites
+     WHERE repo_id = ?1 AND path = ?2 AND from_start = ?3 ORDER BY line`,
+  );
+  for (const d of symbolDefs(db, repoId, name)) {
+    const rows = q.all(repoId, d.path, d.spanStart) as Array<RefRow & { name: string }>;
+    for (const r of rows) {
+      if (r.from_name !== name) continue; // чужой символ, начавшийся на той же строке
+      out.push({ ...toRef(r), name: r.name });
+    }
+  }
+  return out;
+}
+
+/**
+ * Сколько ссылок индекс вообще знает по репозиторию. Нужен там же, где
+ * `indexScope`: пустая выдача `callers` обязана уметь отличить «никто не
+ * зовёт» от «ссылки ещё не построены» (§6.3).
+ */
+export function refsIndexed(db: Database, repoId: string): number {
+  const r = db
+    .query("SELECT count(*) AS n FROM code_ref_sites WHERE repo_id = ?1")
+    .get(repoId) as { n: number };
+  return Number(r.n);
 }

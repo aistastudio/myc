@@ -28,6 +28,7 @@
  *   dist/myc.js       — весь myc одним бандлом (все @myc/* внутри)
  *   dist/worker.ts    — воркер батч-пула эмбеддера, см. ниже
  *   vendor/ort/       — .wasm ONNX-рантайма, см. ниже
+ *   vendor/tree-sitter/ — tree-sitter.wasm, рантайм разбора, см. ниже
  *
  * ПРО dist/worker.ts. packages/embed/src/pool.ts поднимает воркер как
  * `new Worker(new URL("./worker.ts", import.meta.url))`. Бандлер Bun такую
@@ -43,16 +44,40 @@
  * зависимостью ради двух файлов — это ~180 МБ распакованными на каждую
  * установку. Кладём ровно те два файла (~11 МБ), а bin/myc.js выставляет
  * MYC_ORT_WASM_DIR на них. Лицензия onnxruntime — MIT, копируем рядом.
+ *
+ * ПРО vendor/tree-sitter. Та же развилка, что у ort, и решена так же, но
+ * ЧИСЛА здесь другие и они решают дело. JS-часть web-tree-sitter (161 КиБ)
+ * бандлер вшивает в dist/myc.js; с диска грузится ровно один файл —
+ * tree-sitter.wasm, 186 КиБ. Это 1.5% пакета за то, без чего не работает НИ
+ * ОДИН язык, — качать по требованию тут нечего. (В постановке фигурировало
+ * 4.5 МБ: это вес npm-пакета web-tree-sitter целиком, с исходниками и
+ * .d.ts, которые на диск не попадают.)
+ *
+ * ГРАММАТИКИ, В ОТЛИЧИЕ ОТ РАНТАЙМА, СЮДА НЕ КЛАДУТСЯ. Все 36 весят 49 МБ
+ * при пакете 12 МБ; даже наши четыре — 5.6 МБ, то есть +46% ради языков,
+ * которых у конкретного репозитория нет. Они приезжают по требованию:
+ * `myc code fetch`, кеш ~/.cache/myc/grammars, sha256 из зашитого каталога
+ * (packages/code-intel/src/grammars.ts).
+ *
+ * Каталог ищется ОТ БАНДЛА (dist/myc.js -> ../vendor/tree-sitter), а не
+ * выставляется переменной из bin/myc.js, как у ort: у ort выбора нет —
+ * onnxruntime-web вообще не зависимость пакета, — а здесь обе стороны наши,
+ * и знание «где лежит мой .wasm» честнее держать рядом с кодом, который его
+ * грузит, чем в пусковом скрипте, который придётся держать в согласии.
  */
 
 import { mkdir, rm, cp, writeFile, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { PARSE_WORKER_SOURCE } from "../packages/code-intel/src/parse_worker_entry.ts";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const OUT = join(ROOT, "dist/npm");
 
 /** Файлы дистрибутива onnxruntime-web, без которых wasm-бэкенд не поднимется. */
 const ORT_FILES = ["ort-wasm-simd-threaded.wasm", "ort-wasm-simd-threaded.mjs"];
+
+/** Рантайм tree-sitter: единственный его файл, который грузится с диска. */
+const TREE_SITTER_WASM = "tree-sitter.wasm";
 
 async function build(entry: string, outfile: string, minify: boolean): Promise<void> {
   const args = [
@@ -121,9 +146,16 @@ async function main(): Promise<void> {
   await mkdir(join(OUT, "dist"), { recursive: true });
   await mkdir(join(OUT, "bin"), { recursive: true });
   await mkdir(join(OUT, "vendor/ort"), { recursive: true });
+  await mkdir(join(OUT, "vendor/tree-sitter"), { recursive: true });
 
   await build("packages/cli/src/main.ts", join(OUT, "dist/myc.js"), true);
   await build("packages/embed/src/worker.ts", join(OUT, "dist/worker.ts"), true);
+  // Воркер РАЗБОРА — по той же причине и тем же способом, что воркер эмбеддера
+  // (см. «ПРО dist/worker.ts» в шапке). Без него `myc code index` из пакета
+  // падал: `parseWorkerEntry` резолвит `./code_index_worker.ts` рядом с
+  // бандлом, а класть его туда было некому — ModuleNotFound на первом батче.
+  // Имя берётся из `parse_worker_entry.ts`, одного на сборку и рантайм.
+  await build(PARSE_WORKER_SOURCE, join(OUT, "dist", basename(PARSE_WORKER_SOURCE)), true);
 
   for (const f of ["myc.js", "preflight.js"]) {
     await cp(join(ROOT, "packages/cli/bin", f), join(OUT, "bin", f));
@@ -143,6 +175,31 @@ async function main(): Promise<void> {
       "Файлы ort-wasm-simd-threaded.{wasm,mjs} взяты из пакета onnxruntime-web",
       "(Microsoft, лицензия MIT) и распространяются без изменений.",
       "Исходный проект: https://github.com/microsoft/onnxruntime",
+      "",
+    ].join("\n"),
+  );
+
+  // Рантайм tree-sitter. Ищется РЕЗОЛВЕРОМ от пакета, который объявил
+  // зависимость (@myc/code-intel), а не жёстким путём в его node_modules:
+  // Bun поднимает часть зависимостей воркспейса наверх, и от раскладки к
+  // раскладке файл лежит то там, то там. Резолвер обходит оба случая; жёсткий
+  // путь ломался бы от одного `bun install` — молча, оставив пакет без
+  // рантайма и вернув `myc code index` ровно в то состояние, ради выхода из
+  // которого всё это писалось.
+  const tsPkg = Bun.resolveSync("web-tree-sitter/package.json", join(ROOT, "packages/code-intel"));
+  const tsWasm = join(dirname(tsPkg), TREE_SITTER_WASM);
+  if (!(await exists(tsWasm))) {
+    throw new Error(`нет ${tsWasm}: сначала bun install (нужен web-tree-sitter)`);
+  }
+  await cp(tsWasm, join(OUT, "vendor/tree-sitter", TREE_SITTER_WASM));
+  await writeFile(
+    join(OUT, "vendor/tree-sitter/README-tree-sitter.txt"),
+    [
+      "tree-sitter.wasm взят из пакета web-tree-sitter (лицензия MIT) без изменений.",
+      "Исходный проект: https://github.com/tree-sitter/tree-sitter",
+      "",
+      "Грамматики языков в пакет НЕ входят (все 36 весят 49 МБ) и качаются по",
+      "требованию: `myc code fetch`. Состояние: `myc code grammars`.",
       "",
     ].join("\n"),
   );

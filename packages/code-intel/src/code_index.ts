@@ -36,15 +36,16 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { jobs } from "@myc/store-sqlite";
 import {
-  listDefs,
   loadLangs,
   treeSitterDirs,
   type Def,
   type LangId,
   type TreeSitterDirs,
 } from "./symbols.ts";
+import { listDefsAndRefs, type ParsedFile, type Ref } from "./refs.ts";
 import { PARSE_WORKER_IN_BINARY } from "./parse_worker_entry.ts";
 import { L1_LANGS, langOf, walkFiles } from "./langs.ts";
+import { GRAMMAR_BY_LANG, type MissingGrammar, missingGrammars } from "./grammars.ts";
 
 // Языки, обход дерева и список пропускаемых каталогов живут в `./langs.ts`:
 // их же читает `select.ts`, которому граф модулей индекса не по карману.
@@ -84,8 +85,15 @@ export interface CodeIndexOptions {
   /** Корень репозитория на диске (абсолютный). */
   readonly root: string;
   readonly now?: number;
-  /** Разбор дефсов; по умолчанию listDefs. Подмена — для тестов и замеров. */
-  readonly parse?: (source: string, lang: LangId) => Def[];
+  /**
+   * Разбор файла; по умолчанию `listDefsAndRefs` — определения И ссылки за
+   * один проход дерева. Подмена — для тестов и замеров.
+   *
+   * Ссылки попали сюда же, а не во вторую функцию, потому что цена — это
+   * ПОСТРОЕНИЕ ДЕРЕВА (7.5 мс на 64 КБ против долей миллисекунды на обход):
+   * второй вызов удвоил бы фоновую индексацию, купив ровно ничего.
+   */
+  readonly parse?: (source: string, lang: LangId) => ParsedFile;
   /**
    * Свежесть: "hash" (умолчание) — уровень 1 это (mtime, size), уровень 2 —
    * хеш; "mtime" — МУТАЦИЯ 2 приёмки: сверяется ТОЛЬКО mtime, ни размера, ни
@@ -120,10 +128,26 @@ export interface ScanStats {
   readonly enqueueMs: number;
 }
 
+/** Нехватка одной грамматики: что не скачано, для каких языков, сколько файлов. */
+export interface MissingGrammarStat {
+  readonly grammar: string;
+  readonly langs: readonly string[];
+  /** Вес .wasm — цена, которую называет отказ, а не только его причина. */
+  readonly bytes: number;
+  /** Сколько файлов пропущено из-за неё в этом прогоне. */
+  readonly files: number;
+}
+
 export interface DrainStats {
   readonly claimed: number;
   /** Вызовов разбора (инкрементальность видна здесь). */
   readonly parsed: number;
+  /**
+   * Ссылок записано этим прогоном. Отдельно от `parsed`, потому что отвечает
+   * на другой вопрос: разбор мог пройти, а ссылок не дать — и «файлов
+   * разобрано 416» это бы не показало.
+   */
+  readonly refs: number;
   /** Файлов, чьи строки записаны (дефсы и/или code_files). */
   readonly written: number;
   /** Файлов, исчезнувших к моменту разбора: строки убраны. */
@@ -136,6 +160,19 @@ export interface DrainStats {
    * иначе неотличим — а именно так он и был сломан в бинаре.
    */
   readonly pooled: number;
+  /**
+   * Файлы, ПРОПУЩЕННЫЕ из-за отсутствия грамматики их языка. Отдельное число,
+   * а не слагаемое в `parsed`: пропуск — это отсутствие символов, и он обязан
+   * быть виден отдельно от разбора, иначе индекс без половины языков
+   * неотличим от полного (И2).
+   */
+  readonly skipped: number;
+  /**
+   * Каких грамматик не хватило и скольким файлам. Пустой список — все языки
+   * батча разобраны. Непустой — команда обязана НАЗВАТЬ язык и способ его
+   * добыть; молчаливого пропуска файлов в этом продукте нет.
+   */
+  readonly missing: readonly MissingGrammarStat[];
   /** Миллисекунды собственно разбора, без чтения и записи. */
   readonly parseMs: number;
   readonly applyMs: number;
@@ -155,6 +192,11 @@ export interface IndexRunResult {
 
 function wyhash(data: Uint8Array): string {
   return `wy:${Bun.hash(data).toString(16)}`;
+}
+
+/** Имя грамматики, обслуживающей язык — ключ, по которому копится нехватка. */
+function grammarOf(lang: string): string {
+  return GRAMMAR_BY_LANG[lang as LangId] ?? lang;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +275,8 @@ function safeTreeSitterDirs(): TreeSitterDirs | null {
 }
 
 /**
- * Пул воркеров listDefs. Один воркер на свободное ядро (потолок 8), живёт
+ * Пул воркеров разбора (`listDefsAndRefs`). Один воркер на свободное ядро
+ * (потолок 8), живёт
  * ровно столько, сколько идёт большой прогон. Подменный `parse` из опций в
  * воркер не уносится — функция не переходит границу потока; пул включается
  * только для разбора по умолчанию.
@@ -268,7 +311,7 @@ class ParsePool {
   readonly #workers: Worker[] = [];
   readonly #pending = new Map<
     number,
-    { resolve: (defs: Def[]) => void; reject: (e: Error) => void }
+    { resolve: (parsed: ParsedFile) => void; reject: (e: Error) => void }
   >();
   #nextId = 0;
   /** true — пул погашен: сторожем или падением воркера. */
@@ -284,12 +327,14 @@ class ParsePool {
     const env = workerEnv(dirs, mutation);
     for (let i = 0; i < size; i++) {
       const w = new Worker(entry, { env } as WorkerOptions);
-      w.onmessage = (e: MessageEvent<{ id: number; defs?: Def[]; error?: string }>) => {
+      w.onmessage = (
+        e: MessageEvent<{ id: number; defs?: Def[]; refs?: Ref[]; error?: string }>,
+      ) => {
         const waiter = this.#pending.get(e.data.id);
         if (waiter === undefined) return;
         this.#pending.delete(e.data.id);
         if (e.data.error !== undefined) waiter.reject(new Error(e.data.error));
-        else waiter.resolve(e.data.defs ?? []);
+        else waiter.resolve({ defs: e.data.defs ?? [], refs: e.data.refs ?? [] });
       };
       w.onerror = (e: unknown) => {
         // Сообщение воркера — единственное, что объясняет причину: без него
@@ -310,14 +355,14 @@ class ParsePool {
     }
   }
 
-  parse(source: string, lang: LangId): Promise<Def[]> {
+  parse(source: string, lang: LangId): Promise<ParsedFile> {
     // Пул уже погас: посылать некому. Раньше здесь считался остаток по длине
     // пустого массива, и `#workers[NaN]!` падал TypeError прямо в разборе.
     if (this.broken || this.#workers.length === 0) {
       return Promise.reject(new Error(this.crash ?? "пул разбора погашен"));
     }
     const id = ++this.#nextId;
-    return new Promise<Def[]>((resolve, reject) => {
+    return new Promise<ParsedFile>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
         this.broken = true;
@@ -325,9 +370,9 @@ class ParsePool {
         reject(new Error(`пул разбора не ответил за ${ParsePool.WATCHDOG_MS} мс`));
       }, ParsePool.WATCHDOG_MS);
       this.#pending.set(id, {
-        resolve: (defs) => {
+        resolve: (parsed) => {
           clearTimeout(timer);
-          resolve(defs);
+          resolve(parsed);
         },
         reject: (e) => {
           clearTimeout(timer);
@@ -473,8 +518,13 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
 
       const delFile = db.query("DELETE FROM code_files WHERE repo_id = ?1 AND path = ?2");
       const delDefs = db.query("DELETE FROM code_defs WHERE repo_id = ?1 AND path = ?2");
+      // Ссылки исчезнувшего файла уходят вместе с его определениями. Забыть
+      // их здесь значило бы оставить `callers` строки на файл, которого нет:
+      // ссылка живёт в файле, а не в символе, и пережить его не может.
+      const delRefSites = db.query("DELETE FROM code_ref_sites WHERE repo_id = ?1 AND path = ?2");
       for (const path of removed) {
         delDefs.run(opts.repoId, path);
+        delRefSites.run(opts.repoId, path);
         delFile.run(opts.repoId, path);
       }
       if (removed.length > 0) invalidateRefs(db, opts.repoId);
@@ -554,11 +604,19 @@ type Plan =
       readonly path: string;
       readonly lang: string;
       readonly defs: readonly Def[];
+      readonly refs: readonly Ref[];
       readonly mtimeMs: number;
       readonly size: number;
       readonly hash: string;
     }
-  | { readonly kind: "cleanup"; readonly path: string };
+  | { readonly kind: "cleanup"; readonly path: string }
+  /**
+   * Файл L1, для которого нет грамматики: работа закрывается, но в базу не
+   * пишется НИЧЕГО. Ни строки реестра (иначе скан признает файл разобранным
+   * и после загрузки грамматики к нему не вернётся), ни удаления старых
+   * дефсов (иначе очищенный кеш стирал бы уже собранный индекс).
+   */
+  | { readonly kind: "skip" };
 
 /**
  * Разбирает очередь `code_index`: claim батчем → разбор всех файлов батча →
@@ -566,7 +624,7 @@ type Plan =
  * `myc reindex`: чекпойнт — сама транзакция, недоделка остаётся в очереди.
  *
  * Батчи от PARSE_POOL_MIN_FILES работ разбираются пулом воркеров — полный
- * индекс репозитория это чистые сотни миллисекунд listDefs, и они делятся по
+ * индекс репозитория это чистые сотни миллисекунд разбора, и они делятся по
  * ядрам; инкрементальный прогон остаётся в одном потоке.
  *
  * Пустая выдача — не всегда «работы нет»: батч убитого воркера ещё под
@@ -586,11 +644,18 @@ export async function drainCodeIndex(
   const st = {
     claimed: 0,
     parsed: 0,
+    refs: 0,
     written: 0,
     cleaned: 0,
     failed: 0,
     batches: 0,
     pooled: 0,
+    skipped: 0,
+    /**
+     * Копится по всему прогону, а не по батчу: пользователь спрашивает «чего
+     * не хватает этому репозиторию», а не «чего не хватило работам 257-512».
+     */
+    missing: new Map<string, { grammar: string; langs: Set<string>; bytes: number; files: number }>(),
     parseMs: 0,
     applyMs: 0,
     waitedMs: 0,
@@ -674,11 +739,19 @@ export async function drainCodeIndex(
   return {
     claimed: st.claimed,
     parsed: st.parsed,
+    refs: st.refs,
     written: st.written,
     cleaned: st.cleaned,
     failed: st.failed,
     batches: st.batches,
     pooled: st.pooled,
+    skipped: st.skipped,
+    missing: [...st.missing.values()].map((m) => ({
+      grammar: m.grammar,
+      langs: [...m.langs].sort(),
+      bytes: m.bytes,
+      files: m.files,
+    })),
     parseMs: st.parseMs,
     applyMs: st.applyMs,
     waitedMs: st.waitedMs,
@@ -687,11 +760,11 @@ export async function drainCodeIndex(
 }
 
 /** Ответ пула, уже без отказа: промис от `pool.parse` не остаётся висеть. */
-type PoolReply = { readonly ok: true; readonly defs: Def[] } | { readonly ok: false };
+type PoolReply = { readonly ok: true; readonly parsed: ParsedFile } | { readonly ok: false };
 
-function settle(p: Promise<Def[]>): Promise<PoolReply> {
+function settle(p: Promise<ParsedFile>): Promise<PoolReply> {
   return p.then(
-    (defs) => ({ ok: true, defs }) as PoolReply,
+    (parsed) => ({ ok: true, parsed }) as PoolReply,
     () => ({ ok: false }) as PoolReply,
   );
 }
@@ -705,11 +778,14 @@ async function drainBatch(
   st: {
     claimed: number;
     parsed: number;
+    refs: number;
     written: number;
     cleaned: number;
     failed: number;
     batches: number;
     pooled: number;
+    skipped: number;
+    missing: Map<string, { grammar: string; langs: Set<string>; bytes: number; files: number }>;
     parseMs: number;
     applyMs: number;
     waitedMs: number;
@@ -718,7 +794,7 @@ async function drainBatch(
 ): Promise<void> {
   const holder = ctx.holder;
   const now = ctx.now;
-  const parse = opts.parse ?? listDefs;
+  const parse = opts.parse ?? listDefsAndRefs;
   const useHash = (opts.freshness ?? "hash") === "hash";
 
   const upsertFile = db.query(`
@@ -733,9 +809,59 @@ async function drainBatch(
     "INSERT OR REPLACE INTO code_defs (repo_id, path, name, kind, span_start, span_end, exported) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
   );
   const delFile = db.query("DELETE FROM code_files WHERE repo_id = ?1 AND path = ?2");
+  // Ссылки файла заменяются ЦЕЛИКОМ, как и определения: частичное обновление
+  // спанов нечем проверить, а DELETE идёт по префиксу первичного ключа
+  // (repo_id, path) — ровно поэтому ключ так и начинается.
+  const delRefs = db.query("DELETE FROM code_ref_sites WHERE repo_id = ?1 AND path = ?2");
+  const insRef = db.query(
+    "INSERT OR REPLACE INTO code_ref_sites (repo_id, path, line, name, kind, from_name, from_start) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+  );
 
   st.batches++;
   const parseT0 = performance.now();
+
+  /**
+   * ЧТО ДЕЛАЕТ ИНДЕКСАЦИЯ, КОГДА ГРАММАТИКИ НЕТ: ПРОПУСКАЕТ ФАЙЛ И НАЗЫВАЕТ
+   * ЯЗЫК. Не качает.
+   *
+   * Второй вариант — скачать при первой встрече языка — удобнее ровно один
+   * раз и хуже всегда. Эта команда поднимается ФОНОМ, отсоединённым процессом
+   * из чужого вызова (`drain.ts`, шаг `code_index`): сеть здесь — это сеть,
+   * которой пользователь не просил, в момент, когда он набрал `myc ready`.
+   * Продукт обещает не ходить в сеть на рабочем пути и держит это обещание
+   * даже для модели эмбеддингов, без которой поиск деградирует до BM25:
+   * `myc models fetch` зовёт человек. Второй довод — воспроизводимость:
+   * индекс, содержимое которого зависит от того, была ли сеть, нельзя
+   * сравнить с индексом соседа.
+   *
+   * Пропуск НЕ ТИХИЙ и не разрушительный: строка реестра для такого файла НЕ
+   * ПИШЕТСЯ вовсе. Из этого следует ровно то, что нужно: файл остаётся
+   * «невиданным», следующий скан снова признает его грязным и снова поставит
+   * в очередь — то есть после `myc code fetch py` ближайшая индексация даст
+   * символы без единого дополнительного флага. Уже найденные когда-то
+   * символы при этом не стираются: их строка реестра осталась с прошлого
+   * прогона, и скан считает файл неизменившимся.
+   */
+  const grammarKnown = new Map<string, boolean>();
+  const noGrammar = (lang: string): boolean => {
+    let known = grammarKnown.get(lang);
+    if (known === undefined) {
+      const miss: MissingGrammar[] = missingGrammars([lang as LangId]);
+      known = miss.length > 0;
+      grammarKnown.set(lang, known);
+      for (const m of miss) {
+        const acc = st.missing.get(m.grammar) ?? {
+          grammar: m.grammar,
+          langs: new Set<string>(),
+          bytes: m.bytes,
+          files: 0,
+        };
+        for (const l of m.langs) acc.langs.add(l);
+        st.missing.set(m.grammar, acc);
+      }
+    }
+    return known;
+  };
 
   // Проход 1: чтение файлов и РАЗОСЛАНЬЕ разбора в пул (не дожидаясь
   // результатов) — иначе await до следующей посылки свёл бы параллелизм на нет.
@@ -748,6 +874,8 @@ async function drainBatch(
     size: number;
     hash: string;
     source: string;
+    /** Язык L1, но грамматики нет: файл не разбирается и в реестр не пишется. */
+    skip: boolean;
     pending: Promise<PoolReply> | null;
   }> = [];
   for (const job of batchRows) {
@@ -768,13 +896,17 @@ async function drainBatch(
       size = st2.size;
     } catch {
       entries.push({
-        job, path, cleanup: true, lang: "", mtimeMs: 0, size: 0, hash: "", source: "", pending: null,
+        job, path, cleanup: true, lang: "", mtimeMs: 0, size: 0, hash: "", source: "",
+        skip: false, pending: null,
       });
       continue;
     }
     const lang = langOf(path);
     const hash = useHash ? wyhash(buf) : "";
-    const isL1 = L1_LANGS.has(lang);
+    // Подмена разбора (тесты, замер) грамматики не спрашивает: она и есть
+    // разбор. Спрашивать её значило бы гасить стенды на машине без кеша.
+    const skip = L1_LANGS.has(lang) && opts.parse === undefined && noGrammar(lang);
+    const isL1 = L1_LANGS.has(lang) && !skip;
     const sourceText = isL1 ? buf.toString("utf8") : "";
     entries.push({
       job,
@@ -785,6 +917,7 @@ async function drainBatch(
       size,
       hash,
       source: sourceText,
+      skip,
       // Обработчик вешается ЗДЕСЬ, в момент посылки, а не там, где результат
       // понадобится. Иначе падение воркера отклоняет три сотни промисов, до
       // которых очередь ожидания ещё не дошла, — и Bun убивает процесс
@@ -794,7 +927,7 @@ async function drainBatch(
     });
   }
 
-  // Грамматики языков батча. `listDefs` синхронна, а `.wasm` грузится
+  // Грамматики языков батча. Разбор синхронен, а `.wasm` грузится
   // промисом — ждать его здесь, ПОСЛЕ рассылки в пул: воркеры уже разбирают
   // со своими копиями, и загрузка главного потока идёт с ними параллельно, не
   // добавляя латентности. Главному потоку она нужна всё равно — он разбирает
@@ -802,7 +935,7 @@ async function drainBatch(
   // погас по сторожу. Загрузка идемпотентна: платится один раз за процесс.
   const batchLangs = new Set<LangId>();
   for (const e of entries) {
-    if (!e.cleanup && L1_LANGS.has(e.lang)) batchLangs.add(e.lang as LangId);
+    if (!e.cleanup && !e.skip && L1_LANGS.has(e.lang)) batchLangs.add(e.lang as LangId);
   }
   if (batchLangs.size > 0) await loadLangs(batchLangs);
 
@@ -815,27 +948,37 @@ async function drainBatch(
       plans.push({ job: e.job, plan: { kind: "cleanup", path: e.path } });
       continue;
     }
+    if (e.skip) {
+      // Работа закрывается (иначе она вернётся в этом же прогоне и так по
+      // кругу), но строка реестра НЕ пишется — см. `noGrammar` выше.
+      st.skipped++;
+      const acc = st.missing.get(grammarOf(e.lang));
+      if (acc !== undefined) acc.files++;
+      plans.push({ job: e.job, plan: { kind: "skip" } });
+      continue;
+    }
     if (!L1_LANGS.has(e.lang)) {
       // L0 в очереди оказаться не должен; если попал — пишем реестр без дефсов.
-      plans.push({ job: e.job, plan: { kind: "write", path: e.path, lang: e.lang, defs: [], mtimeMs: e.mtimeMs, size: e.size, hash: e.hash } });
+      plans.push({ job: e.job, plan: { kind: "write", path: e.path, lang: e.lang, defs: [], refs: [], mtimeMs: e.mtimeMs, size: e.size, hash: e.hash } });
       continue;
     }
     try {
-      let defs: Def[];
+      let parsed: ParsedFile;
       if (e.pending !== null) {
         const reply = await e.pending;
         if (reply.ok) {
-          defs = reply.defs;
+          parsed = reply.parsed;
           st.pooled++;
         } else {
           // Пул не ответил (сторож) или воркер умер — файл не теряем.
-          defs = parse(e.source, e.lang as LangId);
+          parsed = parse(e.source, e.lang as LangId);
         }
       } else {
-        defs = parse(e.source, e.lang as LangId);
+        parsed = parse(e.source, e.lang as LangId);
       }
       st.parsed++;
-      plans.push({ job: e.job, plan: { kind: "write", path: e.path, lang: e.lang, defs, mtimeMs: e.mtimeMs, size: e.size, hash: e.hash } });
+      st.refs += parsed.refs.length;
+      plans.push({ job: e.job, plan: { kind: "write", path: e.path, lang: e.lang, defs: parsed.defs, refs: parsed.refs, mtimeMs: e.mtimeMs, size: e.size, hash: e.hash } });
     } catch (err) {
       st.failed++;
       jobs.fail(db, e.job.id, `разбор ${e.path}: ${err instanceof Error ? err.message : String(err)}`, {
@@ -850,15 +993,24 @@ async function drainBatch(
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const { job, plan } of plans) {
+      if (plan.kind === "skip") {
+        jobs.complete(db, job.id, holder);
+        continue;
+      }
       if (plan.kind === "cleanup") {
         delDefs.run(opts.repoId, plan.path);
+        delRefs.run(opts.repoId, plan.path);
         delFile.run(opts.repoId, plan.path);
         st.cleaned++;
       } else {
         upsertFile.run(opts.repoId, plan.path, plan.lang, plan.mtimeMs, plan.size, plan.hash, now);
         delDefs.run(opts.repoId, plan.path);
+        delRefs.run(opts.repoId, plan.path);
         for (const d of plan.defs) {
           insDef.run(opts.repoId, plan.path, d.name, d.kind, d.startLine, d.endLine);
+        }
+        for (const r of plan.refs) {
+          insRef.run(opts.repoId, plan.path, r.line, r.name, r.kind, r.from, r.fromStart);
         }
         st.written++;
       }

@@ -549,6 +549,26 @@ CREATE TABLE code_refs (
   PRIMARY KEY (repo_id, name)
 ) WITHOUT ROWID;
 
+-- Ссылки: вхождение имени с МЕСТОМ и ВЛАДЕЛЬЦЕМ (миграция 011,
+-- memory-e34bfse29jdw). Не путать с code_refs выше: та — кеш счётчика по
+-- имени, здесь — по строке на каждое вхождение. Охватывающее определение
+-- (from_name, from_start) — точный ключ строки code_defs; именно оно
+-- превращает список совпадений в граф вызовов. Обоснование объёма и формы
+-- ключа целиком в packages/store-sqlite/src/migrations/011-code-ref-sites.ts.
+
+CREATE TABLE code_ref_sites (
+  repo_id    TEXT    NOT NULL,
+  path       TEXT    NOT NULL,
+  line       INTEGER NOT NULL,              -- 1-based, как file:line
+  name       TEXT    NOT NULL,              -- имя, на которое ссылаются
+  kind       TEXT    NOT NULL,              -- call|new|type|import|read|prop
+  from_name  TEXT    NOT NULL,              -- охватывающее определение; '' — верхний уровень файла
+  from_start INTEGER NOT NULL,              -- span_start охватывающего определения; 0 — файл
+  PRIMARY KEY (repo_id, path, line, name, kind, from_start)
+) WITHOUT ROWID;
+
+CREATE INDEX ix_code_ref_sites_name ON code_ref_sites (repo_id, name);
+
 -- ============================ 8.1.11 кеш дайджестов (S4, миграция 008) ======
 -- Предвычисленные дайджесты с инвалидацией по oplog.seq: prime — это
 -- profile='prime', счётчики очереди — profile='ready'. Версия базы (seq) —

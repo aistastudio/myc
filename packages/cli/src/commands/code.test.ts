@@ -17,10 +17,11 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
+import { grammarPath } from "@myc/code-intel/symbols";
 import { ExitCode } from "../exit.ts";
 import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
@@ -144,6 +145,51 @@ describe("myc code index — вход, которого не было", () => {
     const again = (await data("code", "index"))["drain"] as Record<string, number>;
     expect(again["parsed"]).toBe(0);
     expect(again["claimed"]).toBe(0);
+  });
+
+  /**
+   * Главное решение этой задачи — «молчаливого пропуска быть не должно» — не
+   * было защищено ничем: снятие `ctx.warn` целиком не роняло ни одного теста.
+   * Файл, который не разобрали, ничем не отличается от файла без символов, и
+   * человек узнаёт об этом только когда `myc code symbol` не находит того, что
+   * точно есть.
+   *
+   * Каталог грамматик подменяется на пустой — это единственный способ увидеть
+   * пропуск, не удаляя ничего из пользовательского кеша.
+   */
+  test("часть языков без грамматики — пропуск НАЗВАН, а не проглочен", async () => {
+    // Каталог, где есть ТОЛЬКО typescript: ts разбирается, python — нет.
+    // Это и есть интересный случай: пустой каталог даёт другую ветку (отказ
+    // «ни одного символа»), и мутация в предупреждении на нём не видна.
+    const partial = mkdtempSync(join(tmpdir(), "myc-partial-grammars-"));
+    const real = grammarPath("ts");
+    copyFileSync(real, join(partial, real.split("/").pop()!));
+    writeFileSync(join(dir, "app.py"), "def fuse(a):\n    return a + 1\n");
+    const saved = process.env["MYC_TREE_SITTER_GRAMMAR_DIR"];
+    process.env["MYC_TREE_SITTER_GRAMMAR_DIR"] = partial;
+    try {
+      // Проверяется МАШИНОЧИТАЕМЫЙ канал: человеческий рендер печатает ту же
+      // строку отдельно, и утверждение по тексту зеленело бы даже со снятым
+      // `ctx.warn` — то есть агент, читающий конверт, о пропуске не узнал бы,
+      // а тест бы этого не заметил.
+      const r = await myc("code", "index", "--json");
+      const env = JSON.parse(String(r.stdout ?? "")) as {
+        warn?: Array<{ code: string; msg: string }>;
+        data?: { missing_grammars?: Array<{ langs: string[]; fetch: string }> };
+      };
+      const warn = (env.warn ?? []).find((w) => w.code === "code_index.grammar_missing");
+      expect(warn).toBeDefined();
+      expect(warn!.msg).toContain("py");
+      expect(warn!.msg).toContain("myc code fetch");
+      // И то же — в данных, чтобы агент не разбирал текст предупреждения.
+      expect(env.data?.missing_grammars?.some((m) => m.langs.includes("py"))).toBe(true);
+      // При этом TS разобран: пропуск одного языка не отменяет остальных.
+      expect(count("code_defs")).toBeGreaterThan(0);
+    } finally {
+      if (saved === undefined) delete process.env["MYC_TREE_SITTER_GRAMMAR_DIR"];
+      else process.env["MYC_TREE_SITTER_GRAMMAR_DIR"] = saved;
+      rmSync(partial, { recursive: true, force: true });
+    }
   });
 
   test("--dry-run считает и не пишет", async () => {

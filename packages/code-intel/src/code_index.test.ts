@@ -12,7 +12,7 @@ import {
   scanCodeIndex,
   type CodeIndexOptions,
 } from "./code_index.ts";
-import { listDefs } from "./symbols.ts";
+import { listDefsAndRefs } from "./refs.ts";
 
 let dir: string;
 let db: Database;
@@ -25,7 +25,7 @@ function baseOpts(): CodeIndexOptions {
     now: 1_000_000,
     parse: (source, lang) => {
       parseCalls++;
-      return listDefs(source, lang);
+      return listDefsAndRefs(source, lang);
     },
   };
 }
@@ -103,9 +103,11 @@ describe("полный индекс", () => {
       { path: "a.ts", lang: "ts" },
     ]);
 
-    // Спаны — ровно то, что даёт listDefs (один разбор — один источник истины).
+    // Спаны — ровно то, что даёт разбор (один разбор — один источник истины).
     const src = readFileSync(join(dir, "a.ts"), "utf8");
-    expect(defNames("a.ts")).toEqual(listDefs(src, "ts").map((d) => d.name).sort());
+    expect(defNames("a.ts")).toEqual(
+      listDefsAndRefs(src, "ts").defs.map((d) => d.name).sort(),
+    );
     const circle = (
       db
         .query(

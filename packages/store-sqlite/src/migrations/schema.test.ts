@@ -20,6 +20,7 @@ import {
   migration006NodesReach,
   migration007NodesRepo,
   migration008DigestCache,
+  migration011CodeRefSites,
 } from "./index.ts";
 
 let dir: string;
@@ -85,7 +86,7 @@ describe("миграция 1 — базовая схема", () => {
   test("чистая БД поднимается одной командой, все заявленные объекты в sqlite_master", async () => {
     store = open();
     const result = await migrate(store, { migrations, writable: true });
-    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(result.pendingVersions).toEqual([]);
     expect(result.degraded).toEqual([]);
 
@@ -109,6 +110,12 @@ describe("миграция 1 — базовая схема", () => {
     // Версия 8 (S4): кеш дайджестов — таблица.
     expect(migration008DigestCache.objects.filter((n) => !present.has(n))).toEqual([]);
     expect(present.get("digest_cache")).toBe("table");
+    // Версия 11 (memory-e34bfse29jdw): ссылки — таблица И индекс по имени.
+    // Индекс здесь не украшение: без него «кто зовёт» это скан сотен тысяч
+    // строк, и проверка его наличия — часть договора, а не косметика.
+    expect(migration011CodeRefSites.objects.filter((n) => !present.has(n))).toEqual([]);
+    expect(present.get("code_ref_sites")).toBe("table");
+    expect(present.get("ix_code_ref_sites_name")).toBe("index");
 
     // Состав набора зафиксирован числом: молчаливая потеря объекта при правке
     // DDL — ровно то, что этот тест обязан ловить.

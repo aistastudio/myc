@@ -32,7 +32,7 @@
 import { join } from "node:path";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
-import type { Command, CommandContext, CommandFailure } from "../registry.ts";
+import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import {
   flagBool,
   flagNum,
@@ -52,6 +52,30 @@ export const CODE_INDEXED_AT_KEY = "code_indexed_at";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
+}
+
+/** «2.3 МБ» — тот же формат, что у самого код-интеллекта; одна реализация. */
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} Б`;
+  const units = ["КБ", "МБ", "ГБ"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * Ошибка «нет ресурса» — или null, если это что-то другое. Опознаётся по
+ * КЛАССУ из @myc/code-intel, а не по тексту сообщения: строку кто-нибудь
+ * когда-нибудь перепишет, и опознание сломается молча.
+ */
+async function missingResource(e: unknown): Promise<{ message: string; hint: string } | null> {
+  const { MissingResourceError } = await import("@myc/code-intel/symbols");
+  if (e instanceof MissingResourceError) return { message: e.message, hint: e.hint };
+  return null;
 }
 
 /**
@@ -102,9 +126,17 @@ interface CodeIndexData {
      * по `parsed` неотличим — и ровно так он год не работал в бинаре.
      */
     pooled: number;
+    /** Файлы, пропущенные из-за отсутствующей грамматики (символов не будет). */
+    skipped: number;
     parse_ms: number;
     drain_ms: number;
   };
+  /**
+   * Каких грамматик не хватило. Поле есть ВСЕГДА (пустым списком), а не
+   * появляется при беде: потребитель `--json` не должен угадывать, значит ли
+   * его отсутствие «всё хорошо» или «старая версия myc».
+   */
+  missing_grammars: { grammar: string; langs: string[]; bytes: number; files: number; fetch: string }[];
   /** Состояние индекса ПОСЛЕ прогона — то, ради чего команда и звалась. */
   files: number;
   defs: number;
@@ -127,8 +159,10 @@ function buildCodeIndex(deps: StoreDeps): Command {
       "code_files/code_defs. Incremental on two levels — (mtime,size), then content hash — so a " +
       "repeat run over an unchanged tree reads nothing. Costs seconds on a large tree: this is a " +
       "background job class, and the drain step spawns this very command detached rather than " +
-      "running it inline (И1). Symbols are parsed for ts/tsx/js/jsx (L1); every other file is " +
-      "registered by path, language and hash (L0) and gets no symbols.",
+      "running it inline (И1). Symbols are parsed for ts/tsx/js/jsx/py (L1); every other file is " +
+      "registered by path, language and hash (L0) and gets no symbols. A L1 language whose " +
+      "tree-sitter grammar is not staged is SKIPPED and NAMED — indexing never goes to the " +
+      "network, not even in the background; `myc code fetch` does, and only when a human asks.",
     flags: INDEX_FLAGS,
     handler: async (ctx) => {
       const t0 = performance.now();
@@ -144,12 +178,25 @@ function buildCodeIndex(deps: StoreDeps): Command {
         const dryRun = flagBool(ctx, "dry-run");
         const scan = scanCodeIndex(db, opts, !dryRun);
         const batchRaw = flagNum(ctx, "batch");
-        const drain = dryRun
-          ? { claimed: 0, parsed: 0, written: 0, cleaned: 0, failed: 0, batches: 0, pooled: 0, parseMs: 0, drainMs: 0 }
-          : await drainCodeIndex(db, opts, {
-              holder: `code-index-${process.pid}`,
-              ...(batchRaw !== undefined && batchRaw > 0 ? { batch: Math.floor(batchRaw) } : {}),
-            });
+        let drain;
+        try {
+          drain = dryRun
+            ? { claimed: 0, parsed: 0, written: 0, cleaned: 0, failed: 0, batches: 0, pooled: 0, skipped: 0, missing: [], parseMs: 0, drainMs: 0 }
+            : await drainCodeIndex(db, opts, {
+                holder: `code-index-${process.pid}`,
+                ...(batchRaw !== undefined && batchRaw > 0 ? { batch: Math.floor(batchRaw) } : {}),
+              });
+        } catch (e) {
+          // Нехватка РЕСУРСА — не сбой программы. Раньше рантайм, которого нет
+          // в опубликованном пакете, доезжал сюда голым Error и печатался как
+          // `internal.unexpected`: агент, ветвящийся на коде, читал это как
+          // «myc сломан», а сломан был не myc, а установка.
+          const miss = await missingResource(e);
+          if (miss !== null) {
+            return failure("precond.runtime_missing", miss.message, ExitCode.PRECOND, miss.hint);
+          }
+          throw e;
+        }
         const scope = indexScope(db, repoId);
         const data: CodeIndexData = {
           repo: repoId,
@@ -173,9 +220,17 @@ function buildCodeIndex(deps: StoreDeps): Command {
             failed: drain.failed,
             batches: drain.batches,
             pooled: drain.pooled,
+            skipped: drain.skipped,
             parse_ms: Math.round(drain.parseMs),
             drain_ms: Math.round(drain.drainMs),
           },
+          missing_grammars: drain.missing.map((m) => ({
+            grammar: m.grammar,
+            langs: [...m.langs],
+            bytes: m.bytes,
+            files: m.files,
+            fetch: `myc code fetch ${m.langs[0] ?? m.grammar}`,
+          })),
           files: scope.files,
           defs: scope.defs,
           langs: scope.langs.slice(0, 8).map((l) => ({ lang: l.lang, files: l.files })),
@@ -194,7 +249,29 @@ function buildCodeIndex(deps: StoreDeps): Command {
         if (drain.failed > 0) {
           ctx.warn("code_index.failed", `файлов не разобрано: ${drain.failed} (см. jobs.last_error)`);
         }
-        if (scope.l1Files === 0) {
+        if (data.missing_grammars.length > 0) {
+          const total = data.missing_grammars.reduce((n, m) => n + m.files, 0);
+          const named = data.missing_grammars
+            .map((m) => `${m.langs.join("/")} (${m.files} файлов, ${fmtBytes(m.bytes)})`)
+            .join("; ");
+          // Ни одного символа И были пропуски — команда не выполнила того, о
+          // чём её просили, и говорить «готово» здесь нельзя.
+          if (scope.defs === 0) {
+            return failure(
+              "precond.grammar_missing",
+              `грамматик tree-sitter нет: ${named}. Пропущено файлов: ${total}, ` +
+                `символов в индексе: 0. Реестр файлов построен (${scope.files})`,
+              ExitCode.PRECOND,
+              data.missing_grammars.map((m) => m.fetch).join(" && "),
+            );
+          }
+          ctx.warn(
+            "code_index.grammar_missing",
+            `пропущено файлов ${total} — нет грамматик: ${named}. Добыть: ` +
+              data.missing_grammars.map((m) => m.fetch).join(", "),
+          );
+        }
+        if (scope.l1Files === 0 && data.missing_grammars.length === 0) {
           ctx.warn(
             "code_index.no_l1",
             `файлов ts/tsx/js/jsx нет — символов не будет, реестр файлов построен (${scope.files})`,
@@ -213,7 +290,13 @@ function buildCodeIndex(deps: StoreDeps): Command {
         `скан      файлов ${d.scan.files}, без изменений ${d.scan.unchanged}, тач ${d.scan.touched}, ` +
           `в работу ${d.scan.enqueued}, убрано ${d.scan.removed}  ${d.scan.scan_ms} мс`,
         `разбор    взято ${d.drain.claimed}, разобрано ${d.drain.parsed} (пулом ${d.drain.pooled}), ` +
-          `записано ${d.drain.written}, отказов ${d.drain.failed}  ${d.drain.drain_ms} мс`,
+          `записано ${d.drain.written}, пропущено ${d.drain.skipped}, отказов ${d.drain.failed}  ` +
+          `${d.drain.drain_ms} мс`,
+        ...d.missing_grammars.map(
+          (m) =>
+            `без грамматики  ${m.langs.join("/")}: ${m.files} файлов не разобрано ` +
+            `(${fmtBytes(m.bytes)}) — \`${m.fetch}\``,
+        ),
         `индекс    ${d.files} файлов, ${d.defs} символов${langs.length > 0 ? `  [${langs}]` : ""}`,
         `${d.dry_run ? "dry-run: ничего не записано  " : ""}${d.took_ms} мс`,
       ];
@@ -400,10 +483,267 @@ function buildCodeSymbol(deps: StoreDeps): Command {
   };
 }
 
+// ---------------------------------------------------------------------------
+// myc code fetch / myc code grammars — грамматики по требованию
+// ---------------------------------------------------------------------------
+
+/**
+ * ПОЧЕМУ ОТДЕЛЬНАЯ КОМАНДА, А НЕ `myc models fetch <грамматика>`.
+ *
+ * Механизм у них общий (url + sha256 + идемпотентный кеш), а НАМЕЧЕННОЕ —
+ * разное, и именно намеченное видит человек. `myc models` объявлен как
+ * «manage local embedding models», его идентификаторы выглядят как
+ * `multilingual-e5-small-q8`, а `models list` печатает размерность вектора,
+ * которой у грамматики нет. Всунуть туда `python` значит завести в одной
+ * команде два вида сущностей с разными полями — то есть ту самую «одну
+ * поверхность, два ответа», которую этот репозиторий ловил шесть раз.
+ *
+ * Против общей команды `myc fetch <что угодно>` довод тот же и ещё один:
+ * грамматика нужна ровно тому, кто зовёт `myc code index`, и отказ этой
+ * команды должен называть команду СОСЕДНЮЮ, на расстоянии одного слова, а не
+ * из другого раздела справки. `myc code index` -> `myc code fetch` читается
+ * без справки вовсе.
+ *
+ * Общим остаётся МЕХАНИЗМ, и его дублирование — временное: одинаковые по
+ * смыслу `packages/embed/src/fetch.ts` и `packages/code-intel/src/grammars.ts`
+ * должны сойтись в `@myc/core`. Границы этой задачи в `@myc/core` не пускают,
+ * поэтому здесь честная вторая реализация того же контракта, а не
+ * притворство, что её нет.
+ */
+
+interface FetchData {
+  requested: string[];
+  fetched: { grammar: string; langs: string[]; bytes: number; ms: number; already: boolean }[];
+  dir: string;
+  downloaded_bytes: number;
+  took_ms: number;
+}
+
+const FETCH_FLAGS: readonly FlagSpec[] = [
+  { name: "repo", value: "string", description: "repo id to scan for languages (default: from cwd)" },
+];
+
+function buildCodeFetch(deps: StoreDeps): Command {
+  return {
+    name: "fetch",
+    summary: "download tree-sitter grammars for this repo's languages (sha256-verified, idempotent)",
+    help:
+      "Grammars are NOT shipped in the package: all 36 weigh 49MB against a 12MB package, and a " +
+      "given repo needs two of them. `myc code fetch` with no arguments walks the repo and " +
+      "downloads exactly the grammars its L1 files need; with arguments it takes language ids " +
+      "(ts, tsx, js, jsx, py) or grammar names (typescript, tsx, javascript, python). Repeating " +
+      "the call touches no network: an intact file is not re-downloaded. This is the ONLY place " +
+      "in the code index that opens a socket — indexing never does (see `myc code index`).",
+    flags: FETCH_FLAGS,
+    handler: async (ctx): Promise<CommandResult> => {
+      const t0 = performance.now();
+      const {
+        GRAMMARS,
+        GRAMMAR_BY_LANG,
+        FetchGrammarError,
+        fetchGrammar,
+        grammarsCacheDir,
+      } = await import("@myc/code-intel/grammars");
+      type GName = keyof typeof GRAMMARS;
+
+      const wanted = new Set<GName>();
+      const requested: string[] = [];
+      for (const raw of ctx.args) {
+        const a = raw.trim().toLowerCase();
+        if (a.length === 0) continue;
+        requested.push(a);
+        if (a === "all") {
+          for (const g of Object.keys(GRAMMARS) as GName[]) wanted.add(g);
+          continue;
+        }
+        const byLang = (GRAMMAR_BY_LANG as Record<string, GName | undefined>)[a];
+        if (byLang !== undefined) {
+          wanted.add(byLang);
+          continue;
+        }
+        if (a in GRAMMARS) {
+          wanted.add(a as GName);
+          continue;
+        }
+        return failure(
+          "usage.invalid",
+          `не знаю языка или грамматики "${raw}"; языки: ${Object.keys(GRAMMAR_BY_LANG).join(", ")}; ` +
+            `грамматики: ${Object.keys(GRAMMARS).join(", ")}`,
+          ExitCode.USAGE,
+          "myc code fetch      # без аргументов — по языкам этого репозитория",
+        );
+      }
+
+      // Без аргументов — по ЯЗЫКАМ РЕПОЗИТОРИЯ, а не «все 36». Дерево читается
+      // напрямую, а не из реестра code_files: файла, чья грамматика не
+      // скачана, в реестре нет по построению (см. drainBatch), и спросить у
+      // индекса, каких языков ему не хватает, было бы замкнутым кругом.
+      if (wanted.size === 0) {
+        const opened = await deps.openStore(ctx);
+        if (!opened.ok) return opened.failure;
+        const h = opened.handle;
+        try {
+          const { repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
+          const { L1_LANGS, langOf, walkFiles } = await import("@myc/code-intel/langs");
+          for (const rel of walkFiles(repoRoot)) {
+            const lang = langOf(rel);
+            if (!L1_LANGS.has(lang)) continue;
+            const g = (GRAMMAR_BY_LANG as Record<string, GName | undefined>)[lang];
+            if (g !== undefined) wanted.add(g);
+          }
+        } finally {
+          h.close();
+        }
+        if (wanted.size === 0) {
+          return failure(
+            "notfound.lang",
+            "в этом репозитории нет файлов ts/tsx/js/jsx/py — грамматики не нужны ни одной",
+            ExitCode.NOTFOUND,
+            "myc code fetch ts   # если нужна конкретная",
+          );
+        }
+      }
+
+      const showProgress =
+        process.stdout.isTTY === true && !ctx.globals.json && !ctx.globals.ndjson && !ctx.globals.quiet;
+      const data: FetchData = {
+        requested,
+        fetched: [],
+        dir: grammarsCacheDir(),
+        downloaded_bytes: 0,
+        took_ms: 0,
+      };
+      for (const name of [...wanted].sort()) {
+        try {
+          const r = await fetchGrammar(name, {
+            onProgress: showProgress
+              ? (p) => {
+                  const pct =
+                    p.totalBytes !== null
+                      ? ` ${Math.min(100, Math.round((p.loadedBytes / p.totalBytes) * 100))}%`
+                      : "";
+                  process.stdout.write(`\r${p.grammar}${pct} ${fmtBytes(p.loadedBytes)}\x1b[K`);
+                }
+              : undefined,
+          });
+          if (showProgress) process.stdout.write("\r\x1b[K");
+          data.fetched.push({
+            grammar: r.grammar,
+            langs: [...GRAMMARS[name].langs],
+            bytes: r.bytes,
+            ms: Math.round(r.tookMs),
+            already: r.alreadyPresent,
+          });
+          if (!r.alreadyPresent) data.downloaded_bytes += r.bytes;
+        } catch (e) {
+          if (showProgress) process.stdout.write("\r\x1b[K");
+          if (e instanceof FetchGrammarError) {
+            return failure(
+              FETCH_GRAMMAR_CODE[e.code] ?? "internal.unexpected",
+              e.message,
+              e.code === "unknown_grammar" ? ExitCode.NOTFOUND : ExitCode.ERR,
+              e.code === "network_error"
+                ? "нужен доступ к cdn.jsdelivr.net; в закрытом контуре положите .wasm в MYC_GRAMMARS_DIR"
+                : undefined,
+            );
+          }
+          throw e;
+        }
+      }
+      data.took_ms = Math.round(performance.now() - t0);
+      return { ok: true, data, meta: { took_ms: data.took_ms } };
+    },
+    renderHuman: (data) => {
+      const d = data as FetchData;
+      const lines = d.fetched.map(
+        (f) =>
+          `${f.already ? "уже есть " : "скачано  "}${f.grammar} (${f.langs.join("/")})  ` +
+          `${fmtBytes(f.bytes)}  ${f.ms} мс`,
+      );
+      lines.push(
+        `каталог  ${d.dir}`,
+        `${d.downloaded_bytes > 0 ? `из сети ${fmtBytes(d.downloaded_bytes)}  ` : "сеть не использовалась  "}${d.took_ms} мс`,
+      );
+      return `${lines.join("\n")}\n`;
+    },
+  };
+}
+
+/** Коды отказа загрузки — отражение FetchGrammarErrorCode в словарь myc. */
+const FETCH_GRAMMAR_CODE: Record<string, string> = {
+  checksum_mismatch: "internal.checksum_mismatch",
+  network_error: "internal.network",
+  http_error: "internal.http",
+  fs_error: "internal.fs",
+  unknown_grammar: "notfound.grammar",
+};
+
+interface GrammarsData {
+  runtime: { file: string; path: string | null; status: string };
+  grammars: { grammar: string; langs: string[]; status: string; size: string; path: string | null }[];
+  cache_dir: string;
+  search_path: string[];
+}
+
+function buildCodeGrammars(): Command {
+  return {
+    name: "grammars",
+    summary: "which tree-sitter grammars are staged locally, and where",
+    help:
+      "Reports the runtime (tree-sitter.wasm, shipped inside the package) and every grammar in the " +
+      "catalogue: present, corrupt (on disk but the bytes disagree with the pinned sha256) or " +
+      "absent. corrupt is not absent — a half-written file has to name itself rather than look " +
+      "like something nobody downloaded yet.",
+    handler: async (): Promise<CommandResult> => {
+      const { RUNTIME_WASM, findRuntime, formatBytes, grammarSearchPath, grammarStates, grammarsCacheDir } =
+        await import("@myc/code-intel/grammars");
+      const runtimePath = findRuntime();
+      const states = await grammarStates();
+      const data: GrammarsData = {
+        runtime: {
+          file: RUNTIME_WASM,
+          path: runtimePath,
+          status: runtimePath === null ? "absent" : "present",
+        },
+        grammars: states.map((g) => ({
+          grammar: g.grammar,
+          langs: [...g.langs],
+          status: g.status,
+          size: formatBytes(g.bytes),
+          path: g.path,
+        })),
+        cache_dir: grammarsCacheDir(),
+        search_path: grammarSearchPath(),
+      };
+      return { ok: true, data, meta: { count: data.grammars.length } };
+    },
+    renderHuman: (data) => {
+      const d = data as GrammarsData;
+      const out = [`рантайм   ${d.runtime.file}  ${d.runtime.status}  ${d.runtime.path ?? "-"}`];
+      for (const g of d.grammars) {
+        out.push(
+          `${g.status.padEnd(8)}  ${g.grammar.padEnd(11)} ${g.langs.join("/").padEnd(7)} ${g.size.padStart(9)}  ${g.path ?? "-"}`,
+        );
+      }
+      out.push(`кеш       ${d.cache_dir}`);
+      const absent = d.grammars.filter((g) => g.status !== "present");
+      if (absent.length > 0) {
+        out.push(`добыть    myc code fetch ${absent.map((g) => g.langs[0]).join(" ")}`);
+      }
+      return `${out.join("\n")}\n`;
+    },
+  };
+}
+
 export function createCodeCommand(deps: StoreDeps = realStoreDeps): Command {
   return {
     name: "code",
-    summary: "built-in code index: build it (code index) and read it (code symbol)",
-    subcommands: [buildCodeIndex(deps), buildCodeSymbol(deps)],
+    summary: "built-in code index: build it (code index), read it (code symbol), stage grammars (code fetch)",
+    subcommands: [
+      buildCodeIndex(deps),
+      buildCodeSymbol(deps),
+      buildCodeFetch(deps),
+      buildCodeGrammars(),
+    ],
   };
 }
