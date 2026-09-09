@@ -7,7 +7,7 @@
  * вместе с ним — это НЕ демон (решение S8), постоянного процесса нет.
  */
 
-import { listDefs, type Def, type LangId } from "./defs.ts";
+import { listDefs, loadLang, type Def, type LangId } from "./symbols.ts";
 
 interface ParseRequest {
   readonly id: number;
@@ -28,11 +28,27 @@ const ctx = globalThis as unknown as {
   postMessage: (msg: ParseReply) => void;
 };
 
+/**
+ * ГРАММАТИКА ГРУЗИТСЯ ОДИН РАЗ НА ВОРКЕР И ЖИВЁТ В ПАМЯТИ.
+ *
+ * `listDefs` синхронна, а `.wasm` грузится промисом — стык лёг сюда. Первый
+ * файл каждого языка ждёт загрузку (Parser.init ~7 мс + грамматика ~4 мс);
+ * `loadLang` идемпотентна и отдаёт один промис на все параллельные вызовы,
+ * поэтому остальные файлы того же языка встают за тем же ожиданием, а не
+ * заводят второе. Пул живёт весь большой прогон (сотни файлов), так что эти
+ * 11 мс платятся один раз на воркер, а не на файл.
+ *
+ * Обработчик асинхронный намеренно: `postMessage` не обязан случиться в том
+ * же такте, а порядок ответов пулу не важен — он сводит их по `id`.
+ */
 ctx.onmessage = (e: MessageEvent<ParseRequest>) => {
   const { id, source, lang } = e.data;
-  try {
-    ctx.postMessage({ id, defs: listDefs(source, lang) });
-  } catch (err) {
-    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
-  }
+  void (async () => {
+    try {
+      await loadLang(lang);
+      ctx.postMessage({ id, defs: listDefs(source, lang) });
+    } catch (err) {
+      ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+    }
+  })();
 };

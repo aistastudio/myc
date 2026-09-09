@@ -48,6 +48,7 @@ import { defaultRegistry } from "../registry.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import {
+  findMycDir,
   graphFailure,
   openPersonalStore,
   parseWorkspaceToml,
@@ -618,8 +619,18 @@ function probeModels(env: ProbeEnv): BootstrapBlock {
  * Ярусы (S41). Личный ярус читается, только если он реально создан
  * (`myc init --global`); отсутствующий ~/.myc не ошибка, а обычное
  * состояние — работает один проектный ярус.
+ *
+ * `project=` печатает каталог БАЗЫ, а не `<cwd>/.myc`: из git worktree это
+ * разные каталоги, и напечатать cwd значило бы назвать агенту путь, по
+ * которому проектного яруса нет. `mycDir` пуст — воркспейса нет вовсе, и
+ * тогда печатается место, где он был бы заведён.
  */
-function probeTiers(dir: string, env: ProbeEnv, personal: number): BootstrapBlock {
+function probeTiers(
+  dir: string,
+  env: ProbeEnv,
+  personal: number,
+  mycDir: string | undefined,
+): BootstrapBlock {
   const status = personalWorkspaceStatus(env.mycHome);
   const tail = !status.exists
     ? "нет (myc init --global); всё ручное — проектное"
@@ -627,7 +638,10 @@ function probeTiers(dir: string, env: ProbeEnv, personal: number): BootstrapBloc
       ? `${plural(personal, "ручной блок", "ручных блока", "ручных блоков")};` +
         " проектный блок с тем же ключом вытесняет личный"
       : "есть, ручных блоков нет";
-  return autoBlock("tiers", `project=${join(dir, ".myc")} personal=${status.dir} ${tail}`);
+  return autoBlock(
+    "tiers",
+    `project=${mycDir ?? join(dir, ".myc")} personal=${status.dir} ${tail}`,
+  );
 }
 
 export interface Degradation {
@@ -666,34 +680,78 @@ export function autoBlocks(
 // Кеш автодетекта
 // ---------------------------------------------------------------------------
 
-interface CacheFile {
-  readonly v: number;
+interface CacheEntry {
   readonly fp: string;
   readonly at: number;
   readonly blocks: readonly BootstrapBlock[];
 }
 
-function cachePath(dir: string): string {
-  return join(dir, ".myc", "bootstrap.cache.json");
+interface CacheFile {
+  readonly v: number;
+  /** Ключ — корень РАБОЧЕГО ДЕРЕВА, из которого собран этот автодетект. */
+  readonly trees: Readonly<Record<string, CacheEntry>>;
 }
 
-function readCache(dir: string, fp: string): BootstrapBlock[] | null {
+/**
+ * Сколько деревьев помнить. Worktree заводят и удаляют; без потолка файл рос
+ * бы на каждую ветку и никогда не убывал. Вытесняется самое старое по `at`.
+ */
+const CACHE_TREES = 8;
+
+/**
+ * Кеш автодетекта — обе стороны сразу, и это не компромисс, а состав данных.
+ *
+ * ЛЕЖИТ он рядом с БАЗОЙ: это side-файл воркспейса, и `<cwd>/.myc` в git
+ * worktree — чужой каталог, который исчезнет вместе с веткой (сорить в дереве
+ * ветки каталогом `.myc` мы не имеем права: в нём базы нет и не будет).
+ *
+ * КЛЮЧОМ ему служит корень рабочего дерева, потому что СОДЕРЖИМОЕ у него
+ * про дерево: отпечаток окружения складывается из `<cwd>/.mcp.json`,
+ * `<cwd>/.claude/skills`, `<cwd>/graft` — и в отпечаток входят сами эти пути,
+ * то есть у worktree он ОТЛИЧАЕТСЯ от основного дерева всегда. Держи мы одну
+ * запись на файл — два дерева вытесняли бы друг друга на каждом старте
+ * сессии, и кеш перестал бы попадать вовсе, оставшись при этом записью.
+ */
+function cachePath(mycDir: string): string {
+  return join(mycDir, "bootstrap.cache.json");
+}
+
+function readCacheFile(mycDir: string): CacheFile | null {
   try {
-    const raw = JSON.parse(readFileSync(cachePath(dir), "utf8")) as CacheFile;
-    if (raw.v !== BOOTSTRAP_FORMAT_VERSION || raw.fp !== fp) return null;
-    if (!Array.isArray(raw.blocks)) return null;
-    return [...raw.blocks];
+    const raw = JSON.parse(readFileSync(cachePath(mycDir), "utf8")) as CacheFile;
+    if (raw.v !== BOOTSTRAP_FORMAT_VERSION) return null;
+    if (raw.trees === null || typeof raw.trees !== "object") return null;
+    return raw;
   } catch {
     return null;
   }
 }
 
-function writeCache(dir: string, fp: string, blocks: readonly BootstrapBlock[]): boolean {
+function readCache(mycDir: string, treeRoot: string, fp: string): BootstrapBlock[] | null {
+  const file = readCacheFile(mycDir);
+  const entry = file?.trees[treeRoot];
+  if (entry === undefined || entry.fp !== fp || !Array.isArray(entry.blocks)) return null;
+  return [...entry.blocks];
+}
+
+function writeCache(
+  mycDir: string,
+  treeRoot: string,
+  fp: string,
+  blocks: readonly BootstrapBlock[],
+): boolean {
   try {
-    const target = join(dir, ".myc");
-    if (!existsSync(target)) mkdirSync(target, { recursive: true });
-    const payload: CacheFile = { v: BOOTSTRAP_FORMAT_VERSION, fp, at: Date.now(), blocks };
-    writeFileSync(cachePath(dir), JSON.stringify(payload));
+    if (!existsSync(mycDir)) mkdirSync(mycDir, { recursive: true });
+    const now = Date.now();
+    const kept = Object.entries(readCacheFile(mycDir)?.trees ?? {})
+      .filter(([root]) => root !== treeRoot)
+      .sort((a, b) => b[1].at - a[1].at)
+      .slice(0, CACHE_TREES - 1);
+    const payload: CacheFile = {
+      v: BOOTSTRAP_FORMAT_VERSION,
+      trees: { ...Object.fromEntries(kept), [treeRoot]: { fp, at: now, blocks } },
+    };
+    writeFileSync(cachePath(mycDir), JSON.stringify(payload));
     return true;
   } catch {
     return false; // read-only ФС — не повод ронять запуск сессии
@@ -887,13 +945,20 @@ interface BootstrapData {
  *
  * Конфиг читается ПО КАТАЛОГУ, а не через хранилище: блок обязан собираться и
  * там, где воркспейса нет вовсе, а хранилище к этому моменту ещё не открыто.
+ * Каталог при этом берётся у ВОРКСПЕЙСА, а не из cwd: правила общие для
+ * команды, они коммитятся в `workspace.toml` основного дерева, и из git
+ * worktree бюджет обязан быть тот же самый.
  */
-function resolveBudget(ctx: CommandContext, dir: string): number | CommandFailure {
+function resolveBudget(
+  ctx: CommandContext,
+  dir: string,
+  mycDir: string | undefined,
+): number | CommandFailure {
   const flag = ctx.flags["budget"];
   const fromEnv = process.env.MYC_BOOTSTRAP_BUDGET;
   let fromProject: number | undefined;
   try {
-    const tomlPath = join(dir, ".myc", "workspace.toml");
+    const tomlPath = join(mycDir ?? join(dir, ".myc"), "workspace.toml");
     if (existsSync(tomlPath)) {
       fromProject = parseWorkspaceToml(readFileSync(tomlPath, "utf8")).bootstrapBudget;
     }
@@ -932,8 +997,14 @@ function buildPrint(deps: BootstrapDeps): Command {
     ],
     handler: async (ctx): Promise<CommandResult> => {
       const t0 = performance.now();
+      // Две стороны. `dir` — РАБОЧЕЕ ДЕРЕВО: из него собирается автодетект
+      // (какие тут скилы, есть ли graft, чем настроен харнесс). `mycDir` —
+      // ВОРКСПЕЙС: там база, туда же кеш и оттуда общий для команды бюджет.
+      // Вне worktree это один и тот же каталог; внутри — разные, и путать их
+      // значит писать кеш в ветку, которая завтра исчезнет.
       const dir = resolve(ctx.globals.directory ?? process.cwd());
-      const budget = resolveBudget(ctx, dir);
+      const mycDir = findMycDir(dir, ctx.globals.db);
+      const budget = resolveBudget(ctx, dir, mycDir);
       if (typeof budget !== "number") return budget;
 
       const env = deps.env;
@@ -965,14 +1036,14 @@ function buildPrint(deps: BootstrapDeps): Command {
         const manual = handle !== undefined ? manualBlocks(handle) : [];
         let cache: "hit" | "miss" | "off" = "off";
         let auto: BootstrapBlock[] | null = null;
-        const cacheable = handle !== undefined && !noCache;
+        const cacheable = handle !== undefined && mycDir !== undefined && !noCache;
         if (cacheable && !refresh) {
-          auto = readCache(dir, fp);
+          auto = readCache(mycDir!, dir, fp);
           if (auto !== null) cache = "hit";
         }
         if (auto === null) {
           auto = autoBlocks(dir, env, commands);
-          if (cacheable) cache = writeCache(dir, fp, auto) ? "miss" : "off";
+          if (cacheable) cache = writeCache(mycDir!, dir, fp, auto) ? "miss" : "off";
         }
 
         const personal = await deps.personalBlocks(ctx, env);
@@ -994,7 +1065,7 @@ function buildPrint(deps: BootstrapDeps): Command {
         const extra: BootstrapBlock[] = [];
         const deg = probeDegraded(degraded);
         if (deg) extra.push(deg);
-        extra.push(probeTiers(dir, env, personal.length));
+        extra.push(probeTiers(dir, env, personal.length, mycDir));
 
         const all = [...auto, ...extra, ...manual, ...personal];
         const took = Math.max(1, Math.round(performance.now() - t0));

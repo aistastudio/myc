@@ -726,14 +726,17 @@ describe("каркас", () => {
   test("кеш пишется в .myc и не мусорит в корне репозитория", async () => {
     await myc("init");
     await myc("bootstrap");
+    // Запись на КАЖДОЕ рабочее дерево: файл лежит у базы, а содержимое у него
+    // про дерево (memory-40dy12kkq6v2 — в отпечаток входят пути самого
+    // дерева, и на одном ключе два дерева вытесняли бы друг друга).
     const raw = JSON.parse(readFileSync(join(dir, ".myc", "bootstrap.cache.json"), "utf8")) as {
       v: number;
-      fp: string;
-      blocks: unknown[];
+      trees: Record<string, { fp: string; at: number; blocks: unknown[] }>;
     };
     expect(raw.v).toBe(1);
-    expect(raw.fp).toHaveLength(16);
-    expect(raw.blocks.length).toBeGreaterThan(0);
+    expect(Object.keys(raw.trees)).toEqual([dir]);
+    expect(raw.trees[dir]!.fp).toHaveLength(16);
+    expect(raw.trees[dir]!.blocks.length).toBeGreaterThan(0);
   });
 
   test("устаревшая версия формата в кеше игнорируется", async () => {

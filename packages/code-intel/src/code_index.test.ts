@@ -12,7 +12,7 @@ import {
   scanCodeIndex,
   type CodeIndexOptions,
 } from "./code_index.ts";
-import { listDefs } from "./defs.ts";
+import { listDefs } from "./symbols.ts";
 
 let dir: string;
 let db: Database;

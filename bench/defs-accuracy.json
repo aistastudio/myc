@@ -1,79 +1,31 @@
 [
   {
     "mode": "baseline",
-    "files": 41,
-    "graftDefs": 211,
-    "myDefs": 210,
-    "startOk": 210,
-    "endExact": 210,
-    "endPlus1": 210,
-    "endPlus2": 210,
-    "kindOk": 210,
+    "files": 49,
+    "graftDefs": 685,
+    "myDefs": 685,
+    "startOk": 685,
+    "endExact": 685,
+    "endPlus1": 685,
+    "endPlus2": 685,
+    "kindOk": 685,
     "falsePositives": 0,
-    "startFailures": [
-      "memory/bench/defs-fixtures/adversarial.ts:56 method [KEY] — [KEY](): string"
-    ],
+    "startFailures": [],
     "endFailures": [],
     "falsePositiveSamples": []
   },
   {
-    "mode": "m1-ignore-strings",
-    "files": 41,
-    "graftDefs": 211,
-    "myDefs": 210,
-    "startOk": 210,
-    "endExact": 206,
-    "endPlus1": 206,
-    "endPlus2": 208,
-    "kindOk": 210,
-    "falsePositives": 0,
-    "startFailures": [
-      "memory/bench/defs-fixtures/adversarial.ts:56 method [KEY] — [KEY](): string"
-    ],
-    "endFailures": [
-      "end memory/bench/defs-accuracy.ts:L143 function graftSkeleton: graft L143-L153, mine L143-L313",
-      "end memory/bench/defs-fixtures/adversarial.ts:L21 function braceInString: graft L21-L24, mine L21-L22",
-      "end memory/bench/defs-fixtures/adversarial.ts:L54 class Tricky: graft L54-L62, mine L54-L55",
-      "end memory/bench/defs-fixtures/adversarial.ts:L80 enum Color: graft L80-L83, mine L80-L81"
-    ],
-    "falsePositiveSamples": []
-  },
-  {
-    "mode": "m2-ignore-template-exprs",
-    "files": 41,
-    "graftDefs": 211,
-    "myDefs": 211,
-    "startOk": 210,
-    "endExact": 208,
-    "endPlus1": 208,
-    "endPlus2": 208,
-    "kindOk": 210,
-    "falsePositives": 1,
-    "startFailures": [
-      "memory/bench/defs-fixtures/adversarial.ts:56 method [KEY] — [KEY](): string"
-    ],
-    "endFailures": [
-      "end cherry-miniapp-sdk/example/src/App.tsx:L303 function ShareSection: graft L303-L441, mine L303-L1311",
-      "end cherry-miniapp-sdk/example/src/App.tsx:L689 function KitSection: graft L689-L827, mine L689-L1311"
-    ],
-    "falsePositiveSamples": [
-      "fp cherry-miniapp-sdk/example/server.ts:L41 function server — const server = createServer(async (req, res) => {"
-    ]
-  },
-  {
     "mode": "m3-naive-end",
-    "files": 41,
-    "graftDefs": 211,
-    "myDefs": 906,
-    "startOk": 210,
-    "endExact": 10,
-    "endPlus1": 14,
-    "endPlus2": 31,
-    "kindOk": 210,
-    "falsePositives": 696,
-    "startFailures": [
-      "memory/bench/defs-fixtures/adversarial.ts:56 method [KEY] — [KEY](): string"
-    ],
+    "files": 49,
+    "graftDefs": 685,
+    "myDefs": 685,
+    "startOk": 685,
+    "endExact": 28,
+    "endPlus1": 33,
+    "endPlus2": 133,
+    "kindOk": 685,
+    "falsePositives": 0,
+    "startFailures": [],
     "endFailures": [
       "end memory/bench/absorb-calibrate.ts:L47 interface PairSpec: graft L47-L51, mine L47-L47",
       "end memory/bench/absorb-calibrate.ts:L53 interface NodeRow: graft L53-L61, mine L53-L53",
@@ -91,32 +43,11 @@
       "end memory/bench/absorb-calibrate.ts:L272 function embedText: graft L272-L279, mine L272-L272",
       "end memory/bench/absorb-calibrate.ts:L281 function resolveSide: graft L281-L290, mine L281-L281",
       "end memory/bench/absorb-calibrate.ts:L358 function range: graft L358-L362, mine L358-L358",
-      "end cherry-bots-sdk/example/src/handlers/blink.ts:L27 function sendBlinkExample: graft L27-L45, mine L27-L27",
-      "end cherry-bots-sdk/example/src/handlers/blink.ts:L53 function handleBlinkCallback: graft L53-L70, mine L53-L53",
-      "end cherry-bots-sdk/example/src/handlers/blink.ts:L72 function uniqueSeed: graft L72-L75, mine L72-L72",
-      "end cherry-bots-sdk/example/src/handlers/blink.ts:L77 function randomSeed: graft L77-L80, mine L77-L77"
+      "end memory/bench/boost-eval.ts:L47 interface CorpusNode: graft L47-L54, mine L47-L47",
+      "end memory/bench/boost-eval.ts:L56 interface CorpusQuery: graft L56-L61, mine L56-L56",
+      "end memory/bench/boost-eval.ts:L63 interface Corpus: graft L63-L66, mine L63-L63",
+      "end memory/bench/boost-eval.ts:L90 function nodeIdOf: graft L90-L92, mine L90-L90"
     ],
-    "falsePositiveSamples": [
-      "fp memory/bench/absorb-calibrate.ts:L64 function db — let db = join(resolve(\".\"), \".myc\", \"myc.db\");",
-      "fp memory/bench/absorb-calibrate.ts:L65 function out — let out = join(resolve(\".\"), \"bench\", \"absorb-calibration.json\");",
-      "fp memory/bench/absorb-calibrate.ts:L66 function grid — let grid = true;",
-      "fp memory/bench/absorb-calibrate.ts:L68 function a — const a = argv[i]!;",
-      "fp memory/bench/absorb-calibrate.ts:L82 function head — const head = (n.title ?? \"\").trim().replace(/[.…]+$/u, \"\").trim();",
-      "fp memory/bench/absorb-calibrate.ts:L83 function body — const body = (n.body ?? n.excerpt ?? \"\").trim();",
-      "fp memory/bench/absorb-calibrate.ts:L92 function s — const s = [...xs].sort((a, b) => a - b);",
-      "fp memory/bench/absorb-calibrate.ts:L93 function pos — const pos = (s.length - 1) * q;",
-      "fp memory/bench/absorb-calibrate.ts:L94 function lo — const lo = Math.floor(pos);",
-      "fp memory/bench/absorb-calibrate.ts:L95 function hi — const hi = Math.ceil(pos);",
-      "fp memory/bench/absorb-calibrate.ts:L113 function m — const m = {} as Matrix;",
-      "fp memory/bench/absorb-calibrate.ts:L141 function m — const m = emptyMatrix();",
-      "fp memory/bench/absorb-calibrate.ts:L143 function v — const v = verdictFromFeatures(withVectors ? p.features : p.lexicalFeatures, t);",
-      "fp memory/bench/absorb-calibrate.ts:L146 function correct — let correct = 0;",
-      "fp memory/bench/absorb-calibrate.ts:L147 function falseDuplicate — let falseDuplicate = 0;",
-      "fp memory/bench/absorb-calibrate.ts:L148 function falseUpdate — let falseUpdate = 0;",
-      "fp memory/bench/absorb-calibrate.ts:L149 function perClass — const perClass = {} as Evaluation[\"perClass\"];",
-      "fp memory/bench/absorb-calibrate.ts:L150 function f1Sum — let f1Sum = 0;",
-      "fp memory/bench/absorb-calibrate.ts:L152 function tp — const tp = m[c][c];",
-      "fp memory/bench/absorb-calibrate.ts:L153 function fp — let fp = 0;"
-    ]
+    "falsePositiveSamples": []
   }
 ]

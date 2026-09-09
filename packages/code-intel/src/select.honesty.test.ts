@@ -3,8 +3,16 @@
  *
  * Строка «код-интеллект builtin: символы и fan_in по тексту» обещала то, чего
  * не происходило: индекс не строила ни одна команда, а для репозитория без
- * ts/tsx/js/jsx определений не будет НИКОГДА (§5, уровень L1). Обещание,
- * которое читатель не может проверить, — ровно то, что И2 называет ложью.
+ * L1-языков определений не будет НИКОГДА (§5, уровень L1). Обещание, которое
+ * читатель не может проверить, — ровно то, что И2 называет ложью.
+ *
+ * ФИКСТУРА «БЕЗ L1» БЫЛА PYTHON И ПЕРЕСТАЛА ЕЮ БЫТЬ. С переходом на
+ * tree-sitter (memory-hrsae2f1mf7a) python стал L1: символы по нему теперь
+ * есть. Оставить .py в роли «языка, которого мы не разберём никогда» значило
+ * бы проверять ложь — тест бы зеленел, утверждая то, чего больше нет.
+ * Поэтому фикстура переехала на .rb: грамматика ruby у tree-sitter есть, но в
+ * L1 его никто не заводил, и обещания по нему мы не даём. Утверждения не
+ * ослаблены: та же строка, та же проверка «не обещано», другой язык.
  *
  * МУТАЦИЯ: заставить `builtinAbility` не смотреть на дерево (вернуть одну и
  * ту же строку про символы) — краснеет «репозиторий без TS».
@@ -14,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { probeL1Files } from "./langs.ts";
+import { L1_LANGS_LABEL, probeL1Files } from "./langs.ts";
 import { selectCodeIntel, type SelectEnv } from "./select.ts";
 
 let dir: string;
@@ -47,10 +55,10 @@ describe("проба L1", () => {
 
   test("дерево без L1: found=false, языки названы", () => {
     mkdirSync(join(dir, "app"), { recursive: true });
-    writeFileSync(join(dir, "app", "main.py"), "def f():\n    return 1\n");
+    writeFileSync(join(dir, "app", "main.rb"), "def f\n  1\nend\n");
     const p = probeL1Files(dir);
     expect(p.found).toBe(false);
-    expect(p.langs).toContain("py");
+    expect(p.langs).toContain("rb");
   });
 
   test("node_modules и .myc не обходятся: чужое дерево не наша статистика", () => {
@@ -62,30 +70,44 @@ describe("проба L1", () => {
   });
 });
 
+describe("python стал L1", () => {
+  test("репозиторий на python: символы ОБЕЩАНЫ, и это правда (грамматика есть)", () => {
+    mkdirSync(join(dir, "app"), { recursive: true });
+    writeFileSync(join(dir, "app", "main.py"), "def f():\n    return 1\n");
+    const p = probeL1Files(dir);
+    expect(p.found).toBe(true);
+    expect(p.langs).toContain("py");
+    const s = selectCodeIntel(dir, env(), "builtin");
+    expect(s.reason).toContain("py");
+    expect(s.reason).toContain("myc code index");
+    expect(s.reason).not.toContain("не будет");
+  });
+});
+
 describe("строка init обещает ровно то, что будет", () => {
   test("TS-репозиторий: символы обещаны И названо, чем они появятся", () => {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
     const s = selectCodeIntel(dir, env(), "builtin");
-    expect(s.reason).toContain("ts/tsx/js/jsx");
+    expect(s.reason).toContain(L1_LANGS_LABEL);
     expect(s.reason).toContain("myc code index");
     expect(s.state).toBe("ok");
   });
 
   test("репозиторий без TS: символов НЕ обещано, и сказано, что работает", () => {
     mkdirSync(join(dir, "app"), { recursive: true });
-    writeFileSync(join(dir, "app", "main.py"), "def f():\n    return 1\n");
+    writeFileSync(join(dir, "app", "main.rb"), "def f\n  1\nend\n");
     const s = selectCodeIntel(dir, env(), "builtin");
     expect(s.reason).toContain("не будет");
     expect(s.reason).toContain("якоря");
-    expect(s.reason).toContain("py");
+    expect(s.reason).toContain("rb");
     // Ровно то обещание, которого не должно остаться.
     expect(s.reason).not.toContain("символы и fan_in по тексту для");
   });
 
   test("auto без graft говорит про builtin то же самое, а не своё", () => {
     mkdirSync(join(dir, "app"), { recursive: true });
-    writeFileSync(join(dir, "app", "main.py"), "def f():\n    return 1\n");
+    writeFileSync(join(dir, "app", "main.rb"), "def f\n  1\nend\n");
     const s = selectCodeIntel(dir, env(), "auto");
     expect(s.id).toBe("builtin");
     expect(s.reason).toContain("не будет");

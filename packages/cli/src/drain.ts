@@ -354,6 +354,9 @@ export function openDrainHandle(
     // корня воркспейса у него нет, и охват репозитория (S59) честно
     // неопределён, а не выдуман общим.
     wsDir: dir,
+    // А вот каталог базы у него определён точно — он и есть `dir`. Рабочего
+    // дерева у дренажа нет вовсе: он фоновый и в дерево не пишет ничего.
+    mycDir: dir,
     repo: { repo: undefined, reason: "no-workspace", from: dir },
     weights: { ...DEFAULT_READY_WEIGHTS },
     vec0: driver.vec0,

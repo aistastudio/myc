@@ -35,7 +35,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { jobs } from "@myc/store-sqlite";
-import { listDefs, type Def, type LangId } from "./defs.ts";
+import { listDefs, loadLangs, type Def, type LangId } from "./symbols.ts";
 import { L1_LANGS, langOf, walkFiles } from "./langs.ts";
 
 // Языки, обход дерева и список пропускаемых каталогов живут в `./langs.ts`:
@@ -157,6 +157,14 @@ function wyhash(data: Uint8Array): string {
  * сторожевым таймером (POOL_WATCHDOG_MS); не дождались — пул гасится, файл
  * разбирается в своём потоке. Под нагрузкой CI воркер может стартовать
  * дольше обычного, и индексация не имеет права из-за этого застревать.
+ *
+ * ЦЕНА СТАРТА ВЫРОСЛА ВМЕСТЕ С ПЕРЕХОДОМ НА TREE-SITTER, и на восьми воркерах
+ * пул на этом репозитории перестал окупаться: 778 мс против 648 мс без пула
+ * (400 L1-файлов, машина занята). Каждый воркер теперь платит импорт
+ * web-tree-sitter, Parser.init и компиляцию своих грамматик. Размер пула тут
+ * НЕ перенастраивается: замер сделан на загруженной машине, а по такому
+ * замеру менять формулу нельзя — это отдельная задача memory-eyqdv56a95s5 с
+ * перепроверкой на тихой машине. Корректность от этого не зависит.
  */
 class ParsePool {
   static readonly WATCHDOG_MS = 2_000;
@@ -621,6 +629,18 @@ async function drainBatch(
       pending: isL1 && pool !== null ? pool.parse(sourceText, lang as LangId) : null,
     });
   }
+
+  // Грамматики языков батча. `listDefs` синхронна, а `.wasm` грузится
+  // промисом — ждать его здесь, ПОСЛЕ рассылки в пул: воркеры уже разбирают
+  // со своими копиями, и загрузка главного потока идёт с ними параллельно, не
+  // добавляя латентности. Главному потоку она нужна всё равно — он разбирает
+  // сам, когда пула нет (батч меньше PARSE_POOL_MIN_FILES) или когда пул
+  // погас по сторожу. Загрузка идемпотентна: платится один раз за процесс.
+  const batchLangs = new Set<LangId>();
+  for (const e of entries) {
+    if (!e.cleanup && L1_LANGS.has(e.lang)) batchLangs.add(e.lang as LangId);
+  }
+  if (batchLangs.size > 0) await loadLangs(batchLangs);
 
   // Проход 2: сбор результатов в порядке работ. Отказ пула — не отказ работы:
   // разбор повторяется в своём потоке; и только собственно ошибка разбора

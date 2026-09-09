@@ -31,7 +31,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import {
   Q,
@@ -422,6 +422,15 @@ export interface HooksSection {
   readonly journal: boolean;
   readonly hooks: readonly HookReport[];
   readonly checks: readonly Check[];
+  /** Каталог, откуда читался счётчик срабатываний: он принадлежит базе. */
+  readonly countersDir: string;
+  /** Каталог, откуда читался журнал `myc wire`: он принадлежит дереву. */
+  readonly journalDir: string;
+  /**
+   * Непусто, когда эти два каталога РАЗНЫЕ (git worktree). Тогда вердикт
+   * собран из двух источников, и промолчать об этом нельзя (И2).
+   */
+  readonly split?: string;
 }
 
 interface WireJournal {
@@ -507,9 +516,29 @@ function counterFor(
   return { count, last, agents };
 }
 
-function checkHooks(mycDir: string, registry: Registry, now: number = Date.now()): HooksSection {
-  const wired = wiredEvents(mycDir);
-  const counters = readCounters(mycDir).hooks;
+/**
+ * Две стороны, и `--hooks` нужны ОБЕ — это не недосмотр, а состав вопроса.
+ *
+ * СЧЁТЧИК (`hooks.json`) принадлежит БАЗЕ и читается из её каталога. «Сколько
+ * раз хук сработал» — свойство воркспейса, а не ветки: сжатие контекста,
+ * случившееся в git worktree, сохраняет память в общую базу, и не увидеть его
+ * из основного дерева значило бы раздвоить сам счётчик, на котором строится
+ * вердикт.
+ *
+ * ЖУРНАЛ `myc wire` (`wire.json`) принадлежит РАБОЧЕМУ ДЕРЕВУ и читается из
+ * cwd. «Поставлен ли хук» — свойство именно того дерева, в котором мы сейчас:
+ * конфиги харнесса (`.claude/`, `.mcp.json`) `wire` ставит в своё дерево,
+ * потому что Claude Code читает `.claude` из своего. Читай мы журнал рядом с
+ * базой — doctor в worktree отвечал бы про установку в ЧУЖОМ дереве.
+ */
+function checkHooks(
+  countersDir: string,
+  journalDir: string,
+  registry: Registry,
+  now: number = Date.now(),
+): HooksSection {
+  const wired = wiredEvents(journalDir);
+  const counters = readCounters(countersDir).hooks;
   const reports: HookReport[] = [];
 
   for (const spec of HOOK_SPECS) {
@@ -565,7 +594,9 @@ function checkHooks(mycDir: string, registry: Registry, now: number = Date.now()
         command: spec.command,
         installed: null,
         verdict: "unknown",
-        detail: `не знаю: журнала .myc/${WIRE_JOURNAL} нет — поставлен ли хук, отсюда не видно`,
+        detail:
+          `не знаю: журнала ${join(journalDir, WIRE_JOURNAL)} нет — ` +
+          "поставлен ли хук, отсюда не видно",
       });
       continue;
     }
@@ -606,7 +637,25 @@ function checkHooks(mycDir: string, registry: Registry, now: number = Date.now()
     verdict: r.verdict,
     detail: r.detail,
   }));
-  return { journal: wired !== null, hooks: reports, checks };
+  // Каталоги разошлись — значит команду позвали из git worktree, и вердикт
+  // собран из ДВУХ мест. Назвать это обязаны: молчащий диагност, который
+  // смешал два источника, хуже молчания.
+  const split =
+    countersDir === journalDir
+      ? undefined
+      : `счётчик из ${countersDir} (он принадлежит базе), журнал установки из ` +
+        `${journalDir} (он принадлежит рабочему дереву)`;
+  if (split !== undefined) {
+    checks.unshift({ name: "источники", verdict: "ok", detail: split });
+  }
+  return {
+    journal: wired !== null,
+    hooks: reports,
+    checks,
+    countersDir,
+    journalDir,
+    ...(split !== undefined ? { split } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +772,12 @@ export function createDoctorCommand(registry: Registry): Command {
       if (!existsSync(dbPath)) {
         return failure("ws.not_initialized", `базы нет: ${dbPath}`, ExitCode.NOWS, "myc init");
       }
-      const mycDir = dirname(dbPath).split(sep).pop() === ".myc" ? dirname(dbPath) : dirname(dbPath);
+      // Каталог базы — сторона ВОРКСПЕЙСА: там счётчик хуков и всё прочее,
+      // что базе принадлежит. Каталог cwd — сторона РАБОЧЕГО ДЕРЕВА: там
+      // конфиги харнесса и журнал их установки. Из git worktree это разные
+      // каталоги, и `--hooks` спрашивает у каждого своё (см. checkHooks).
+      const mycDir = dirname(dbPath);
+      const treeMycDir = join(resolve(ctx.globals.directory ?? process.cwd()), ".myc");
 
       let driver: CliDriver | undefined;
       const needsDb = sections.includes("schema") || sections.includes("recount");
@@ -742,7 +796,9 @@ export function createDoctorCommand(registry: Registry): Command {
       try {
         const schema = sections.includes("schema") ? await checkSchema(driver!) : undefined;
         const recount = sections.includes("recount") ? checkRecount(driver!) : undefined;
-        const hooks = sections.includes("hooks") ? checkHooks(mycDir, registry) : undefined;
+        const hooks = sections.includes("hooks")
+          ? checkHooks(mycDir, treeMycDir, registry)
+          : undefined;
 
         const checks = [
           ...(schema?.checks ?? []),

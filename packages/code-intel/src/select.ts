@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CodeIntelId, CodeIntelState } from "./index.ts";
-import { probeL1Files } from "./langs.ts";
+import { L1_LANGS_LABEL, probeL1Files } from "./langs.ts";
 
 // ---------------------------------------------------------------------------
 // Режим
@@ -328,7 +328,7 @@ function cmpVersion(a: string, b: string): number {
 /**
  * ЧЕСТНАЯ СТРОКА ПРО BUILTIN (И2). До этого здесь стояло «символы и fan_in по
  * тексту» — обещание, которое строка давала ВСЕГДА: и репозиторию на python,
- * где определений не будет никогда (§5, уровень L1 — только ts/tsx/js/jsx), и
+ * где определений не будет никогда (§5, уровень L1), и
  * репозиторию, где индекс ещё не построен (`code_files` пуст, и до
  * `myc code index` символ не найдётся ни один). Обещание, которое читатель
  * проверить не может, — ровно то, что И2 называет ложью.
@@ -341,11 +341,11 @@ function cmpVersion(a: string, b: string): number {
 function builtinAbility(dir: string): string {
   const probe = probeL1Files(dir);
   if (probe.found) {
-    return "символы и fan_in по тексту для ts/tsx/js/jsx — после `myc code index` (фон собирает сам, когда в репозитории есть якоря)";
+    return `символы и fan_in по тексту для ${L1_LANGS_LABEL} — после \`myc code index\` (фон собирает сам, когда в репозитории есть якоря)`;
   }
   const seen = probe.langs.length > 0 ? ` (видно: ${probe.langs.slice(0, 5).join(", ")})` : "";
   const how = probe.capped ? `в первых ${probe.seen} файлах нет` : "нет";
-  return `файлов ts/tsx/js/jsx ${how}${seen} — символов и fan_in не будет (якоря, протухание и ре-привязка работают на любом языке)`;
+  return `файлов ${L1_LANGS_LABEL} ${how}${seen} — символов и fan_in не будет (якоря, протухание и ре-привязка работают на любом языке)`;
 }
 
 /**

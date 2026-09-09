@@ -576,6 +576,22 @@ interface Journal {
   readonly entries: readonly JournalEntry[];
 }
 
+/**
+ * Журнал остаётся в РАБОЧЕМ ДЕРЕВЕ, и это единственный side-файл, для
+ * которого сторона именно такая.
+ *
+ * `wire` ставит конфиги харнесса (`.claude/`, `.opencode/`, `.mcp.json`) в то
+ * дерево, из которого его позвали, — Claude Code читает `.claude` из СВОЕГО
+ * рабочего дерева, общим на репозиторий он быть не может. Журнал перечисляет
+ * ровно эти файлы, относительными путями и с хешем каждого, и по нему же
+ * `unwire` их снимает. Уедь журнал к базе — в git worktree `unwire` сверял бы
+ * хеши чужого дерева и снимал бы не то, что ставил.
+ *
+ * Всё ОСТАЛЬНОЕ в `.myc` принадлежит базе и живёт рядом с ней
+ * (`StoreHandle.mycDir`): эпизоды, счётчик хуков, кеши. `myc doctor --hooks`
+ * спрашивает у каждой стороны своё и говорит об этом вслух, когда каталоги
+ * разошлись.
+ */
 function journalPath(root: string, ctx: CommandContext): string {
   const db = ctx.globals.db;
   const dir = db !== undefined ? dirname(resolve(db)) : join(root, ".myc");

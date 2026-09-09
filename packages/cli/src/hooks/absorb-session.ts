@@ -36,7 +36,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { redactSecrets, type JsonValue } from "@myc/core";
 import { HARNESSES } from "@myc/swarm";
 import {
@@ -147,13 +147,6 @@ const ABSORB_FLAGS: readonly FlagSpec[] = [
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
-}
-
-/** `.myc` рядом с базой: `--db` может увести её куда угодно, эпизоды идут туда же. */
-function mycDirOf(ctx: CommandContext): string {
-  const db = ctx.globals.db;
-  if (db !== undefined) return dirname(resolve(db));
-  return join(resolve(ctx.globals.directory ?? process.cwd()), ".myc");
 }
 
 interface TranscriptSource {
@@ -361,7 +354,13 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
-      const mycDir = mycDirOf(ctx);
+      // Каталог БАЗЫ, а не `<cwd>/.myc`. Эпизод и счётчик хука принадлежат
+      // базе: из git worktree cwd — чужой каталог, он уходит вместе с веткой,
+      // а база остаётся в основном дереве. Пока путь выводился из cwd, эпизод
+      // сжатия умирал вместе с worktree, тогда как ЗАДАЧИ той же сессии
+      // оставались в общей базе — половина работы сохранена, половина нет, и
+      // никто об этом не говорил (memory-40dy12kkq6v2).
+      const mycDir = h.mycDir;
 
       try {
         // Шаг 3: СЫРОЙ ЭПИЗОД. Первым и быстро — бюджет 6 мс.

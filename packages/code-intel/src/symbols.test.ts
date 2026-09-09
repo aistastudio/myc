@@ -1,5 +1,29 @@
-import { describe, expect, test } from "bun:test";
-import { DEF_RULES, findBlockEnd, listDefs } from "./defs.ts";
+/**
+ * Поведение listDefs — то же самое, что проверялось у регекспного defs.ts
+ * (memory-hrsae2f1mf7a). Файл переехал вместе с реализацией, ОЖИДАНИЯ не
+ * трогались: если tree-sitter где-то отвечает иначе, это обязано быть видно
+ * здесь красным, а не подогнано под новый парсер.
+ *
+ * Что ушло вместе со старой реализацией и почему (подробно — в отчёте):
+ *   - набор про таблицу регекспов проверял ВНУТРЕННОСТЬ, которой больше нет;
+ *     его смысл (js не знает типовых форм) держит поведенческая проверка
+ *     "js skips type-only forms" ниже;
+ *   - мутации ignoreStrings / ignoreTemplateExprs — свойства лексера, а не
+ *     разбора символов; лексер жив и переехал в lex.ts, мутации — в
+ *     lex.test.ts, где проверяются на нём самом.
+ *
+ * beforeAll — не украшение: грамматика грузится асинхронно, listDefs
+ * синхронна и без грамматики падает ГРОМКО. Тот же контракт в бою держат
+ * code_index.ts и воркер пула.
+ */
+
+import { beforeAll, describe, expect, test } from "bun:test";
+import { L1_LANGS } from "./langs.ts";
+import { DEF_LANGS, findBlockEnd, listDefs, loadLangs } from "./symbols.ts";
+
+beforeAll(async () => {
+  await loadLangs(["ts", "tsx", "js", "jsx", "py"]);
+});
 
 const lines = (src: string) => src.split("\n").length;
 
@@ -9,23 +33,6 @@ const spanOf = (src: string, lang: "ts" | "tsx" | "js" | "jsx", name: string) =>
   expect(def).toBeDefined();
   return def!;
 };
-
-describe("DEF_RULES", () => {
-  test("one table per language: ts/tsx carry type forms, js/jsx do not", () => {
-    expect(DEF_RULES.ts).toBe(DEF_RULES.tsx);
-    expect(DEF_RULES.js).toBe(DEF_RULES.jsx);
-    const tsKinds = new Set(DEF_RULES.ts.map((r) => r.kind));
-    const jsKinds = new Set(DEF_RULES.js.map((r) => r.kind));
-    expect(tsKinds.has("interface")).toBe(true);
-    expect(tsKinds.has("enum")).toBe(true);
-    expect(tsKinds.has("type")).toBe(true);
-    expect(jsKinds.has("interface")).toBe(false);
-    expect(jsKinds.has("enum")).toBe(false);
-    expect(jsKinds.has("type")).toBe(false);
-    expect(jsKinds.has("function")).toBe(true);
-    expect(jsKinds.has("class")).toBe(true);
-  });
-});
 
 describe("listDefs: top-level forms", () => {
   test("function, async function, generator; declare function has no body and is excluded", () => {
@@ -545,25 +552,74 @@ describe("mutations degrade measurement", () => {
     expect([f.startLine, f.endLine]).toEqual([1, 6]);
   });
 
-  test("mutation ignoreStrings miscounts", () => {
-    const defs = listDefs(src, "ts", { ignoreStrings: true });
-    const f = defs.find((d) => d.name === "f");
-    expect(f).toBeDefined();
-    expect([f!.startLine, f!.endLine]).not.toEqual([1, 6]);
-  });
-
-  test("mutation ignoreTemplateExprs miscounts", () => {
-    const defs = listDefs(src, "ts", { ignoreTemplateExprs: true });
-    const f = defs.find((d) => d.name === "f");
-    expect(f).toBeDefined();
-    expect([f!.startLine, f!.endLine]).not.toEqual([1, 6]);
-  });
-
   test("mutation naiveEnd collapses the span", () => {
     const defs = listDefs(src, "ts", { naiveEnd: true });
     const f = defs.find((d) => d.name === "f");
     expect(f).toBeDefined();
     expect(f!.endLine).toBe(f!.startLine);
+  });
+});
+
+describe("listDefs: python", () => {
+  test("функции, классы и методы с верными строками", () => {
+    const src = [
+      "import os",
+      "",
+      "",
+      "def top(a, b):",
+      "    return a + b",
+      "",
+      "",
+      "class Repo:",
+      '    """docstring"""',
+      "",
+      "    def __init__(self, root):",
+      "        self.root = root",
+      "",
+      "    @property",
+      "    def name(self):",
+      "        return self.root",
+      "",
+      "",
+      "async def fetch(url):",
+      "    return url",
+    ].join("\n");
+    const defs = listDefs(src, "py");
+    expect(defs.map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
+      ["top", "function", 4, 5],
+      ["Repo", "class", 8, 16],
+      ["__init__", "method", 11, 12],
+      ["name", "method", 15, 16],
+      ["fetch", "function", 19, 20],
+    ]);
+  });
+
+  test("вложенная функция — своя строка, а не метод", () => {
+    const src = [
+      "def outer():",
+      "    def inner():",
+      "        return 1",
+      "    return inner",
+    ].join("\n");
+    const defs = listDefs(src, "py");
+    expect(defs.map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
+      ["outer", "function", 1, 4],
+      ["inner", "function", 2, 3],
+    ]);
+  });
+
+  test("грамматика не загружена — падаем громко, а не отдаём пусто", () => {
+    expect(() => listDefs("def f():\n    return 1\n", "nope" as never)).toThrow();
+  });
+});
+
+describe("языки L1 и таблица грамматик — один список", () => {
+  test("на каждый L1-язык есть правило разбора, и лишних правил нет", () => {
+    // `langs.ts` не может импортировать `symbols.ts` (И1: он тянет
+    // web-tree-sitter в холодный старт `init`), поэтому список объявлен там, а
+    // грамматики — здесь. Расхождение означало бы, что индекс ставит файл в
+    // очередь на разбор, для которого нет парсера, — или наоборот.
+    expect([...DEF_LANGS].sort()).toEqual([...L1_LANGS].sort() as typeof DEF_LANGS[number][]);
   });
 });
 

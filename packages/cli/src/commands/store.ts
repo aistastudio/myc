@@ -15,6 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 // ради одного `existsSync` обязан не всякий, кто ищет корень (см. шапку
 // wsfind.ts — цена импорта store.ts в собранном бинаре ~9 мс).
 import {
+  findMycDir,
   findWorkspaceDb,
   findWorktreeLink,
   isRepoDir,
@@ -28,6 +29,7 @@ import {
 } from "./wsfind.ts";
 
 export {
+  findMycDir,
   findWorkspaceDb,
   findWorktreeLink,
   isRepoDir,
@@ -330,10 +332,36 @@ export interface StoreHandle {
   /** Корень воркспейса — каталог, содержащий `.myc` (R1). */
   readonly wsDir: string;
   /**
+   * Каталог `.myc` САМОГО воркспейса — тот, в котором лежит открытая база.
+   *
+   * ЗАЧЕМ ОТДЕЛЬНОЕ ПОЛЕ. Без него каждый пишущий выводил бы этот каталог
+   * сам, и выводил бы из cwd — а cwd и воркспейс это РАЗНЫЕ каталоги ровно
+   * тогда, когда цена ошибки максимальна. Из git worktree база резолвится в
+   * основное дерево, а `<cwd>/.myc` исчезает вместе с веткой; всё, что туда
+   * записали, исчезает с ней. Так и умирали эпизоды сжатия: задачи из той же
+   * сессии оставались в общей базе, память о сессии — нет
+   * (memory-40dy12kkq6v2).
+   *
+   * ЧТО ЛЕЖИТ ЗДЕСЬ — всё, что принадлежит БАЗЕ и без неё бессмысленно:
+   * сырые эпизоды (`episodes/`), счётчик срабатываний хуков (`hooks.json`),
+   * кеши (`bootstrap.cache.json`), журнал грязных файлов якорей.
+   *
+   * Не `join(wsDir, ".myc")`: явный `--db` уводит базу куда угодно (тесты и
+   * бенчи открывают её файлом в произвольном каталоге), корня воркспейса
+   * тогда нет вовсе, а каталог базы есть всегда.
+   */
+  readonly mycDir: string;
+  /**
    * Непусто, когда команду позвали из git worktree: `wsDir` тогда — корень
    * ОСНОВНОГО дерева, а файлы, которые агент правит, лежат в worktree. Всё,
    * что и записывает путь, и читает содержимое (якоря), обязано различать эти
    * две стороны — отсюда и ссылка в хендле.
+   *
+   * ВТОРАЯ СТОРОНА ПАРЫ к `mycDir`. Рабочее дерево — `worktree.worktreeDir`,
+   * а вне worktree это просто cwd. Туда и только туда идут файлы, которые
+   * правит агент, и конфиги харнесса (`.claude/`, `.opencode/`, `.mcp.json`)
+   * вместе с журналом их установки `wire.json`: Claude Code читает `.claude`
+   * из СВОЕГО рабочего дерева, и общий на репозиторий он быть не может.
    */
   readonly worktree?: WorktreeLink;
   /**
@@ -750,6 +778,9 @@ export async function openWorkspaceByDir(
       scope: config.slug === "myc" ? "" : config.slug,
       slug: config.slug,
       wsDir: found.wsDir,
+      // Каталог найденной базы: из git worktree `found.dbPath` уже указывает
+      // в основное дерево, и side-файлы обязаны идти туда же.
+      mycDir: dirname(found.dbPath),
       repo: { repo: undefined, reason: "no-workspace", from: found.wsDir },
       weights: config.weights,
       vec0: driver.vec0,
@@ -890,6 +921,11 @@ export async function openStore(
       scope: config.slug === "myc" ? "" : config.slug,
       slug: config.slug,
       wsDir: repoRoot ?? wsDir,
+      // Каталог базы, а не `<cwd>/.myc`: из worktree это разные каталоги, и
+      // всё, что принадлежит базе, обязано лечь рядом с ней. `resolve` — из-за
+      // явного `--db`: его берут как дали, а side-файл по относительному пути
+      // уехал бы при первой же смене каталога внутри процесса.
+      mycDir: dirname(resolve(dbPath)),
       ...(worktree !== undefined ? { worktree } : {}),
       repo,
       weights: config.weights,
@@ -985,6 +1021,9 @@ export async function openPersonalStore(
       scope: PERSONAL_SLUG,
       slug: PERSONAL_SLUG,
       wsDir: home,
+      // Личный ярус (S41) к рабочему дереву не привязан вовсе: его `.myc`
+      // всегда один и тот же, откуда бы команду ни позвали.
+      mycDir: dirname(status.dbPath),
       repo,
       weights: { ...DEFAULT_READY_WEIGHTS },
       vec0: driver.vec0,

@@ -209,6 +209,32 @@ export function findWorkspaceDb(startDir: string): WorkspaceFound | WorkspaceNot
   return { searched: local.searched };
 }
 
+/**
+ * Каталог `.myc` ВОРКСПЕЙСА — для команд, которые базу не открывают.
+ *
+ * ДВЕ СТОРОНЫ, которые обязана различать каждая запись на диск, и эта
+ * функция отдаёт первую из них:
+ *
+ *   воркспейс     — там база и всё, что ей принадлежит: `episodes/`,
+ *                   `hooks.json`, кеши, `anchor-dirty.log`. Из git worktree
+ *                   резолвится в ОСНОВНОЕ дерево через общий git-dir;
+ *   рабочее дерево — cwd: файлы, которые правит агент, и конфиги харнесса
+ *                   (`.claude/`, `.mcp.json`) с журналом их установки.
+ *
+ * Пока side-файлы базы выводили свой каталог из cwd, они писались в дерево, а
+ * база жила в другом: эпизод сжатия, записанный в worktree, умирал вместе с
+ * веткой, тогда как задачи той же сессии оставались (memory-40dy12kkq6v2).
+ *
+ * `undefined` — воркспейса нет: тогда и side-файлу лечь некуда, и придумывать
+ * ему место в cwd — ровно та ошибка, от которой эта функция и заведена.
+ * Команды, которые базу ОТКРЫВАЮТ, берут готовый `StoreHandle.mycDir`.
+ */
+export function findMycDir(startDir: string, explicitDb?: string): string | undefined {
+  if (explicitDb !== undefined) return dirname(resolve(explicitDb));
+  const found = findWorkspaceDb(startDir);
+  return "dbPath" in found ? dirname(found.dbPath) : undefined;
+}
+
 /** Первая ссылка worktree по списку каталогов снизу вверх. */
 function firstWorktreeLink(dirs: readonly string[]): WorktreeLink | undefined {
   for (const dir of dirs) {

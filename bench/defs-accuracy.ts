@@ -1,7 +1,12 @@
 #!/usr/bin/env bun
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { listDefs, type DefsOptions, type LangId } from "../packages/code-intel/src/defs.ts";
+import {
+  listDefs,
+  loadLangs,
+  type DefsOptions,
+  type LangId,
+} from "../packages/code-intel/src/symbols.ts";
 
 // Корпуса задаются снаружи. Прибитые пути к домашнему каталогу автора
 // превращают стенд в неповторяемый где-либо ещё и вписывают его имя в
@@ -270,10 +275,15 @@ function measure(corpus: CorpusEntry[], mode: string, opts: DefsOptions): ModeRe
   return res;
 }
 
+/**
+ * Мутации стенда. `ignoreStrings` и `ignoreTemplateExprs` ушли вместе с
+ * регекспным разбором (memory-hrsae2f1mf7a): это были ослабления ЛЕКСЕРА, а
+ * tree-sitter лексером не пользуется — грамматика знает про строки и шаблоны
+ * сама. Лексер жив и по-прежнему стережётся этими мутациями, но там, где он
+ * работает: `packages/code-intel/src/lex.test.ts` (нормализация якорей).
+ */
 const MODES: readonly { name: string; opts: DefsOptions }[] = [
   { name: "baseline", opts: {} },
-  { name: "m1-ignore-strings", opts: { ignoreStrings: true } },
-  { name: "m2-ignore-template-exprs", opts: { ignoreTemplateExprs: true } },
   { name: "m3-naive-end", opts: { naiveEnd: true } },
 ];
 
@@ -287,6 +297,10 @@ if (args.includes("--corpus")) {
   console.error(`${corpus.length} files`);
   process.exit(0);
 }
+
+// Грамматики: разбор синхронный, загрузка — нет. Стенд грузит их разом до
+// первого замера, чтобы ожидание не попало в измеряемое время.
+await loadLangs(new Set(corpus.map((c) => c.lang)));
 
 const results = MODES.map((m) => measure(corpus, m.name, m.opts));
 
