@@ -152,71 +152,118 @@ process.exit(0);
 `;
 }
 
-export function codexNotify(opts: HelperOptions): string {
-  const preCompact = opts.events.includes("pre-compact");
-  return `#!/usr/bin/env node
-// .codex/myc-notify.mjs — ${GENERATED}.
-//
-// У Codex поверхность тоньше: событие приходит одним JSON-аргументом.
-// Настоящего pre-compact в части версий нет вовсе — тогда эпизод пишется по
-// завершении хода, и \`myc doctor --hooks\` сообщает об этом честно, а не
-// делает вид, что контекст защищён.
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+/**
+ * Codex: почему `myc wire` НЕ ставит хук эпизода, хотя раньше ставил.
+ *
+ * Всё ниже установлено ЧТЕНИЕМ бинаря codex-cli 0.153.4
+ * (`/Applications/ChatGPT.app/Contents/Resources/codex`), а не догадкой.
+ *
+ * 1. ЕДИНСТВЕННОЕ СОБЫТИЕ `notify` — `agent-turn-complete`. Поля полезной
+ *    нагрузки перечислены в `hooks/src/legacy_notify.rs` целиком:
+ *    `thread-id`, `turn-id`, `cwd`, `client`, `input-messages`,
+ *    `last-assistant-message`. Ни `rollout-path`, ни `transcript_path`, ни
+ *    какого-либо иного пути к стенограмме там НЕТ, и события сжатия там нет
+ *    тоже: ветка `/compact/i.test(type)` в прошлой версии этого файла не
+ *    могла сработать ни разу за всё время его существования.
+ * 2. Значит хук через `notify` — ровно тот случай, который myc уже отработал
+ *    на `stop`: обещание, которое некому исполнить. Он звал
+ *    `absorb-session --transcript "-"` на пустой stdin, получал `empty`, и
+ *    единственным его следом был счётчик, выдававший пустоту за здоровье.
+ *    Поэтому он больше не ставится, и `myc wire` говорит об этом вслух.
+ * 3. ПУТЬ, КОТОРЫЙ РАБОТАЕТ, У CODEX ЕСТЬ, но он не в `notify`. У 0.153.4
+ *    есть полноценная система хуков (`codex_hooks`, `hooks = true` в
+ *    `config.toml`): файл `~/.codex/hooks.json` формы Claude Code, события
+ *    `PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact,
+ *    SessionStart, SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop,
+ *    Stop, Interrupt`, вход — JSON на stdin с полями `session_id`, `turn_id`,
+ *    `agent_type`, `transcript_path`, `hook_event_name`, `model`,
+ *    `permission_mode`, `trigger`, `tool_name`, `tool_input`, `timeout` в
+ *    СЕКУНДАХ (поле `timeoutSec` в записи хука). Стенограмма там есть.
+ *    Но конфиг у этой системы ПОЛЬЗОВАТЕЛЬСКИЙ (`~/.codex/hooks.json`, плюс
+ *    хуки плагинов), проектного нет — то есть положение ровно как у Kimi, и
+ *    делается это отдельной работой, с отдельной живой проверкой, а не
+ *    догадкой в этом коммите.
+ */
+export const CODEX_NO_EPISODE =
+  "хук эпизода у Codex не ставится: единственное событие `notify` — " +
+  "`agent-turn-complete`, и в его payload (thread-id, turn-id, cwd, client, " +
+  "input-messages, last-assistant-message) нет ни стенограммы, ни события " +
+  "сжатия — absorb-session там всегда возвращал `empty`. Рабочий путь у Codex " +
+  "есть: `~/.codex/hooks.json`, событие PreCompact, поле `transcript_path`; " +
+  "конфиг пользовательский, поэтому это отдельная работа";
 
-const DIR = process.env.CODEX_PROJECT_DIR || process.cwd();
-
-${BIN_LOOKUP}
-
-let ev = {};
-try {
-  const arg = process.argv[2];
-  ev = JSON.parse(arg && arg.trim().startsWith("{") ? arg : readFileSync(0, "utf8") || "{}");
-} catch {}
-
-const type = ev.type ?? ev.event ?? "";
-const transcript = ev["rollout-path"] ?? ev.rollout_path ?? ev.transcript_path ?? "-";
-// S58: чьей сессии принадлежит записанное. Пусто — охват выведется из эпизода.
-const session = ev.session_id ?? ev.conversation_id ?? ev.thread_id ?? "";
-
-let args = null;
-let limit = 1500;
-if (${preCompact ? "true" : "false"} && /compact/i.test(type)) {
-  args = ["absorb-session", "--reason", "compact", "--transcript", transcript, "--agent", "codex", "--session", session];
-  limit = 7500;
-} else if (/turn[-_.]?complete|agent[-_.]?turn|session[-_.]?end/i.test(type)) {
-  args = ["absorb-session", "--reason", "auto", "--transcript", transcript, "--agent", "codex", "--session", session];
-  limit = 2000;
-}
-
-if (!args) process.exit(0);
-
-try {
-  spawnSync(bin(), args, {
-    cwd: DIR,
-    timeout: limit,
-    encoding: "utf8",
-    env: { ...process.env, MYC_HOOK: "codex-notify" },
-  });
-} catch {}
-
-process.exit(0);
-`;
-}
-
+/**
+ * opencode (`.opencode/plugin/myc.ts`).
+ *
+ * Всё ниже установлено ЧТЕНИЕМ opencode 1.18.26 (единый бинарь Bun,
+ * `/opt/homebrew/Cellar/opencode/1.18.26/bin/opencode`), его же типов
+ * `@opencode-ai/plugin@1.18.21` (`~/.config/opencode/node_modules`) и ЖИВЫМ
+ * прогоном `opencode serve` — а не догадкой по имени события. Прошлая версия
+ * этого файла была собрана из догадок, и все три её половины молчали:
+ *
+ * 1. СОБЫТИЙ `session.start`, `session.end` И `session.compacting` У OPENCODE
+ *    НЕТ. Полный список типов шины (все определения `{type:"…",schema:…}` в
+ *    бинаре) содержит `session.created`, `session.updated`, `session.idle`,
+ *    `session.compacted` — и ни одного из тех трёх. Хук на несуществующее имя
+ *    не «иногда не срабатывает», он не срабатывает НИКОГДА.
+ * 2. `client.session.appendContext` НЕ СУЩЕСТВУЕТ: ноль вхождений строки
+ *    `appendContext` в 144-мегабайтном бинаре и ноль в SDK. Прошлая версия
+ *    звала его через `?.`, то есть весь вывод myc молча падал на пол.
+ *    Единственная дверь в контекст при сжатии — `output.context` хука
+ *    `experimental.session.compacting`: opencode подклеивает эти строки к
+ *    промпту суммаризации (`to = […qh(previousSummary, context), …Ve.context]`).
+ * 3. СТЕНОГРАММА ЕСТЬ, но только через `client`, и её надо просить:
+ *    `client.session.messages({path:{id}, query:{directory}})` →
+ *    `[{info, parts}]`. Замер на живом сервере (три сообщения, 3145 байт):
+ *    4 мс на вызов из хука сжатия и 2 мс из события `session.compacted`.
+ *    Бюджет хука 7500 мс — влезает с тысячекратным запасом. Именно этого
+ *    вызова здесь не было, и потому `absorb-session` одиннадцать сжатий
+ *    подряд получал пустой ввод и писал `empty` (memory-pqtyqnej23b7).
+ *
+ * ФОРМА ЖИЗНИ. `Plugin.trigger` зовёт хуки как `Effect.promise(() => M(K,U))`
+ * — БЕЗ catch и БЕЗ таймаута. Отброшенный промис плагина становится дефектом
+ * в файбере сжатия, а зависший — вешает сжатие насмерть. Поэтому здесь всё в
+ * `try/catch`, а у каждого вызова myc свой дедлайн и `proc.kill()`.
+ *
+ * ПОЧЕМУ ДВА ОБРАБОТЧИКА НА ОДНО СЖАТИЕ. `experimental.session.compacting`
+ * — основной: он идёт ДО сжатия и умеет вернуть спасательный пакет. Но он
+ * экспериментальный, и в сборке без него хук просто не позовут — молча.
+ * Поэтому `session.compacted` (событие стабильное, оно и тикало те 11 раз)
+ * остаётся страховкой и пишет эпизод, если основной не отработал. Двойной
+ * записи нет: страховка смотрит на отметку `handled`.
+ */
 export function opencodePlugin(opts: HelperOptions): string {
+  const sessionStart = opts.events.includes("session-start");
+  const preCompact = opts.events.includes("pre-compact");
   const postEdit = opts.events.includes("post-edit");
   return `// .opencode/plugin/myc.ts — ${GENERATED}.
 //
-// У opencode есть и MCP, и события плагинов — доступны обе половины. Форма
-// та же, что у helper'ов Claude Code и Codex: любая ошибка проглатывается,
-// сессия агента не страдает никогда.
+// Правило то же, что у helper'ов Claude Code, Codex и Kimi: myc НИКОГДА не
+// валит сессию агента. Любая ошибка, любой таймаут, отсутствие бинаря —
+// тишина и пустая строка, а не исключение из хука.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
-const run = async (args: string[], ms: number): Promise<string> => {
+/** Каталог проекта: его даёт opencode в PluginInput, cwd сервера тут чужой. */
+let DIR = process.cwd();
+
+${BIN_LOOKUP}
+
+/** Один вызов myc: свой дедлайн, свой kill, ни одного проброшенного отказа. */
+const run = async (args: string[], ms: number, stdin?: string): Promise<string> => {
   try {
-    const proc = Bun.spawn(["myc", ...args], { stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => proc.kill(), ms);
+    const proc = Bun.spawn([bin(), ...args], {
+      cwd: DIR,
+      stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
+      stdout: "pipe",
+      stderr: "ignore",
+      env: { ...process.env, MYC_HOOK: "opencode" },
+    });
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {}
+    }, ms);
     const out = await new Response(proc.stdout).text();
     clearTimeout(timer);
     return out;
@@ -225,31 +272,140 @@ const run = async (args: string[], ms: number): Promise<string> => {
   }
 };
 
-export const MycPlugin = async ({ client }: { client: any }) => ({
-  event: async ({ event }: { event: { type: string } }) => {
-    if (event.type === "session.start") {
-      client.session?.appendContext?.(
-        await run(["prime", "--budget", "2000", "--format", "agent"], 2500),
+/**
+ * Стенограмма сессии в JSONL, который разбирает \`myc absorb-session\`.
+ * Один узел сообщения — одна строка; блоки \`text\`/\`tool_use\`/\`tool_result\`
+ * названы так же, как у Claude Code, потому что их и ждёт parseTranscript.
+ */
+const transcript = async (client: any, sessionID: string): Promise<string> => {
+  try {
+    const res: any = await client.session.messages({
+      path: { id: sessionID },
+      query: { directory: DIR },
+    });
+    const list: any[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+    const lines: string[] = [];
+    for (const m of list) {
+      const info: any = m?.info ?? {};
+      const content: any[] = [];
+      for (const part of m?.parts ?? []) {
+        if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
+          content.push({ type: "text", text: part.text });
+        } else if (part?.type === "tool") {
+          const state: any = part.state ?? {};
+          content.push({ type: "tool_use", name: part.tool ?? "tool", input: state.input ?? {} });
+          if (typeof state.output === "string" && state.output.length > 0) {
+            content.push({ type: "tool_result", content: state.output });
+          }
+        }
+      }
+      if (content.length === 0) continue;
+      lines.push(
+        JSON.stringify({
+          type: info.role ?? "system",
+          sessionId: sessionID,
+          cwd: DIR,
+          message: { role: info.role ?? "system", model: info.modelID, content },
+        }),
       );
     }
-    if (event.type === "session.compacting" || event.type === "session.compacted") {
-      client.session?.appendContext?.(
-        await run(
-          ["absorb-session", "--reason", "compact", "--budget", "1200", "--agent", "opencode"],
-          7500,
-        ),
-      );
-    }
-    if (event.type === "session.idle" || event.type === "session.end") {
-      await run(["absorb-session", "--reason", "auto", "--agent", "opencode"], 1500);
-    }
-  },
-  "tool.execute.after": async ({ tool, args }: { tool: string; args: any }) => {
-    if (${postEdit ? "true" : "false"} && ["write", "edit", "patch"].includes(tool) && args?.filePath) {
-      await run(["anchor", "touch", args.filePath], 1000);
-    }
-  },
-});
+    return lines.length === 0 ? "" : lines.join("\\n") + "\\n";
+  } catch {
+    return "";
+  }
+};
+
+/**
+ * Эпизод сжатия. \`--transcript -\` со стенограммой на stdin: без неё
+ * absorb-session честно возвращает \`empty\`, и это ровно та поломка, которую
+ * \`myc doctor --hooks\` показывает как расхождение. Поэтому даже при неудачном
+ * запросе вызов ДЕЛАЕТСЯ: пустой статус видно, тишину — нет.
+ */
+const absorb = async (client: any, sessionID: string): Promise<string> =>
+  run(
+    [
+      "absorb-session",
+      "--reason",
+      "compact",
+      "--transcript",
+      "-",
+      "--budget",
+      "1200",
+      "--agent",
+      "opencode",
+      "--session",
+      sessionID,
+      "--hook-output",
+      "text",
+    ],
+    7500,
+    await transcript(client, sessionID),
+  );
+
+/** Сжатия, уже записанные основным хуком: страховка их не переписывает. */
+const handled = new Map<string, number>();
+const HANDLED_MS = 60000;
+/** Сессии, которым уже отдали prime: он стоит запроса, а не каждого запроса. */
+const primed = new Set<string>();
+
+export const MycPlugin = async ({ client, directory }: { client: any; directory?: string }) => {
+  if (typeof directory === "string" && directory.length > 0) DIR = directory;
+  return {
+    // Единственная дверь в контекст при сжатии (см. шапку шаблона).
+    "experimental.session.compacting": async (
+      input: { sessionID: string },
+      output: { context: string[] },
+    ): Promise<void> => {
+      if (!${preCompact ? "true" : "false"}) return;
+      try {
+        const packet = await absorb(client, input.sessionID);
+        handled.set(input.sessionID, Date.now());
+        if (packet.trim().length > 0) output.context.push(packet);
+      } catch {}
+    },
+    event: async ({ event }: { event: { type: string; properties?: any } }): Promise<void> => {
+      try {
+        // Страховка на сборку без экспериментального хука: событие стабильное,
+        // стенограмма после сжатия ещё целиком на месте (замер: 4 сообщения,
+        // 6180 байт против 3 и 3145 до сжатия — сводка добавлена, история нет).
+        if (${preCompact ? "true" : "false"} && event.type === "session.compacted") {
+          const id = event.properties?.sessionID;
+          if (typeof id !== "string" || id.length === 0) return;
+          const at = handled.get(id);
+          if (at !== undefined && Date.now() - at < HANDLED_MS) return;
+          await absorb(client, id);
+        }
+      } catch {}
+    },
+    /**
+     * prime вместо несуществующего session.start. Системный промпт — тот
+     * единственный канал, который у плагина есть: событие создания сессии
+     * текст доставить некуда.  Один раз на сессию, не на каждый запрос.
+     */
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      if (!${sessionStart ? "true" : "false"}) return;
+      try {
+        const id = input?.sessionID;
+        if (typeof id !== "string" || id.length === 0 || primed.has(id)) return;
+        primed.add(id);
+        const text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500);
+        if (text.trim().length > 0) output.system.push(text);
+      } catch {}
+    },
+    "tool.execute.after": async (input: { tool: string; args?: any }): Promise<void> => {
+      if (!${postEdit ? "true" : "false"}) return;
+      try {
+        const file = input?.args?.filePath ?? input?.args?.path;
+        if (!["write", "edit", "patch"].includes(input?.tool) || typeof file !== "string") return;
+        if (file.length === 0) return;
+        await run(["anchor", "touch", file], 1000);
+      } catch {}
+    },
+  };
+};
 `;
 }
 
@@ -299,7 +455,7 @@ export function kimiHelper(opts: HelperOptions): string {
     .map((s) =>
       s.event === "session-start"
         ? `  "session-start": ["prime", "--budget", "2000", "--format", "agent", "--session", payload.session_id ?? ""],`
-        : `  "pre-compact": ["absorb-session", "--reason", payload.trigger ?? "auto", "--transcript", "-", "--budget", payload.trigger === "manual" ? "2000" : "1200", "--agent", "kimi", "--session", payload.session_id ?? "", "--hook-output", "text"],`,
+        : `  "pre-compact": ["absorb-session", "--reason", payload.trigger ?? "auto", "--transcript", transcriptPath(payload.session_id) ?? "-", "--budget", payload.trigger === "manual" ? "2000" : "1200", "--agent", "kimi", "--session", payload.session_id ?? "", "--hook-output", "text"],`,
     )
     .join("\n");
   return `#!/usr/bin/env node
@@ -321,6 +477,38 @@ try {
 
 // Kimi запускает хук из каталога сессии и кладёт его же в payload.cwd.
 const DIR = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+
+// СТЕНОГРАММА У KIMI: её нет во входе хука, но она есть на диске.
+// Прочитано в бинаре (сборка 2026-09-04): PreCompact зовётся как
+// \`trigger("PreCompact", {inputData: withSessionFacts({trigger, tokenCount})})\`,
+// а \`withSessionFacts\` добавляет ровно \`sessionTitle\`; строка
+// \`transcript_path\` не встречается в бинаре НИ РАЗУ. Значит \`--transcript -\`
+// читал пустоту: stdin к этому моменту уже вычерпан разбором payload выше.
+// Зато сессия лежит файлом: \`~/.kimi-code/session_index.jsonl\` сопоставляет
+// \`sessionId\` → \`sessionDir\`, а внутри \`agents/main/wire.jsonl\` — тот самый
+// JSONL, где \`{"type":"context.append_message","message":{role,content}}\`
+// читается parseTranscript как ход без единой поправки.
+function transcriptPath(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+  const home = process.env.KIMI_CODE_HOME || join(process.env.HOME ?? "", ".kimi-code");
+  const index = join(home, "session_index.jsonl");
+  if (!existsSync(index)) return null;
+  try {
+    for (const line of readFileSync(index, "utf8").split("\\n")) {
+      if (!line.includes(sessionId)) continue;
+      let rec;
+      try {
+        rec = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (rec?.sessionId !== sessionId || typeof rec?.sessionDir !== "string") continue;
+      const wire = join(rec.sessionDir, "agents", "main", "wire.jsonl");
+      return existsSync(wire) ? wire : null;
+    }
+  } catch {}
+  return null;
+}
 
 const LIMIT = {
 ${limits}

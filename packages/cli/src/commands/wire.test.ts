@@ -115,7 +115,9 @@ describe("чистая установка", () => {
     expect(has(".claude/helpers/myc-hooks.mjs")).toBe(true);
     expect(has(".claude/skills/myc/SKILL.md")).toBe(true);
     expect(has(".claude/settings.json")).toBe(true);
-    expect(has(".codex/myc-notify.mjs")).toBe(true);
+    // .codex/myc-notify.mjs больше НЕ пишется: в payload `notify` нет ни
+    // стенограммы, ни события сжатия (см. CODEX_NO_EPISODE).
+    expect(has(".codex/myc-notify.mjs")).toBe(false);
     expect(has(".opencode/plugin/myc.ts")).toBe(true);
     expect(has(".kimi-code/skills/myc/SKILL.md")).toBe(true);
     expect(has(".kimi-code/myc-hooks.mjs")).toBe(true);
@@ -179,6 +181,35 @@ describe("чистая установка", () => {
       read(".kimi-code/mcp.json"),
       read(".kimi-code/myc-hooks.mjs"),
     ]).toEqual(before);
+  });
+
+  // Плагин opencode и helper'ы — файлы, которые myc пишет ЦЕЛИКОМ (D10).
+  // Проект, настроенный прошлой версией, обязан получить новую при повторном
+  // `wire`: именно на устаревшем сгенерированном файле держалась дыра
+  // memory-pqtyqnej23b7 — плагин звал absorb-session без стенограммы.
+  test("повторный wire заменяет устаревший сгенерированный файл, а не оставляет его", async () => {
+    await myc("wire");
+    const fresh = {
+      plugin: read(".opencode/plugin/myc.ts"),
+      claude: read(".claude/helpers/myc-hooks.mjs"),
+      kimi: read(".kimi-code/myc-hooks.mjs"),
+    };
+    const stale = "// старая версия\nexport const MycPlugin = async () => ({});\n";
+    write(".opencode/plugin/myc.ts", stale);
+    write(".claude/helpers/myc-hooks.mjs", "// старая версия\n");
+    write(".kimi-code/myc-hooks.mjs", "// старая версия\n");
+
+    const r = await myc("wire", "--json");
+    expect(r.code).toBe(0);
+    const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
+    expect((env["data"] as Record<string, unknown>)["changed"]).toBe(3);
+    expect(read(".opencode/plugin/myc.ts")).toBe(fresh.plugin);
+    expect(read(".claude/helpers/myc-hooks.mjs")).toBe(fresh.claude);
+    expect(read(".kimi-code/myc-hooks.mjs")).toBe(fresh.kimi);
+    // Старое не выброшено молча: рядом лежит .myc.bak.
+    expect(read(".opencode/plugin/myc.ts.myc.bak")).toBe(stale);
+    // И новая версия действительно берёт стенограмму, а не зовёт absorb вслепую.
+    expect(read(".opencode/plugin/myc.ts")).toContain("client.session.messages");
   });
 });
 
@@ -261,6 +292,33 @@ describe("чужие файлы", () => {
     expect(toml).toContain('notify = ["node", "other.mjs"]');
     expect(toml).toContain("[mcp_servers.other]");
     expect(toml).toContain("[mcp_servers.myc]");
+  });
+
+  // Мутация: вернуть notify-блок в planCodex — и оба теста ниже падают.
+  test("Codex: notify не ставится, и wire называет причину", async () => {
+    const r = await myc("wire", "--agents", "codex", "--json");
+    expect(r.code).toBe(0);
+    const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
+    const notes = ((env["data"] as Record<string, unknown>)["notes"] as string[]).join(" ");
+    expect(notes).toContain("не ставится");
+    expect(notes).toContain("transcript_path");
+    expect(has(".codex/myc-notify.mjs")).toBe(false);
+    const toml = read(".codex/config.toml");
+    expect(toml).not.toContain("notify");
+    expect(toml).toContain("[mcp_servers.myc]"); // MCP работает и остаётся
+  });
+
+  test("Codex: прежний наш notify снимается, а не остаётся тикать вхолостую", async () => {
+    write(
+      ".codex/config.toml",
+      '# myc:notify:start\nnotify = ["node", ".codex/myc-notify.mjs"]\n# myc:notify:end\n\n[mcp_servers.other]\ncommand = "other"\n',
+    );
+    const r = await myc("wire", "--agents", "codex", "--json");
+    expect(r.code).toBe(0);
+    const toml = read(".codex/config.toml");
+    expect(toml).not.toContain("myc-notify.mjs");
+    expect(toml).not.toContain("myc:notify:start");
+    expect(toml).toContain("[mcp_servers.other]");
   });
 
   test("свой [mcp_servers.myc] вне маркеров — конфликт", async () => {

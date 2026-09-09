@@ -336,6 +336,50 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     ).toBe("ok");
   });
 
+  /**
+   * Харнессы делятся на два рода: у Claude Code хуки — узлы чужого JSON, у
+   * opencode и Kimi весь обработчик — наш файл, и узлов у него нет по
+   * устройству. Читая только узлы, doctor объявлял «не поставлен» про
+   * поставленные хуки — ложная тревога в проекте, где стоит один opencode.
+   */
+  test("плагин без узлов — тоже установка, а не отсутствие хуков", async () => {
+    writeFileSync(
+      join(dir, ".myc", "wire.json"),
+      JSON.stringify({
+        v: 1,
+        written_at: Date.now() - 7 * 24 * 60 * 60 * 1000,
+        agents: ["opencode"],
+        entries: [
+          { path: ".opencode/plugin/myc.ts", kind: "new", nodes: [], hash: "x" },
+          { path: "opencode.json", kind: "merge", nodes: ["mcp.myc"], hash: "y" },
+        ],
+      }),
+    );
+    // Счётчик нужен, чтобы pre-compact не покраснел по ДРУГОЙ причине
+    // («поставлен, но не срабатывал») и не увёл выдачу в конверт ошибки.
+    writeCounters("opencode:pre-compact", 3);
+    for (const event of ["session-start", "pre-compact", "post-edit"]) {
+      const line = hookLine(await envelope("--hooks"), event);
+      expect(line).not.toContain("не поставлен");
+      expect(line).not.toContain("drift");
+    }
+    // Обратная сторона: журнал БЕЗ нашего файла по-прежнему значит «не
+    // поставлено», иначе проверка перестала бы что-либо утверждать.
+    writeFileSync(
+      join(dir, ".myc", "wire.json"),
+      JSON.stringify({
+        v: 1,
+        written_at: Date.now() - 7 * 24 * 60 * 60 * 1000,
+        agents: ["opencode"],
+        entries: [{ path: "opencode.json", kind: "merge", nodes: ["mcp.myc"], hash: "y" }],
+      }),
+    );
+    // Проверяем на событии БЕЗ счётчика: сработавший хук — знание более
+    // твёрдое, чем журнал, и ветка «срабатывал N раз» перекрыла бы вопрос
+    // об установке вовсе.
+    expect(hookLine(await envelope("--hooks"), "post-edit")).toContain("не поставлен");
+  });
+
   test("не поставленное событие названо не поставленным, а не «не срабатывало»", async () => {
     writeWireJournal(["SessionStart", "PreCompact"]);
     writeCounters("claude:pre-compact", 1);

@@ -35,7 +35,7 @@ import {
   AGENTS_START,
   agentsBlock,
   claudeHelper,
-  codexNotify,
+  CODEX_NO_EPISODE,
   HOOK_SPECS,
   kimiHelper,
   kimiHooksToml,
@@ -392,8 +392,6 @@ function planClaude(plan: Plan, o: WireOptions): void {
 }
 
 function planCodex(plan: Plan, o: WireOptions): void {
-  planOwnFile(plan, o.root, ".codex/myc-notify.mjs", codexNotify({ events: o.events, hookOutput: o.hookOutput }));
-
   const rel = ".codex/config.toml";
   const abs = join(o.root, rel);
   const current = fileText(abs) ?? "";
@@ -405,8 +403,6 @@ function planCodex(plan: Plan, o: WireOptions): void {
     "startup_timeout_sec = 10",
     TOML_MCP_END,
   ].join("\n");
-  const notifyBlock = [TOML_NOTIFY_START, 'notify = ["node", ".codex/myc-notify.mjs"]', TOML_NOTIFY_END].join("\n");
-
   const nodes: string[] = [];
   let next = current;
 
@@ -419,17 +415,19 @@ function planCodex(plan: Plan, o: WireOptions): void {
     nodes.push("[mcp_servers.myc]");
   }
 
-  // notify — ключ верхнего уровня, и в TOML он обязан стоять ДО первой
-  // таблицы, иначе попадёт внутрь неё. Поэтому свой блок кладём в начало.
-  const hasForeignNotify = /^\s*notify\s*=/m.test(removeBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END));
-  if (hasForeignNotify) {
-    plan.notes.push(`${rel}: свой notify уже настроен — не трогаем; добавь ".codex/myc-notify.mjs" вручную, если нужен эпизод у Codex`);
-  } else if (hasBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END)) {
-    next = replaceBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END, notifyBlock);
-    nodes.push("notify");
+  // notify БОЛЬШЕ НЕ СТАВИТСЯ (см. CODEX_NO_EPISODE в templates.ts): в его
+  // payload нет ни стенограммы, ни события сжатия. Мало перестать писать
+  // блок — надо снять свой старый, иначе у всех, кто настроился раньше,
+  // на каждом ходу продолжит запускаться хук, который пишет `empty` и
+  // выдаёт пустоту за здоровье в `myc doctor`.
+  if (hasBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END)) {
+    next = removeBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END);
+    plan.notes.push(
+      `${rel}: снят наш прежний notify на .codex/myc-notify.mjs — ${CODEX_NO_EPISODE}. ` +
+        "Сам файл .codex/myc-notify.mjs уберёт `myc unwire`",
+    );
   } else {
-    next = `${notifyBlock}\n${next.length > 0 && !next.startsWith("\n") ? "\n" : ""}${next}`;
-    nodes.push("notify");
+    plan.notes.push(`Codex: ${CODEX_NO_EPISODE}`);
   }
 
   if (plan.conflicts.some((c) => c.path === rel)) return;

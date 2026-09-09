@@ -439,20 +439,44 @@ interface WireJournal {
  */
 export const HOOK_GRACE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * События, которые обслуживает НАШ файл-обработчик (плагин opencode, helper
+ * Kimi): в журнале у него нет узлов, поэтому они выводятся из самого факта
+ * его установки. Список совпадает с тем, что эти файлы умеют, — расширять
+ * его вслепую нельзя: `stop` они не обслуживают ни один.
+ */
+const HELPER_FILE_EVENTS = HOOK_SPECS.filter((s) => s.event !== "stop").map((s) => s.claudeEvent);
+
 function wiredEvents(mycDir: string): WireJournal | null {
   const path = join(mycDir, WIRE_JOURNAL);
   if (!existsSync(path)) return null;
   try {
     const j = JSON.parse(readFileSync(path, "utf8")) as {
-      entries?: Array<{ nodes?: string[] }>;
+      entries?: Array<{ nodes?: string[]; path?: string }>;
       written_at?: number;
     };
     const events = new Set<string>();
+    let ownHelper = false;
     for (const e of j.entries ?? []) {
       for (const node of e.nodes ?? []) {
         if (node.startsWith("hooks.")) events.add(node.slice("hooks.".length));
       }
+      // Харнессы делятся на два рода, и журнал это отражает. У Claude Code
+      // хуки — УЗЛЫ чужого JSON (`hooks.SessionStart`), и они перечислены. У
+      // opencode и Kimi весь обработчик — НАШ ФАЙЛ целиком (плагин, helper), и
+      // узлов у него нет по устройству: `unwire` удаляет такой файл как раз по
+      // признаку `nodes.length === 0`, и дописать туда узлы значило бы
+      // превратить его в конфиг, из которого вычёркивают ключи.
+      //
+      // Читая только узлы, doctor объявлял «не поставлен: события нет в
+      // журнале» про поставленные хуки — ложная тревога в проекте, где стоит
+      // один opencode. Наличие нашего файла с обработчиками — такое же
+      // свидетельство установки, как имя узла.
+      if ((e.nodes ?? []).length === 0 && /myc(-hooks)?\.(ts|mjs)$/.test(e.path ?? "")) {
+        ownHelper = true;
+      }
     }
+    if (ownHelper) for (const ev of HELPER_FILE_EVENTS) events.add(ev);
     return { events, writtenAt: typeof j.written_at === "number" ? j.written_at : Number.NaN };
   } catch {
     return null; // журнал битый — это «не знаю», а не «не поставлено»
