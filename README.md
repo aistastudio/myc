@@ -31,7 +31,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
-myc --version                     # myc 0.2.1 (schema 1)
+myc --version                     # myc 0.2.2 (schema 1)
 ```
 
 The embedding model is **not** downloaded during install. Semantic search is

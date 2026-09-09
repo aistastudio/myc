@@ -358,6 +358,10 @@ export function resolveMycBin(
   root: string,
   env: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = existsSync,
+  // Платформа — АРГУМЕНТ, как у buildLibCandidates в store-sqlite, и по той же
+  // причине: иначе Windows-ветку нельзя проверить на macOS, а именно она и
+  // была сломана. Мутация «PATH снова по ':'» без этого не краснела.
+  platform: NodeJS.Platform = process.platform,
 ): MycBinChoice {
   const fromEnv = env.MYC_BIN;
   if (fromEnv !== undefined && fromEnv.length > 0 && exists(fromEnv)) {
@@ -366,10 +370,27 @@ export function resolveMycBin(
   for (const rel of ["node_modules/.bin/myc", "dist/myc", ".myc/bin/myc"]) {
     if (exists(join(root, rel))) return { command: `./${rel}`, source: "repo" };
   }
-  const home = join(env.HOME ?? "", ".myc/bin/myc");
-  if ((env.HOME ?? "").length > 0 && exists(home)) return { command: home, source: "home" };
-  for (const dir of (env.PATH ?? "").split(":")) {
-    if (dir.length > 0 && exists(join(dir, "myc"))) return { command: "myc", source: "path" };
+  // Домашний каталог на Windows — USERPROFILE, HOME там обычно пуст.
+  const homeDir = env.HOME !== undefined && env.HOME.length > 0 ? env.HOME : (env.USERPROFILE ?? "");
+  const home = join(homeDir, ".myc/bin/myc");
+  if (homeDir.length > 0 && exists(home)) return { command: home, source: "home" };
+  // PATH делится по ':' в POSIX и по ';' в Windows, а исполняемый там —
+  // myc.exe/myc.cmd. Жёсткое ':' и голое 'myc' означали, что на Windows
+  // поиск НИКОГДА не находил бинарь: wire предупреждал `bin_unresolved`
+  // даже там, где myc стоит в PATH и прекрасно работает (сообщил агент,
+  // работавший на Windows). Ложная тревога в первую минуту знакомства.
+  //
+  // `delimiter` и `PATHEXT` берём у платформы, а не угадываем по разделителю
+  // в строке: пустой PATH тогда молча выбрал бы POSIX-ветку.
+  const win = platform === "win32";
+  const names = win ? ["myc.exe", "myc.cmd", "myc.bat", "myc"] : ["myc"];
+  const sep = win ? ";" : ":";
+  const pathVar = env.PATH ?? env.Path ?? "";
+  for (const dir of pathVar.split(sep)) {
+    if (dir.length === 0) continue;
+    for (const name of names) {
+      if (exists(join(dir, name))) return { command: "myc", source: "path" };
+    }
   }
   return { command: "myc", source: "none" };
 }

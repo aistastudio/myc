@@ -93,6 +93,44 @@ describe("resolveMycBin — команда для .mcp.json", () => {
     expect(r).toEqual({ command: "myc", source: "path" });
   });
 
+  /**
+   * Windows: разделитель PATH — `;`, домашний каталог — USERPROFILE, а
+   * исполняемый называется myc.exe/myc.cmd. Жёсткое `:` и голое `myc`
+   * означали, что на Windows поиск не находил бинарь НИКОГДА, и `wire`
+   * предупреждал `degraded.bin_unresolved` там, где myc стоит в PATH и
+   * работает (сообщил агент, работавший на Windows).
+   *
+   * Проверяется через `exists`, потому что `delimiter` и расширения берутся
+   * у платформы: на этой машине они POSIX-ные, и подделать их нельзя — зато
+   * можно проверить, что путь с `;` не разбирается как один каталог, а
+   * USERPROFILE участвует наравне с HOME.
+   */
+  test("Windows: USERPROFILE заменяет пустой HOME", () => {
+    const r = resolveMycBin(
+      "/repo", { PATH: "", HOME: "", USERPROFILE: "C:/Users/u" },
+      (p) => p === "C:/Users/u/.myc/bin/myc", "win32",
+    );
+    expect(r).toEqual({ command: "C:/Users/u/.myc/bin/myc", source: "home" });
+  });
+
+  test("Windows: PATH делится по ';', а исполняемый — myc.exe", () => {
+    const r = resolveMycBin(
+      "C:/repo", { PATH: "C:/nope;C:/tools", HOME: "" },
+      (p) => p === "C:/tools/myc.exe", "win32",
+    );
+    expect(r).toEqual({ command: "myc", source: "path" });
+  });
+
+  test("POSIX не начинает делить PATH по ';'", () => {
+    // Обратная сторона: путь с точкой с запятой на POSIX — это ОДИН каталог
+    // с таким именем, а не два. Без этой проверки правка «делить по обоим»
+    // прошла бы молча.
+    const r = resolveMycBin(
+      "/repo", { PATH: "/a;/b", HOME: "" }, (p) => p === "/b/myc", "linux",
+    );
+    expect(r.source).toBe("none");
+  });
+
   test("в PATH есть только myc — берём его как переносимый вариант", () => {
     const r = resolveMycBin("/repo", { PATH: "/nope:/usr/local/bin", HOME: "" }, (p) =>
       p === "/usr/local/bin/myc",
