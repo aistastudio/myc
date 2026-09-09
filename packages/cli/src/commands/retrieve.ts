@@ -1001,7 +1001,16 @@ export function dropMaskOf(row: RetrieveRow, f: RetrieveFilters, repoWanted: str
   if (f.reach !== undefined && f.reach.length > 0 && !f.reach.includes(row.reach)) {
     mask |= 1 << D_REACH;
   }
-  if (f.reachSession !== undefined && f.reachSession.length > 0) {
+  // Отсев по сессии касается ТОЛЬКО сессионных строк. У проектной строки
+  // `reach_session` пуст по определению, и сравнение с текущей сессией
+  // отбрасывало её — то есть `--reach project,session` возвращал МЕНЬШЕ, чем
+  // `--reach project`: расширение списка сужало выдачу.
+  //
+  // Найдено прогоном myc на чужом корпусе (LoCoMo): `--reach project` дал 40
+  // попаданий, `--reach project,session` — ноль, и это чуть не попало в отчёт
+  // как результат myc. Композиция должна быть ИЛИ: «проектное ИЛИ моё
+  // сессионное», а вышло И.
+  if (f.reachSession !== undefined && f.reachSession.length > 0 && row.reach === "session") {
     if (row.reach_session !== f.reachSession) mask |= 1 << D_SESSION;
   }
   // Охват репозитория (S59). Отсев здесь, рядом с охватом сессии, а не в SQL

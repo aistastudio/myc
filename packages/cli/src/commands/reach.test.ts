@@ -333,6 +333,30 @@ describe("myc recall — охват виден и ищется", () => {
     expect(own).toEqual(["кворум реплик держит бета"]);
   });
 
+  /**
+   * Расширение списка не имеет права СУЖАТЬ выдачу — а именно это и делал
+   * `--reach project,session`: отсев по сессии применялся ко ВСЕМ строкам, а у
+   * проектной `reach_session` пуст по определению, и она отбрасывалась. То
+   * есть `project,session` возвращал меньше, чем `project`.
+   *
+   * Найдено прогоном myc на чужом корпусе (LoCoMo, исследование бенчмарков):
+   * `--reach project` дал 40 попаданий, `--reach project,session` — ноль, и
+   * этот ноль чуть не попал в отчёт как результат myc.
+   */
+  test("project,session — это ИЛИ: объединение, а не пересечение", async () => {
+    const both = titles(
+      (await data("recall", "кворум", "--reach", "project,session", "--session", SESSION_B))["rows"],
+    );
+    expect(both).toContain("кворум реплик считается по проекту");
+    expect(both).toContain("кворум реплик держит бета");
+
+    // И то, что ломать нельзя: чужая сессия в объединение не попадает.
+    const fromA = titles(
+      (await data("recall", "кворум", "--reach", "project,session", "--session", SESSION_A))["rows"],
+    );
+    expect(fromA).not.toContain("кворум реплик держит бета");
+  });
+
   test("футер называет числом чужое и неопределённое", async () => {
     const out = text((await myc("recall", "кворум", "--session", SESSION_A)).stdout);
     expect(out).toContain("1 из чужих сессий");
