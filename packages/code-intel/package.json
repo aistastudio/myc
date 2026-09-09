@@ -7,9 +7,12 @@
     ".": "./src/index.ts",
     "./defs": "./src/defs.ts",
     "./code-index": "./src/code_index.ts",
+    "./read": "./src/read.ts",
+    "./langs": "./src/langs.ts",
     "./anchors": "./src/anchors.ts"
   },
   "dependencies": {
+    "@myc/bench": "workspace:*",
     "@myc/core": "workspace:*",
     "@myc/store-sqlite": "workspace:*"
   },

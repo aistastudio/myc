@@ -30,7 +30,7 @@
     },
     "packages/cli": {
       "name": "@myc/cli",
-      "version": "0.2.0",
+      "version": "0.2.2",
       "dependencies": {
         "@myc/code-intel": "workspace:*",
         "@myc/core": "workspace:*",
@@ -49,6 +49,7 @@
       "name": "@myc/code-intel",
       "version": "0.0.0",
       "dependencies": {
+        "@myc/bench": "workspace:*",
         "@myc/core": "workspace:*",
         "@myc/store-sqlite": "workspace:*",
       },

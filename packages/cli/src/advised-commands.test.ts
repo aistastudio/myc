@@ -55,20 +55,15 @@ const ROOTS = ["packages", "scripts"];
  *
  * Ключ — `<команда> @ <файл>`, а не одна команда: то же имя, всплывшее в
  * другом файле, обязано уронить сторож заново.
+ *
+ * СПИСОК ПУСТ, И ЭТО ПРОВЕРЯЕМОЕ СОСТОЯНИЕ, А НЕ УМОЛЧАНИЕ. Обе строки,
+ * стоявшие здесь, закрыты в memory-55ggwfrm68gp: `myc link` заведена
+ * (commands/link.ts — тот же контракт, что у тула `myc_link`, сверено
+ * link.parity.test.ts), а help `myc prime` больше не обещает `myc route`
+ * командой этой сборки — роутинг едет с M5. Пустая карта означает: сегодня
+ * каждая названная пользователю команда исполнима.
  */
-const KNOWN_MISSING = new Map<string, string>([
-  [
-    "route @ packages/cli/src/commands/prime.ts",
-    "help `myc prime` обещает «`myc route` — отдельная команда (S12)»; команды нет в реестре. " +
-      "Файл вне границ задачи memory-ryk2t5pft1mh — правку делает владелец prime/S12.",
-  ],
-  [
-    "link @ packages/cli/src/hooks/templates.ts",
-    "SKILL.md, который `myc wire` кладёт КАЖДОМУ агенту, велит писать " +
-      "`myc link A supersedes B --reason \"...\"`; команды нет в реестре (ребро supersedes " +
-      "ставит absorb сам). Файл вне границ задачи memory-ryk2t5pft1mh.",
-  ],
-]);
+const KNOWN_MISSING = new Map<string, string>([]);
 
 // ---------------------------------------------------------------------------
 // Разбор исходника: строковые литералы без комментариев

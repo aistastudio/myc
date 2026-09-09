@@ -52,6 +52,7 @@ export function registerAll(registry: Registry): void {
   lazy("show", () => import("./commands/show.ts").then((m) => m.createShowCommand()));
   lazy("list", () => import("./commands/list.ts").then((m) => m.createListCommand()));
   lazy("dep", () => import("./commands/dep.ts").then((m) => m.createDepCommand()));
+  lazy("link", () => import("./commands/link.ts").then((m) => m.createLinkCommand()));
   lazy("ready", () => import("./commands/ready.ts").then((m) => m.createReadyCommand()));
   lazy("prime", () => import("./commands/prime.ts").then((m) => m.createPrimeCommand()));
   lazy("viz", () => import("./commands/viz.ts").then((m) => m.createVizCommand()));
@@ -69,6 +70,7 @@ export function registerAll(registry: Registry): void {
   lazy("embedd", () => import("./commands/embedd.ts").then((m) => m.createEmbeddCommand()));
   lazy("reindex", () => import("./commands/reindex.ts").then((m) => m.createReindexCommand()));
   lazy("anchor", () => import("./commands/anchor.ts").then((m) => m.createAnchorCommand()));
+  lazy("code", () => import("./commands/code.ts").then((m) => m.createCodeCommand()));
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("absorb-session", () =>
     import("./hooks/absorb-session.ts").then((m) => m.createAbsorbSessionCommand()));

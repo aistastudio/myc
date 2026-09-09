@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CodeIntelId, CodeIntelState } from "./index.ts";
+import { probeL1Files } from "./langs.ts";
 
 // ---------------------------------------------------------------------------
 // Режим
@@ -325,6 +326,29 @@ function cmpVersion(a: string, b: string): number {
 }
 
 /**
+ * ЧЕСТНАЯ СТРОКА ПРО BUILTIN (И2). До этого здесь стояло «символы и fan_in по
+ * тексту» — обещание, которое строка давала ВСЕГДА: и репозиторию на python,
+ * где определений не будет никогда (§5, уровень L1 — только ts/tsx/js/jsx), и
+ * репозиторию, где индекс ещё не построен (`code_files` пуст, и до
+ * `myc code index` символ не найдётся ни один). Обещание, которое читатель
+ * проверить не может, — ровно то, что И2 называет ложью.
+ *
+ * Поэтому строка спрашивает дерево: есть ли в нём хоть один L1-файл. Проба
+ * обрывается на ПЕРВОМ таком файле (в TS-репозитории это первые же записи) и
+ * ограничена потолком в дереве без них — цена одной строки отчёта, а не скан
+ * индекса.
+ */
+function builtinAbility(dir: string): string {
+  const probe = probeL1Files(dir);
+  if (probe.found) {
+    return "символы и fan_in по тексту для ts/tsx/js/jsx — после `myc code index` (фон собирает сам, когда в репозитории есть якоря)";
+  }
+  const seen = probe.langs.length > 0 ? ` (видно: ${probe.langs.slice(0, 5).join(", ")})` : "";
+  const how = probe.capped ? `в первых ${probe.seen} файлах нет` : "нет";
+  return `файлов ts/tsx/js/jsx ${how}${seen} — символов и fan_in не будет (якоря, протухание и ре-привязка работают на любом языке)`;
+}
+
+/**
  * Единственное место выбора (§6.2).
  *
  * - `builtin` (умолчание) и `off` не трогают ни PATH, ни `graft/`: graft не
@@ -373,7 +397,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `builtin (code_intel=builtin${source === "default" ? ", умолчание" : ""}): символы и fan_in по тексту, callers/search/map недоступны${badReason}`,
+      reason: `builtin (code_intel=builtin${source === "default" ? ", умолчание" : ""}): ${builtinAbility(dir)}, callers/search/map недоступны${badReason}`,
       degraded: badConfig,
       graft: null,
       cache: "off",
@@ -442,7 +466,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `graft не найден (code_intel=auto) — работаем на builtin: символы только для ts/tsx/js/jsx, callers/search/map недоступны${badReason}`,
+      reason: `graft не найден (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}, callers/search/map недоступны${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.builtin, ...badConfig],
       graft: probe,
       cache,
@@ -454,7 +478,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `graft ${probe.version} старше минимальной ${MIN_GRAFT_VERSION} (code_intel=auto) — работаем на builtin${badReason}`,
+      reason: `graft ${probe.version} старше минимальной ${MIN_GRAFT_VERSION} (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}, callers/search/map недоступны${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.incompatible, CODE_INTEL_DEGRADED.builtin, ...badConfig],
       graft: probe,
       cache,

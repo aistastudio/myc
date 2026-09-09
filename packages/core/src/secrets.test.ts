@@ -266,6 +266,56 @@ describe("redactSecrets — маскирование", () => {
   });
 });
 
+/**
+ * Написание секрета в реальном коде и выводе — не одно, а десяток, и правило
+ * ловило только одно из них. Сообщено с живого проекта: `DB_PASSWORD=…`
+ * маскировался, а `db_password=…`, `password=…`, `api_key=…` и `PGPASSWORD=…`
+ * уходили в эпизод сжатия ОТКРЫТЫМ ТЕКСТОМ. Память, которая пишется
+ * автоматически и живёт годами, — худшее место для незамаскированного пароля.
+ *
+ * Проверяются обе границы сразу, потому что они тянут в разные стороны:
+ * ослабишь — «monkey=» и «turkeys=» станут секретами и проза превратится в
+ * решето; ужесточишь — вернётся утечка.
+ */
+describe("redactSecrets — написание секрета не спасает его от маскировки", () => {
+  const МАСКИРУЕТСЯ = [
+    "DB_PASSWORD=hunter2long",
+    "db_password=hunter2long",
+    "password=hunter2long",
+    "passwords=abcdefgh12345",
+    "DB_Password=hunter2long",
+    "API_KEY=abcdefgh12345",
+    "api_key=abcdefgh12345",
+    "my.api.key=abcdefgh12345",
+    "PGPASSWORD=hunter2long",
+    "MYSQLPWD=abcdefgh12345",
+    "secret: abcdefgh12345",
+  ];
+  const НЕ_МАСКИРУЕТСЯ = [
+    "ключ: да",
+    "monkey=abcdefgh12345",
+    "donkey: abcdefgh12345",
+    "turkeys=abcdefgh12345",
+    "hockeys=abcdefgh12345",
+  ];
+
+  for (const line of МАСКИРУЕТСЯ) {
+    test(`скрыт: ${line}`, () => {
+      const r = redactSecrets(line);
+      expect(r.text).not.toBe(line);
+      expect(r.text).toContain("<redacted:");
+      // Само значение не должно уцелеть ни в каком виде.
+      expect(r.text).not.toContain(line.split(/[:=]/).slice(1).join("").trim());
+    });
+  }
+
+  for (const line of НЕ_МАСКИРУЕТСЯ) {
+    test(`не тронут: ${line}`, () => {
+      expect(redactSecrets(line).text).toBe(line);
+    });
+  }
+});
+
 describe("redactSecrets — бюджет времени", () => {
   test("укладывается в 5 мс на транскрипте ~100 КБ", () => {
     const chunk =
@@ -298,6 +348,23 @@ describe("redactSecrets — бюджет времени", () => {
     console.log(
       `[secrets] ${(text.length / 1024).toFixed(1)} КБ, среднее время redactSecrets: ${elapsedMs.toFixed(3)} мс (бюджет 5 мс)`,
     );
-    expect(elapsedMs).toBeLessThan(5);
+    // Абсолютный бюджет проверяется только там, где он откалиброван: числа
+    // сняты на рабочей машине, а на загруженной тот же код честно медленнее —
+    // тест падал под параллельным прогоном, сообщая о машине вместо кода.
+    // Правило повторено, а не импортировано: `core` по архитектуре не зависит
+    // ни от чего, включая `@myc/bench` (см. scripts/deps-check.ts).
+    //
+    // Цена ВЫРОСЛА и это осознанно: второе правило для слитных имён
+    // (`PGPASSWORD`) удвоило проход — замер 0.434 -> 0.940 мс на 97 КБ прозы.
+    // Запас к бюджету остаётся пятикратным, а без второго правила пароль
+    // уходил в память открытым текстом.
+    const calibrated =
+      process.env["MYC_BENCH_ABSOLUTE"] !== "0" || process.env["MYC_BENCH_STRICT"] === "1";
+    if (elapsedMs >= 5 && !calibrated) {
+      // eslint-disable-next-line no-console
+      console.log(`[secrets] бюджет 5 мс НЕ ПРОВЕРЯЕТСЯ: машина не откалибрована`);
+    } else {
+      expect(elapsedMs).toBeLessThan(5);
+    }
   });
 });

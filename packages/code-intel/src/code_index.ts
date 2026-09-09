@@ -31,11 +31,16 @@
  * цену отказа от хеша и от инкрементальности. По умолчанию выключены.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { jobs } from "@myc/store-sqlite";
 import { listDefs, type Def, type LangId } from "./defs.ts";
+import { L1_LANGS, langOf, walkFiles } from "./langs.ts";
+
+// Языки, обход дерева и список пропускаемых каталогов живут в `./langs.ts`:
+// их же читает `select.ts`, которому граф модулей индекса не по карману.
+export { L1_LANGS, LANG_BY_EXT, SKIP_DIRS, langOf, walkFiles } from "./langs.ts";
 
 // ---------------------------------------------------------------------------
 // Константы
@@ -51,39 +56,12 @@ export const CODE_INDEX_JOB_KIND = "code_index";
  */
 export const CODE_INDEX_PRIORITY = 8;
 
-/** Языки уровня L1 (§5): определения разбираются только для них. */
-export const L1_LANGS: ReadonlySet<string> = new Set(["ts", "tsx", "js", "jsx"]);
-
 /**
  * С какого размера батча разбор идёт в пул воркеров. Ниже порога пул не
  * окупает собственного старта: 10 изменённых файлов разбираются за
  * единицы миллисекунд в этом же потоке.
  */
 export const PARSE_POOL_MIN_FILES = 64;
-
-const LANG_BY_EXT: ReadonlyMap<string, string> = new Map([
-  [".ts", "ts"],
-  [".tsx", "tsx"],
-  [".js", "js"],
-  [".jsx", "jsx"],
-  [".mjs", "js"],
-  [".cjs", "js"],
-]);
-
-/** Каталоги, в которые индекс не входит никогда. */
-const SKIP_DIRS: ReadonlySet<string> = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  "out",
-  "coverage",
-  ".next",
-  ".turbo",
-  ".cache",
-  "target",
-  "vendor",
-]);
 
 /** Файлы крупнее этого не читаются и не индексируются (страховка от OOM). */
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -161,39 +139,8 @@ export interface IndexRunResult {
 // Служебное
 // ---------------------------------------------------------------------------
 
-/** Язык файла: L1-идентификатор или расширение без точки (L0). */
-export function langOf(path: string): string {
-  const dot = path.lastIndexOf(".");
-  const ext = dot === -1 ? "" : path.slice(dot).toLowerCase();
-  return LANG_BY_EXT.get(ext) ?? ext.replace(/^\./, "");
-}
-
 function wyhash(data: Uint8Array): string {
   return `wy:${Bun.hash(data).toString(16)}`;
-}
-
-function walkFiles(root: string): string[] {
-  const out: string[] = [];
-  const stack: string[] = [root];
-  while (stack.length > 0) {
-    const dir = stack.pop()!;
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue; // каталог исчез до обхода — не наша гонка
-    }
-    for (const e of entries) {
-      const p = join(dir, e.name);
-      if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) stack.push(p);
-        continue;
-      }
-      if (!e.isFile()) continue;
-      out.push(relative(root, p).split(sep).join("/"));
-    }
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,21 +349,13 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
         upsertL0.run(opts.repoId, f.path, f.lang, f.mtimeMs, f.size, f.hash, now);
       }
 
-      const oldDefNames = db.query("SELECT name FROM code_defs WHERE repo_id = ?1 AND path = ?2");
       const delFile = db.query("DELETE FROM code_files WHERE repo_id = ?1 AND path = ?2");
       const delDefs = db.query("DELETE FROM code_defs WHERE repo_id = ?1 AND path = ?2");
-      const delRef = db.query("DELETE FROM code_refs WHERE repo_id = ?1 AND name = ?2");
-      const refsPresent = db.query("SELECT 1 FROM code_refs WHERE repo_id = ?1 LIMIT 1");
-      const pruneRefs = refsPresent.get(opts.repoId) !== null;
       for (const path of removed) {
-        if (pruneRefs) {
-          for (const r of oldDefNames.all(opts.repoId, path) as Array<{ name: string }>) {
-            delRef.run(opts.repoId, r.name);
-          }
-        }
         delDefs.run(opts.repoId, path);
         delFile.run(opts.repoId, path);
       }
+      if (removed.length > 0) invalidateRefs(db, opts.repoId);
 
       for (const f of dirtyL1) {
         const res = jobs.enqueue(db, CODE_INDEX_JOB_KIND, {
@@ -461,6 +400,26 @@ export interface DrainOptions {
    * PARSE_POOL_MIN_FILES). 0 — пул выключен; для тестов — 1.
    */
   readonly poolMinFiles?: number;
+}
+
+/**
+ * ИНВАЛИДАЦИЯ `code_refs` — ПО РЕПОЗИТОРИЮ, а не по именам изменённого файла.
+ *
+ * Так было не всегда: раньше снимались строки символов, ОБЪЯВЛЕННЫХ в
+ * изменившемся файле. Это неверно ровно там, где fan_in и живёт: счёт
+ * `\bNAME\b` меняется от правки ЛЮБОГО файла, где имя УПОМЯНУТО, а
+ * упоминание — не объявление. Файл, добавивший десять вызовов `alpha`, не
+ * объявляет `alpha` и старую строку кеша не трогал — читатель получал число,
+ * которое уже не соответствовало ни одному состоянию дерева.
+ *
+ * Здесь именно КЕШ, а не данные: строка появляется, только когда кто-то
+ * спросил fan_in, и пересчитывается по требованию (`read.ts`, ~90 мс на 400
+ * L1-файлах). Снести его целиком дешевле, чем хранить обратный индекс
+ * «имя → файлы, где встречается», который пришлось бы поддерживать при
+ * каждом разборе.
+ */
+function invalidateRefs(db: Database, repoId: string): void {
+  db.query("DELETE FROM code_refs WHERE repo_id = ?1").run(repoId);
 }
 
 function defaultHolder(): string {
@@ -602,13 +561,11 @@ async function drainBatch(
       lang = excluded.lang, mtime_ms = excluded.mtime_ms,
       size_bytes = excluded.size_bytes, file_hash = excluded.file_hash,
       indexed_at = excluded.indexed_at`);
-  const oldDefNames = db.query("SELECT name FROM code_defs WHERE repo_id = ?1 AND path = ?2");
   const delDefs = db.query("DELETE FROM code_defs WHERE repo_id = ?1 AND path = ?2");
   const insDef = db.query(
     "INSERT OR REPLACE INTO code_defs (repo_id, path, name, kind, span_start, span_end, exported) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
   );
   const delFile = db.query("DELETE FROM code_files WHERE repo_id = ?1 AND path = ?2");
-  const delRef = db.query("DELETE FROM code_refs WHERE repo_id = ?1 AND name = ?2");
 
   st.batches++;
   const parseT0 = performance.now();
@@ -706,28 +663,12 @@ async function drainBatch(
   const applyT0 = performance.now();
   db.exec("BEGIN IMMEDIATE");
   try {
-    const refsPresent = db.query("SELECT 1 FROM code_refs WHERE repo_id = ?1 LIMIT 1");
-    const pruneRefs = refsPresent.get(opts.repoId) !== null;
     for (const { job, plan } of plans) {
       if (plan.kind === "cleanup") {
-        if (pruneRefs) {
-          for (const r of oldDefNames.all(opts.repoId, plan.path) as Array<{ name: string }>) {
-            delRef.run(opts.repoId, r.name);
-          }
-        }
         delDefs.run(opts.repoId, plan.path);
         delFile.run(opts.repoId, plan.path);
         st.cleaned++;
       } else {
-        // Инвалидация fan_in: имена до и после — набор изменившихся символов.
-        if (pruneRefs) {
-          const names = new Set<string>();
-          for (const r of oldDefNames.all(opts.repoId, plan.path) as Array<{ name: string }>) {
-            names.add(r.name);
-          }
-          for (const d of plan.defs) names.add(d.name);
-          for (const name of names) delRef.run(opts.repoId, name);
-        }
         upsertFile.run(opts.repoId, plan.path, plan.lang, plan.mtimeMs, plan.size, plan.hash, now);
         delDefs.run(opts.repoId, plan.path);
         for (const d of plan.defs) {
@@ -737,6 +678,7 @@ async function drainBatch(
       }
       jobs.complete(db, job.id, holder);
     }
+    if (plans.length > 0) invalidateRefs(db, opts.repoId);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

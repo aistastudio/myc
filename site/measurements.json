@@ -408,12 +408,12 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 2453,
+    "pass": 2519,
     "fail": 0,
     "skip": 16,
-    "files": 165,
-    "assertions": 30302,
-    "seconds": 256.9,
-    "sources": "9734c88dbd5efd39"
+    "files": 171,
+    "assertions": 30517,
+    "seconds": 299.24,
+    "sources": "d1d65b2cfb50c9ad"
   }
 }

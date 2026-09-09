@@ -86,6 +86,11 @@ import {
 } from "@myc/store-sqlite";
 import type { Globals } from "./registry.ts";
 import { absorbOne, type Session } from "./commands/absorb.ts";
+// Ключ отметки — оттуда же, откуда команда, которая её обновляет: две копии
+// строки `code_indexed_at` разъехались бы молча, и период перестал бы
+// действовать в одну из сторон. Модуль лёгкий (его собственный граф —
+// store.ts, уже здесь), тяжёлое он тянет динамически внутри обработчиков.
+import { CODE_INDEXED_AT_KEY } from "./commands/code.ts";
 import { modelLikelyPresent } from "./commands/retrieve.ts";
 import {
   DEFAULT_READY_WEIGHTS,
@@ -151,6 +156,29 @@ export const ANCHOR_JOB_CLAIM_LIMIT = 32;
 export const ANCHOR_SWEPT_AT_KEY = "anchor_swept_at";
 
 /**
+ * ПЕРИОД КОД-ИНДЕКСА — 15 минут, в тридцать раз реже якорей, и это не
+ * осторожность, а цена. Прогон лестницы якорей читает десятки файлов по
+ * `checked_at ASC`; прогон индекса ОБХОДИТ ВСЁ ДЕРЕВО (замер на этом
+ * репозитории: 803 файла, 60 мс только скан с попаданием во все хеши, 0,3 с
+ * полная сборка с разбором). Чаще — значит платить обходом дерева за каждый
+ * второй вызов CLI ради символов, которые меняются от правки файла, а не от
+ * времени.
+ */
+export const CODE_INDEX_PERIOD_MS = 900_000;
+
+/**
+ * Включён ли фоновый код-индекс. Выключатель свой, а не общий с MYC_DRAIN:
+ * шаг ПОДНИМАЕТ ПРОЦЕСС, который ходит по файлам репозитория, и тесту,
+ * правящему дерево под собой, нужно уметь погасить именно его. Имя — в
+ * реестре BACKGROUND_SWITCHES (@myc/core/test-env.ts).
+ */
+export function codeIndexEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NODE_ENV === "test") return false;
+  const raw = (env.MYC_CODE_INDEX ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "off" && raw !== "false" && raw !== "no";
+}
+
+/**
  * Включён ли фон якорей. Отдельный выключатель от MYC_DRAIN, а не общий:
  * лестница §7.2 читает ФАЙЛЫ РЕПОЗИТОРИЯ, а не только базу, и тесту, который
  * правит файлы под собой, нужно уметь погасить именно её, оставив разбор
@@ -213,29 +241,45 @@ function fakeExecutorFromEnv(
  * просто выйдет.
  */
 export function spawnReindexWorker(dbPath: string): void {
+  spawnDetachedCommand(["reindex", "--db", dbPath]);
+}
+
+/**
+ * Общий спавн отсоединённой подкоманды myc. Одна функция на два дорогих
+ * класса (`embed` → `myc reindex`, `code_index` → `myc code index`): argv
+ * собирается от process.execPath (в бинаре это сам `myc`, из исходников —
+ * `bun` + входной файл), spawn без await, detached + unref.
+ *
+ * Воркер обязан пережить команду, которая его позвала: иначе дорогая работа
+ * снова умрёт вместе с ней — ровно дефект S56. Не поднялся — работы остаются
+ * в очереди (наблюдаемо через stats), следующий вызов попробует снова;
+ * падать здесь нечему.
+ */
+function spawnDetachedCommand(args: readonly string[]): void {
   try {
     const entry = process.argv[1];
     const fromSource = typeof entry === "string" && /\.(ts|js|mjs)$/.test(entry);
-    const argv = [
-      process.execPath,
-      ...(fromSource ? [entry] : []),
-      "reindex",
-      "--db",
-      dbPath,
-    ];
+    const argv = [process.execPath, ...(fromSource ? [entry] : []), ...args];
     const child = Bun.spawn(argv, {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
-      // Воркер обязан пережить команду, которая его позвала: иначе хвост
-      // очереди снова умрёт вместе с ней — ровно дефект S56.
       detached: true,
     });
     child.unref();
   } catch {
-    // Не поднялся — работы останутся в очереди (наблюдаемо через stats), а
-    // следующий вызов попробует снова. Падать здесь нечему.
+    // см. шапку: отказ спавна — не отказ команды и не потеря работы
   }
+}
+
+/**
+ * Код-индекс отсоединённым процессом: `myc code index` синхронно стоит
+ * СЕКУНДЫ на большом дереве (замер: 803 файла этого репозитория — 0,3 с
+ * полный, 0,08 с повторный), а бюджет дренажа — 50 мс. Инлайн он не пойдёт
+ * никогда (И1); ровно тот же расклад, что у класса `embed`.
+ */
+export function spawnCodeIndexWorker(dbPath: string): void {
+  spawnDetachedCommand(["code", "index", "--db", dbPath]);
 }
 
 const SQL_EMBED_READY = `SELECT 1 AS x FROM jobs
@@ -353,6 +397,8 @@ export interface DrainOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Подмена спавна воркера (тесты). */
   readonly spawnWorker?: (dbPath: string) => void;
+  /** Подмена спавна воркера код-индекса (тесты). */
+  readonly spawnCodeIndex?: (dbPath: string) => void;
   readonly now?: () => number;
 }
 
@@ -374,6 +420,18 @@ export interface AnchorStepReport {
   readonly tookMs: number;
 }
 
+/** Что сделал шаг код-индекса за этот вызов. `null` — не запускался. */
+export interface CodeIndexStepReport {
+  /** Что позвало: наступивший период или строки `code_index` в очереди. */
+  readonly triggered: "period" | "jobs";
+  /** Поднят ли отсоединённый воркер. false — повод был, но условие не сошлось. */
+  readonly spawned: boolean;
+  /** Почему не поднят: чужая аренда, нет якорей. Пусто — поднят. */
+  readonly reason: string;
+  /** Якорей в базе: индекс строится только там, где к коду привязано знание. */
+  readonly anchors: number;
+}
+
 export interface DrainReport {
   readonly dbPath: string;
   readonly budgetMs: number;
@@ -384,6 +442,7 @@ export interface DrainReport {
   readonly byKind: Record<string, number>;
   readonly embedWorkerSpawned: boolean;
   readonly anchor: AnchorStepReport | null;
+  readonly codeIndex: CodeIndexStepReport | null;
   readonly skipped: "no_db" | null;
   /** Первые ошибки fail — наблюдаемость без WARN в чужом выводе. */
   readonly errors: readonly string[];
@@ -500,6 +559,79 @@ async function runAnchorStep(driver: CliDriver, opts: AnchorStepOptions): Promis
   };
 }
 
+// ---------------------------------------------------------------------------
+// Фоновый вход код-индекса (S52, §4.3): период + отсоединённый воркер
+// ---------------------------------------------------------------------------
+
+const SQL_CODE_JOB_READY = `SELECT 1 AS x FROM jobs
+  WHERE kind = 'code_index' AND attempts < max_attempts
+    AND lease_expires <= ?1 AND run_after <= ?1 LIMIT 1`;
+const SQL_CODE_JOB_LEASED = `SELECT 1 AS x FROM jobs
+  WHERE kind = 'code_index' AND attempts < max_attempts AND lease_expires > ?1 LIMIT 1`;
+
+/**
+ * ВХОД КОД-ИНДЕКСА, КОТОРОГО НЕ БЫЛО. Индекс `code_files/code_defs` был
+ * написан и покрыт тестами, а строил его только стенд замера: ни одна команда
+ * не звала `runCodeIndex`, и в базе этого репозитория лежали нули
+ * (memory-m30yh8swnm1d). Здесь тот же расклад, что у дорогого класса `embed`:
+ * инлайн — НИКОГДА (обход дерева стоит сотни миллисекунд при бюджете 50 мс),
+ * работа уходит отсоединённому `myc code index`.
+ *
+ * УСЛОВИЕ ИЗ §4.3, а не «всегда»: индекс строится только для репозиториев,
+ * где есть хотя бы один якорь. Воркспейс без якорей кодом не занимается вовсе
+ * — обходить ради него чужое дерево не за чем, а `myc code index` руками
+ * никто не отменял.
+ *
+ * ЦЕНА, КОГДА ПОВОДА НЕТ: один SELECT из `myc_meta` — как у шага якорей.
+ * Отметка ставится ДО работы: воркер живёт своей жизнью и может умереть, и
+ * второй такой же, поднимаемый следующим вызовом CLI через секунду, не нужен
+ * никому. Свою отметку воркер обновит сам, когда закончит.
+ */
+function runCodeIndexStep(
+  driver: CliDriver,
+  opts: {
+    readonly dbPath: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly now: number;
+    readonly spawn: (dbPath: string) => void;
+  },
+): CodeIndexStepReport | null {
+  const db = driver.database;
+  const periodMs = numFromEnv(opts.env.MYC_CODE_INDEX_PERIOD_MS, CODE_INDEX_PERIOD_MS);
+  const stampRaw = driver.one<{ value: string }>(Q.meta_get, [CODE_INDEXED_AT_KEY])?.value;
+  const stamp = Number(stampRaw ?? 0);
+  const periodDue = !Number.isFinite(stamp) || opts.now - stamp >= periodMs;
+  const jobsReady = db.query(SQL_CODE_JOB_READY).get(opts.now) !== null;
+  if (!periodDue && !jobsReady) return null;
+
+  const triggered: CodeIndexStepReport["triggered"] = jobsReady ? "jobs" : "period";
+  // Якоря — признак «этому воркспейсу код важен» (§4.3). Считаем не COUNT(*)
+  // по таблице, а наличие первой строки: разница на 50k якорей — два порядка.
+  const anchors = db.query("SELECT 1 AS x FROM anchors LIMIT 1").get() === null ? 0 : 1;
+  if (anchors === 0) {
+    // Отметку ставим и здесь: иначе каждый вызов CLI в воркспейсе без якорей
+    // платил бы этим же SELECT'ом заново, а ответ не изменится до якоря.
+    try {
+      driver.run(Q.meta_set, [CODE_INDEXED_AT_KEY, String(opts.now)]);
+    } catch {
+      // не записалась — следующий вызов просто спросит снова
+    }
+    return { triggered, spawned: false, reason: "в базе нет якорей (§4.3)", anchors: 0 };
+  }
+  if (db.query(SQL_CODE_JOB_LEASED).get(opts.now) !== null) {
+    return { triggered, spawned: false, reason: "работы под чужой арендой: сосед разгребает", anchors };
+  }
+
+  try {
+    driver.run(Q.meta_set, [CODE_INDEXED_AT_KEY, String(opts.now)]);
+  } catch {
+    // Отметка не записалась — следующий вызов поднимет воркер ещё раз;
+    // гонка двух воркеров безвредна (захват работ атомарен, jobs.claim).
+  }
+  opts.spawn(opts.dbPath);
+  return { triggered, spawned: true, reason: "", anchors };
+}
+
 /**
  * Разобрать хвост очереди одного воркспейса по бюджету. НИКОГДА не бросает:
  * дренаж — фон команды, и его отказ не имеет права стать отказом команды.
@@ -519,6 +651,7 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
     byKind: {} as Record<string, number>,
     embedWorkerSpawned: false,
     anchor: null as AnchorStepReport | null,
+    codeIndex: null as CodeIndexStepReport | null,
     skipped: null as DrainReport["skipped"],
     errors: [] as string[],
   };
@@ -584,6 +717,21 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
         // Лестница ходит по ФАЙЛАМ: битая ссылка, пропавший каталог, гонка с
         // git checkout. Отказ фона не имеет права стать отказом команды.
         report.errors.push(`anchor: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    // Код-индекс — только постановка воркера, ни одного прочитанного файла в
+    // этом процессе. Стоит один SELECT, когда период не наступил.
+    if (codeIndexEnabled(env)) {
+      try {
+        report.codeIndex = runCodeIndexStep(driver, {
+          dbPath: opts.dbPath,
+          env,
+          now: now(),
+          spawn: opts.spawnCodeIndex ?? spawnCodeIndexWorker,
+        });
+      } catch (e) {
+        report.errors.push(`code_index: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 

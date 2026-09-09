@@ -563,8 +563,9 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
     help:
       "READY > IN PROGRESS > CORE > DECISIONS > NEXT, in that priority order — the tail is cut " +
       "first and predictably when --budget is too small. Never calls the embedder; --focus filters " +
-      "the L2/L3 digest by substring, not by semantic search. `myc route` is a separate command " +
-      "(S12) and `myc bootstrap` is a separate command — neither is duplicated here.",
+      "the L2/L3 digest by substring, not by semantic search. Model routing (S12) is called " +
+      "separately and ships with M5 — it is not part of this build; `myc bootstrap` is a separate " +
+      "command. Neither is duplicated here.",
     handler: async (ctx) => {
       const t0 = performance.now();
 
