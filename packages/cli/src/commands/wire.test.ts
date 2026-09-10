@@ -15,7 +15,8 @@ import { Registry } from "../registry.ts";
 import { createAbsorbSessionCommand } from "../hooks/absorb-session.ts";
 import { createAnchorCommand } from "./anchor.ts";
 import { createPrimeCommand } from "./prime.ts";
-import { createUnwireCommand, createWireCommand, resolveMycBin } from "./wire.ts";
+import { createUnwireCommand, createWireCommand, readWireJournal, resolveMycBin, type WireDeps } from "./wire.ts";
+import { isOurStatusLineCommand } from "../statusline-config.ts";
 
 let dir: string;
 let registry: Registry;
@@ -744,5 +745,331 @@ describe("kimi", () => {
     expect(written).toEqual(planned);
     // И это не просто совпадение отчётов: каждый обещанный файл на диске.
     for (const a of planned) expect([a.path, has(a.path)]).toEqual([a.path, true]);
+  });
+});
+
+/**
+ * Строка статуса Claude Code — опция `--status-line` (без флага statusLine не
+ * трогается, решение задачи memory-fbzbw5pexjs7). Прежняя действующая строка
+ * — проектная, иначе пользовательская — продолжает получать тот же ввод, а
+ * `unwire` возвращает файл побайтно. Пользовательские настройки здесь —
+ * временный CLAUDE_CONFIG_DIR, настоящий ~/.claude не читается.
+ */
+describe("строка статуса: --status-line", () => {
+  let cfg: string;
+
+  function slRegistry(overrides: Partial<WireDeps> = {}): Registry {
+    const r = new Registry();
+    r.register(createPrimeCommand());
+    r.register(createAbsorbSessionCommand());
+    r.register(
+      createWireCommand(r, {
+        probeStatusLine: () => ({ ok: true }),
+        env: { CLAUDE_CONFIG_DIR: cfg },
+        platform: "darwin",
+        ...overrides,
+      }),
+    );
+    r.register(createUnwireCommand());
+    return r;
+  }
+
+  function sl(r: Registry, ...args: string[]): Promise<RunResult> {
+    return run(["-C", dir, ...args], { registry: r, env: { MYC_ACTOR: "tester" } });
+  }
+
+  function userLine(command: string, extra: Record<string, unknown> = {}): void {
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "settings.json"), `${JSON.stringify({ statusLine: { type: "command", command, ...extra } }, null, 2)}\n`);
+  }
+
+  function statusLine(): { type: string; command: string; padding?: number; refreshInterval?: number } {
+    return (JSON.parse(read(".claude/settings.json")) as { statusLine: never }).statusLine;
+  }
+
+  const ORCA_CMD = '/bin/sh "${HOME}/.orca/agent-hooks/claude-statusline.sh"';
+  /** Каноничный JSON: только на нём побайтный круг вообще определён. */
+  const PROJECT_WITH_LINE = `${JSON.stringify({ statusLine: { type: "command", command: "my-own-statusline --x 'y'" } }, null, 2)}\n`;
+
+  beforeEach(() => {
+    cfg = join(dir, "claude-config");
+  });
+
+  test("без флага statusLine не трогается — и сказано, какой флаг его ставит", async () => {
+    write(".claude/settings.json", PROJECT_WITH_LINE);
+    userLine(ORCA_CMD);
+    const r = await sl(slRegistry(), "wire", "--agents", "claude", "--json");
+    expect(statusLine().command).toBe("my-own-statusline --x 'y'");
+    const data = JSON.parse(r.stdout as string).data as { untouched: string[] };
+    expect(data.untouched).toContain(".claude/settings.json:statusLine (нужен --status-line)");
+  });
+
+  test("проектная чужая: дословно в журнал, её команда — в --then; unwire побайтно (S1, S5)", async () => {
+    write(".claude/settings.json", PROJECT_WITH_LINE);
+    userLine(ORCA_CMD); // есть и пользовательская — но действует проектная
+    const r = slRegistry();
+    expect((await sl(r, "wire", "--agents", "claude", "--status-line")).code).toBe(0);
+    const ours = statusLine();
+    expect(isOurStatusLineCommand(ours.command)).toBe(true);
+    expect(ours.command.endsWith(` statusline --then 'my-own-statusline --x '\\''y'\\'''`)).toBe(true);
+    const journal = readWireJournal(join(dir, ".myc", "wire.json"));
+    expect(journal?.status_line).toEqual({
+      path: ".claude/settings.json",
+      previous: { type: "command", command: "my-own-statusline --x 'y'" },
+      passthrough: "project",
+    });
+    expect((await sl(r, "unwire")).code).toBe(0);
+    expect(read(".claude/settings.json")).toBe(PROJECT_WITH_LINE);
+  });
+
+  test("пользовательская (orca): наша без --then, ключа не было — после unwire его нет, байт в байт", async () => {
+    const project = `${JSON.stringify({ permissions: { deny: ["Read(./.env)"] } }, null, 2)}\n`;
+    write(".claude/settings.json", project);
+    userLine(ORCA_CMD);
+    const userBefore = readFileSync(join(cfg, "settings.json"), "utf8");
+    const r = slRegistry();
+    const wired = await sl(r, "wire", "--agents", "claude", "--status-line");
+    expect(wired.code).toBe(0);
+    expect(statusLine().command).not.toContain("--then");
+    expect(String(wired.stdout)).toContain("пользовательская");
+    expect(readWireJournal(join(dir, ".myc", "wire.json"))?.status_line).toEqual({
+      path: ".claude/settings.json",
+      previous: null,
+      passthrough: "user",
+    });
+    expect((await sl(r, "unwire")).code).toBe(0);
+    expect(read(".claude/settings.json")).toBe(project);
+    expect(readFileSync(join(cfg, "settings.json"), "utf8")).toBe(userBefore);
+  });
+
+  test("повторный wire --status-line не меняет ни байта", async () => {
+    write(".claude/settings.json", PROJECT_WITH_LINE);
+    const r = slRegistry();
+    await sl(r, "wire", "--agents", "claude", "--status-line");
+    const once = read(".claude/settings.json");
+    const again = await sl(r, "wire", "--agents", "claude", "--status-line", "--json");
+    expect(read(".claude/settings.json")).toBe(once);
+    expect((JSON.parse(again.stdout as string).data as { changed: number }).changed).toBe(0);
+    // И прежней не стала наша собственная строка.
+    expect(readWireJournal(join(dir, ".myc", "wire.json"))?.status_line?.previous).toEqual({
+      type: "command",
+      command: "my-own-statusline --x 'y'",
+    });
+  });
+
+  test("обычный wire после --status-line строку не трогает и запись о прежней не теряет (S5)", async () => {
+    write(".claude/settings.json", PROJECT_WITH_LINE);
+    const r = slRegistry();
+    await sl(r, "wire", "--agents", "claude", "--status-line");
+    const withLine = statusLine();
+    await sl(r, "wire", "--agents", "claude");
+    expect(statusLine()).toEqual(withLine);
+    expect(readWireJournal(join(dir, ".myc", "wire.json"))?.status_line?.passthrough).toBe("project");
+    await sl(r, "unwire");
+    expect(read(".claude/settings.json")).toBe(PROJECT_WITH_LINE);
+  });
+
+  test("никогда сам за себя: пользовательская строка — это myc statusline", async () => {
+    userLine("myc statusline");
+    const wired = await sl(slRegistry(), "wire", "--agents", "claude", "--status-line");
+    expect(wired.code).toBe(0);
+    expect(statusLine().command).not.toContain("--then");
+    expect(readWireJournal(join(dir, ".myc", "wire.json"))?.status_line?.passthrough).toBe("none");
+  });
+
+  test("раскладка и частота прежней строки переезжают в нашу", async () => {
+    userLine(ORCA_CMD, { padding: 2, refreshInterval: 5 });
+    await sl(slRegistry(), "wire", "--agents", "claude", "--status-line");
+    expect(statusLine()).toMatchObject({ padding: 2, refreshInterval: 5 });
+  });
+
+  test("codex, opencode, kimi: строку не ставим — и говорим это, а не молчим", async () => {
+    const r = await sl(slRegistry(), "wire", "--agents", "codex,opencode,kimi", "--status-line", "--json");
+    expect(r.code).toBe(0);
+    const notes = (JSON.parse(r.stdout as string).data as { notes: string[] }).notes.join("\n");
+    expect(notes).toContain("Codex: строка статуса не ставится");
+    expect(notes).toContain("opencode: строка статуса не ставится");
+    expect(notes).toContain("Kimi: строка статуса этой версией wire не ставится");
+    expect(notes).toContain("только для Claude Code");
+    expect(has(".claude/settings.json")).toBe(false);
+  });
+
+  test("бинарь без команды statusline — отказ, не записано ничего", async () => {
+    userLine(ORCA_CMD);
+    const r = await sl(slRegistry({ probeStatusLine: () => ({ ok: false, why: "./dist/myc statusline --help: код 2" }) }), "wire", "--agents", "claude", "--status-line");
+    expect(r.code).toBe(5); // PRECOND
+    expect(String(r.stderr)).toContain("statusline --help");
+    expect(has(".claude/settings.json")).toBe(false);
+    expect(has(".myc/wire.json")).toBe(false);
+  });
+
+  test("Windows поверх чужой строки — отказ: передачи там нет, отрезать чужую нельзя", async () => {
+    userLine(ORCA_CMD);
+    const r = await sl(slRegistry({ platform: "win32" }), "wire", "--agents", "claude", "--status-line");
+    expect(r.code).toBe(4); // CONFLICT
+    expect(String(r.stderr)).toContain("Windows");
+    expect(has(".claude/settings.json")).toBe(false);
+  });
+
+  test("своя строка в settings.local.json — сказано, что проектную Claude Code не покажет", async () => {
+    write(".claude/settings.local.json", `${JSON.stringify({ statusLine: { type: "command", command: "local-line" } })}\n`);
+    const r = await sl(slRegistry(), "wire", "--agents", "claude", "--status-line");
+    expect(String(r.stdout)).toContain("settings.local.json: там своя statusLine");
+    expect(JSON.parse(read(".claude/settings.local.json")).statusLine.command).toBe("local-line");
+  });
+});
+
+/**
+ * Журнал — слияние, а не перезапись (memory-e272e38n0e3v). До правки частичный
+ * `wire --agents opencode` оставлял в журнале только opencode, и `unwire`
+ * молча бросал хуки Claude на месте — координатор наступил на это вживую.
+ */
+describe("журнал wire: частичный прогон сливается, а не перезаписывает", () => {
+  const journal = () => readWireJournal(join(dir, ".myc", "wire.json"))!;
+
+  test("wire claude → wire opencode → unwire снимает оба", async () => {
+    expect((await myc("wire", "--agents", "claude")).code).toBe(0);
+    expect((await myc("wire", "--agents", "opencode")).code).toBe(0);
+    const j = journal();
+    expect(j.agents).toEqual(["claude", "opencode"]);
+    const paths = j.entries.map((e) => e.path);
+    expect(paths).toContain(".claude/helpers/myc-hooks.mjs");
+    expect(paths).toContain(".claude/settings.json");
+    expect(paths).toContain(".opencode/plugin/myc.ts");
+
+    expect((await myc("unwire")).code).toBe(0);
+    expect(has(".claude/helpers/myc-hooks.mjs")).toBe(false);
+    expect(has(".claude/skills/myc/SKILL.md")).toBe(false);
+    expect(has(".opencode/plugin/myc.ts")).toBe(false);
+    // Их создал wire, и ничего чужого в них нет — файлов не было, нет и теперь.
+    expect(has(".claude/settings.json")).toBe(false);
+    expect(has(".mcp.json")).toBe(false);
+    expect(has("opencode.json")).toBe(false);
+    expect(has(".myc/wire.json")).toBe(false);
+  });
+
+  test("отчёт wire называет, сколько записей прежних прогонов сохранено", async () => {
+    await myc("wire", "--agents", "claude");
+    const r = await myc("wire", "--agents", "opencode", "--json");
+    const kept = (JSON.parse(r.stdout as string).data as { journal_kept: number }).journal_kept;
+    expect(kept).toBe(journal().entries.filter((e) => !e.path.startsWith(".opencode") && e.path !== "opencode.json").length);
+    expect(kept).toBeGreaterThan(0);
+  });
+
+  test("запись о прежней строке статуса переживает wire другого агента", async () => {
+    const original = `${JSON.stringify({ statusLine: { type: "command", command: "my-own-statusline" } }, null, 2)}\n`;
+    write(".claude/settings.json", original);
+    const r = new Registry();
+    r.register(createPrimeCommand());
+    r.register(createAbsorbSessionCommand());
+    r.register(createWireCommand(r, { probeStatusLine: () => ({ ok: true }), env: { CLAUDE_CONFIG_DIR: join(dir, "cfg") }, platform: "darwin" }));
+    r.register(createUnwireCommand());
+    const sl = (...args: string[]): Promise<RunResult> => run(["-C", dir, ...args], { registry: r, env: { MYC_ACTOR: "tester" } });
+    await sl("wire", "--agents", "claude", "--status-line");
+    await sl("wire", "--agents", "opencode");
+    expect(journal().status_line?.passthrough).toBe("project");
+    await sl("unwire");
+    expect(read(".claude/settings.json")).toBe(original);
+  });
+
+  test("разный --hook-output у прогонов — журнал не выдумывает один на всех", async () => {
+    await myc("wire", "--agents", "claude");
+    await myc("wire", "--agents", "opencode", "--hook-output", "text");
+    expect(journal().hook_output).toBeUndefined();
+    await myc("wire", "--hook-output", "text");
+    expect(journal().hook_output).toBe("text");
+  });
+
+  test("файл, удалённый руками, не держит журнал: остальное снято, журнал убран", async () => {
+    await myc("wire", "--agents", "claude");
+    rmSync(join(dir, ".claude", "skills", "myc", "SKILL.md"));
+    const r = await myc("unwire", "--json");
+    const data = JSON.parse(r.stdout as string).data as { gone: string[]; kept: unknown[] };
+    expect(data.gone).toEqual([".claude/skills/myc/SKILL.md"]);
+    expect(data.kept).toEqual([]);
+    expect(has(".claude/helpers/myc-hooks.mjs")).toBe(false);
+    expect(has(".myc/wire.json")).toBe(false);
+  });
+});
+
+/**
+ * «Ключ был — ключ остаётся»: пустые контейнеры человека (`"hooks": {}`,
+ * `"allow": []`) переживают круг wire+unwire, в том числе через повторный
+ * wire, у которого наш же `hooks` уже в файле.
+ */
+describe("unwire не удаляет контейнеры, бывшие до wire", () => {
+  test.each([
+    [`${JSON.stringify({ hooks: {} }, null, 2)}\n`],
+    [`${JSON.stringify({ hooks: { SessionStart: [] }, permissions: { allow: [] }, env: { A: "1" } }, null, 2)}\n`],
+  ])("побайтовый круг: %s", async (original) => {
+    write(".claude/settings.json", original);
+    expect((await myc("wire", "--agents", "claude")).code).toBe(0);
+    expect((await myc("wire", "--agents", "claude")).code).toBe(0); // повторный — тот же итог
+    expect(JSON.parse(read(".claude/settings.json")).hooks.PreCompact).toBeDefined();
+    expect((await myc("unwire")).code).toBe(0);
+    expect(read(".claude/settings.json")).toBe(original);
+  });
+
+  test("созданное нами — снимается целиком, как раньше", async () => {
+    const original = `${JSON.stringify({ env: { A: "1" } }, null, 2)}\n`;
+    write(".claude/settings.json", original);
+    await myc("wire", "--agents", "claude");
+    await myc("unwire");
+    expect(read(".claude/settings.json")).toBe(original);
+  });
+});
+
+/**
+ * «Файла не было — файла нет». Координатор на чистом репозитории: wire claude
+ * --status-line + wire opencode + unwire оставляли `.mcp.json = {}` и
+ * `opencode.json = {"$schema": …}`, которых до wire не было. Журнал теперь
+ * помнит, что файл создал wire (из ПЕРВОЙ записи), и unwire удаляет такой
+ * файл, если после снятия наших узлов в нём не осталось чужого.
+ */
+describe("unwire удаляет файлы, которые создал wire", () => {
+  const CREATED = [
+    ".claude/settings.json",
+    ".mcp.json",
+    "opencode.json",
+    ".codex/config.toml",
+    ".codex/hooks.json",
+    ".kimi-code/mcp.json",
+    "AGENTS.md",
+  ];
+
+  test("чистый репозиторий: wire всех + --status-line + wire opencode + unwire — ни одного созданного файла", async () => {
+    const r = new Registry();
+    r.register(createPrimeCommand());
+    r.register(createAbsorbSessionCommand());
+    r.register(createWireCommand(r, { probeStatusLine: () => ({ ok: true }), env: { CLAUDE_CONFIG_DIR: join(dir, "cfg") }, platform: "darwin" }));
+    r.register(createUnwireCommand());
+    const sl = (...args: string[]): Promise<RunResult> => run(["-C", dir, ...args], { registry: r, env: { MYC_ACTOR: "tester" } });
+    expect((await sl("wire", "--status-line", "--agents-md")).code).toBe(0);
+    for (const p of CREATED) expect([p, has(p)]).toEqual([p, true]);
+    expect((await sl("wire", "--agents", "opencode")).code).toBe(0); // повторный — файл уже есть
+    const un = await sl("unwire", "--json");
+    expect(un.code).toBe(0);
+    for (const p of CREATED) expect([p, has(p)]).toEqual([p, false]);
+    expect(String((JSON.parse(un.stdout as string).data as { removed: string[] }).removed)).toContain("файл создан wire — удалён");
+  });
+
+  test("файл, бывший до wire, остаётся — даже пустым", async () => {
+    write(".mcp.json", "{}\n");
+    write("AGENTS.md", "");
+    await myc("wire", "--agents", "claude", "--agents-md");
+    await myc("unwire");
+    expect(read(".mcp.json")).toBe("{}\n");
+    expect(has("AGENTS.md")).toBe(true);
+  });
+
+  test("в созданном файле осталось чужое — файл остаётся с чужим", async () => {
+    await myc("wire", "--agents", "claude");
+    // Кто-то дописал свой сервер — хеш сменился, файл не наш целиком: unwire
+    // его не трогает вовсе (правило журнала), и уж точно не удаляет.
+    const mcp = JSON.parse(read(".mcp.json")) as { mcpServers: Record<string, unknown> };
+    mcp.mcpServers["other"] = { command: "other" };
+    write(".mcp.json", `${JSON.stringify(mcp, null, 2)}\n`);
+    await myc("unwire");
+    expect(JSON.parse(read(".mcp.json")).mcpServers.other).toEqual({ command: "other" });
   });
 });

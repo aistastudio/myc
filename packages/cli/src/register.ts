@@ -87,5 +87,9 @@ export function registerAll(registry: Registry): void {
   // замыкает тот самый registry, в который регистрируется.
   lazy("wire", () => import("./commands/wire.ts").then((m) => m.createWireCommand(registry)));
   lazy("unwire", () => import("./commands/wire.ts").then((m) => m.createUnwireCommand()));
+  // Строку статуса зовёт ХОСТ на каждую отрисовку, не агент и не человек;
+  // ставит её `wire --status-line`, поэтому она рядом с wire.
+  lazy("statusline", () =>
+    import("./commands/statusline.ts").then((m) => m.createStatuslineCommand()));
   lazy("mcp", () => import("@myc/mcp").then((m) => m.createMcpCommand(registry)));
 }
