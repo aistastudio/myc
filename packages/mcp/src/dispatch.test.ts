@@ -315,6 +315,19 @@ describe("инструменты кода: argv — та же команда, ч
     expect(text(r)).toBe("ответ\n");
   });
 
+  test("myc_code_grep: in — тем же --in через запятую; пустой массив — весь репозиторий", async () => {
+    // memory-3jkvs7g5hkdw: область, выброшенная диспетчером, превратила бы
+    // суженный вопрос в вопрос про весь репозиторий — без единого WARN.
+    const { d, fake } = dispatchWith(ok);
+    await d("myc_code_grep", { literal: "leaf", in: ["src/core", "README.md"], lang: ["ts"] });
+    await d("myc_code_grep", { literal: "leaf", in: [] });
+    const human = fake.calls.filter((c) => !c.includes("--json"));
+    expect(human).toEqual([
+      ["code", "grep", "--lang", "ts", "--in", "src/core,README.md", "--", "leaf"],
+      ["code", "grep", "--", "leaf"],
+    ]);
+  });
+
   test("myc_code_grep: пробелы литерала — часть вопроса, trim их не съедает", async () => {
     const { d, fake } = dispatchWith(ok);
     await d("myc_code_grep", { literal: "  x = " });
@@ -359,6 +372,7 @@ describe("инструменты кода: argv — та же команда, ч
       ["myc_code_search", { query: "x", limit: 0 }],
       ["myc_code_map", { top: 2.5 }],
       ["myc_code_grep", { literal: "x", lang: "ts" }],
+      ["myc_code_grep", { literal: "x", in: "src" }],
     ] as const) {
       const r = await d(tool, args as Record<string, unknown>);
       expect({ tool, isError: r.isError, code: /^myc: (usage\.[a-z]+):/.exec(text(r))?.[1] !== undefined }).toEqual({

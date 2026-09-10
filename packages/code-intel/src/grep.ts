@@ -21,10 +21,26 @@
  * относится к охватывающему определению из `code_defs` (самый тесный спан,
  * содержащий строку), и выдача группируется по нему. Без этого список
  * вхождений остаётся списком строк; с ним видно, ЧТО именно придётся править.
+ *
+ * ОБЛАСТЬ (`--in`, memory-3jkvs7g5hkdw) — то, что было у `graft grep` для
+ * монорепо. Путь считается ОТ КОРНЯ РЕПОЗИТОРИЯ, как у `myc skeleton` и как
+ * пути в самой выдаче: скопированное из ответа вставляется обратно без правки,
+ * а у инструмента MCP, у которого нет «текущего каталога», тот же вопрос
+ * значит то же самое. Область называется в ответе: ответ, суженный молча,
+ * читался бы как ответ про весь репозиторий. Путь, которого нет, путь за
+ * корнем и путь, под которым нет ни одного файла реестра, — отказы, а не
+ * «0 вхождений»: пустой успех там был бы неправдой (И2).
+ *
+ * БИНАРНЫЕ ФАЙЛЫ пропускаются по СОДЕРЖИМОМУ, а не по расширению — признак
+ * git: NUL в первых 8000 байтах (xdiff FIRST_FEW_BYTES). Реестр `code_files`
+ * — это обход дерева, а не список исходников, и в нём оказываются архивы Dolt
+ * (`.beads/backup/*.darc`), индексы, картинки; их «строки» в выдаче — мусор.
+ * Пропуск считается и называется числом, как пропуск по размеру. Файл и так
+ * читается целиком, поэтому признак — один memchr по уже прочитанному буферу.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 
 export interface GrepHit {
@@ -55,16 +71,31 @@ export interface GrepResult {
   readonly searched: number;
   /** Файлов пропущено по потолку размера, с именами: молчать о них нельзя. */
   readonly skipped: readonly { readonly path: string; readonly bytes: number }[];
+  /** Файлов пропущено как бинарные (NUL в начале) — в `searched` не входят. */
+  readonly binary: number;
   /** Файлов, которых нет на диске (индекс отстал). */
   readonly missing: number;
+  /** Область, к которой ответ СУЖЕН (метки `GrepScope.label`); null — весь репозиторий. */
+  readonly scope: readonly string[] | null;
   readonly truncated: boolean;
   readonly tookMs: number;
+}
+
+/** Одна область `--in`, уже проверенная `resolveGrepScope`. */
+export interface GrepScope {
+  /** Как область названа в ответе: каталог — со слэшем на конце, корень — ".". */
+  readonly label: string;
+  /** Путь файла — точно; каталог — префикс со слэшем; "" — весь репозиторий. */
+  readonly path: string;
+  readonly dir: boolean;
 }
 
 export interface GrepOptions {
   readonly ignoreCase?: boolean;
   /** Только эти языки (расширения без точки). Пусто — все файлы индекса. */
   readonly langs?: readonly string[];
+  /** Только под этими путями (объединение). Пусто — весь репозиторий. */
+  readonly scopes?: readonly GrepScope[];
   /** Потолок групп в выдаче; вхождения считаются все и без потолка. */
   readonly limit?: number;
   /** Файлы крупнее — пропускаются и НАЗЫВАЮТСЯ. */
@@ -80,10 +111,107 @@ const DEFAULT_LIMIT = 60;
  */
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_LINE_CHARS = 240;
+/** Окно признака «бинарный» — ровно git (xdiff-interface.c, FIRST_FEW_BYTES). */
+export const BINARY_PROBE_BYTES = 8000;
 
 const SQL_FILES = `SELECT path, lang, size_bytes FROM code_files WHERE repo_id = ?1 ORDER BY path`;
+const SQL_PATHS = `SELECT path FROM code_files WHERE repo_id = ?1`;
 const SQL_DEFS = `SELECT path, name, kind, span_start, span_end FROM code_defs
   WHERE repo_id = ?1 ORDER BY path, span_start`;
+
+/** NUL в первых BINARY_PROBE_BYTES байтах — признак git, не расширение имени. */
+export function looksBinary(buf: Uint8Array): boolean {
+  return buf.subarray(0, BINARY_PROBE_BYTES).indexOf(0) !== -1;
+}
+
+function inScope(path: string, scopes: readonly GrepScope[]): boolean {
+  for (const s of scopes) {
+    if (s.dir ? path.startsWith(s.path) : path === s.path) return true;
+  }
+  return false;
+}
+
+export type GrepScopeRefusal = {
+  readonly ok: false;
+  readonly code: "usage.invalid" | "usage.outside_repo" | "notfound.path" | "notfound.scope";
+  readonly msg: string;
+  readonly hint?: string;
+};
+
+/**
+ * Разбор `--in`: пути от корня репозитория → области поиска, или ОТКАЗ.
+ *
+ * Отказов четыре, и ни один не превращается в пустой ответ: нет пути
+ * (`notfound.path`); путь за корнем (`usage.outside_repo`, как у `anchor
+ * add`); путь есть, но под ним нет ни одного файла реестра — индекс туда не
+ * заходит (node_modules, .git) или отстал (`notfound.scope`): «0 вхождений»
+ * там значило бы «не искали»; пустой `--in` (`usage.invalid`). Путь, под
+ * которым файлы реестра есть, а вхождений нет, — обычный пустой ответ.
+ *
+ * `cwd` нужен только подсказке: из подкаталога легко написать путь от себя, а
+ * не от корня, и отказ тогда называет, как было бы правильно.
+ */
+export function resolveGrepScope(
+  db: Database,
+  repoId: string,
+  repoRoot: string,
+  inputs: readonly string[],
+  cwd?: string,
+): { readonly ok: true; readonly scopes: readonly GrepScope[] } | GrepScopeRefusal {
+  const wanted = inputs.map((x) => x.trim()).filter((x) => x.length > 0);
+  if (wanted.length === 0) {
+    return { ok: false, code: "usage.invalid", msg: "--in без пути: нужен путь от корня репозитория" };
+  }
+  const toRel = (abs: string): string => relative(repoRoot, abs).split(sep).join("/");
+  const outside = (rel: string): boolean => rel === ".." || rel.startsWith("../") || isAbsolute(rel);
+  let registry: string[] | null = null;
+  const scopes: GrepScope[] = [];
+  for (const input of wanted) {
+    const posix = input.replaceAll("\\", "/");
+    const abs = isAbsolute(posix) ? posix : resolve(repoRoot, posix);
+    const rel = toRel(abs);
+    if (outside(rel)) {
+      return {
+        ok: false,
+        code: "usage.outside_repo",
+        msg: `--in ${input}: путь выходит за корень репозитория — искать можно только внутри него`,
+      };
+    }
+    let dir: boolean;
+    try {
+      dir = statSync(abs).isDirectory();
+    } catch {
+      let hint = "путь считается от корня репозитория — так же, как пути в выдаче grep";
+      if (cwd !== undefined && !isAbsolute(posix)) {
+        const fromCwd = toRel(resolve(cwd, posix));
+        if (fromCwd !== rel && !outside(fromCwd) && fromCwd.length > 0) {
+          try {
+            statSync(join(repoRoot, fromCwd));
+            hint += `; от текущего каталога это --in ${fromCwd}`;
+          } catch {
+            // и от текущего каталога такого пути нет — подсказать нечего
+          }
+        }
+      }
+      return { ok: false, code: "notfound.path", msg: `--in ${input}: такого пути в репозитории нет`, hint };
+    }
+    const path = dir ? (rel.length === 0 ? "" : `${rel}/`) : rel;
+    const scope: GrepScope = { label: dir ? (rel.length === 0 ? "." : `${rel}/`) : rel, path, dir };
+    registry ??= (db.query(SQL_PATHS).all(repoId) as Array<{ path: string }>).map((r) => r.path);
+    if (!registry.some((p) => inScope(p, [scope]))) {
+      return {
+        ok: false,
+        code: "notfound.scope",
+        msg: dir
+          ? `--in ${input}: каталог есть, но в реестре индекса под ним нет ни одного файла — искать там нечего`
+          : `--in ${input}: файл есть, но в реестре индекса его нет — искать нечего`,
+        hint: "индекс не заходит в node_modules, .git, dist и подобные; новые файлы — myc code index",
+      };
+    }
+    if (!scopes.some((s) => s.path === scope.path)) scopes.push(scope);
+  }
+  return { ok: true, scopes };
+}
 
 interface OwnerDef {
   name: string;
@@ -116,6 +244,7 @@ export function grepCode(
   const maxBytes = Math.max(1, Math.floor(opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES));
   const maxLine = Math.max(20, Math.floor(opts.maxLineChars ?? DEFAULT_MAX_LINE_CHARS));
   const wanted = opts.langs === undefined || opts.langs.length === 0 ? null : new Set(opts.langs);
+  const scopes = opts.scopes === undefined || opts.scopes.length === 0 ? null : opts.scopes;
   const needle = opts.ignoreCase === true ? literal.toLowerCase() : literal;
 
   const defsByPath = new Map<string, OwnerDef[]>();
@@ -139,6 +268,7 @@ export function grepCode(
   let files = 0;
   let hits = 0;
   let searched = 0;
+  let binary = 0;
   let missing = 0;
 
   for (const f of db.query(SQL_FILES).all(repoId) as Array<{
@@ -146,18 +276,25 @@ export function grepCode(
     lang: string;
     size_bytes: number;
   }>) {
+    // Область — до потолка размера: файл вне области не «пропущен», его не спрашивали.
+    if (scopes !== null && !inScope(f.path, scopes)) continue;
     if (wanted !== null && !wanted.has(f.lang)) continue;
     if (f.size_bytes > maxBytes) {
       skipped.push({ path: f.path, bytes: f.size_bytes });
       continue;
     }
-    let text: string;
+    let buf: Buffer;
     try {
-      text = readFileSync(join(repoRoot, f.path), "utf8");
+      buf = readFileSync(join(repoRoot, f.path));
     } catch {
       missing++;
       continue;
     }
+    if (looksBinary(buf)) {
+      binary++;
+      continue;
+    }
+    const text = buf.toString("utf8");
     searched++;
     const hay = opts.ignoreCase === true ? text.toLowerCase() : text;
     if (!hay.includes(needle)) continue;
@@ -212,7 +349,9 @@ export function grepCode(
     hits,
     searched,
     skipped,
+    binary,
     missing,
+    scope: scopes === null ? null : scopes.map((s) => s.label),
     truncated,
     tookMs: performance.now() - t0,
   };

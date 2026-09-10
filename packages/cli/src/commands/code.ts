@@ -896,6 +896,8 @@ function buildCodeSearch(deps: StoreDeps): Command {
 interface GrepData {
   repo: string;
   literal: string;
+  /** Область, к которой ответ сужен (`--in`); null — весь репозиторий. */
+  scope: string[] | null;
   groups: {
     path: string;
     symbol: string;
@@ -908,6 +910,8 @@ interface GrepData {
   files: number;
   searched: number;
   skipped: { path: string; bytes: number }[];
+  /** Бинарных файлов пропущено (NUL в начале) — в `searched` не входят. */
+  binary: number;
   missing: number;
   truncated: boolean;
   took_ms: number;
@@ -917,8 +921,21 @@ const GREP_FLAGS: readonly FlagSpec[] = [
   { name: "repo", value: "string", description: "repo id to search (default: derived from cwd)" },
   { name: "ignore-case", description: "case-insensitive match" },
   { name: "lang", value: "string", description: "limit to these languages, comma-separated (ts,py,md)" },
+  {
+    name: "in",
+    value: "string",
+    description: "only under these paths from the repo root, comma-separated (dirs or files)",
+  },
   { name: "limit", value: "number", description: "symbol groups to print (default 60); the count is always exhaustive" },
 ];
+
+/** Отказ разбора `--in` → код выхода: нет пути или файлов под ним — NOTFOUND, остальное — USAGE. */
+const GREP_SCOPE_EXIT: Readonly<Record<string, ExitCode>> = {
+  "usage.invalid": ExitCode.USAGE,
+  "usage.outside_repo": ExitCode.USAGE,
+  "notfound.path": ExitCode.NOTFOUND,
+  "notfound.scope": ExitCode.NOTFOUND,
+};
 
 function buildCodeGrep(deps: StoreDeps): Command {
   return {
@@ -930,7 +947,11 @@ function buildCodeGrep(deps: StoreDeps): Command {
       "turned into a symbol is found too, and the answer cannot lag behind the code. The index " +
       "supplies exactly two things: the file list (the same directory exclusions indexing uses) " +
       "and the enclosing definition of every hit, which is what turns `grep -n` into 'here is what " +
-      "you will have to edit'. Files above 2 MB are skipped and NAMED; nothing is dropped silently.",
+      "you will have to edit'. Files above 2 MB are skipped and NAMED; binary files (a NUL in the " +
+      "first 8000 bytes, the git rule) are skipped and COUNTED; nothing is dropped silently. " +
+      "`--in` narrows the search to paths from the repo root — the same paths the output prints — " +
+      "and the answer names the scope; a path that does not exist, lies outside the repo or has no " +
+      "indexed files under it is refused, not answered with zero hits.",
     flags: GREP_FLAGS,
     handler: async (ctx) => {
       const literal = ctx.args.join(" ");
@@ -942,7 +963,7 @@ function buildCodeGrep(deps: StoreDeps): Command {
       const h = opened.handle;
       try {
         const { repoId, repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
-        const { grepCode } = await import("@myc/code-intel/grep");
+        const { grepCode, resolveGrepScope } = await import("@myc/code-intel/grep");
         const { indexScope } = await import("@myc/code-intel/read");
         const db = h.driver.database;
         const scope = indexScope(db, repoId);
@@ -954,6 +975,17 @@ function buildCodeGrep(deps: StoreDeps): Command {
             "myc code index",
           );
         }
+        // `--in` через запятую, как `--lang`. Повтор флага разбор argv
+        // схлопывает в последнее значение ещё до обработчика — поэтому
+        // несколько областей пишутся одним флагом.
+        const inRaw = flagStr(ctx, "in");
+        const inScope =
+          inRaw === undefined
+            ? undefined
+            : resolveGrepScope(db, repoId, repoRoot, inRaw.split(","), ctx.globals.directory ?? process.cwd());
+        if (inScope !== undefined && !inScope.ok) {
+          return failure(inScope.code, inScope.msg, GREP_SCOPE_EXIT[inScope.code] ?? ExitCode.USAGE, inScope.hint);
+        }
         const langsRaw = flagStr(ctx, "lang");
         const limit = flagNum(ctx, "limit");
         const res = grepCode(db, repoId, repoRoot, literal, {
@@ -961,11 +993,13 @@ function buildCodeGrep(deps: StoreDeps): Command {
           ...(langsRaw !== undefined
             ? { langs: langsRaw.split(",").map((x) => x.trim()).filter((x) => x.length > 0) }
             : {}),
+          ...(inScope !== undefined ? { scopes: inScope.scopes } : {}),
           ...(limit !== undefined && limit > 0 ? { limit: Math.floor(limit) } : {}),
         });
         const data: GrepData = {
           repo: repoId,
           literal: res.literal,
+          scope: res.scope === null ? null : [...res.scope],
           groups: res.groups.map((g) => ({
             path: g.path,
             symbol: g.symbol,
@@ -978,6 +1012,7 @@ function buildCodeGrep(deps: StoreDeps): Command {
           files: res.files,
           searched: res.searched,
           skipped: res.skipped.map((x) => ({ path: x.path, bytes: x.bytes })),
+          binary: res.binary,
           missing: res.missing,
           truncated: res.truncated,
           took_ms: Math.round(res.tookMs),
@@ -1011,9 +1046,11 @@ function buildCodeGrep(deps: StoreDeps): Command {
     },
     renderHuman: (data) => {
       const d = data as GrepData;
+      const where = d.scope === null ? "" : ` в ${d.scope.join(", ")}`;
+      const binary = d.binary > 0 ? `, бинарных пропущено ${d.binary}` : "";
       const out = [
-        `"${d.literal}" — ${d.hits} вхождений в ${d.groups.length} символах, ` +
-          `файлов ${d.files} (просмотрено ${d.searched})`,
+        `"${d.literal}"${where} — ${d.hits} вхождений в ${d.groups.length} символах, ` +
+          `файлов ${d.files} (просмотрено ${d.searched}${binary})`,
       ];
       for (const g of d.groups) {
         out.push("");

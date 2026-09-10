@@ -77,6 +77,13 @@ export function useChain(n: number): number {
 const README = "# fixture\n\nleaf — листовая функция; LEAF заглавными тоже leaf.\n";
 
 /**
+ * Бинарный файл с литералом внутри (memory-3jkvs7g5hkdw): реестр — обход
+ * дерева, и такие в нём есть (архивы Dolt у beads). Имя сортируется раньше
+ * src/, поэтому «пропуск выключен» виден даже в выдаче, урезанной до 60 групп.
+ */
+const BLOB = Buffer.concat([Buffer.from("STRT"), Buffer.from([0, 0, 1, 0]), Buffer.from("leaf(1) leaf\n")]);
+
+/**
  * Шестнадцать каталогов по пять функций, каждая зовёт leaf. Нужны не для
  * смысла, а для УМОЛЧАНИЙ: у поиска потолок 10 файлов, у grep 60 групп, у
  * callers 40, у карты 14 каталогов. Пока фикстура меньше любого потолка,
@@ -115,6 +122,11 @@ async function workspace(name: string): Promise<string> {
   writeFileSync(join(dir, "src", "core", "twins.ts"), TWINS);
   writeFileSync(join(dir, "src", "app", "use.ts"), USE);
   writeFileSync(join(dir, "README.md"), README);
+  mkdirSync(join(dir, "assets"), { recursive: true });
+  writeFileSync(join(dir, "assets", "blob.bin"), BLOB);
+  // Есть на диске, но не в реестре: индекс в node_modules не заходит.
+  mkdirSync(join(dir, "node_modules", "dep"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "dep", "index.ts"), "export const leaf = 1;\n");
   for (let d = 0; d < MANY_DIRS; d++) {
     const sub = join(dir, "src", "many", `d${String(d).padStart(2, "0")}`);
     mkdirSync(sub, { recursive: true });
@@ -177,6 +189,14 @@ function scenario(): Question[] {
     { what: "grep урезан лимитом", cli: ["code", "grep", "leaf", "--limit", "1"], tool: "myc_code_grep", args: { literal: "leaf", limit: 1 } },
     { what: "grep шире умолчания", cli: ["code", "grep", "leaf(", "--limit", "70"], tool: "myc_code_grep", args: { literal: "leaf(", limit: 70 } },
     { what: "grep литерала-флага", cli: ["code", "grep", "--", "--limit"], tool: "myc_code_grep", args: { literal: "--limit" } },
+    // область --in: сужение, файл и каталог, пустой ответ и четыре отказа
+    { what: "grep в каталоге", cli: ["code", "grep", "leaf(", "--in", "src/core"], tool: "myc_code_grep", args: { literal: "leaf(", in: ["src/core"] } },
+    { what: "grep в файле и каталоге", cli: ["code", "grep", "leaf", "--in", "src/app/use.ts,src/many/d00"], tool: "myc_code_grep", args: { literal: "leaf", in: ["src/app/use.ts", "src/many/d00"] } },
+    { what: "grep в области без вхождений", cli: ["code", "grep", "useChain", "--in", "./src/core/"], tool: "myc_code_grep", args: { literal: "useChain", in: ["./src/core/"] } },
+    { what: "grep нет пути", cli: ["code", "grep", "leaf", "--in", "src/нет"], tool: "myc_code_grep", args: { literal: "leaf", in: ["src/нет"] } },
+    { what: "grep за корнем", cli: ["code", "grep", "leaf", "--in", "../"], tool: "myc_code_grep", args: { literal: "leaf", in: ["../"] } },
+    { what: "grep область вне реестра", cli: ["code", "grep", "leaf", "--in", "node_modules"], tool: "myc_code_grep", args: { literal: "leaf", in: ["node_modules"] } },
+    { what: "grep пустая область", cli: ["code", "grep", "leaf", "--in", ""], tool: "myc_code_grep", args: { literal: "leaf", in: [""] } },
     // где определён
     { what: "symbol", cli: ["code", "symbol", "leaf"], tool: "myc_code_symbol", args: { name: "leaf" } },
     { what: "symbol нет", cli: ["code", "symbol", "нетакого"], tool: "myc_code_symbol", args: { name: "нетакого" } },
@@ -369,8 +389,10 @@ describe("команды кода и инструменты кода: один �
 
     const steps = scenario();
     const cli: Outcome[] = [];
+    const exits = new Map<string, number>();
     for (const q of steps) {
-      const { exit: _exit, ...c } = await viaCli(q);
+      const { exit, ...c } = await viaCli(q);
+      exits.set(q.what, exit);
       cli.push(c);
     }
     const tool: Outcome[] = [];
@@ -397,8 +419,56 @@ describe("команды кода и инструменты кода: один �
     expect((got("map")["clusters"] as unknown[]).length).toBe(14);
     expect((got("map шире умолчания")["clusters"] as unknown[]).length).toBeGreaterThan(14);
     expect(new Set(cli.filter((o) => !o.ok).map((o) => o.code))).toEqual(
-      new Set(["notfound.symbol", "notfound.file", "usage.invalid"]),
+      new Set([
+        "notfound.symbol",
+        "notfound.file",
+        "usage.invalid",
+        "notfound.path",
+        "usage.outside_repo",
+        "notfound.scope",
+      ]),
     );
+
+    // Область --in (memory-3jkvs7g5hkdw). Совпадение дверей выше ловит дверь,
+    // молча выбросившую `in`; здесь — то, что сужение вообще СЛУЧИЛОСЬ и
+    // НАЗВАНО: две двери, одинаково игнорирующие область, сошлись бы тоже.
+    const text = (what: string): string => cli.find((o) => o.what === what)!.text!;
+    const paths = (what: string): string[] =>
+      (got(what)["groups"] as { path: string }[]).map((g) => g.path);
+    expect(got("grep")["scope"]).toBeNull();
+    expect(got("grep в каталоге")["scope"]).toEqual(["src/core/"]);
+    expect(got("grep в каталоге")["searched"]).toBe(2);
+    expect(paths("grep в каталоге").length).toBeGreaterThan(0);
+    expect(paths("grep в каталоге").every((p) => p.startsWith("src/core/"))).toBe(true);
+    expect(text("grep в каталоге")).toContain(`"leaf(" в src/core/ — `);
+    expect(got("grep в файле и каталоге")["scope"]).toEqual(["src/app/use.ts", "src/many/d00/"]);
+    expect([...new Set(paths("grep в файле и каталоге"))].sort()).toEqual([
+      "src/app/use.ts",
+      "src/many/d00/mod.ts",
+    ]);
+    // Путь есть, вхождений нет — обычный ответ, не отказ, и область в нём названа.
+    const empty = got("grep в области без вхождений");
+    expect({ hits: empty["hits"], searched: empty["searched"], scope: empty["scope"] }).toEqual({
+      hits: 0,
+      searched: 2,
+      scope: ["src/core/"],
+    });
+    expect(text("grep в области без вхождений")).toContain(`"useChain" в src/core/ — 0 вхождений`);
+    // Отказы — кодом и кодом выхода, а не пустым успехом.
+    const refused = ["grep нет пути", "grep за корнем", "grep область вне реестра", "grep пустая область"];
+    expect(refused.map((w) => [w, cli.find((o) => o.what === w)!.code, exits.get(w)])).toEqual([
+      ["grep нет пути", "notfound.path", ExitCode.NOTFOUND],
+      ["grep за корнем", "usage.outside_repo", ExitCode.USAGE],
+      ["grep область вне реестра", "notfound.scope", ExitCode.NOTFOUND],
+      ["grep пустая область", "usage.invalid", ExitCode.USAGE],
+    ]);
+
+    // Бинарный файл пропущен и НАЗВАН числом — в конверте и в тексте.
+    expect(got("grep")["binary"]).toBe(1);
+    expect(paths("grep")).not.toContain("assets/blob.bin");
+    expect(text("grep")).toContain("бинарных пропущено 1)");
+    expect(got("grep в каталоге")["binary"]).toBe(0);
+    expect(text("grep в каталоге")).not.toContain("бинарных");
     // WARN доезжают в обе стороны — и в конверт, и в текст.
     const warned = new Set(cli.flatMap((o) => o.warn ?? []));
     for (const code of ["callers.ambiguous", "callers.external", "code_grep.truncated", "code_search.empty"]) {

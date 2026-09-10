@@ -258,6 +258,7 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
         literal: { type: "string", minLength: 1 },
         ignore_case: { type: "boolean", default: false },
         lang: { type: "array", items: { type: "string" }, description: "ts, py, md…" },
+        in: { type: "array", items: { type: "string" }, description: "каталоги/файлы от корня репозитория" },
         limit: { type: "integer", default: 60, minimum: 1, description: "групп" },
       },
       additionalProperties: false,

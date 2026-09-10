@@ -823,6 +823,10 @@ async function toolCodeGrep(deps: DispatchDeps, args: Args): Promise<CallToolRes
   if (optBool(args, "ignore_case")) head.push("--ignore-case");
   const langs = strList(args, "lang");
   if (langs.length > 0) head.push("--lang", langs.join(","));
+  // Область — тот же `--in` через запятую; пустой массив — «весь репозиторий»,
+  // как у lang. Проверку путей ведёт команда: её отказ и есть ответ.
+  const scopes = strList(args, "in");
+  if (scopes.length > 0) head.push("--in", scopes.join(","));
   flagIf(head, "--limit", optCount(args, "limit"));
   return codeRead(deps, head, literal);
 }
