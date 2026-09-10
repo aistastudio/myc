@@ -14,6 +14,18 @@
 
 export type HookEvent = "session-start" | "pre-compact" | "post-edit" | "stop";
 
+/**
+ * Все события списком. Нужен именно список, а не тип: `MYC_HOOK` приходит
+ * строкой из окружения, и проверить её принадлежность типу в рантайме нечем —
+ * а отметку хука ставит только известное событие (см. hooks/counters.ts).
+ */
+export const HOOK_EVENTS: readonly HookEvent[] = [
+  "session-start",
+  "pre-compact",
+  "post-edit",
+  "stop",
+];
+
 export type ClaudeEvent = "SessionStart" | "PreCompact" | "PostToolUse" | "Stop";
 
 export interface HookSpec {
@@ -143,7 +155,7 @@ try {
     timeout: LIMIT,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, MYC_HOOK: EV },
+    env: { ...process.env, MYC_HOOK: EV, MYC_HOOK_AGENT: "claude" },
   });
   if (r.status === 0 && r.stdout) process.stdout.write(r.stdout);
 } catch {}
@@ -153,44 +165,192 @@ process.exit(0);
 }
 
 /**
- * Codex: почему `myc wire` НЕ ставит хук эпизода, хотя раньше ставил.
+ * Codex (`.codex/myc-hooks.mjs` + `.codex/hooks.json`).
  *
  * Всё ниже установлено ЧТЕНИЕМ бинаря codex-cli 0.153.4
- * (`/Applications/ChatGPT.app/Contents/Resources/codex`), а не догадкой.
+ * (`/Applications/ChatGPT.app/Contents/Resources/codex`) И ЖИВЫМ ПРОГОНОМ
+ * `codex exec` на изолированном `CODEX_HOME`, а не догадкой. Локальный
+ * `/opt/homebrew/bin/codex` сломан (`spawn …/codex-darwin-arm64/vendor/…
+ * ENOENT`), рабочий бинарь — только в ChatGPT.app.
  *
- * 1. ЕДИНСТВЕННОЕ СОБЫТИЕ `notify` — `agent-turn-complete`. Поля полезной
- *    нагрузки перечислены в `hooks/src/legacy_notify.rs` целиком:
- *    `thread-id`, `turn-id`, `cwd`, `client`, `input-messages`,
- *    `last-assistant-message`. Ни `rollout-path`, ни `transcript_path`, ни
- *    какого-либо иного пути к стенограмме там НЕТ, и события сжатия там нет
- *    тоже: ветка `/compact/i.test(type)` в прошлой версии этого файла не
- *    могла сработать ни разу за всё время его существования.
- * 2. Значит хук через `notify` — ровно тот случай, который myc уже отработал
- *    на `stop`: обещание, которое некому исполнить. Он звал
+ * 1. `notify` МЁРТВ И ОСТАЁТСЯ МЁРТВЫМ. Единственное его событие —
+ *    `agent-turn-complete`, а поля payload перечислены в
+ *    `hooks/src/legacy_notify.rs` целиком: `thread-id`, `turn-id`, `cwd`,
+ *    `client`, `input-messages`, `last-assistant-message`. Ни стенограммы, ни
+ *    события сжатия там нет. Хук эпизода через `notify` звал
  *    `absorb-session --transcript "-"` на пустой stdin, получал `empty`, и
  *    единственным его следом был счётчик, выдававший пустоту за здоровье.
- *    Поэтому он больше не ставится, и `myc wire` говорит об этом вслух.
- * 3. ПУТЬ, КОТОРЫЙ РАБОТАЕТ, У CODEX ЕСТЬ, но он не в `notify`. У 0.153.4
- *    есть полноценная система хуков (`codex_hooks`, `hooks = true` в
- *    `config.toml`): файл `~/.codex/hooks.json` формы Claude Code, события
- *    `PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact,
- *    SessionStart, SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop,
- *    Stop, Interrupt`, вход — JSON на stdin с полями `session_id`, `turn_id`,
- *    `agent_type`, `transcript_path`, `hook_event_name`, `model`,
- *    `permission_mode`, `trigger`, `tool_name`, `tool_input`, `timeout` в
- *    СЕКУНДАХ (поле `timeoutSec` в записи хука). Стенограмма там есть.
- *    Но конфиг у этой системы ПОЛЬЗОВАТЕЛЬСКИЙ (`~/.codex/hooks.json`, плюс
- *    хуки плагинов), проектного нет — то есть положение ровно как у Kimi, и
- *    делается это отдельной работой, с отдельной живой проверкой, а не
- *    догадкой в этом коммите.
+ *
+ * 2. РАБОЧИЙ ПУТЬ — СИСТЕМА ХУКОВ, и она ЕСТЬ В ПРОЕКТЕ. Прежняя запись в
+ *    этом файле утверждала, что конфиг у неё только пользовательский
+ *    (`~/.codex/hooks.json`), и это оказалось неверно: `codex` читает ОБА
+ *    слоя, и проектный тоже. Живой ответ `hooks/list` app-server'а на проект
+ *    с файлом `<проект>/.codex/hooks.json` перечисляет наши записи с
+ *    `"source": "project"`, а до доверия проекту тот же codex печатает
+ *    `configWarning`: «Project-local config, hooks, and exec policies are
+ *    disabled in the following folders until the project is trusted» и
+ *    называет `<проект>/.codex`. Значит положение у Codex НЕ как у Kimi:
+ *    писать блок человеку в `$HOME` не нужно, D10 соблюдается — файл лежит
+ *    внутри проекта.
+ *
+ * 3. ФОРМА ФАЙЛА — форма Claude Code: `hooks.<Event>[] = {matcher?, hooks:
+ *    [{type:"command", command, timeout}]}`. События: `PreToolUse,
+ *    PermissionRequest, PostToolUse, PreCompact, PostCompact, SessionStart,
+ *    SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop, Stop,
+ *    Interrupt`. `timeout` — СЕКУНДЫ (внутри это `hook.timeout_sec`, а
+ *    app-server отдаёт его как `timeoutSec`; у Claude Code то же поле в
+ *    миллисекундах, и перепутать значит получить хук, живущий в 1000 раз
+ *    дольше или короче задуманного). Команда исполняется ЧЕРЕЗ SHELL и с
+ *    cwd = каталог проекта — проверено живьём (`cwd=<проект>` в хуке при
+ *    относительной команде `node .codex/myc-hooks.mjs`). Подстановка
+ *    `\${…}` в команде для SessionStart НЕ работает («hook input placeholder
+ *    was not found», хук молча не запускается), поэтому путь относительный.
+ *
+ * 4. ВХОД — JSON на stdin. Схемы вкомпилированы в бинарь
+ *    (`*.command.input`), и живой прогон их подтвердил дословно:
+ *    SessionStart — `session_id, transcript_path, cwd, hook_event_name,
+ *    model, permission_mode, source(startup|resume|clear|compact)`;
+ *    PreCompact — `session_id, turn_id, transcript_path, cwd,
+ *    hook_event_name, model, trigger(manual|auto)`.
+ *
+ * 5. КУДА ВОЗВРАЩАТЬ ПАКЕТ. `session-start.command.output` содержит
+ *    `hookSpecificOutput.additionalContext` — и он ДОХОДИТ ДО МОДЕЛИ:
+ *    в живом прогоне маркер, отданный хуком, вернулся дословно в ответе
+ *    модели и лежит в rollout как `developer`-сообщение. А
+ *    `pre-compact.command.output` — это ровно `continue, stopReason,
+ *    suppressOutput, systemMessage`, и `additionalContext` там НЕТ. Поэтому
+ *    helper печатает пакет только на session-start, а на pre-compact молчит.
+ *    Потери нет: codex зовёт SessionStart СНОВА сразу после сжатия, с
+ *    `source: "compact"` — это видно в том же прогоне, где PreCompact
+ *    сработал дважды. То есть эпизод пишет pre-compact, а отдаёт его в
+ *    контекст следующий за ним session-start, через обычный `myc prime`.
+ *
+ * 6. СТЕНОГРАММА ЕСТЬ И ОНА ФАЙЛОМ: `transcript_path` — путь к rollout JSONL
+ *    (`<CODEX_HOME>/sessions/<Y>/<M>/<D>/rollout-*.jsonl`), в живом прогоне
+ *    непустой и у SessionStart, и у PreCompact. Формат — свой:
+ *    `{"type":"response_item","payload":{…}}`, блоки текста называются
+ *    `input_text`/`output_text`, вызовы инструментов —
+ *    `custom_tool_call`/`function_call`. Его понимает `parseTranscript`
+ *    (см. hooks/transcript.ts): без этого absorb-session разобрал бы ноль
+ *    ходов и вернул `empty` — та же тихая пустота, что у notify.
+ *
+ * 7. ЧЕЛОВЕК ВСЁ РАВНО НУЖЕН, ДВАЖДЫ, и молчать об этом нельзя. Проект
+ *    должен быть доверенным (`[projects."<путь>"] trust_level = "trusted"`
+ *    в `~/.codex/config.toml` — codex просит это сам при первом запуске), а
+ *    новый или изменённый хук — просмотренным: `hooks/list` отдаёт
+ *    `trustStatus: "untrusted"` для нового и `"modified"` для изменённого, и
+ *    TUI встречает такую сессию экраном «N hooks are new or changed» /
+ *    «hooks need review before they can run». До этого хук НЕ ЗАПУСКАЕТСЯ и
+ *    ничего об этом не печатает — в `codex exec` он просто молча пропущен
+ *    (проверено: тот же файл до доверия не сработал ни разу, после — сработал).
  */
+export const CODEX_NEEDS_REVIEW =
+  "Codex запускает хук только после двух согласий человека: проект должен быть " +
+  "доверенным (codex спрашивает это при первом запуске в каталоге; в " +
+  "~/.codex/config.toml это `[projects.\"<путь>\"] trust_level = \"trusted\"`), " +
+  "а новый или изменённый хук — просмотренным (codex встретит сессию экраном " +
+  "«hooks are new or changed»; до этого хук молча не запускается). Проверить: " +
+  "`myc doctor --hooks` после первой сессии";
+
 export const CODEX_NO_EPISODE =
-  "хук эпизода у Codex не ставится: единственное событие `notify` — " +
-  "`agent-turn-complete`, и в его payload (thread-id, turn-id, cwd, client, " +
-  "input-messages, last-assistant-message) нет ни стенограммы, ни события " +
-  "сжатия — absorb-session там всегда возвращал `empty`. Рабочий путь у Codex " +
-  "есть: `~/.codex/hooks.json`, событие PreCompact, поле `transcript_path`; " +
-  "конфиг пользовательский, поэтому это отдельная работа";
+  "хук эпизода у Codex больше не идёт через `notify`: единственное событие " +
+  "`notify` — `agent-turn-complete`, и в его payload (thread-id, turn-id, cwd, " +
+  "client, input-messages, last-assistant-message) нет ни стенограммы, ни " +
+  "события сжатия — absorb-session там всегда возвращал `empty`. Теперь хуки " +
+  "стоят в `.codex/hooks.json` (события SessionStart и PreCompact, стенограмма " +
+  "приходит полем `transcript_path`)";
+
+/**
+ * Что Codex проверяет у записи хука: `timeout` в СЕКУНДАХ (см. пункт 3 выше).
+ * Событий два, и это не лень: `post-edit` не ставится, потому что подтвердить
+ * чтением форму `tool_input` у правящих инструментов Codex не удалось, а хук,
+ * который не сработает ни разу, хуже отсутствующего — он создаёт уверенность.
+ * Ровно по той же причине его нет и у Kimi.
+ */
+export const CODEX_EVENTS: ReadonlyMap<HookEvent, ClaudeEvent> = new Map([
+  ["session-start", "SessionStart"],
+  ["pre-compact", "PreCompact"],
+]);
+
+export const CODEX_HELPER_REL = ".codex/myc-hooks.mjs";
+
+/** Команда записи хука: относительная (cwd хука — проект) и под защитой. */
+export function codexHookCommand(event: HookEvent): string {
+  return (
+    `if [ -f ${CODEX_HELPER_REL} ]; then node ${CODEX_HELPER_REL} ${event}; ` +
+    "else cat >/dev/null 2>&1 || true; fi"
+  );
+}
+
+export function codexHelper(opts: HelperOptions): string {
+  const specs = HOOK_SPECS.filter(
+    (s) => opts.events.includes(s.event) && CODEX_EVENTS.has(s.event),
+  );
+  const limits = specs.map((s) => `  "${s.event}": ${s.innerMs},`).join("\n");
+  const args = specs
+    .map((s) =>
+      s.event === "session-start"
+        ? `  "session-start": ["prime", "--budget", "2000", "--format", "agent", "--session", payload.session_id ?? ""],`
+        : `  "pre-compact": ["absorb-session", "--reason", payload.trigger ?? "auto", "--transcript", payload.transcript_path ?? "-", "--budget", payload.trigger === "manual" ? "2000" : "1200", "--agent", "codex", "--session", payload.session_id ?? "", "--hook-output", "text"],`,
+    )
+    .join("\n");
+  return `#!/usr/bin/env node
+// ${CODEX_HELPER_REL} — ${GENERATED}.
+//
+// Правило то же, что у Claude Code, opencode и Kimi: myc НИКОГДА не валит
+// сессию агента. Любая ошибка, любой таймаут, отсутствие бинаря — выход 0 и
+// пустой stdout. Кодом 2 Codex блокирует ход, поэтому им мы не выходим никогда.
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const EV = process.argv[2];
+
+let payload = {};
+try {
+  payload = JSON.parse(readFileSync(0, "utf8") || "{}");
+} catch {}
+
+// Codex зовёт хук из каталога проекта и кладёт его же в payload.cwd.
+const DIR = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+
+const LIMIT = {
+${limits}
+}[EV] ?? 2000;
+
+${BIN_LOOKUP}
+
+const ARGS = {
+${args}
+}[EV];
+
+if (!ARGS) process.exit(0);
+
+try {
+  const r = spawnSync(bin(), ARGS, {
+    cwd: DIR,
+    timeout: LIMIT,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, MYC_HOOK: EV, MYC_HOOK_AGENT: "codex" },
+  });
+  // additionalContext есть ТОЛЬКО у SessionStart: в схеме
+  // pre-compact.command.output его нет вовсе (continue, stopReason,
+  // suppressOutput, systemMessage — и всё). Печатать туда пакет значило бы
+  // отдавать его в /dev/null; за сжатием codex сам зовёт SessionStart с
+  // source:"compact", и пакет приходит оттуда.
+  if (EV === "session-start" && r.status === 0 && r.stdout && r.stdout.trim()) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: r.stdout },
+      }) + "\\n",
+    );
+  }
+} catch {}
+
+process.exit(0);
+`;
+}
 
 /**
  * opencode (`.opencode/plugin/myc.ts`).
@@ -249,15 +409,23 @@ let DIR = process.cwd();
 
 ${BIN_LOOKUP}
 
-/** Один вызов myc: свой дедлайн, свой kill, ни одного проброшенного отказа. */
-const run = async (args: string[], ms: number, stdin?: string): Promise<string> => {
+/**
+ * Один вызов myc: свой дедлайн, свой kill, ни одного проброшенного отказа.
+ *
+ * \`ev\` — ИМЯ СОБЫТИЯ, а не имя харнесса, и это не косметика. По \`MYC_HOOK\`
+ * myc ставит отметку срабатывания в \`.myc/hooks.json\`, и она обязана означать
+ * ровно то, что на ней написано. Пока здесь стояло \`MYC_HOOK: "opencode"\`,
+ * \`myc doctor --hooks\` не мог отличить старт сессии от сжатия — обе отметки
+ * назывались бы одинаково.
+ */
+const run = async (args: string[], ms: number, ev: string, stdin?: string): Promise<string> => {
   try {
     const proc = Bun.spawn([bin(), ...args], {
       cwd: DIR,
       stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
       stdout: "pipe",
       stderr: "ignore",
-      env: { ...process.env, MYC_HOOK: "opencode" },
+      env: { ...process.env, MYC_HOOK: ev, MYC_HOOK_AGENT: "opencode" },
     });
     const timer = setTimeout(() => {
       try {
@@ -339,6 +507,7 @@ const absorb = async (client: any, sessionID: string): Promise<string> =>
       "text",
     ],
     7500,
+    "pre-compact",
     await transcript(client, sessionID),
   );
 
@@ -391,7 +560,7 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
         const id = input?.sessionID;
         if (typeof id !== "string" || id.length === 0 || primed.has(id)) return;
         primed.add(id);
-        const text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500);
+        const text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
         if (text.trim().length > 0) output.system.push(text);
       } catch {}
     },
@@ -401,7 +570,7 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
         const file = input?.args?.filePath ?? input?.args?.path;
         if (!["write", "edit", "patch"].includes(input?.tool) || typeof file !== "string") return;
         if (file.length === 0) return;
-        await run(["anchor", "touch", file], 1000);
+        await run(["anchor", "touch", file], 1000, "post-edit");
       } catch {}
     },
   };
@@ -528,7 +697,7 @@ try {
     timeout: LIMIT,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, MYC_HOOK: EV },
+    env: { ...process.env, MYC_HOOK: EV, MYC_HOOK_AGENT: "kimi" },
   });
   // В контекст Kimi попадает только JSON с полем message — обычный stdout
   // он разбирает и молча выбрасывает.

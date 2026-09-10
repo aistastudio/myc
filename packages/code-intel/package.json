@@ -12,14 +12,18 @@
     "./read": "./src/read.ts",
     "./langs": "./src/langs.ts",
     "./anchors": "./src/anchors.ts",
-    "./grammars": "./src/grammars.ts"
+    "./grammars": "./src/grammars.ts",
+    "./search": "./src/search.ts",
+    "./grep": "./src/grep.ts",
+    "./map": "./src/map.ts"
   },
   "dependencies": {
     "@myc/bench": "workspace:*",
     "@myc/core": "workspace:*",
     "@myc/store-sqlite": "workspace:*",
     "tree-sitter-wasms": "0.1.13",
-    "web-tree-sitter": "0.24.7"
+    "web-tree-sitter": "0.24.7",
+    "@myc/retrieval": "workspace:*"
   },
   "scripts": {
     "test": "bun test",

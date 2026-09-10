@@ -24,6 +24,7 @@ import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
 import { createAnchorCommand, DIRTY_LOG, drainDirtyLog, parseTarget } from "./anchor.ts";
 import { anchorPathsOf, taskClassOf } from "./attempt.ts";
+import { readCounters } from "../hooks/counters.ts";
 import { createTaskCommand } from "./tasks.ts";
 
 const FUSE = `// заголовок файла
@@ -252,6 +253,35 @@ describe("touch: пометить и выйти", () => {
     expect(drainDirtyLog(dir)).toHaveLength(1);
     expect(drainDirtyLog(dir)).toHaveLength(0);
     expect(existsSync(join(dir, ".myc", DIRTY_LOG))).toBe(false);
+  });
+
+  /**
+   * Отметка срабатывания хука правки (memory-q9k2zxfx2mcm). Условие то же, что
+   * у старта сессии: `myc anchor touch`, набранный руками, отметки НЕ создаёт —
+   * иначе счётчик `post-edit` означал бы «кто-нибудь звал anchor touch».
+   * И база здесь по-прежнему не открывается: отметка — файл рядом с журналом.
+   */
+  test("отметку post-edit ставит только вызов из хука", async () => {
+    const dbFile = join(dir, ".myc", "myc.db");
+    const before = readFileSync(dbFile);
+    const hooksJson = join(dir, ".myc", "hooks.json");
+
+    await data("anchor", "touch", "src/fuse.ts");
+    expect(existsSync(hooksJson)).toBe(false);
+
+    process.env.MYC_HOOK = "post-edit";
+    process.env.MYC_HOOK_AGENT = "claude";
+    try {
+      await data("anchor", "touch", "src/fuse.ts");
+      await data("anchor", "touch", "src/other.ts");
+    } finally {
+      delete process.env.MYC_HOOK;
+      delete process.env.MYC_HOOK_AGENT;
+    }
+    const c = readCounters(join(dir, ".myc")).hooks["claude:post-edit"];
+    expect(c?.count).toBe(2);
+    expect(c?.last_status).toBe("ok");
+    expect(readFileSync(dbFile).equals(before)).toBe(true);
   });
 });
 

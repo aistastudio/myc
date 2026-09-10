@@ -337,17 +337,28 @@ describe("хуки: список самоотмечающихся событий
    * знаю» про событие, о котором данные уже есть; забудет наоборот — начнёт
    * утверждать «не срабатывал» про то, что себя не отмечает. Второе хуже.
    */
-  test("recordHook зовут ровно для перечисленных событий", () => {
-    const dir = join(import.meta.dir, "hooks");
+  test("recordHook/markHookCall зовут ровно для перечисленных событий", () => {
+    // Обработчики живут в двух каталогах: absorb-session — в hooks/, а prime и
+    // anchor touch — в commands/. Пока сканировался только hooks/, отметка,
+    // добавленная в prime, была бы для этого сторожа невидимой, и он бы её
+    // «не заметил» ровно в том случае, ради которого написан.
+    const dirs = [join(import.meta.dir, "hooks"), join(import.meta.dir, "commands")];
     const events = new Set(HOOK_SPECS.map((s) => s.event as string));
     const found = new Set<string>();
-    for (const entry of readdirSync(dir)) {
-      if (!entry.endsWith(".ts") || entry.includes(".test.")) continue;
-      const src = readFileSync(join(dir, entry), "utf8");
-      if (entry === "counters.ts") continue; // сам модуль счётчиков
-      for (const call of src.matchAll(/recordHook\(([^)]*)\)/g)) {
-        for (const m of call[1]!.matchAll(/:([a-z][a-z0-9-]*)/g)) {
-          if (events.has(m[1]!)) found.add(m[1]!);
+    for (const dir of dirs) {
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith(".ts") || entry.includes(".test.")) continue;
+        if (entry === "counters.ts") continue; // сам модуль счётчиков
+        const src = readFileSync(join(dir, entry), "utf8");
+        // recordHook(dir, `${agent}:pre-compact`, …) — событие после двоеточия;
+        // markHookCall(dir, "session-start", …) — событие вторым аргументом.
+        for (const call of src.matchAll(/recordHook\(([^)]*)\)/g)) {
+          for (const m of call[1]!.matchAll(/:([a-z][a-z0-9-]*)/g)) {
+            if (events.has(m[1]!)) found.add(m[1]!);
+          }
+        }
+        for (const call of src.matchAll(/markHookCall\([^,]+,\s*"([a-z-]+)"/g)) {
+          if (events.has(call[1]!)) found.add(call[1]!);
         }
       }
     }

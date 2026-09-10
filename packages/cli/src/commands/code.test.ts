@@ -261,3 +261,117 @@ describe("myc code symbol — читатель, ради которого инд
     expect(r.code).toBe(ExitCode.USAGE);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Поиск, исчерпывающий откат и карта (memory-5nvk1hwcene2)
+// ---------------------------------------------------------------------------
+//
+//   МУТАЦИЯ «корпус не строится» — убрать `buildSearchUnits` из обработчика
+//   `code index`: краснеет «search отвечает», потому что `code_units` пуст и
+//   команда честно отказывает по precond.
+//
+//   МУТАЦИЯ «grep читает индекс» — заменить чтение файлов на выборку из
+//   `code_ref_sites`: краснеет «grep находит литерал в markdown», потому что
+//   в индексе символов markdown нет вовсе.
+//
+//   МУТАЦИЯ «рёбра по любому вхождению» — убрать `kind = 'import'` из
+//   `SQL_REF_EDGES`: краснеет map-тест в `code-intel/src/map.test.ts`.
+
+describe("myc code search — вопрос без знания имени", () => {
+  test("search отвечает файлом и символом, назвав ступени и объём просмотра", async () => {
+    await data("code", "index");
+    const d = (await data("code", "search", "слияние рангов rrf")) as unknown as {
+      hits: { path: string; units: { name: string; line: number }[] }[];
+      stages: string[];
+      searched: { units: number; files: number };
+    };
+    expect(d.hits.length).toBeGreaterThan(0);
+    expect(d.hits[0]!.path).toBe("src/fuse.ts");
+    expect(d.hits[0]!.units.some((u) => u.name === "fuseRRF")).toBe(true);
+    expect(d.stages.length).toBeGreaterThan(0);
+    expect(d.searched.units).toBeGreaterThan(0);
+  });
+
+  test("корпуса нет — это ДРУГОЙ ответ, а не «ничего не нашлось»", async () => {
+    const r = await myc("code", "search", "слияние рангов");
+    expect(r.code).toBe(ExitCode.PRECOND);
+    expect(r.stderr).toContain("myc code index");
+  });
+
+  test("ничего не нашлось — предупреждение называет просмотренное и откат", async () => {
+    await data("code", "index");
+    const r = await myc("code", "search", "квазистеллар");
+    expect(r.code).toBe(ExitCode.OK);
+    // В человекочитаемом режиме предупреждения печатаются в stdout — вместе
+    // с выдачей, к которой относятся; в stderr они уходят только при --json.
+    expect(r.stdout as string).toContain("просмотрено");
+    expect(r.stdout as string).toContain("myc code grep");
+  });
+
+  test("без вопроса — usage", async () => {
+    const r = await myc("code", "search");
+    expect(r.code).toBe(ExitCode.USAGE);
+  });
+});
+
+describe("myc code grep — исчерпывающий откат", () => {
+  test("находит литерал там, где индекса символов нет вовсе (markdown)", async () => {
+    await data("code", "index");
+    const d = (await data("code", "grep", "fuseRRF")) as unknown as {
+      hits: number;
+      files: number;
+      searched: number;
+      groups: { path: string; symbol: string; hits: { line: number }[] }[];
+    };
+    expect(d.groups.some((g) => g.path === "README.md")).toBe(true);
+    expect(d.groups.some((g) => g.symbol === "callsFuse")).toBe(true);
+    expect(d.hits).toBeGreaterThanOrEqual(3);
+    expect(d.searched).toBeGreaterThanOrEqual(2);
+  });
+
+  test("вхождения относятся к охватывающему определению, а не к файлу целиком", async () => {
+    await data("code", "index");
+    const d = (await data("code", "grep", "out.push")) as unknown as {
+      groups: { symbol: string; kind: string }[];
+    };
+    expect(d.groups.some((g) => g.symbol === "fuseRRF" && g.kind === "function")).toBe(true);
+  });
+
+  test("реестра файлов нет — precond, а не ноль вхождений", async () => {
+    const r = await myc("code", "grep", "fuseRRF");
+    expect(r.code).toBe(ExitCode.PRECOND);
+    expect(r.stderr).toContain("myc code index");
+  });
+
+  test("без литерала — usage", async () => {
+    const r = await myc("code", "grep");
+    expect(r.code).toBe(ExitCode.USAGE);
+  });
+});
+
+describe("myc code map — ориентация в незнакомом дереве", () => {
+  test("карта печатает итоги, кластеры и СВОЙ размер в знаках", async () => {
+    await data("code", "index");
+    const d = (await data("code", "map")) as unknown as {
+      files: number;
+      defs: number;
+      imports: number;
+      clusters: { dir: string; files: number; defs: number }[];
+      render_bytes: number;
+    };
+    expect(d.files).toBeGreaterThan(0);
+    expect(d.defs).toBeGreaterThan(0);
+    expect(d.clusters.length).toBeGreaterThan(0);
+    // Бюджет контекста назван числом, а не обещанием: без этого карта
+    // «помещается» ровно до первого большого репозитория.
+    expect(d.render_bytes).toBeGreaterThan(0);
+    const human = await myc("code", "map");
+    expect(Buffer.byteLength(human.stdout as string, "utf8")).toBeGreaterThanOrEqual(d.render_bytes);
+  });
+
+  test("реестра файлов нет — precond, а не пустая карта", async () => {
+    const r = await myc("code", "map");
+    expect(r.code).toBe(ExitCode.PRECOND);
+    expect(r.stderr).toContain("myc code index");
+  });
+});

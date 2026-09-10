@@ -7,9 +7,18 @@
  * потолки. Всё, что требует LLM, уходит в фоновую дистилляцию.
  *
  * Форматы транскриптов у хостов разные и меняются между версиями, поэтому
- * парсер намеренно терпимый: он пробует JSONL (Claude Code, Codex), а всё, что
- * не разобралось, не выбрасывает, а кладёт как текстовый ход. Потеря хода из-за
- * незнакомой схемы была бы ровно той тихой деградацией, которую запрещает И2.
+ * парсер намеренно терпимый: он пробует JSONL, а всё, что не разобралось, не
+ * выбрасывает, а кладёт как текстовый ход. Потеря хода из-за незнакомой схемы
+ * была бы ровно той тихой деградацией, которую запрещает И2.
+ *
+ * Разобранных форм JSONL три, и все три подтверждены живыми прогонами:
+ *   - Claude Code и Kimi: `{type, message:{role, content:[{type:"text"…}]}}`;
+ *   - наш плагин opencode: то же, он для этого и собирает строки сам;
+ *   - Codex rollout: `{type:"response_item", payload:{…}}`, блоки текста
+ *     `input_text`/`output_text`, вызовы инструментов `custom_tool_call` и
+ *     `function_call`. Пока этой формы здесь не было, absorb-session разбирал
+ *     rollout Codex в НОЛЬ ходов и писал `empty` — хук тикал, не сохраняя
+ *     ничего.
  */
 
 /** Роли, которые мы различаем; всё незнакомое схлопывается в "system". */
@@ -102,7 +111,14 @@ function contentText(content: unknown, files: string[]): Content {
     if (block === null || typeof block !== "object") continue;
     const b = block as Record<string, unknown>;
     const type = b["type"];
-    if (type === "text" && typeof b["text"] === "string") {
+    // `input_text`/`output_text` — имена блоков у Codex; `text` — у Claude Code
+    // и opencode. Разные имена одного и того же: без них rollout Codex
+    // разбирался в НОЛЬ ходов, absorb-session возвращал `empty`, и хук
+    // выглядел здоровым, ничего не сохраняя.
+    if (
+      (type === "text" || type === "input_text" || type === "output_text") &&
+      typeof b["text"] === "string"
+    ) {
       parts.push(b["text"]);
       prose.push(b["text"]);
     } else if (type === "tool_use") {
@@ -143,8 +159,65 @@ function readMeta(rec: Record<string, unknown>, meta: Meta): void {
   }
 }
 
+/**
+ * Стенограмма Codex (rollout JSONL) — единственная, у которой ход завёрнут:
+ * `{"timestamp":…,"type":"response_item","payload":{…}}`. Разворачиваем, и
+ * дальше всё общее: `payload.role` + `payload.content`, а мета-строка
+ * `session_meta` отдаёт `cwd` и `session_id` тому же readMeta.
+ *
+ * Проверено живым прогоном codex-cli 0.153.4: ни у Claude Code, ни у Kimi, ни
+ * у нашего плагина opencode поля `payload` на верхнем уровне нет, так что
+ * разворот их не задевает.
+ */
+function unwrapRollout(rec: Record<string, unknown>): Record<string, unknown> {
+  const payload = rec["payload"];
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return rec;
+  return payload as Record<string, unknown>;
+}
+
+/** Вызовы инструментов у Codex: своя пара имён на каждую половину. */
+const CODEX_TOOL_CALL = /^(?:custom_tool_call|function_call|local_shell_call)$/;
+const CODEX_TOOL_OUTPUT = /^(?:custom_tool_call_output|function_call_output|local_shell_call_output)$/;
+
+/**
+ * Ход из вызова инструмента Codex. `input`/`arguments` — СТРОКА (у
+ * `custom_tool_call` это код на JS, у `function_call` — JSON аргументов),
+ * поэтому пути файлов достаются только когда строка разбирается как объект:
+ * гадать по тексту значило бы набивать счётчик правок мусором.
+ */
+function codexToolTurn(rec: Record<string, unknown>, files: string[]): Turn | null {
+  const type = rec["type"];
+  if (typeof type !== "string") return null;
+  if (CODEX_TOOL_CALL.test(type)) {
+    const name = typeof rec["name"] === "string" ? rec["name"] : "tool";
+    const raw = rec["input"] ?? rec["arguments"];
+    let parsed: unknown = raw;
+    if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = undefined;
+      }
+    }
+    const block = { type: "tool_use", name, ...(parsed !== undefined ? { input: parsed } : {}) };
+    const content = contentText([block], files);
+    const text = typeof raw === "string" && raw.length > 0 ? `[${name}] ${raw}` : content.all;
+    if (text.trim().length === 0) return null;
+    return { role: "assistant", text: text.slice(0, MAX_TURN_CHARS), prose: "" };
+  }
+  if (CODEX_TOOL_OUTPUT.test(type)) {
+    const out = rec["output"];
+    const text = typeof out === "string" ? out : contentText(out, files).all;
+    if (text.trim().length === 0) return null;
+    return { role: "tool", text: text.slice(0, MAX_TURN_CHARS), prose: "" };
+  }
+  return null;
+}
+
 /** Один ход из JSONL-строки; null — строка не наша (summary, meta, мусор). */
 function lineToTurn(rec: Record<string, unknown>, files: string[]): Turn | null {
+  const tool = codexToolTurn(rec, files);
+  if (tool !== null) return tool;
   const message = rec["message"];
   const source = message !== null && typeof message === "object" ? (message as Record<string, unknown>) : null;
   const content = source !== null ? contentText(source["content"], files) : contentText(rec["content"] ?? rec["text"], files);
@@ -178,7 +251,7 @@ export function parseTranscript(raw: string): Transcript {
         const rec = JSON.parse(trimmed) as unknown;
         if (rec !== null && typeof rec === "object") {
           jsonLines++;
-          const asRec = rec as Record<string, unknown>;
+          const asRec = unwrapRollout(rec as Record<string, unknown>);
           readMeta(asRec, meta);
           const turn = lineToTurn(asRec, files);
           if (turn) turns.push(turn);

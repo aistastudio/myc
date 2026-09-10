@@ -10,6 +10,7 @@ import { migration008DigestCache } from "./008-digest-cache.ts";
 import { migration009NodesExternalId } from "./009-nodes-external-id.ts";
 import { migration010AncBlockers } from "./010-anc-blockers.ts";
 import { migration011CodeRefSites } from "./011-code-ref-sites.ts";
+import { migration012CodeSearch } from "./012-code-search.ts";
 
 /**
  * Базовый набор миграций SQLite. Версия 1 — вся схема §8.1 целиком,
@@ -23,7 +24,9 @@ import { migration011CodeRefSites } from "./011-code-ref-sites.ts";
  * версия 10 — наследование блокеров вниз по parent счётчиком nodes.anc_blockers
  * (memory-atcm254ry6c7: `ready` расходился с `bd ready` на 51 задачу),
  * версия 11 — ссылки с местом и владельцем (memory-e34bfse29jdw): без них у
- * код-интеллекта есть определения, но нет рёбер, то есть нет `callers`.
+ * код-интеллекта есть определения, но нет рёбер, то есть нет `callers`,
+ * версия 12 — корпус поиска по коду (memory-5nvk1hwcene2): определения и шапки
+ * файлов в отдельном FTS5, без которого `myc code symbol` требует ЗНАТЬ имя.
  * Векторные объекты сюда не входят намеренно (решение S26) — см. ./vec.ts.
  */
 export const migrations: readonly Migration[] = [
@@ -38,6 +41,7 @@ export const migrations: readonly Migration[] = [
   migration009NodesExternalId,
   migration010AncBlockers,
   migration011CodeRefSites,
+  migration012CodeSearch,
 ];
 
 export { migration001Init } from "./001-init.ts";
@@ -51,6 +55,7 @@ export { migration008DigestCache } from "./008-digest-cache.ts";
 export { migration009NodesExternalId } from "./009-nodes-external-id.ts";
 export { migration010AncBlockers } from "./010-anc-blockers.ts";
 export { migration011CodeRefSites } from "./011-code-ref-sites.ts";
+export { migration012CodeSearch } from "./012-code-search.ts";
 export { vecMigration001Init } from "./vec-001-init.ts";
 export {
   migrateVectors,

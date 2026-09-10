@@ -36,7 +36,12 @@ import {
   AGENTS_START,
   agentsBlock,
   claudeHelper,
+  CODEX_EVENTS,
+  CODEX_HELPER_REL,
+  CODEX_NEEDS_REVIEW,
   CODEX_NO_EPISODE,
+  codexHelper,
+  codexHookCommand,
   HOOK_SPECS,
   kimiHelper,
   kimiHooksToml,
@@ -52,6 +57,7 @@ const HELPER_MARK = "myc-hooks.mjs";
 const MYC_PERMISSION = "Bash(myc:*)";
 const TOML_NOTIFY_START = "# myc:notify:start";
 const TOML_NOTIFY_END = "# myc:notify:end";
+const CODEX_HOOKS_REL = ".codex/hooks.json";
 const TOML_MCP_START = "# myc:mcp:start";
 const TOML_MCP_END = "# myc:mcp:end";
 
@@ -224,13 +230,32 @@ function entryMatcher(entry: unknown): string | undefined {
   return typeof m === "string" && m.length > 0 ? m : undefined;
 }
 
-function hookEntry(spec: HookSpec): Record<string, unknown> {
+function claudeHookEntry(spec: HookSpec): Record<string, unknown> {
   const command = `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/myc-hooks.mjs" ${spec.event}`;
   const entry: Record<string, unknown> = {
     ...(spec.matcher !== undefined ? { matcher: spec.matcher } : {}),
     hooks: [{ type: "command", command, timeout: spec.timeoutMs }],
   };
   return entry;
+}
+
+/**
+ * Запись хука для `.codex/hooks.json`. Форма та же, что у Claude Code, а
+ * `timeout` — В СЕКУНДАХ (`hook.timeout_sec` внутри codex). Одно и то же поле
+ * с разной единицей в двух конфигах — ровно тот случай, где молчаливая
+ * подстановка миллисекунд дала бы хук с таймаутом в 8000 секунд.
+ */
+function codexHookEntry(spec: HookSpec): Record<string, unknown> {
+  return {
+    ...(spec.matcher !== undefined ? { matcher: spec.matcher } : {}),
+    hooks: [
+      {
+        type: "command",
+        command: codexHookCommand(spec.event),
+        timeout: Math.max(1, Math.ceil(spec.timeoutMs / 1000)),
+      },
+    ],
+  };
 }
 
 interface SettingsPlan {
@@ -244,15 +269,18 @@ interface SettingsPlan {
 }
 
 /**
- * Точечный merge `.claude/settings.json`. Меняются ровно три вещи: массивы
- * `hooks.<Event>`, куда добавляется НАША запись, и `permissions.allow`.
- * Всё остальное — включая `statusLine` — не читается и не пишется.
+ * Точечный merge массивов `hooks.<Event>` в чужом JSON-конфиге. Общий для
+ * Claude Code (`.claude/settings.json`) и Codex (`.codex/hooks.json`): форма
+ * записи у них одна, различаются только команда и единица таймаута, и обе
+ * приходят параметром `entry`. Две копии этой функции разъехались бы молча —
+ * а вытеснение чужих хуков считается самым дорогим, что здесь происходит.
  */
-function mergeClaudeSettings(
+function mergeHookNodes(
   source: JsonSource,
   specs: readonly HookSpec[],
   mode: HookMode | undefined,
   relPath: string,
+  entry: (spec: HookSpec) => Record<string, unknown>,
 ): SettingsPlan {
   const value: Record<string, unknown> = { ...source.value };
   const hooks = asRecord(value["hooks"]);
@@ -297,13 +325,29 @@ function mergeClaudeSettings(
     }
 
     const kept = mode === "replace" ? [] : foreign;
-    hooks[event] = [...kept, hookEntry(spec)];
+    hooks[event] = [...kept, entry(spec)];
     nodes.push(node);
   }
 
   if (conflicts.length > 0) return { nodes, conflicts, evicted, notes, value };
-
   if (nodes.length > 0) value["hooks"] = hooks;
+  return { nodes, conflicts, evicted, notes, value };
+}
+
+/**
+ * `.claude/settings.json`: те же узлы `hooks.<Event>` плюс `permissions.allow`.
+ * Всё остальное — включая `statusLine` — не читается и не пишется.
+ */
+function mergeClaudeSettings(
+  source: JsonSource,
+  specs: readonly HookSpec[],
+  mode: HookMode | undefined,
+  relPath: string,
+): SettingsPlan {
+  const base = mergeHookNodes(source, specs, mode, relPath, claudeHookEntry);
+  if (base.conflicts.length > 0) return base;
+  const value = { ...base.value };
+  const nodes = [...base.nodes];
 
   const permissions = asRecord(value["permissions"]);
   const allow = asArray(permissions["allow"]);
@@ -313,7 +357,17 @@ function mergeClaudeSettings(
     nodes.push(`permissions.allow[${MYC_PERMISSION}]`);
   }
 
-  return { nodes, conflicts, evicted, notes, value };
+  return { ...base, nodes, value };
+}
+
+/** `.codex/hooks.json`: только узлы `hooks.<Event>`, без permissions. */
+function mergeCodexHooks(
+  source: JsonSource,
+  specs: readonly HookSpec[],
+  mode: HookMode | undefined,
+  relPath: string,
+): SettingsPlan {
+  return mergeHookNodes(source, specs, mode, relPath, codexHookEntry);
 }
 
 function planJsonMerge(
@@ -480,6 +534,20 @@ function planClaude(plan: Plan, o: WireOptions): void {
   plan.untouched.push("CLAUDE.md", ".claude/settings.json:statusLine");
 }
 
+/**
+ * Codex. Две половины, и обе внутри проекта — D10 соблюдается.
+ *
+ * 1. `.codex/config.toml` — MCP-сервер между маркерами, как было.
+ * 2. `.codex/myc-hooks.mjs` + `.codex/hooks.json` — хуки. Проектный слой хуков
+ *    у codex ЕСТЬ (`hooks/list` отдаёт наши записи с `"source": "project"`),
+ *    вопреки прежней записи в templates.ts, которая считала конфиг только
+ *    пользовательским. Поэтому блок в `$HOME` печатать не нужно, в отличие от
+ *    Kimi.
+ *
+ * Чего wire всё равно не может: доверия. Codex запускает хук лишь после того,
+ * как человек доверил проект и просмотрел новый хук, — и об этом сказано в
+ * заметке, а не оставлено на догадку (И2).
+ */
 function planCodex(plan: Plan, o: WireOptions): void {
   const rel = ".codex/config.toml";
   const abs = join(o.root, rel);
@@ -504,7 +572,7 @@ function planCodex(plan: Plan, o: WireOptions): void {
     nodes.push("[mcp_servers.myc]");
   }
 
-  // notify БОЛЬШЕ НЕ СТАВИТСЯ (см. CODEX_NO_EPISODE в templates.ts): в его
+  // notify БОЛЬШЕ НЕ СТАВИТСЯ (см. шапку про Codex в templates.ts): в его
   // payload нет ни стенограммы, ни события сжатия. Мало перестать писать
   // блок — надо снять свой старый, иначе у всех, кто настроился раньше,
   // на каждом ходу продолжит запускаться хук, который пишет `empty` и
@@ -515,8 +583,17 @@ function planCodex(plan: Plan, o: WireOptions): void {
       `${rel}: снят наш прежний notify на .codex/myc-notify.mjs — ${CODEX_NO_EPISODE}. ` +
         "Сам файл .codex/myc-notify.mjs уберёт `myc unwire`",
     );
-  } else {
-    plan.notes.push(`Codex: ${CODEX_NO_EPISODE}`);
+  }
+
+  // Хуки: helper целиком наш, hooks.json — чужой конфиг, значит merge.
+  const specs = HOOK_SPECS.filter((sp) => o.events.includes(sp.event) && CODEX_EVENTS.has(sp.event));
+  if (specs.length > 0) {
+    planOwnFile(plan, o.root, CODEX_HELPER_REL, codexHelper({ events: o.events, hookOutput: o.hookOutput }));
+    planJsonMerge(plan, o.root, CODEX_HOOKS_REL, (source) =>
+      mergeCodexHooks(source, specs, o.mode, CODEX_HOOKS_REL),
+    );
+    plan.untouched.push("~/.codex/config.toml (доверие проекту и просмотр хуков — только руками)");
+    plan.notes.push(`Codex: ${CODEX_NEEDS_REVIEW}`);
   }
 
   if (plan.conflicts.some((c) => c.path === rel)) return;
@@ -629,7 +706,7 @@ function planAgentsMd(plan: Plan, o: WireOptions): void {
 // Журнал
 // ---------------------------------------------------------------------------
 
-interface JournalEntry {
+export interface JournalEntry {
   readonly path: string;
   readonly kind: ActionKind;
   readonly nodes: readonly string[];
@@ -637,11 +714,78 @@ interface JournalEntry {
   readonly hash: string;
 }
 
-interface Journal {
+export interface Journal {
   readonly v: 1;
   readonly written_at: number;
   readonly agents: readonly string[];
+  /**
+   * `--hook-output`, с которым записывали. Нужен, чтобы сверка «установленное
+   * против нынешней сборки» не считала расхождением ЧУЖОЙ выбор человека:
+   * helper для `text` и для `json` — разные файлы, и без этого поля один из
+   * двух всегда выглядел бы устаревшим. У журналов, записанных до появления
+   * поля, его нет, и тогда сверка принимает любой из двух вариантов.
+   */
+  readonly hook_output?: "json" | "text";
   readonly entries: readonly JournalEntry[];
+}
+
+/**
+ * Журнал установки, разобранный. `null` — файла нет или он битый: и то и другое
+ * значит «не знаю», а не «не поставлено» (И2).
+ */
+export function readWireJournal(path: string): Journal | null {
+  const raw = fileText(path);
+  if (raw === null) return null;
+  try {
+    const j = JSON.parse(raw) as Partial<Journal>;
+    if (j === null || typeof j !== "object" || !Array.isArray(j.entries)) return null;
+    return {
+      v: 1,
+      written_at: typeof j.written_at === "number" ? j.written_at : Number.NaN,
+      agents: Array.isArray(j.agents) ? j.agents : [],
+      ...(j.hook_output === "json" || j.hook_output === "text" ? { hook_output: j.hook_output } : {}),
+      entries: j.entries as JournalEntry[],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Файлы, которые myc генерирует ЦЕЛИКОМ, и содержимое, которое дала бы ИМЕННО
+ * ЭТА сборка. Собирается теми же планировщиками, что и запись, — второй список
+ * тех же путей разошёлся бы с ними молча, а признак «наш файл» здесь ровно тот
+ * же, по которому `unwire` их удаляет: у записи нет узлов чужого конфига.
+ *
+ * Ради этой функции существует `myc doctor --hooks`-сверка устаревших хуков:
+ * шаблон helper'а меняется от версии к версии, а на диске у человека лежит
+ * файл, сгенерированный месяц назад, и заметить это было нечем
+ * (memory-h12hjebzr0he: установленный helper не передавал `--session`, и вся
+ * сессионная память была скрыта — принятая функция БЕЗДЕЙСТВОВАЛА).
+ */
+export function generatedFiles(
+  root: string,
+  events: readonly HookEvent[],
+  hookOutput: "json" | "text",
+): ReadonlyMap<string, string> {
+  const plan = emptyPlan();
+  const options: WireOptions = {
+    root,
+    events,
+    hookOutput,
+    mode: undefined,
+    agentsMd: false,
+    mycBin: { command: "myc", source: "none" },
+  };
+  for (const harness of HARNESSES) PLANNERS[harness](plan, options);
+  const out = new Map<string, string>();
+  for (const a of plan.actions) if (a.nodes.length === 0) out.set(a.path, a.content);
+  return out;
+}
+
+/** Хеш файла в том же виде, в каком его пишет журнал. */
+export function wireHash(text: string): string {
+  return sha256(text);
 }
 
 /**
@@ -818,7 +962,13 @@ export function createWireCommand(registry: Registry): Command {
         const jPath = journalPath(root, ctx);
         try {
           mkdirSync(dirname(jPath), { recursive: true });
-          const doc: Journal = { v: 1, written_at: Date.now(), agents, entries };
+          const doc: Journal = {
+            v: 1,
+            written_at: Date.now(),
+            agents,
+            hook_output: outRaw,
+            entries,
+          };
           writeFileSync(jPath, `${JSON.stringify(doc, null, 2)}\n`);
           journal = relative(root, jPath);
         } catch (e) {

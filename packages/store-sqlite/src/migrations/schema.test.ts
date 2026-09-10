@@ -21,6 +21,7 @@ import {
   migration007NodesRepo,
   migration008DigestCache,
   migration011CodeRefSites,
+  migration012CodeSearch,
 } from "./index.ts";
 
 let dir: string;
@@ -86,7 +87,7 @@ describe("миграция 1 — базовая схема", () => {
   test("чистая БД поднимается одной командой, все заявленные объекты в sqlite_master", async () => {
     store = open();
     const result = await migrate(store, { migrations, writable: true });
-    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(result.pendingVersions).toEqual([]);
     expect(result.degraded).toEqual([]);
 
@@ -116,6 +117,17 @@ describe("миграция 1 — базовая схема", () => {
     expect(migration011CodeRefSites.objects.filter((n) => !present.has(n))).toEqual([]);
     expect(present.get("code_ref_sites")).toBe("table");
     expect(present.get("ix_code_ref_sites_name")).toBe("index");
+    // Версия 12 (memory-5nvk1hwcene2): корпус поиска по коду — таблица единиц,
+    // индекс по файлу и виртуальная таблица FTS5. Последняя проверяется ещё и
+    // теневыми таблицами ниже: bun:sqlite МОЛЧА пропускает CREATE VIRTUAL
+    // TABLE с неизвестным модулем, и без этой проверки отсутствие FTS5 в
+    // сборке выглядело бы как «поиск ничего не нашёл».
+    expect(migration012CodeSearch.objects.filter((n) => !present.has(n))).toEqual([]);
+    expect(present.get("code_units")).toBe("table");
+    expect(present.get("ix_code_units_file")).toBe("index");
+    expect(present.get("code_fts")).toBe("table");
+    expect(present.has("code_fts_data")).toBe(true);
+    expect(present.has("code_fts_idx")).toBe(true);
 
     // Состав набора зафиксирован числом: молчаливая потеря объекта при правке
     // DDL — ровно то, что этот тест обязан ловить.

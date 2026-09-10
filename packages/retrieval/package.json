@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fts": "./src/fts.ts"
   },
   "dependencies": {
     "@myc/core": "workspace:*"

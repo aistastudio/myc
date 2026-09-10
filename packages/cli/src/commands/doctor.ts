@@ -24,10 +24,16 @@
  * И2 (ГРОМКАЯ ДЕГРАДАЦИЯ) ЗДЕСЬ — НЕ УКРАШЕНИЕ, А СМЫСЛ КОМАНДЫ. У каждого
  * пункта три исхода, а не два: «сходится», «расходится» и «НЕ ПРОВЕРЕНО».
  * Диагностика, печатающая «ок» там, где она ничего не смотрела, вреднее
- * молчания: человек уносит уверенность, которой не было. Ровно поэтому
- * `--hooks` про session-start отвечает «не знаю»: этот хук себя не отмечает,
- * а старт сессии от ручного `myc prime` неотличим (memory-q9k2zxfx2mcm), и
- * написать «не срабатывал» значило бы соврать.
+ * молчания: человек уносит уверенность, которой не было.
+ *
+ * `--hooks` отвечает на два разных вопроса, и оба здесь. СРАБАТЫВАЛ ЛИ хук —
+ * по счётчику `.myc/hooks.json`; отметку ставит только вызов, объявивший себя
+ * через `MYC_HOOK` (helper объявляет, человек — нет), поэтому «session-start
+ * срабатывал N раз» означает ровно старт сессии, а не «кто-нибудь запускал
+ * `myc prime`» (memory-q9k2zxfx2mcm). ТОТ ЛИ ХУК СТОИТ — сверкой хеша
+ * установленного файла с тем, что дала бы эта сборка: устаревший helper тикал
+ * исправно и печатался как `ok`, пока молча не передавал `--session`
+ * (memory-h12hjebzr0he).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -57,9 +63,20 @@ import type {
 import { swarmMigrations, BOOKKEEPING_TABLE } from "@myc/swarm";
 import { openDriver, type CliDriver } from "./store.ts";
 import { findWorkspaceDb } from "./wsfind.ts";
-import { readCounters, SELF_REPORTING_HOOKS, type HookCounter } from "../hooks/counters.ts";
-import { HOOK_SPECS } from "../hooks/templates.ts";
-import { WIRE_JOURNAL } from "./wire.ts";
+import {
+  HOLLOW_STATUS,
+  readCounters,
+  SELF_REPORTING_HOOKS,
+  type HookCounter,
+} from "../hooks/counters.ts";
+import { HOOK_SPECS, type HookEvent } from "../hooks/templates.ts";
+import {
+  generatedFiles,
+  readWireJournal,
+  wireHash,
+  WIRE_JOURNAL,
+  type Journal,
+} from "./wire.ts";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, ...(hint !== undefined ? { hint } : {}) };
@@ -418,9 +435,30 @@ export interface HookReport {
   readonly last_at?: number;
 }
 
+/**
+ * Сверка ОДНОГО сгенерированного нами файла с тем, что дала бы эта сборка.
+ * Три исхода, и они отвечают на разные вопросы: `ok` — файл нынешний,
+ * `устарел` — файл ровно тот, что записал `wire`, но шаблон с тех пор изменился
+ * (виноват не человек, а версия), `изменён` — на диске не то, что мы писали, и
+ * не то, что пишем сейчас (файл правили руками или подменили).
+ */
+export interface GeneratedReport {
+  readonly path: string;
+  readonly verdict: Verdict;
+  readonly detail: string;
+  /** Хеш, записанный `myc wire`. */
+  readonly recorded?: string;
+  /** Хеш того, что сгенерировала бы нынешняя сборка. */
+  readonly expected?: string;
+  /** Хеш файла на диске сейчас. */
+  readonly actual?: string;
+}
+
 export interface HooksSection {
   readonly journal: boolean;
   readonly hooks: readonly HookReport[];
+  /** Сгенерированные нами файлы: устарел / подменён / актуален. */
+  readonly generated: readonly GeneratedReport[];
   readonly checks: readonly Check[];
   /** Каталог, откуда читался счётчик срабатываний: он принадлежит базе. */
   readonly countersDir: string;
@@ -456,14 +494,9 @@ export const HOOK_GRACE_MS = 24 * 60 * 60 * 1000;
  */
 const HELPER_FILE_EVENTS = HOOK_SPECS.filter((s) => s.event !== "stop").map((s) => s.claudeEvent);
 
-function wiredEvents(mycDir: string): WireJournal | null {
-  const path = join(mycDir, WIRE_JOURNAL);
-  if (!existsSync(path)) return null;
-  try {
-    const j = JSON.parse(readFileSync(path, "utf8")) as {
-      entries?: Array<{ nodes?: string[]; path?: string }>;
-      written_at?: number;
-    };
+function wiredEvents(j: Journal | null): WireJournal | null {
+  if (j === null) return null;
+  {
     const events = new Set<string>();
     let ownHelper = false;
     for (const e of j.entries ?? []) {
@@ -486,10 +519,109 @@ function wiredEvents(mycDir: string): WireJournal | null {
       }
     }
     if (ownHelper) for (const ev of HELPER_FILE_EVENTS) events.add(ev);
-    return { events, writtenAt: typeof j.written_at === "number" ? j.written_at : Number.NaN };
-  } catch {
-    return null; // журнал битый — это «не знаю», а не «не поставлено»
+    return { events, writtenAt: j.written_at };
   }
+}
+
+function fileTextOrNull(path: string): string | null {
+  try {
+    return existsSync(path) ? readFileSync(path, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Устаревший сгенерированный файл — самая тихая из поломок хуков, и до этой
+ * сверки её нечем было заметить. Установленный `.claude/helpers/myc-hooks.mjs`
+ * был собран ДО того, как шаблон начал передавать `--session`; хук исправно
+ * тикал, `doctor` печатал `ok`, а `prime` при этом всегда работал с «сессия не
+ * указана», то есть принятая функция БЕЗДЕЙСТВОВАЛА (memory-h12hjebzr0he).
+ * `myc wire` про это не говорил — он просто перезаписывал по требованию.
+ *
+ * Сверять есть с чем без новых сущностей: журнал `wire.json` хранит хеш
+ * каждого записанного файла, а содержимое, которое дала бы НЫНЕШНЯЯ сборка,
+ * собирают те же планировщики, что и запись (`generatedFiles`).
+ */
+function checkGenerated(
+  root: string,
+  journalDir: string,
+  journal: Journal | null,
+  events: readonly HookEvent[],
+): GeneratedReport[] {
+  if (journal === null) {
+    return [
+      {
+        path: WIRE_JOURNAL,
+        verdict: "unknown",
+        detail:
+          `не знаю: журнала ${join(journalDir, WIRE_JOURNAL)} нет или он не разбирается — ` +
+          "сверить установленные файлы с этой сборкой нечем",
+      },
+    ];
+  }
+  // `--hook-output` — выбор человека, а не признак свежести. В журнале он есть
+  // начиная с этой версии; у прежних журналов поля нет, и тогда подходит любой
+  // из двух вариантов — иначе половина установок объявлялась бы устаревшей на
+  // ровном месте.
+  const outputs: readonly ("json" | "text")[] =
+    journal.hook_output !== undefined ? [journal.hook_output] : ["json", "text"];
+  const variants = outputs.map((o) => generatedFiles(root, events, o));
+  const out: GeneratedReport[] = [];
+
+  for (const entry of journal.entries) {
+    const expected = variants.map((v) => v.get(entry.path)).filter((c): c is string => c !== undefined);
+    if (expected.length === 0) continue; // конфиг харнесса, а не наш файл целиком
+    const expectedHashes = expected.map(wireHash);
+    const text = fileTextOrNull(join(root, entry.path));
+    if (text === null) {
+      out.push({
+        path: entry.path,
+        verdict: "drift",
+        detail: "пропал: журнал `myc wire` его помнит, на диске файла нет — хук запускать нечем, `myc wire`",
+        recorded: entry.hash,
+        expected: expectedHashes[0]!,
+      });
+      continue;
+    }
+    const actual = wireHash(text);
+    if (expectedHashes.includes(actual)) {
+      out.push({
+        path: entry.path,
+        verdict: "ok",
+        detail: `актуален: совпадает с тем, что генерирует эта сборка (${actual})`,
+        recorded: entry.hash,
+        expected: actual,
+        actual,
+      });
+      continue;
+    }
+    if (actual === entry.hash) {
+      out.push({
+        path: entry.path,
+        verdict: "drift",
+        detail:
+          `устарел: файл ровно тот, что записал \`myc wire\` (${entry.hash}), но шаблон в этой ` +
+          `сборке даёт другой (${expectedHashes[0]}) — перезапустите \`myc wire\``,
+        recorded: entry.hash,
+        expected: expectedHashes[0]!,
+        actual,
+      });
+      continue;
+    }
+    out.push({
+      path: entry.path,
+      verdict: "drift",
+      detail:
+        `изменён после нас: на диске (${actual}) ни то, что записал \`myc wire\` (${entry.hash}), ` +
+        `ни то, что даёт эта сборка (${expectedHashes[0]}) — \`myc wire\` вернёт наш файл, ` +
+        "прежний уйдёт в .myc.bak",
+      recorded: entry.hash,
+      expected: expectedHashes[0]!,
+      actual,
+    });
+  }
+  return out;
 }
 
 function when(ms: number): string {
@@ -537,9 +669,14 @@ function checkHooks(
   registry: Registry,
   now: number = Date.now(),
 ): HooksSection {
-  const wired = wiredEvents(journalDir);
+  const journal = readWireJournal(join(journalDir, WIRE_JOURNAL));
+  const wired = wiredEvents(journal);
   const counters = readCounters(countersDir).hooks;
   const reports: HookReport[] = [];
+  // Те же события, что поставил бы `myc wire` из этой сборки: сверять
+  // содержимое helper'а с шаблоном, который эта сборка не ставит, значило бы
+  // объявлять расхождением собственный отказ.
+  const buildEvents = HOOK_SPECS.filter((sp) => registry.hasTop(sp.command)).map((sp) => sp.event);
 
   for (const spec of HOOK_SPECS) {
     const inBuild = registry.hasTop(spec.command);
@@ -572,17 +709,17 @@ function checkHooks(
       // `empty`, ни одного узла kind='session' в базе — плагин opencode зовёт
       // `absorb-session` без транскрипта. doctor при этом печатал `ok`, то
       // есть подтверждал ровно то обещание, которое не выполнялось.
-      const empty = last.last_status === "empty";
+      const hollow = HOLLOW_STATUS[last.last_status];
       reports.push({
         event: spec.event,
         command: spec.command,
         installed,
-        verdict: empty ? "drift" : "ok",
-        detail: empty
-          ? `срабатывал ${count} раз, но последний раз сохранять было нечего ` +
-            `(${when(last.last_at)}, статус empty${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}) — ` +
-            "эпизод не создан, проверьте, что хук передаёт транскрипт"
-          : `срабатывал ${count} раз, последний ${when(last.last_at)} (${last.last_status}, ${last.last_ms} мс)${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}`,
+        verdict: hollow !== undefined ? "drift" : "ok",
+        detail:
+          hollow !== undefined
+            ? `срабатывал ${count} раз, но в последний раз работы не сделал ` +
+              `(${when(last.last_at)}, статус ${last.last_status}${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}): ${hollow}`
+            : `срабатывал ${count} раз, последний ${when(last.last_at)} (${last.last_status}, ${last.last_ms} мс)${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}`,
         count,
         last_at: last.last_at,
       });
@@ -632,11 +769,12 @@ function checkHooks(
     });
   }
 
-  const checks: Check[] = reports.map((r) => ({
-    name: r.event,
-    verdict: r.verdict,
-    detail: r.detail,
-  }));
+  const generated = checkGenerated(dirname(journalDir), journalDir, journal, buildEvents);
+
+  const checks: Check[] = [
+    ...reports.map((r) => ({ name: r.event, verdict: r.verdict, detail: r.detail })),
+    ...generated.map((g) => ({ name: g.path, verdict: g.verdict, detail: g.detail })),
+  ];
   // Каталоги разошлись — значит команду позвали из git worktree, и вердикт
   // собран из ДВУХ мест. Назвать это обязаны: молчащий диагност, который
   // смешал два источника, хуже молчания.
@@ -651,6 +789,7 @@ function checkHooks(
   return {
     journal: wired !== null,
     hooks: reports,
+    generated,
     checks,
     countersDir,
     journalDir,
@@ -753,9 +892,11 @@ export function createDoctorCommand(registry: Registry): Command {
       "--recount only compares. `parent_closure` is compared by running the real rebuild inside " +
       "a transaction that is always rolled back, so the file is left byte-for-byte unchanged " +
       "and the check cannot drift from the repair it mirrors.\n\n" +
-      "--hooks distinguishes three states: fired (with when and how long), not installed (with " +
-      "why), and 'не знаю' — installed but self-reporting nothing. Only pre-compact marks " +
-      "itself today; session-start cannot be told apart from a hand-typed `myc prime`.",
+      "--hooks answers two questions. Did it fire: the counter is written only by a caller that " +
+      "declared itself through MYC_HOOK, so 'session-start fired N times' means sessions, not " +
+      "hand-typed `myc prime` calls. Is it the current hook: every file myc generates in full is " +
+      "hashed against what this build would generate, so a helper installed by an older version " +
+      "is reported as stale by name instead of silently doing nothing.",
     handler: async (ctx: CommandContext): Promise<CommandResult> => {
       const want = {
         schema: ctx.flags["schema"] === true,

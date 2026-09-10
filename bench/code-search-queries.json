@@ -1,0 +1,68 @@
+{
+  "_": "Размеченный набор вопросов для замера ранжирования myc code search (memory-5nvk1hwcene2). Вопросы заданы так, как их задал бы агент — естественной речью, без имени символа; иначе замерялся бы `code symbol`, а не поиск. Правильный ответ — РЕГУЛЯРНОЕ ВЫРАЖЕНИЕ по пути файла, потому что ответом поиска является файл с названными символами, а не одна строка. Разметка сделана по тому, где ответ действительно живёт, а не по тому, что находится: три вопроса (semantic-only) поставлены заведомо трудными — слова вопроса в коде не стоят вовсе, и лексика на них имеет право промахнуться. Набор зафиксирован ДО первого замера и не правился под результат.",
+  "corpus": "этот репозиторий (packages/**), собранный `myc code index`",
+  "cases": [
+    {
+      "q": "как резолвится сессия",
+      "expect": "packages/core/src/reach\\.ts",
+      "why": "resolveSession и вся личность сессии живут там; это приёмочный вопрос задачи"
+    },
+    {
+      "q": "кто зовёт символ, граф вызовов",
+      "expect": "packages/code-intel/src/read\\.ts",
+      "why": "callGraph/refsTo — чтение code_ref_sites"
+    },
+    {
+      "q": "аренда задачи и её продление",
+      "expect": "packages/store-sqlite/src/(queries|claim)\\.ts",
+      "why": "renewLease/releaseLease/claimNode"
+    },
+    {
+      "q": "как код-индекс понимает что файл не менялся",
+      "expect": "packages/code-intel/src/code_index\\.ts",
+      "why": "semantic-only: слова «менялся» в коде нет, там mtime/size/hash",
+      "hard": true
+    },
+    {
+      "q": "скачать грамматику tree-sitter",
+      "expect": "packages/code-intel/src/grammars\\.ts",
+      "why": "каталог грамматик, sha256, кеш"
+    },
+    {
+      "q": "проверка обновлений пакета",
+      "expect": "packages/cli/src/update-check\\.ts",
+      "why": "checkForUpdate и сравнение версий"
+    },
+    {
+      "q": "гибридный поиск и слияние источников rrf",
+      "expect": "packages/retrieval/src/hybrid\\.ts",
+      "why": "hybridSearch/rrfScore"
+    },
+    {
+      "q": "векторный поиск по эмбеддингам",
+      "expect": "packages/retrieval/src/vector\\.ts",
+      "why": "vectorSearch поверх vec0"
+    },
+    {
+      "q": "сборка ответа в бюджет символов",
+      "expect": "packages/retrieval/src/budget\\.ts",
+      "why": "assembleBudgeted"
+    },
+    {
+      "q": "привязка знания к участку кода, якорь",
+      "expect": "packages/code-intel/src/anchors\\.ts",
+      "why": "bindAnchor/spanNormText"
+    },
+    {
+      "q": "чекпойнт wal",
+      "expect": "packages/store-sqlite/src/checkpoint\\.ts",
+      "why": "createWalGuard и работа wal_checkpoint"
+    },
+    {
+      "q": "как выбирается модель для агента",
+      "expect": "packages/swarm/src/",
+      "why": "semantic-only: роутинг моделей размазан по swarm, точного слова в коде нет",
+      "hard": true
+    }
+  ]
+}

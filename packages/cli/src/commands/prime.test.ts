@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as realEmbed from "@myc/embed";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -19,6 +19,8 @@ import { createCreateCommand, createTaskCommand, createBugCommand } from "./task
 import { createReadyCommand } from "./ready.ts";
 import { createRememberCommand } from "./remember.ts";
 import { createPrimeCommand } from "./prime.ts";
+import { readCounters } from "../hooks/counters.ts";
+import { SESSION_ENV_KEYS } from "@myc/core";
 
 let dir: string;
 let db: string;
@@ -280,5 +282,90 @@ describe("prime: скрытое по охвату репозитория наз�
     expect(own["mem_repo_foreign"]).toBe(0);
     const ownHuman = text((await myc("prime", "--budget", "3000", "--repo", "repoY")).stdout);
     expect(ownHuman).not.toContain("из других репозиториев скрыто");
+  });
+});
+
+/**
+ * Отметка старта сессии в `.myc/hooks.json` (memory-q9k2zxfx2mcm).
+ *
+ * До этого себя записывал только `pre-compact`, а он срабатывает лишь при
+ * сжатии контекста — то есть через часы после установки. Первый вопрос всякого,
+ * кто поставил myc, — «а он вообще работает?» — оставался без ответа.
+ *
+ * Условие правильности здесь ровно одно и оно жёсткое: отметка обязана означать
+ * РОВНО старт сессии. Счётчик, тикающий и от ручного `myc prime`, означал бы
+ * «кто-нибудь запускал prime» — и был бы хуже отсутствия счётчика.
+ */
+describe("prime: отметка вызова из хука", () => {
+  function counters(): Record<string, { count: number; last_status: string }> {
+    return readCounters(join(dir, ".myc")).hooks as Record<
+      string,
+      { count: number; last_status: string }
+    >;
+  }
+
+  async function withHook(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(env)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      await fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  test("ручной `myc prime` отметки НЕ создаёт", async () => {
+    await myc("prime", "--budget", "2000");
+    await myc("prime", "--budget", "2000", "--session", "s-1");
+    expect(existsSync(join(dir, ".myc", "hooks.json"))).toBe(false);
+    expect(counters()).toEqual({});
+  });
+
+  test("вызов из хука отмечается, назван агентом и событием", async () => {
+    await withHook({ MYC_HOOK: "session-start", MYC_HOOK_AGENT: "claude" }, async () => {
+      await myc("prime", "--budget", "2000", "--session", "s-1");
+      await myc("prime", "--budget", "2000", "--session", "s-1");
+    });
+    const c = counters()["claude:session-start"];
+    expect(c?.count).toBe(2);
+    expect(c?.last_status).toBe("ok");
+  });
+
+  /**
+   * Статус — не украшение. `no-session` означает, что хост не назвал сессию, а
+   * значит сессионная память в контекст не попала вовсе. Ровно так и вела себя
+   * установка со старым helper'ом, не передававшим `--session`
+   * (memory-h12hjebzr0he): хук тикал, функция бездействовала.
+   */
+  test("старт сессии без --session отмечен статусом no-session", async () => {
+    // Сессия подхватывается и из окружения (SESSION_ENV_KEYS), а тесты идут
+    // ВНУТРИ агентской сессии, где эти переменные выставлены. Не сняв их,
+    // проверка молча проверяла бы обратный случай.
+    const cleared: Record<string, string | undefined> = {};
+    for (const key of SESSION_ENV_KEYS) {
+      cleared[key] = process.env[key];
+      delete process.env[key];
+    }
+    try {
+      await withHook({ MYC_HOOK: "session-start", MYC_HOOK_AGENT: "codex" }, async () => {
+        await myc("prime", "--budget", "2000");
+      });
+    } finally {
+      for (const [k, v] of Object.entries(cleared)) if (v !== undefined) process.env[k] = v;
+    }
+    expect(counters()["codex:session-start"]?.last_status).toBe("no-session");
+  });
+
+  test("хук чужого события через prime не отмечается", async () => {
+    await withHook({ MYC_HOOK: "pre-compact", MYC_HOOK_AGENT: "claude" }, async () => {
+      await myc("prime", "--budget", "2000", "--session", "s-1");
+    });
+    expect(counters()).toEqual({});
   });
 });

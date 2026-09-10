@@ -585,3 +585,35 @@ CREATE TABLE digest_cache (
   payload TEXT    NOT NULL,                 -- JSON дайджеста
   PRIMARY KEY (scope, profile, variant)
 ) WITHOUT ROWID;
+
+-- ============================ 8.1.12 корпус поиска по коду (миграция 012) ===
+-- Определения и шапки файлов в СВОЁМ полнотексте, отдельно от nodes_fts: у
+-- символа нет ни владельца, ни слоя, ни приватности, а смешанный корпус
+-- портит BM25 обеим сторонам — средняя длина документа у заметки и у
+-- сигнатуры различается на порядок. Токенизатор отличается от nodes_fts
+-- ровно одним: tokenchars '_' вместо '_-.', потому что точка и дефис в коде
+-- разделители (`a.b()` обязано находиться по `b`). file_hash в code_units —
+-- ключ инкрементальности; обоснование объёма и формы целиком в
+-- packages/store-sqlite/src/migrations/012-code-search.ts.
+
+CREATE TABLE code_units (
+  id         INTEGER PRIMARY KEY,     -- rowid: соединение с code_fts идёт по нему
+  repo_id    TEXT    NOT NULL,
+  path       TEXT    NOT NULL,
+  unit       TEXT    NOT NULL,        -- 'file' (шапка файла) | 'def' (определение)
+  name       TEXT    NOT NULL,
+  kind       TEXT    NOT NULL,        -- 'file' или kind из code_defs
+  span_start INTEGER NOT NULL,        -- 1-based, как file:line
+  span_end   INTEGER NOT NULL,
+  file_hash  TEXT    NOT NULL,        -- хеш файла, с которым единица записана
+  CHECK (unit IN ('file','def'))
+);
+
+CREATE INDEX ix_code_units_file ON code_units (repo_id, path);
+
+CREATE VIRTUAL TABLE code_fts USING fts5(
+  name, sig, doc, path,
+  tokenize = "unicode61 remove_diacritics 2 tokenchars '_'",
+  prefix = '2 3',
+  content = '', contentless_delete = 1
+);

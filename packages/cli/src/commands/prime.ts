@@ -91,6 +91,7 @@ import { CLI_VERSION } from "../index.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import { collectTop, readyStats, type ReadyItem } from "./ready.ts";
+import { markHookCall } from "../hooks/counters.ts";
 import {
   flagNum,
   flagStr,
@@ -694,6 +695,20 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
         // установки. Проверить «подхватил ли харнесс myc» сразу было нечем,
         // и это первый вопрос всякого, кто поставил инструмент. `prime` — то,
         // что зовёт хук старта сессии, поэтому отметка ставится здесь.
+        //
+        // Отмечается ТОЛЬКО вызов из хука: `markHookCall` требует, чтобы
+        // вызывающий объявил себя через MYC_HOOK, и helper это делает, а
+        // человек в терминале — нет. Иначе счётчик `session-start` тикал бы и
+        // от ручного `myc prime`, то есть означал бы «кто-нибудь запускал
+        // prime» — метку, означающую не то, что на ней написано, а это ХУЖЕ
+        // отсутствия метки (memory-q9k2zxfx2mcm).
+        //
+        // Статус: `no-session` — хост не назвал сессию. Это не мелочь, а ровно
+        // та поломка, из-за которой сессионная память была скрыта в живом
+        // потоке (memory-h12hjebzr0he): установленный helper не передавал
+        // `--session`. Отметка называет её вслух, а не выдаёт за здоровье.
+        markHookCall(h.mycDir, "session-start", tookMs, session.length > 0 ? "ok" : "no-session");
+
         const rendered = renderAgent(dataNoBudget, budget);
         const data: PrimeData = { ...dataNoBudget, chars: rendered.chars, truncated: rendered.truncated, cut: rendered.cut };
 

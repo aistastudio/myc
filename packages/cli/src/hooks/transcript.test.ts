@@ -148,3 +148,108 @@ describe("extractSignals", () => {
     expect(s.decisions).toEqual([]);
   });
 });
+
+/**
+ * Стенограмма Codex — rollout JSONL, и это ТРЕТЬЯ форма, не похожая на две
+ * прежние: ход завёрнут в `{type:"response_item", payload:{…}}`, блоки текста
+ * называются `input_text`/`output_text`, вызовы инструментов —
+ * `custom_tool_call`/`function_call`.
+ *
+ * Форма прочитана в бинаре codex-cli 0.153.4 (вкомпилированные схемы
+ * `*.command.input`) и подтверждена живым прогоном `codex exec`: путь к файлу
+ * приходит хуку полем `transcript_path`. Пока этой формы здесь не было,
+ * `parseTranscript` разбирал rollout в НОЛЬ ходов, `absorb-session` возвращал
+ * `empty`, и хук выглядел здоровым, не сохраняя ничего, — та же тихая пустота,
+ * из-за которой снят хук через `notify`. Мутация, снимающая разворот `payload`,
+ * роняет каждый тест ниже.
+ */
+describe("parseTranscript: rollout Codex", () => {
+  const META = {
+    timestamp: "2026-09-10T04:47:41.272Z",
+    type: "session_meta",
+    payload: {
+      session_id: "01a089a4-9a58-77c3-880b-7078c46caffc",
+      cwd: "/repo",
+      originator: "codex_exec",
+    },
+  };
+  const msg = (role: string, type: string, text: string): unknown => ({
+    type: "response_item",
+    payload: { type: "message", role, content: [{ type, text }] },
+  });
+
+  test("сообщения разбираются в ходы, а не пропадают", () => {
+    const t = parseTranscript(
+      jsonl(
+        META,
+        msg("user", "input_text", "почему k=60"),
+        msg("assistant", "output_text", "Берём: k=60 — так у RRF по умолчанию."),
+      ),
+    );
+    expect(t.format).toBe("jsonl");
+    expect(t.turns.length).toBe(2);
+    expect(t.turns[0]?.role).toBe("user");
+    expect(t.turns[1]?.role).toBe("assistant");
+    expect(t.turns[1]?.prose).toContain("k=60");
+  });
+
+  test("мета-строка отдаёт сессию и каталог", () => {
+    const t = parseTranscript(jsonl(META, msg("user", "input_text", "привет")));
+    expect(t.sessionId).toBe("01a089a4-9a58-77c3-880b-7078c46caffc");
+    expect(t.cwd).toBe("/repo");
+  });
+
+  test("вызов инструмента и его результат — два хода, а не тишина", () => {
+    const t = parseTranscript(
+      jsonl(
+        META,
+        {
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call",
+            call_id: "c1",
+            name: "exec",
+            input: 'const r = await tools.exec_command({"cmd":"echo ok"});',
+          },
+        },
+        {
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call_output",
+            call_id: "c1",
+            output: [{ type: "input_text", text: "ok\n" }],
+          },
+        },
+      ),
+    );
+    expect(t.turns.length).toBe(2);
+    expect(t.turns[0]?.text).toContain("exec_command");
+    expect(t.turns[0]?.prose).toBe(""); // вывод инструмента — не речь модели
+    expect(t.turns[1]?.role).toBe("tool");
+    expect(t.turns[1]?.text).toContain("ok");
+  });
+
+  test("правка файла даёт путь в счётчик правок", () => {
+    const t = parseTranscript(
+      jsonl(META, {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "apply_patch",
+          arguments: JSON.stringify({ file_path: "src/fuse.ts" }),
+        },
+      }),
+    );
+    expect(t.toolFiles).toEqual(["src/fuse.ts"]);
+  });
+
+  /**
+   * Обратная сторона: разворот `payload` не должен трогать форму Claude Code —
+   * иначе починка одного хоста сломала бы три остальных.
+   */
+  test("форма Claude Code разбирается как раньше", () => {
+    const t = parseTranscript(jsonl(assistant("решение принято")));
+    expect(t.turns.length).toBe(1);
+    expect(t.turns[0]?.prose).toContain("решение принято");
+  });
+});

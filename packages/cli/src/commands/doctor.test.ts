@@ -26,6 +26,8 @@ import { openDriver, type CliDriver } from "./store.ts";
 import { Registry } from "../registry.ts";
 import { registerAll } from "../register.ts";
 import type { DoctorData } from "./doctor.ts";
+import { generatedFiles, wireHash } from "./wire.ts";
+import { HOOK_SPECS } from "../hooks/templates.ts";
 
 let dir: string;
 let dbPath: string;
@@ -89,15 +91,27 @@ function writeWireJournal(events: readonly string[], ageMs = 7 * 24 * 60 * 60 * 
   );
 }
 
-function writeCounters(key: string, count: number, status = "ok"): void {
-  writeFileSync(
-    join(dir, ".myc", "hooks.json"),
-    JSON.stringify({
-      v: 1,
-      hooks: { [key]: { count, last_at: 1_700_000_000_000, last_ms: 12, last_status: status } },
-    }),
-  );
+type CounterSpec = readonly [key: string, count: number, status?: string];
+
+function writeCounters(...entries: readonly CounterSpec[]): void {
+  const hooks: Record<string, unknown> = {};
+  for (const [key, count, status] of entries) {
+    hooks[key] = { count, last_at: 1_700_000_000_000, last_ms: 12, last_status: status ?? "ok" };
+  }
+  writeFileSync(join(dir, ".myc", "hooks.json"), JSON.stringify({ v: 1, hooks }));
 }
+
+/**
+ * Зелёная база: все три самоотмечающихся события сработали. Нужна с тех пор,
+ * как себя отмечает не только pre-compact: молчащий счётчик session-start —
+ * теперь тоже расхождение, и тест, которому нужен выход 0, обязан сказать это
+ * вслух, а не молча опираться на прежнее «про это ничего не известно».
+ */
+const ALL_FIRED: readonly CounterSpec[] = [
+  ["claude:session-start", 4],
+  ["claude:pre-compact", 3],
+  ["claude:post-edit", 9],
+];
 
 /**
  * Настоящий CLI-драйвер, а не самодельный: GraphStore при конструировании
@@ -269,7 +283,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
 
   test("сработавший хук назван числом и временем", async () => {
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
-    writeCounters("claude:pre-compact", 3);
+    writeCounters(...ALL_FIRED);
     const env = await envelope("--hooks");
     const pre = env.data?.hooks?.hooks.find((h) => h.event === "pre-compact");
     expect(pre?.verdict).toBe("ok");
@@ -278,19 +292,56 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
   });
 
   /**
-   * ГЛАВНАЯ ПРОВЕРКА РАЗДЕЛА. Счётчика нет в обоих случаях, а ответы разные:
-   * pre-compact себя отмечает, значит «не срабатывал» — утверждение; о
-   * session-start сказать нечего, потому что `myc prime` зовут и хуком, и
-   * руками (memory-q9k2zxfx2mcm). Свести их к одному ответу — соврать.
+   * ГЛАВНАЯ ПРОВЕРКА РАЗДЕЛА, и она изменилась вместе с задачей. Раньше про
+   * session-start сказать было нечего: `myc prime` зовут и хуком, и руками,
+   * отличить нечем (memory-q9k2zxfx2mcm). Теперь вызывающий объявляет себя, и
+   * молчащий счётчик про поставленный хук — УТВЕРЖДЕНИЕ «не срабатывал», как у
+   * pre-compact. Мутация, снимающая session-start из SELF_REPORTING_HOOKS,
+   * роняет этот тест.
    */
-  test("одинаково пустой счётчик даёт разные вердикты по разным событиям", async () => {
+  test("поставленный, но ни разу не сработавший session-start — расхождение", async () => {
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
     const res = await doctor("--hooks");
-    expect(res.code).toBe(ExitCode.PRECOND); // «не срабатывал» — расхождение
+    expect(res.code).toBe(ExitCode.PRECOND);
     const env = await envelope("--hooks");
     expect(hookLine(env, "pre-compact")).toContain("не срабатывал ни разу");
-    expect(hookLine(env, "session-start")).toContain("себя не отмечает");
-    expect(hookLine(env, "session-start")).toContain("не знаю");
+    expect(hookLine(env, "session-start")).toContain("не срабатывал ни разу");
+    expect(hookLine(env, "session-start")).not.toContain("себя не отмечает");
+  });
+
+  /**
+   * Обратная сторона: сработавший session-start — знание, а не догадка, и в
+   * отчёте он назван числом. Это и есть ответ на первый вопрос всякого, кто
+   * поставил myc: «а он вообще работает?».
+   */
+  test("сработавший session-start назван числом, агентом и временем", async () => {
+    writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
+    writeCounters(...ALL_FIRED);
+    const env = await envelope("--hooks");
+    const start = env.data?.hooks?.hooks.find((h) => h.event === "session-start");
+    expect(start?.verdict).toBe("ok");
+    expect(start?.count).toBe(4);
+    expect(start?.detail).toContain("срабатывал 4 раз");
+    expect(start?.detail).toContain("агенты: claude");
+  });
+
+  /**
+   * Старт сессии, которому хост не назвал сессию, — не здоровье. Это ровно та
+   * поломка, из-за которой сессионная память была скрыта в живом потоке
+   * (memory-h12hjebzr0he): установленный helper не передавал `--session`.
+   */
+  test("session-start со статусом no-session — расхождение, названное словами", async () => {
+    writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
+    writeCounters(
+      ["claude:session-start", 5, "no-session"],
+      ["claude:pre-compact", 3],
+      ["claude:post-edit", 9],
+    );
+    expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
+    const line = hookLine(await envelope("--hooks"), "session-start");
+    expect(line).toContain("no-session");
+    expect(line).toContain("хост не назвал сессию");
+    expect(line).toContain("myc wire");
   });
 
   /**
@@ -321,15 +372,16 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
    */
   test("сработавший, но пустой хук — расхождение, а не здоровье", async () => {
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
-    writeCounters("opencode:pre-compact", 11, "empty");
+    writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 11, "empty"], ["opencode:post-edit", 5]);
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
     const line = hookLine(await envelope("--hooks"), "pre-compact");
     expect(line).toContain("сохранять было нечего");
     expect(line).toContain("empty");
+    expect(line).toContain("работы не сделал");
 
     // И обратная сторона: успешный хук по-прежнему здоровье, иначе «починка»
     // свелась бы к тому, что pre-compact не может быть зелёным никогда.
-    writeCounters("opencode:pre-compact", 11, "ok");
+    writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 11, "ok"], ["opencode:post-edit", 5]);
     expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("срабатывал 11 раз");
     expect(
       (await envelope("--hooks")).data?.hooks?.hooks.find((h) => h.event === "pre-compact")?.verdict,
@@ -357,7 +409,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     );
     // Счётчик нужен, чтобы pre-compact не покраснел по ДРУГОЙ причине
     // («поставлен, но не срабатывал») и не увёл выдачу в конверт ошибки.
-    writeCounters("opencode:pre-compact", 3);
+    writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 3], ["opencode:post-edit", 5]);
     for (const event of ["session-start", "pre-compact", "post-edit"]) {
       const line = hookLine(await envelope("--hooks"), event);
       expect(line).not.toContain("не поставлен");
@@ -376,13 +428,16 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     );
     // Проверяем на событии БЕЗ счётчика: сработавший хук — знание более
     // твёрдое, чем журнал, и ветка «срабатывал N раз» перекрыла бы вопрос
-    // об установке вовсе.
+    // об установке вовсе. Поэтому счётчик post-edit убираем.
+    writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 3]);
     expect(hookLine(await envelope("--hooks"), "post-edit")).toContain("не поставлен");
   });
 
   test("не поставленное событие названо не поставленным, а не «не срабатывало»", async () => {
     writeWireJournal(["SessionStart", "PreCompact"]);
-    writeCounters("claude:pre-compact", 1);
+    // Счётчика post-edit нет намеренно: сработавший хук перекрыл бы вопрос об
+    // установке (ветка «срабатывал N раз» стоит раньше — знание твёрже).
+    writeCounters(["claude:session-start", 4], ["claude:pre-compact", 1]);
     const res = await doctor("--hooks");
     expect(res.code).toBe(ExitCode.PRECOND);
     const env = await envelope("--hooks");
@@ -397,12 +452,136 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
    */
   test("событие без команды в сборке — «н/д», и оно не портит код выхода", async () => {
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"]);
-    writeCounters("claude:pre-compact", 1);
+    writeCounters(...ALL_FIRED, ["claude:pre-compact", 1]);
     const env = await envelope("--hooks");
     const stop = env.data?.hooks?.hooks.find((h) => h.event === "stop");
     expect(stop?.verdict).toBe("n/a");
     expect(stop?.detail).toContain("нет в этой сборке");
     expect(env.ok).toBe(true);
+  });
+});
+
+describe("myc doctor --hooks: устаревший или подменённый файл хука", () => {
+  const HELPER = ".claude/helpers/myc-hooks.mjs";
+
+  /** Содержимое, которое дала бы ЭТА сборка, — тем же кодом, что пишет wire. */
+  function currentHelper(output: "json" | "text" = "json"): string {
+    const events = HOOK_SPECS.filter((sp) => registry.hasTop(sp.command)).map((sp) => sp.event);
+    const text = generatedFiles(dir, events, output).get(HELPER);
+    expect(text).toBeDefined();
+    return text!;
+  }
+
+  /**
+   * Журнал с записью про НАШ файл целиком (узлов нет — по этому признаку его
+   * узнают и `unwire`, и сверка) плюс зелёные счётчики, чтобы расхождение,
+   * если оно появится, было ровно тем, что проверяет тест.
+   */
+  function journalFor(hash: string, output?: "json" | "text"): void {
+    writeFileSync(
+      join(dir, ".myc", "wire.json"),
+      JSON.stringify({
+        v: 1,
+        written_at: Date.now() - 7 * 24 * 60 * 60 * 1000,
+        agents: ["claude"],
+        ...(output !== undefined ? { hook_output: output } : {}),
+        entries: [
+          { path: HELPER, kind: "new", nodes: [], hash },
+          {
+            path: ".claude/settings.json",
+            kind: "merge",
+            nodes: ["hooks.SessionStart", "hooks.PreCompact", "hooks.PostToolUse"],
+            hash: "x",
+          },
+        ],
+      }),
+    );
+    writeCounters(...ALL_FIRED);
+  }
+
+  function putHelper(text: string): void {
+    mkdirSync(join(dir, ".claude", "helpers"), { recursive: true });
+    writeFileSync(join(dir, HELPER), text);
+  }
+
+  function generatedLine(env: Envelope, path: string): string {
+    const g = env.data?.hooks?.generated.find((x) => x.path === path);
+    if (g !== undefined) return `${g.verdict}|${g.detail}`;
+    return (env.error?.msg ?? "").split("\n").find((l) => l.includes(path)) ?? "";
+  }
+
+  test("актуальный файл — здоровье, и оно названо словом", async () => {
+    const text = currentHelper();
+    putHelper(text);
+    journalFor(wireHash(text));
+    expect((await doctor("--hooks")).code).toBe(ExitCode.OK);
+    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("актуален");
+  });
+
+  /**
+   * РАДИ ЭТОГО СЛУЧАЯ СВЕРКА И НАПИСАНА. Файл на диске ровно тот, что записал
+   * `myc wire`, — человек ничего не портил, — но шаблон в сборке с тех пор
+   * изменился. Именно так установленный helper перестал передавать `--session`,
+   * и вся сессионная память была скрыта, пока хук исправно тикал
+   * (memory-h12hjebzr0he). Мутация, снимающая сверку хеша, роняет тест.
+   */
+  test("устаревший файл назван поимённо, и сказано, что он устарел", async () => {
+    const stale = currentHelper().replace('"--session"', "");
+    expect(stale).not.toBe(currentHelper()); // мутация подмены сработала
+    putHelper(stale);
+    journalFor(wireHash(stale));
+    expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
+    const line = generatedLine(await envelope("--hooks"), HELPER);
+    expect(line).toContain("устарел");
+    expect(line).toContain("myc wire");
+    expect(line).toContain(wireHash(stale)); // назван хеш журнала
+    expect(line).toContain(wireHash(currentHelper())); // и хеш нынешней сборки
+  });
+
+  /**
+   * Другая болезнь с тем же исходом: файл не тот, что мы писали, И не тот, что
+   * пишем сейчас. Смешать её с «устарел» значило бы советовать `myc wire`
+   * человеку, который правил файл сам, не сказав, что правка уйдёт в .bak.
+   */
+  test("подменённый файл отличён от устаревшего", async () => {
+    putHelper("// чужая правка\n");
+    journalFor(wireHash(currentHelper()));
+    expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
+    const line = generatedLine(await envelope("--hooks"), HELPER);
+    expect(line).toContain("изменён после нас");
+    expect(line).toContain(".myc.bak");
+    expect(line).not.toContain("устарел");
+  });
+
+  test("пропавший файл — расхождение, а не тишина", async () => {
+    journalFor(wireHash(currentHelper()));
+    expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
+    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("пропал");
+  });
+
+  /**
+   * `--hook-output text` — выбор человека, а не признак устаревания. Без
+   * записи этого выбора в журнал каждая установка с `text` объявлялась бы
+   * устаревшей, то есть сверка кричала бы на исправную настройку.
+   */
+  test("выбор --hook-output не считается устареванием", async () => {
+    const text = currentHelper("text");
+    expect(text).not.toBe(currentHelper("json"));
+    putHelper(text);
+    journalFor(wireHash(text), "text");
+    expect((await doctor("--hooks")).code).toBe(ExitCode.OK);
+    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("актуален");
+  });
+
+  test("без журнала сверка отвечает «не знаю», а не «ок»", async () => {
+    putHelper(currentHelper());
+    writeCounters(...ALL_FIRED);
+    const env = await envelope("--hooks");
+    const g = env.data?.hooks?.generated ?? [];
+    expect(g.length).toBe(1);
+    expect(g[0]?.verdict).toBe("unknown");
+    expect(g[0]?.detail).toContain("wire.json");
+    expect(env.ok).toBe(true); // «не знаю» — не расхождение
   });
 });
 

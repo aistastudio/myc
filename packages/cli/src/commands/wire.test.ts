@@ -62,6 +62,101 @@ const FOREIGN_SETTINGS = `{
 }
 `;
 
+/**
+ * Codex: проектный слой хуков. Что именно читает codex, установлено чтением
+ * бинаря 0.153.4 и живым прогоном `codex exec` (подробности — в шапке про
+ * Codex в hooks/templates.ts). Здесь проверяется только то, что myc пишет
+ * ровно эту форму и не портит чужое.
+ */
+describe("Codex: хуки в .codex/hooks.json", () => {
+  const FOREIGN_CODEX = JSON.stringify(
+    {
+      hooks: {
+        SessionStart: [{ hooks: [{ type: "command", command: "bd codex-hook SessionStart" }] }],
+      },
+    },
+    null,
+    2,
+  );
+
+  function codexHooks(): Record<string, any> {
+    return JSON.parse(read(".codex/hooks.json")) as Record<string, any>;
+  }
+
+  /**
+   * ЕДИНИЦА ТАЙМАУТА — РАЗНАЯ У ДВУХ ХОСТОВ, и это единственная разница между
+   * иначе одинаковыми записями. У Claude Code `timeout` в миллисекундах, у
+   * Codex — в секундах (`hook.timeout_sec` внутри). Перепутать значит получить
+   * хук, живущий в 1000 раз дольше задуманного; мутация «взять timeoutMs как
+   * есть» роняет этот тест.
+   */
+  test("таймаут в записи Codex — секунды, у Claude Code — миллисекунды", async () => {
+    await myc("wire", "--agents", "claude,codex");
+    const codex = codexHooks()["hooks"];
+    expect(codex["SessionStart"][0].hooks[0].timeout).toBe(3);
+    expect(codex["PreCompact"][0].hooks[0].timeout).toBe(8);
+    const claude = (JSON.parse(read(".claude/settings.json")) as Record<string, any>)["hooks"];
+    expect(claude["SessionStart"][0].hooks[0].timeout).toBe(3000);
+  });
+
+  test("команда относительная и защищена проверкой существования helper'а", async () => {
+    await myc("wire", "--agents", "codex");
+    const cmd = codexHooks()["hooks"]["SessionStart"][0].hooks[0].command as string;
+    // Абсолютный путь одного репозитория в конфиге, который человек может
+    // унести в другой проект, срабатывал бы в чужой сессии.
+    expect(cmd).not.toContain(dir);
+    expect(cmd).toContain(".codex/myc-hooks.mjs");
+    expect(cmd).toContain("[ -f .codex/myc-hooks.mjs ]");
+  });
+
+  test("чужой хук на том же событии — конфликт, и НИЧЕГО не записано", async () => {
+    write(".codex/hooks.json", FOREIGN_CODEX);
+    const r = await myc("wire", "--agents", "codex");
+    expect(r.code).not.toBe(0);
+    expect(String(r.stderr)).toContain("bd codex-hook SessionStart");
+    expect(codexHooks()).toEqual(JSON.parse(FOREIGN_CODEX));
+    expect(has(".codex/myc-hooks.mjs")).toBe(false); // ни одного файла плана
+  });
+
+  test("--hook-mode append оставляет чужой хук на месте", async () => {
+    write(".codex/hooks.json", FOREIGN_CODEX);
+    expect((await myc("wire", "--agents", "codex", "--hook-mode", "append")).code).toBe(0);
+    const start = codexHooks()["hooks"]["SessionStart"] as any[];
+    expect(start.length).toBe(2);
+    expect(JSON.stringify(start)).toContain("bd codex-hook SessionStart");
+    expect(JSON.stringify(start)).toContain("myc-hooks.mjs");
+  });
+
+  test("unwire снимает наш узел и helper, чужой оставляет", async () => {
+    write(".codex/hooks.json", FOREIGN_CODEX);
+    await myc("wire", "--agents", "codex", "--hook-mode", "append");
+    expect((await myc("unwire")).code).toBe(0);
+    expect(has(".codex/myc-hooks.mjs")).toBe(false);
+    const start = codexHooks()["hooks"]["SessionStart"] as any[];
+    expect(start.length).toBe(1);
+    expect(JSON.stringify(start)).toContain("bd codex-hook SessionStart");
+  });
+
+  test("повторный wire ничего не меняет", async () => {
+    await myc("wire", "--agents", "codex");
+    const before = [read(".codex/hooks.json"), read(".codex/myc-hooks.mjs")];
+    await myc("wire", "--agents", "codex");
+    expect([read(".codex/hooks.json"), read(".codex/myc-hooks.mjs")]).toEqual(before);
+  });
+
+  /**
+   * Доверие — единственное, чего myc сделать не может, и молчать об этом
+   * нельзя: без него хук СТОИТ и НЕ ЗАПУСКАЕТСЯ, причём codex об этом в
+   * неинтерактивном режиме не говорит ни слова (проверено живьём).
+   */
+  test("wire говорит вслух, что хук ждёт согласия человека", async () => {
+    const r = await myc("wire", "--agents", "codex", "--json");
+    const notes = ((JSON.parse(r.stdout as string).data as Record<string, unknown>)["notes"] as string[]).join(" ");
+    expect(notes).toContain("trust_level");
+    expect(notes).toContain("hooks are new or changed");
+  });
+});
+
 describe("resolveMycBin — команда для .mcp.json", () => {
   const NONE = { PATH: "", HOME: "" } as NodeJS.ProcessEnv;
 
@@ -482,9 +577,7 @@ describe("чужие файлы", () => {
   test("чужой notify в config.toml не перетирается", async () => {
     write(".codex/config.toml", 'notify = ["node", "other.mjs"]\n\n[mcp_servers.other]\ncommand = "other"\n');
     const r = await myc("wire", "--agents", "codex", "--json");
-    const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
-    const notes = (env["data"] as Record<string, unknown>)["notes"] as string[];
-    expect(notes.join(" ")).toContain("notify");
+    expect(r.code).toBe(0);
     const toml = read(".codex/config.toml");
     expect(toml).toContain('notify = ["node", "other.mjs"]');
     expect(toml).toContain("[mcp_servers.other]");
@@ -492,17 +585,17 @@ describe("чужие файлы", () => {
   });
 
   // Мутация: вернуть notify-блок в planCodex — и оба теста ниже падают.
-  test("Codex: notify не ставится, и wire называет причину", async () => {
+  test("Codex: notify не ставится, хуки идут через .codex/hooks.json", async () => {
     const r = await myc("wire", "--agents", "codex", "--json");
     expect(r.code).toBe(0);
-    const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
-    const notes = ((env["data"] as Record<string, unknown>)["notes"] as string[]).join(" ");
-    expect(notes).toContain("не ставится");
-    expect(notes).toContain("transcript_path");
     expect(has(".codex/myc-notify.mjs")).toBe(false);
     const toml = read(".codex/config.toml");
     expect(toml).not.toContain("notify");
     expect(toml).toContain("[mcp_servers.myc]"); // MCP работает и остаётся
+    // Рабочий путь на месте: helper в проекте и запись в проектном hooks.json.
+    expect(has(".codex/myc-hooks.mjs")).toBe(true);
+    const hooks = JSON.parse(read(".codex/hooks.json")) as Record<string, any>;
+    expect(Object.keys(hooks["hooks"]).sort()).toEqual(["PreCompact", "SessionStart"]);
   });
 
   test("Codex: прежний наш notify снимается, а не остаётся тикать вхолостую", async () => {
