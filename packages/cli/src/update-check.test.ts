@@ -163,7 +163,9 @@ describe("И2: «не смогли проверить» ≠ «обновлени
     });
     const entry = readUpdateCache(env);
     expect(entry?.latest).toBeNull();
-    expect(entry?.error).toContain("ENETDOWN");
+    // Причина — кодом и с автором-сборкой, а не готовой фразой.
+    expect(entry?.failure).toEqual({ code: "network", detail: "ENETDOWN" });
+    expect(entry?.build).toBe("0.1.1");
     expect(cachedVerdict({ current: "0.1.1", env }).status).toBe("unreachable");
   });
 
@@ -244,6 +246,90 @@ describe("кеш: вердикт без сети", () => {
       JSON.stringify({ package: "@someone/else", latest: "9.9.9", checked_at: Date.now(), error: null }),
     );
     expect(cachedVerdict({ current: "0.1.1", env }).status).toBe("never_checked");
+  });
+
+  /**
+   * Кеш личный и переживает смену сборки. 0.3.1 писала в него ГОТОВУЮ фразу
+   * по-русски, и сборка с английским выводом печатала её как есть — в
+   * `myc version`, `init` и `wire`. Запись ниже — дословная форма 0.3.1.
+   * Мутация «снова печатать кешированный текст» роняет этот тест.
+   */
+  test("кеш с русской причиной от другой сборки — в выводе ни одной кириллической буквы", () => {
+    const now = 1_000_000_000;
+    writeFileSync(
+      updateCachePath(env),
+      JSON.stringify({
+        package: PACKAGE_NAME,
+        latest: null,
+        checked_at: now - 3 * 3_600_000,
+        error: "сеть недоступна: Unable to connect. Is the computer able to access the url?",
+      }),
+    );
+    const v = cachedVerdict({ current: "0.4.0", env, now });
+    // Факт отказа не потерян: это по-прежнему «не смогли проверить», а не «свежо».
+    expect(v.status).toBe("unreachable");
+    expect(v.reason).toBe(
+      "the last attempt failed; its reason was recorded by another myc build (re-check: `myc version --check`)",
+    );
+    const notice = updateNotice(v);
+    expect(notice).toBe(
+      "updates not checked: the last attempt failed; its reason was recorded by another myc build (re-check: `myc version --check`) (3 h ago)",
+    );
+    expect(`${v.reason}\n${notice}`).not.toMatch(/[Ѐ-ӿ]/);
+  });
+
+  test("свободный текст из записи печатает только записавшая её сборка", () => {
+    const now = 1_000_000_000;
+    // Новая форма, но сообщение рантайма у записавшей сборки — на её языке.
+    const entry = (build: string) =>
+      JSON.stringify({
+        package: PACKAGE_NAME,
+        latest: null,
+        checked_at: now - 60_000,
+        build,
+        failure: { code: "network", detail: "не удалось соединиться" },
+      });
+    writeFileSync(updateCachePath(env), entry("0.3.9"));
+    const foreign = cachedVerdict({ current: "0.4.0", env, now });
+    expect(foreign.reason).toBe("network unavailable");
+    expect(updateNotice(foreign)).toBe("updates not checked: network unavailable (1 min ago)");
+    // Та же запись своей сборки — с хвостом: отсекает сборка, а не код.
+    writeFileSync(updateCachePath(env), entry("0.4.0"));
+    expect(cachedVerdict({ current: "0.4.0", env, now }).reason).toBe("network unavailable: не удалось соединиться");
+  });
+
+  test("код без свободного текста — фраза этой сборки при любом авторе", () => {
+    const now = 1_000_000_000;
+    writeFileSync(
+      updateCachePath(env),
+      JSON.stringify({ package: PACKAGE_NAME, latest: null, checked_at: now, build: "0.1.0", failure: { code: "http_status", status: 503 } }),
+    );
+    expect(cachedVerdict({ current: "0.4.0", env, now }).reason).toBe("the registry answered 503");
+    // Код, которого эта сборка не знает, — «не знаем почему», а не выдумка.
+    writeFileSync(
+      updateCachePath(env),
+      JSON.stringify({ package: PACKAGE_NAME, latest: null, checked_at: now, build: "0.4.0", failure: { code: "из будущего" } }),
+    );
+    expect(cachedVerdict({ current: "0.4.0", env, now }).reason).toBe("the last attempt failed, no reason recorded");
+  });
+
+  test("запись в кеш: сборка и код, готовой фразы нет", async () => {
+    await checkForUpdate({
+      current: "0.4.0",
+      env,
+      fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({}) }),
+    });
+    const disk = JSON.parse(readFileSync(updateCachePath(env), "utf8")) as Record<string, unknown>;
+    expect(disk).toEqual({
+      package: PACKAGE_NAME,
+      latest: null,
+      checked_at: disk["checked_at"],
+      build: "0.4.0",
+      failure: { code: "http_status", status: 503 },
+    });
+    await checkForUpdate({ current: "0.4.0", env, fetchImpl: registryAnswering("0.4.1") });
+    const ok = JSON.parse(readFileSync(updateCachePath(env), "utf8")) as Record<string, unknown>;
+    expect(ok).toEqual({ package: PACKAGE_NAME, latest: "0.4.1", checked_at: ok["checked_at"], build: "0.4.0", failure: null });
   });
 
   test("cachedVerdict сеть не трогает НИКОГДА — даже с живым fetch", () => {

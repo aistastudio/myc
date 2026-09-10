@@ -132,14 +132,37 @@ export interface UpdateVerdict {
   readonly upgrade?: string;
 }
 
+/**
+ * Отказ попытки — КОДОМ и параметрами, а не фразой. Кеш личный и переживает
+ * смену сборки: 0.3.1 писала в него готовый текст («сеть недоступна: …»), и
+ * сборка на другом языке печатала его как есть. Теперь фразу собирает
+ * ЧИТАЮЩАЯ сборка (failureReason) — на своём языке и своими словами.
+ *
+ * Свободный текст внутри кода (`detail` — сообщение рантайма, `version` —
+ * строка реестра) — не наша фраза, но и не наш язык: его печатает только та
+ * сборка, что его записала (`build` записи совпал с текущей). Чужая сборка
+ * называет причину кодом, без хвоста.
+ */
+export type UpdateFailure =
+  | { readonly code: "http_status"; readonly status: number }
+  | { readonly code: "bad_json"; readonly detail: string }
+  | { readonly code: "no_latest" }
+  | { readonly code: "timeout"; readonly ms: number }
+  | { readonly code: "network"; readonly detail: string }
+  | { readonly code: "bad_version"; readonly version: string }
+  /** Причина не записана кодом: запись старого формата или битое поле. */
+  | { readonly code: "unknown" };
+
 /** Строка кеша на диске. `latest: null` — последняя попытка не удалась. */
 export interface UpdateCacheEntry {
   readonly package: string;
   readonly latest: string | null;
   /** Момент ПОПЫТКИ (успешной или нет) — им же меряется TTL. */
   readonly checked_at: number;
-  /** Текст отказа последней попытки; null у успешной. */
-  readonly error: string | null;
+  /** Сборка, записавшая кеш (CLI_VERSION); null — запись до появления поля. */
+  readonly build: string | null;
+  /** Отказ последней попытки кодом; null у успешной. */
+  readonly failure: UpdateFailure | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,15 +185,76 @@ export function readUpdateCache(
   const path = updateCachePath(env);
   try {
     if (!existsSync(path)) return null;
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<UpdateCacheEntry>;
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (typeof raw.checked_at !== "number" || !Number.isFinite(raw.checked_at)) return null;
     if (raw.package !== PACKAGE_NAME) return null; // кеш от другого пакета — не наш
     const latest = typeof raw.latest === "string" ? raw.latest : null;
-    const error = typeof raw.error === "string" ? raw.error : null;
-    return { package: PACKAGE_NAME, latest, checked_at: raw.checked_at, error };
+    const build = typeof raw.build === "string" ? raw.build : null;
+    // Текст отказа старого формата (`error`) НЕ читается вовсе: его писала
+    // сборка, язык которой неизвестен, — остаётся только факт отказа.
+    const failure = latest === null ? (parseFailure(raw.failure) ?? { code: "unknown" }) : null;
+    return { package: PACKAGE_NAME, latest, checked_at: raw.checked_at, build, failure };
   } catch {
     // Битый кеш — это «не проверяли», а не «обновлений нет».
     return null;
+  }
+}
+
+/** Код отказа из JSON кеша; всё, что не сходится с формой кода, — null. */
+function parseFailure(x: unknown): UpdateFailure | null {
+  if (x === null || typeof x !== "object") return null;
+  const f = x as Record<string, unknown>;
+  const str = (k: string): string | null => (typeof f[k] === "string" ? (f[k] as string) : null);
+  const num = (k: string): number | null => (typeof f[k] === "number" && Number.isFinite(f[k]) ? (f[k] as number) : null);
+  switch (f.code) {
+    case "http_status": {
+      const status = num("status");
+      return status === null ? null : { code: "http_status", status };
+    }
+    case "timeout": {
+      const ms = num("ms");
+      return ms === null ? null : { code: "timeout", ms };
+    }
+    case "bad_json":
+    case "network": {
+      const detail = str("detail");
+      return detail === null ? null : { code: f.code, detail };
+    }
+    case "bad_version": {
+      const version = str("version");
+      return version === null ? null : { code: "bad_version", version };
+    }
+    case "no_latest":
+    case "unknown":
+      return { code: f.code };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Фраза причины — ЭТОЙ сборки и на её языке. `own` — запись сделана этой же
+ * сборкой: только тогда печатается свободный текст из записи (`detail`,
+ * `version`), иначе причина называется без него.
+ */
+export function failureReason(f: UpdateFailure, own: boolean): string {
+  switch (f.code) {
+    case "http_status":
+      return `the registry answered ${f.status}`;
+    case "bad_json":
+      return `the registry response did not parse as JSON${own ? `: ${f.detail}` : ""}`;
+    case "no_latest":
+      return "the registry response has no dist-tags.latest";
+    case "timeout":
+      return `the registry did not answer within ${f.ms} ms`;
+    case "network":
+      return `network unavailable${own ? `: ${f.detail}` : ""}`;
+    case "bad_version":
+      return `the registry returned a version that could not be parsed${own ? `: ${JSON.stringify(f.version)}` : ""}`;
+    case "unknown":
+      return own
+        ? "the last attempt failed, no reason recorded"
+        : "the last attempt failed; its reason was recorded by another myc build (re-check: `myc version --check`)";
   }
 }
 
@@ -208,7 +292,7 @@ export function verdictFromLatest(
       ...base,
       status: "unreachable",
       current,
-      reason: `the registry returned a version that could not be parsed: ${JSON.stringify(latest)}`,
+      reason: failureReason({ code: "bad_version", version: latest }, true),
     };
   }
   if (cmp === 1) {
@@ -234,7 +318,7 @@ export interface ProbeOptions {
 
 export type RegistryProbe =
   | { readonly ok: true; readonly latest: string }
-  | { readonly ok: false; readonly reason: string };
+  | { readonly ok: false; readonly failure: UpdateFailure };
 
 export function registryUrl(env: NodeJS.ProcessEnv = process.env): string {
   const base = (env.MYC_REGISTRY ?? DEFAULT_REGISTRY).replace(/\/+$/, "");
@@ -269,25 +353,25 @@ export async function probeRegistry(opts: ProbeOptions = {}): Promise<RegistryPr
       signal: controller.signal,
       headers: { accept: "application/vnd.npm.install-v1+json" },
     });
-    if (!res.ok) return { ok: false, reason: `the registry answered ${res.status}` };
+    if (!res.ok) return { ok: false, failure: { code: "http_status", status: res.status } };
     let body: unknown;
     try {
       body = await res.json();
     } catch (e) {
-      return { ok: false, reason: `the registry response did not parse as JSON: ${message(e)}` };
+      return { ok: false, failure: { code: "bad_json", detail: message(e) } };
     }
     const tags = (body as { "dist-tags"?: Record<string, unknown> } | null)?.["dist-tags"];
     const latest = tags?.["latest"];
     if (typeof latest !== "string" || latest.length === 0) {
-      return { ok: false, reason: "the registry response has no dist-tags.latest" };
+      return { ok: false, failure: { code: "no_latest" } };
     }
     return { ok: true, latest };
   } catch (e) {
-    const reason =
+    const failure: UpdateFailure =
       e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")
-        ? `the registry did not answer within ${timeoutMs} ms`
-        : `network unavailable: ${message(e)}`;
-    return { ok: false, reason };
+        ? { code: "timeout", ms: timeoutMs }
+        : { code: "network", detail: message(e) };
+    return { ok: false, failure };
   } finally {
     clearTimeout(timer);
   }
@@ -333,7 +417,7 @@ export function cachedVerdict(opts: VerdictOptions): UpdateVerdict {
       source: "cache",
       checked_at: entry.checked_at,
       age_ms: age,
-      reason: entry.error ?? "the last attempt failed, no reason recorded",
+      reason: failureReason(entry.failure ?? { code: "unknown" }, entry.build === opts.current),
     };
   }
   return verdictFromLatest(opts.current, entry.latest, {
@@ -377,7 +461,7 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateVerdict>
   const probe = await probeRegistry(opts);
   if (!probe.ok) {
     writeUpdateCache(
-      { package: PACKAGE_NAME, latest: null, checked_at: now, error: probe.reason },
+      { package: PACKAGE_NAME, latest: null, checked_at: now, build: opts.current, failure: probe.failure },
       env,
     );
     return {
@@ -386,7 +470,7 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateVerdict>
       source: "network",
       checked_at: now,
       age_ms: 0,
-      reason: probe.reason,
+      reason: failureReason(probe.failure, true),
     };
   }
 
@@ -402,7 +486,8 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateVerdict>
       // её как «проверено» — тот же класс молчаливой лжи.
       latest: verdict.status === "unreachable" ? null : probe.latest,
       checked_at: now,
-      error: verdict.status === "unreachable" ? (verdict.reason ?? null) : null,
+      build: opts.current,
+      failure: verdict.status === "unreachable" ? { code: "bad_version", version: probe.latest } : null,
     },
     env,
   );

@@ -2,20 +2,39 @@
  * `myc statusline` — строка статуса Claude Code: то, чего агент не видит
  * сам, одной компактной строкой, и на КАЖДУЮ отрисовку.
  *
- *   myc │ 56 ready · 2 in progress · 31 blocked │ 604 files · 4129 symbols · 12m ago │ 135 notes │ 7/9 useful calls
+ *   myc │ ctx 42% │ 56 ready · 2 in progress · 31 blocked │ 604 files · 4129 symbols · 12m ago │ 135 notes │ 7/9 useful calls
  *
- * Слева направо: очередь задач (готово / в работе / заблокировано), код-индекс
- * (файлы, символы, давность последней записи — или «нет индекса», или
- * «индексируется»), память проекта (узлы знания в охвате репозитория) и
- * обращения к myc в ЭТОЙ сессии: сколько полезных из скольких. Деградация —
- * маркер `⚠` сразу после `myc`; нет деградации — нет и маркера.
+ * Слева направо: заполнение окна контекста (число хоста, см. ниже), очередь
+ * задач (готово / в работе / заблокировано), код-индекс (файлы, символы,
+ * давность последней записи — или «нет индекса», или «индексируется»), память
+ * проекта (узлы знания в охвате репозитория) и обращения к myc в ЭТОЙ сессии:
+ * сколько полезных из скольких. Деградация — маркер `⚠` сразу после `myc`; нет
+ * деградации — нет и маркера.
  *
  * Ставит её `myc wire --status-line` (без флага wire statusLine не трогает).
  * Ввод — JSON хоста на stdin (схема прочитана из бинаря Claude Code 2.1.267,
  * см. statusline-config.ts); из него берутся `session_id`, `transcript_path`,
- * `cwd` и `workspace.current_dir`. Те же байты уходят ЧУЖОЙ строке, которая
- * стояла до нас (statusline-passthrough.ts): её не ждём, над нашей строкой
- * печатается вывод её последнего завершённого запуска.
+ * `cwd`, `workspace.current_dir` и `context_window.used_percentage`. Те же
+ * байты уходят ЧУЖОЙ строке, которая стояла до нас (statusline-passthrough.ts):
+ * её не ждём, над нашей строкой печатается вывод её последнего завершённого
+ * запуска.
+ *
+ * КОНТЕКСТ — ЧИСЛО ХОСТА, НЕ НАШЕ. `context_window` в 2.1.267 (справка
+ * statusLine в бинаре и функция, что его собирает): `total_input_tokens`,
+ * `total_output_tokens`, `context_window_size`, `current_usage` (токены
+ * последнего ответа или null) и `used_percentage` / `remaining_percentage` —
+ * `Math.round(ввод / окно × 100)`, зажато в 0..100, null до первого ответа.
+ * Берём `used_percentage` как есть (округляем и зажимаем — на случай хоста,
+ * что пришлёт дробь), ничего не считая: стоимость — ноль лишнего ввода-вывода,
+ * значение уже в stdin. Поля нет или оно null (старый хост, терминал, сессия
+ * без ответа) — сегмента нет вовсе: это не деградация myc, а отсутствие числа.
+ *
+ * ОТМЕТКИ ВЫСОКОГО ЗАПОЛНЕНИЯ НЕТ, и это решение. Хост сам предупреждает
+ * красным («N% until auto-compact», «Context low (N% remaining)») по своему
+ * порогу — окно минус запас на сводку, с учётом CLAUDE_AUTOCOMPACT_PCT_OVERRIDE.
+ * Наш порог по `used_percentage` меряет от ПОЛНОГО окна и с порогом хоста не
+ * совпадает: 80% у окна 200k и у окна 1M — разное расстояние до сжатия, то
+ * есть символ значил бы разное. Число читается и без него.
  *
  * БЮДЖЕТ (И1). Хост зовёт строку на каждое сообщение, отмена прежней
  * отрисовки убивает её дерево — значит, строка обязана быть быстрой, без
@@ -120,6 +139,11 @@ export interface StatuslineData {
   readonly line: string;
   /** Всё, что уходит в stdout: вывод чужой строки (если был) и наша. */
   readonly lines: readonly string[];
+  /**
+   * Заполнение окна контекста, % — `context_window.used_percentage` хоста,
+   * округлённое и зажатое в 0..100. null — хост числа не дал: сегмента нет.
+   */
+  readonly context_pct: number | null;
   readonly workspace: string | null;
   readonly workspace_error?: string;
   readonly repo: string;
@@ -315,6 +339,9 @@ async function queueStats(h: StoreHandle, repo: string, now: number): Promise<Qu
 
 export function renderLine(d: Omit<StatuslineData, "line" | "lines" | "took_ms">): string {
   const parts: string[] = [];
+  // Контекст — первым после `myc` и его маркера: он про сессию хоста, а не
+  // про воркспейс, и виден даже без воркспейса.
+  if (d.context_pct !== null) parts.push(`ctx ${d.context_pct}%`);
   if (d.workspace === null) {
     parts.push(d.workspace_error ?? "no myc workspace — run myc init");
   } else {
@@ -363,6 +390,8 @@ interface HostInput {
   readonly transcript_path?: string;
   readonly cwd?: string;
   readonly current_dir?: string;
+  /** `context_window.used_percentage`, округлённое и зажатое в 0..100. */
+  readonly context_pct?: number;
 }
 
 function parseInput(raw: Uint8Array): HostInput {
@@ -371,12 +400,16 @@ function parseInput(raw: Uint8Array): HostInput {
     const v = JSON.parse(Buffer.from(raw).toString("utf8")) as Record<string, unknown>;
     if (v === null || typeof v !== "object") return {};
     const str = (x: unknown): string | undefined => (typeof x === "string" && x.length > 0 ? x : undefined);
-    const ws = v["workspace"] as Record<string, unknown> | undefined;
+    const obj = (x: unknown): Record<string, unknown> | undefined =>
+      x !== null && typeof x === "object" ? (x as Record<string, unknown>) : undefined;
+    const ws = obj(v["workspace"]);
+    const used = obj(v["context_window"])?.["used_percentage"];
     return {
       session_id: str(v["session_id"]),
       transcript_path: str(v["transcript_path"]),
       cwd: str(v["cwd"]),
-      current_dir: ws !== undefined && ws !== null && typeof ws === "object" ? str(ws["current_dir"]) : undefined,
+      current_dir: ws !== undefined ? str(ws["current_dir"]) : undefined,
+      context_pct: typeof used === "number" && Number.isFinite(used) ? Math.min(100, Math.max(0, Math.round(used))) : undefined,
     };
   } catch {
     return {};
@@ -467,10 +500,11 @@ export function createStatuslineCommand(overrides: Partial<StatuslineDeps> = {})
   const deps = { ...realDeps(), ...overrides };
   return {
     name: "statusline",
-    summary: "one-line status for Claude Code's statusLine: queue, code index, memory, useful myc calls",
+    summary: "one-line status for Claude Code's statusLine: context fill, queue, code index, memory, useful myc calls",
     flags: FLAGS,
     help:
-      "Reads the host's statusLine JSON on stdin and prints one line: tasks ready / in progress / " +
+      "Reads the host's statusLine JSON on stdin and prints one line: the context window fill the host " +
+      "reports (ctx N%, from context_window.used_percentage; no segment when the host gives none), tasks ready / in progress / " +
       "blocked, code index files, symbols and age, memory nodes in this repo's reach, and how many " +
       "of THIS session's calls to the tool were useful out of how many (counted from the host's " +
       "transcript, incrementally). The same stdin bytes go to the statusLine that was there before " +
@@ -517,6 +551,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     return {
       line: "",
       lines: [],
+      context_pct: null,
       workspace: null,
       repo: "",
       queue: null,
@@ -556,7 +591,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
         })
       : null;
 
-  let body: Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign">;
+  let body: Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign" | "context_pct">;
   let error: string | undefined;
   try {
     body = await ownPart(ctx, deps, input, dir, cacheKey, now);
@@ -595,7 +630,8 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     window_ms: windowMs,
     ...(foreign.skipped !== undefined ? { skipped: foreign.skipped } : got?.error !== undefined ? { skipped: got.error } : {}),
   };
-  const line = renderLine({ ...body, foreign: foreignPart });
+  const context_pct = input.context_pct ?? null;
+  const line = renderLine({ ...body, context_pct, foreign: foreignPart });
   const lines = [
     ...(foreignPart.shown && result !== null
       ? result.output.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim().length > 0)
@@ -603,6 +639,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     line,
   ];
   return {
+    context_pct,
     ...body,
     foreign: foreignPart,
     line,
@@ -619,7 +656,7 @@ async function ownPart(
   dir: string,
   cacheKey: string,
   now: number,
-): Promise<Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign">> {
+): Promise<Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign" | "context_pct">> {
   const cachePath = cacheFile(deps.cacheDir, cacheKey);
   const cache = readCache(cachePath, deps.build);
 

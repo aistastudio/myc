@@ -378,6 +378,23 @@ function call(kind: "useful" | "empty" | "refusal"): string {
   return `${use}\n${res}\n`;
 }
 
+/**
+ * Число контекста приходит в том же stdin, что хост отдаёт процессу строки
+ * (`context_window.used_percentage`), — здесь оно проходит путь целиком:
+ * настоящий процесс, настоящий stdin, человеческий вывод.
+ */
+describe("ctx из настоящего stdin процесса", () => {
+  test("хост дал used_percentage — сегмент в строке; не дал — сегмента нет", async () => {
+    const withCtx = await render(payload(session()), { json: false, args: ["--no-pass"] });
+    expect(withCtx.code).toBe(0);
+    expect(withCtx.out).toMatch(/^myc │ ctx 1% │ \d+ ready · \d+ blocked │ /);
+    const old = await render(payload({ ...session(), context_window: undefined }), { json: false, args: ["--no-pass"] });
+    expect(old.code).toBe(0);
+    expect(old.out).toMatch(/^myc │ \d+ ready · \d+ blocked │ /);
+    expect(old.out).not.toContain("ctx");
+  });
+});
+
 describe("две сессии одновременно — счётчики не смешиваются", () => {
   /**
    * Орка запускает несколько агентов Claude в одном рабочем дереве: общий

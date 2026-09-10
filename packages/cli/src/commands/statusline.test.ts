@@ -15,7 +15,7 @@ import { Registry } from "../registry.ts";
 import { createCodeCommand } from "./code.ts";
 import { createDepCommand } from "./dep.ts";
 import { createRememberCommand } from "./remember.ts";
-import { createStatuslineCommand, statuslineCachePath, type StatuslineData } from "./statusline.ts";
+import { createStatuslineCommand, renderLine, statuslineCachePath, type StatuslineData } from "./statusline.ts";
 import { CLASSIFIER_VERSION } from "../statusline-session.ts";
 import { createClaimCommand, createCommentCommand, createCreateCommand, createTaskCommand } from "./tasks.ts";
 
@@ -201,6 +201,121 @@ describe("что показывает строка", () => {
     const d = await line();
     expect(d.session?.counts).toEqual({ total: 3, useful: 2, empty: 1, refusal: 0, error: 0 });
     expect(d.line.endsWith("│ 2/3 useful calls")).toBe(true);
+  });
+});
+
+/**
+ * Заполнение контекста — число ХОСТА: `context_window.used_percentage` (схема
+ * из бинаря Claude Code 2.1.267: целое 0..100 или null до первого ответа).
+ * Сегмент стоит сразу после `myc` и его маркера. Нет числа — нет сегмента:
+ * старый хост и терминал — не деградация myc, и «ctx ?» было бы шумом.
+ */
+describe("ctx: заполнение окна контекста от хоста", () => {
+  const ctxWindow = (used: unknown): Record<string, unknown> => ({
+    context_window: {
+      total_input_tokens: 84_000,
+      total_output_tokens: 1_200,
+      context_window_size: 200_000,
+      current_usage: { input_tokens: 10, output_tokens: 1_200, cache_creation_input_tokens: 500, cache_read_input_tokens: 83_490 },
+      used_percentage: used,
+      remaining_percentage: typeof used === "number" ? 100 - used : used,
+    },
+  });
+
+  test("поле есть — «ctx N%» сразу после myc, до задач", async () => {
+    await myc("task", "одна");
+    stdin = payload(ctxWindow(42));
+    const d = await line();
+    expect(d.context_pct).toBe(42);
+    expect(d.line).toBe("myc │ ctx 42% │ 1 ready · 0 blocked │ no code index │ 0 notes │ no session");
+  });
+
+  test("поля нет — сегмента нет вовсе, не «ctx ?» и не деградация", async () => {
+    stdin = payload(); // старый хост: context_window нет
+    const d = await line();
+    expect(d.context_pct).toBeNull();
+    expect(d.line).toBe("myc │ 0 ready · 0 blocked │ no code index │ 0 notes │ no session");
+    expect(d.degraded).toEqual([]);
+  });
+
+  test("null до первого ответа и не-число — тоже без сегмента", async () => {
+    for (const used of [null, "42", true, {}]) {
+      stdin = payload(ctxWindow(used));
+      const d = await line();
+      expect({ used, pct: d.context_pct, ctx: d.line.includes("ctx") }).toEqual({ used, pct: null, ctx: false });
+    }
+    stdin = payload({ context_window: null });
+    expect((await line()).context_pct).toBeNull();
+  });
+
+  test("0 и 100 — числа, а не пустота", async () => {
+    stdin = payload(ctxWindow(0));
+    const zero = await line();
+    expect(zero.context_pct).toBe(0);
+    expect(zero.line.startsWith("myc │ ctx 0% │ 0 ready")).toBe(true);
+    stdin = payload(ctxWindow(100));
+    expect((await line()).line.startsWith("myc │ ctx 100% │ 0 ready")).toBe(true);
+  });
+
+  test("дробное округляется, выход за 0..100 зажат — как считает сам хост", async () => {
+    const cases: readonly (readonly [number, number])[] = [
+      [41.5, 42],
+      [41.49, 41],
+      [0.4, 0],
+      [99.6, 100],
+      [104.2, 100],
+      [-3, 0],
+    ];
+    for (const [used, want] of cases) {
+      stdin = payload(ctxWindow(used));
+      const d = await line();
+      expect({ used, pct: d.context_pct, head: d.line.split(" │ ")[1] }).toEqual({ used, pct: want, head: `ctx ${want}%` });
+    }
+  });
+
+  test("маркер деградации остаётся при myc, ctx — следом", async () => {
+    register({ MYC_MODELS_DIR: join(root, "нет-моделей") });
+    stdin = payload(ctxWindow(42));
+    expect((await line()).line).toBe("myc ⚠ no embedding model │ ctx 42% │ 0 ready · 0 blocked │ no code index │ 0 notes │ no session");
+  });
+
+  test("без воркспейса ctx всё равно виден: он про сессию хоста, а не про myc", async () => {
+    const bare = join(root, "bare");
+    mkdirSync(bare);
+    stdin = `${JSON.stringify({ session_id: "s", cwd: bare, workspace: { current_dir: bare }, ...ctxWindow(7) })}\n`;
+    const r = await run(["statusline", "--json"], { registry });
+    const d = (JSON.parse(r.stdout as string) as { data: StatuslineData }).data;
+    expect(d.line).toBe("myc │ ctx 7% │ no myc workspace — run myc init │ no session");
+  });
+
+  test("пример из задачи: длина строки и цена сегмента", () => {
+    const base: Omit<StatuslineData, "line" | "lines" | "took_ms" | "context_pct"> = {
+      workspace: "/ws",
+      repo: "",
+      queue: { ready: 61, in_progress: 0, blocked: 34, blocked_by_ancestor: 0 },
+      code: { state: "ok", files: 612, symbols: 4268, indexed_at: 1, age: "1h", queued: 0 },
+      memory: 101,
+      degraded: [],
+      session: {
+        transcript: "t.jsonl",
+        counts: { total: 653, useful: 600, empty: 50, refusal: 2, error: 1 },
+        pending: 0,
+        read_bytes: 0,
+        behind_bytes: 0,
+        files: 1,
+        took_ms: 1,
+      },
+      foreign: { source: null, started: false, finished: false, from: null, rc: null, shown: false, waited_ms: 0, window_ms: 0 },
+      cache: { stats: "hit", code: "hit" },
+    };
+    const withCtx = renderLine({ ...base, context_pct: 42 });
+    expect(withCtx).toBe(
+      "myc │ ctx 42% │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls",
+    );
+    expect(withCtx.length).toBe(108);
+    // Сегмент стоит ровно 10 знаков («ctx 42% │ »), в худшем случае — 11.
+    expect(renderLine({ ...base, context_pct: null }).length).toBe(98);
+    expect(renderLine({ ...base, context_pct: 100 }).length).toBe(109);
   });
 });
 
