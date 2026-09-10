@@ -219,7 +219,16 @@ describe("чужая строка (orca) получает те же байты �
     expect(r2.data?.lines).toEqual(["orca 42%", r2.data!.line]);
     expect(r2.data!.took_ms).toBeLessThan(70);
 
-    const human = await render(payload(sess), { env: { FAKE_OUT: fakeOut(), FAKE_SLEEP: "0" }, json: false });
+    // Третья отрисовка печатает то же, что вторая: на быстром Linux (обёртка на
+    // dash) чужая с FAKE_SLEEP 0 успевает завершиться, пока myc делает свою
+    // работу, и строка честно показывает ТЕКУЩИЙ вывод. Без FAKE_PRINT он пуст —
+    // и тест проверял исход гонки, а не то, что человеческий вывод ставит
+    // чужую строку над нашей (CI 0.3.1, ubuntu: пришла одна строка myc).
+    // Теперь любой исход — текущий «orca 43%» или прошлый «orca 42%» — сверяем.
+    const human = await render(payload(sess), {
+      env: { FAKE_OUT: fakeOut(), FAKE_SLEEP: "0", FAKE_PRINT: "orca 43%" },
+      json: false,
+    });
     expect(human.out.split("\n")[0]).toMatch(/^orca 4[23]%$/);
     expect(human.out.split("\n")[1]!.startsWith("myc")).toBe(true);
   });
