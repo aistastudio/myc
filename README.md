@@ -31,7 +31,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
-myc --version                     # myc 0.3.1 (schema 1)
+myc --version                     # myc 0.3.2 (schema 1)
 ```
 
 The embedding model is **not** downloaded during install. Semantic search is
@@ -103,18 +103,18 @@ attempted, so exceeding the hook's timeout costs the summary, not the record:
 
 ```
 $ myc absorb-session --reason manual --transcript … --agent claude
-# myc: контекст сжимается — вот что нельзя потерять
-эпизод sess-5jh8je4g050m сохранён (265 Б)
-ДАЛЬШЕ   myc show sess-5jh8je4g050m · myc ready --claim
+# myc: context is being compacted — here is what must not be lost
+episode sess-5jh8je4g050m saved (265 B)
+NEXT     myc show sess-5jh8je4g050m · myc ready --claim
 ```
 
 **A status line with what the agent cannot see.** `myc wire --status-line`
-puts one line under Claude Code's prompt — the task queue, the code index, the
-project's memory, and how many of this session's calls to myc actually returned
-something:
+puts one line under Claude Code's prompt — how full the context is, the task
+queue, the code index, the project's memory, and how many of this session's
+calls to myc actually returned something:
 
 ```
-myc │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls
+myc │ ctx 42% │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls
 ```
 
 "Useful" is counted from the host's own transcript, not guessed: an error, a
@@ -133,9 +133,10 @@ marks each row for what it is: `ses` own session, `ses*` someone else's, `prj`
 project-wide.
 
 ```
-$ MYC_SESSION_ID=s1 myc recall "ретраи"      $ MYC_SESSION_ID=s2 myc recall "ретраи"
-1.30 … ses  сессионное: ретраи…              1.30 … ses* сессионное: ретраи…
-1.10 … ses* в сессии один: ретраи…           1.10 … ses* в сессии один: ретраи…
+$ MYC_SESSION_ID=s1 myc recall "retries"        $ MYC_SESSION_ID=s2 myc recall "retries"
+… prj  project note: retries use jitter          … prj  project note: retries use jitter
+… ses  session note: retries back off…           … ses* session note: retries back off…
+3 of 3 · bm25 only                               3 of 3 · bm25 only · 2 from other sessions
 ```
 
 **Memory has three independent axes**, and the surface says what it hid:

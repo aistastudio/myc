@@ -19,7 +19,7 @@ import {
   renderWarnLines,
 } from "./render.ts";
 
-export const CLI_VERSION = "0.3.1";
+export const CLI_VERSION = "0.3.2";
 
 export type RunResult = {
   code: ExitCode;

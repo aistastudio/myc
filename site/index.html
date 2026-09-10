@@ -267,9 +267,9 @@ myc prime     <span class="c"># пакет контекста сессии — �
         <p class="sub" lang="en"><code>myc wire</code> installs a pre-compact hook. The session episode is written to disk first — raw, <code>L0</code>, <code>acl private</code>, secrets masked — and only then a rescue packet is printed back into the context that survives. Distillation is queued, never done on the write path: exceeding the hook's timeout costs the summary, not the record.</p>
         <p class="sub" lang="ru"><code>myc wire</code> ставит хук pre-compact. Эпизод сессии сначала ложится на диск — сырым, <code>L0</code>, <code>acl private</code>, с замаскированными секретами, — и только потом в выживающий контекст печатается спасательный пакет. Дистилляция уходит в очередь, а не делается на пути записи: превышение таймаута хука стоит выжимки, но не записи.</p>
         <pre class="code"><code>$ myc absorb-session --reason manual --transcript … --agent claude
-<span class="c"># myc: контекст сжимается — вот что нельзя потерять</span>
-эпизод sess-5jh8je4g050m сохранён (265 Б)
-ДАЛЬШЕ   myc show sess-5jh8je4g050m · myc ready --claim</code></pre>
+<span class="c"># myc: context is being compacted — here is what must not be lost</span>
+episode sess-5jh8je4g050m saved (265 B)
+NEXT     myc show sess-5jh8je4g050m · myc ready --claim</code></pre>
       </div>
 
       <div class="card">
@@ -277,9 +277,9 @@ myc prime     <span class="c"># пакет контекста сессии — �
         <h3 lang="ru">Чья это заметка</h3>
         <p class="sub" lang="en">Every note carries a reach: <code>session</code> for this conversation, <code>project</code> for everyone. The automatic context packet — <code>prime</code> — carries only the current session's notes, so another agent's conversation does not leak into yours. An explicit <code>recall</code> still finds them: hiding knowledge is not the same as scoping it. Each row says which it is.</p>
         <p class="sub" lang="ru">У каждой заметки есть охват: <code>session</code> — эта беседа, <code>project</code> — все. Автоматический пакет контекста <code>prime</code> несёт только заметки текущей сессии, поэтому чужая беседа не протекает в вашу. Явный <code>recall</code> их всё равно найдёт: спрятать знание — не то же самое, что ограничить его охват. И каждая строка говорит, что она такое.</p>
-        <pre class="code"><code><span class="c"># сессия s1                     # сессия s2</span>
-ses  сессионное: ретраи…       ses* сессионное: ретраи…
-prj  проектное: база…          prj  проектное: база…</code></pre>
+        <pre class="code"><code><span class="c"># session s1                     # session s2</span>
+ses  session note: retries…      ses* session note: retries…
+prj  project note: jitter…       prj  project note: jitter…</code></pre>
         <p class="sub" lang="en"><code>ses</code> own session · <code>ses*</code> someone else's · <code>prj</code> project-wide</p>
         <p class="sub" lang="ru"><code>ses</code> своя сессия · <code>ses*</code> чужая · <code>prj</code> общее для проекта</p>
       </div>
@@ -288,9 +288,9 @@ prj  проектное: база…          prj  проектное: база�
     <div class="card" style="margin-top:1.25rem">
       <h3 lang="en">A status line with what the agent cannot see</h3>
       <h3 lang="ru">Строка статуса — то, чего агент не видит</h3>
-      <p class="sub" lang="en"><code>myc wire --status-line</code> puts one line under Claude Code's prompt: the task queue, the code index, the project's memory, and how many of this session's calls to myc returned something — counted from the host's own transcript, where an error, a refusal or an empty answer is a call but not a useful one. Opt-in; a status line that was there before keeps receiving the same input and is never waited on or killed.</p>
-      <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают.</p>
-      <pre class="code"><code>myc │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls</code></pre>
+      <p class="sub" lang="en"><code>myc wire --status-line</code> puts one line under Claude Code's prompt: how full the context is, the task queue, the code index, the project's memory, and how many of this session's calls to myc returned something — counted from the host's own transcript, where an error, a refusal or an empty answer is a call but not a useful one. Opt-in; a status line that was there before keeps receiving the same input and is never waited on or killed.</p>
+      <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: заполненность контекста, очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают.</p>
+      <pre class="code"><code>myc │ ctx 42% │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls</code></pre>
     </div>
   </div>
 </section>
@@ -349,8 +349,8 @@ prj  проектное: база…          prj  проектное: база�
             <tr>
               <td>beads<br><span class="muted tnum" style="font-size:.8rem">1.0.5</span></td>
               <td>
-                <span lang="en"><strong class="win">A 1.0 release against our 0.3.1</strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
-                <span lang="ru"><strong class="win">Релиз 1.0 против нашего 0.3.1</strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
+                <span lang="en"><strong class="win">A 1.0 release against our 0.3.2</strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
+                <span lang="ru"><strong class="win">Релиз 1.0 против нашего 0.3.2</strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
               </td>
               <td>
                 <span lang="en">Hybrid search over memory with a measured MRR@10 and labelled corpora; latency budgets enforced in CI on 100 000 nodes; facts and decisions as first-class nodes next to tasks, not only issues.</span>
