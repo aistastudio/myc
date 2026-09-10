@@ -164,7 +164,7 @@ describe("myc callers — ребро графа вместо списка сов
     const out = r.stdout as string;
     expect(out).toContain("mid");
     expect(out).toContain("src/chain.ts");
-    expect(out).toContain("кто зовёт");
+    expect(out).toContain("callers · depth 1");
   });
 });
 
@@ -183,7 +183,7 @@ describe("направление: out отвечает на другой воп�
     await indexed();
     const r = await myc("callers", "нетакого", "--direction", "out");
     expect(r.code).toBe(ExitCode.NOTFOUND);
-    expect(r.stderr ?? "").toContain("тела в этом репозитории нет");
+    expect(r.stderr ?? "").toContain("its body is not in this repo");
   });
 
   test("умолчание видов у out — вызовы: чтения локалей не выдаются за граф", async () => {
@@ -235,7 +235,7 @@ describe("глубина: считается, а не декларируется
     expect(d["shown"]).toBe(1);
     expect(d["total_edges"]).toBeGreaterThan(1);
     const r = await myc("callers", "leaf", "--kind", "call", "--limit", "1");
-    expect(r.stdout as string).toContain("показано 1 из");
+    expect(r.stdout as string).toContain("shown 1 of");
   });
 });
 
@@ -247,7 +247,7 @@ describe("честность выдачи: пустое и неоднознач�
     expect(env.data["ambiguous"]).toBe(true);
     expect((env.data["defs"] as unknown[]).length).toBe(2);
     expect(env.warn.map((w) => w.code)).toContain("callers.ambiguous");
-    expect(env.warn.find((w) => w.code === "callers.ambiguous")!.msg).toContain("НЕ разделены");
+    expect(env.warn.find((w) => w.code === "callers.ambiguous")!.msg).toContain("NOT split");
   });
 
   test("внешнее имя: вхождения есть, определения нет, и это сказано", async () => {
@@ -261,7 +261,7 @@ describe("честность выдачи: пустое и неоднознач�
   test("индекса нет — отказ с командой, а не «никто не зовёт»", async () => {
     const r = await myc("callers", "leaf");
     expect(r.code).toBe(ExitCode.PRECOND);
-    expect(r.stderr ?? "").toContain("не построен");
+    expect(r.stderr ?? "").toContain("is not built");
   });
 
   test("ссылок нет при живом индексе — отдельная причина, а не пустой список", async () => {
@@ -271,14 +271,14 @@ describe("честность выдачи: пустое и неоднознач�
     raw.close();
     const r = await myc("callers", "leaf");
     expect(r.code).toBe(ExitCode.PRECOND);
-    expect(r.stderr ?? "").toContain("code_ref_sites пуста");
+    expect(r.stderr ?? "").toContain("code_ref_sites table is empty");
   });
 
   test("имени нет нигде — notfound с числами просмотренного", async () => {
     await indexed();
     const r = await myc("callers", "совсем-нет-такого-имени");
     expect(r.code).toBe(ExitCode.NOTFOUND);
-    expect(r.stderr ?? "").toContain("просмотрено");
+    expect(r.stderr ?? "").toContain("scanned");
   });
 
   test("аргумента нет и флаги проверяются", async () => {
@@ -310,7 +310,7 @@ describe("myc skeleton — API файла вместо файла", () => {
     expect(d["file_bytes"]).toBeGreaterThan(d["skeleton_bytes"] as number);
     expect(d["cheaper"]).toBeGreaterThan(10);
     const r = await myc("skeleton", "src/fat.ts");
-    expect(r.stdout as string).toContain("дешевле в");
+    expect(r.stdout as string).toContain("× cheaper");
   });
 
   test("вложенность: метод класса сдвинут относительно класса", async () => {
@@ -343,7 +343,7 @@ describe("myc skeleton — API файла вместо файла", () => {
     await indexed();
     const r = await myc("skeleton", "src/нет.ts");
     expect(r.code).toBe(ExitCode.NOTFOUND);
-    expect(r.stderr ?? "").toContain("просмотрено");
+    expect(r.stderr ?? "").toContain("scanned");
   });
 
   test("индекса нет — отказ с командой", async () => {

@@ -141,7 +141,7 @@ export function getModelSpec(modelId: string = DEFAULT_MODEL_ID): ModelSpec {
   const spec = MODELS[modelId];
   if (spec === undefined) {
     throw new Error(
-      `неизвестная модель "${modelId}"; известно: ${Object.keys(MODELS).join(", ")}`,
+      `unknown model "${modelId}"; known: ${Object.keys(MODELS).join(", ")}`,
     );
   }
   return spec;
@@ -154,5 +154,5 @@ export function modelBytes(spec: ModelSpec): number {
 
 /** Проверка целостности каталога: дефолт обязан существовать. */
 if (MODELS[DEFAULT_MODEL_ID] === undefined || MODELS[ENGLISH_MODEL_ID] === undefined) {
-  throw new Error("реестр моделей не содержит модель по умолчанию");
+  throw new Error("model registry does not contain the default model");
 }

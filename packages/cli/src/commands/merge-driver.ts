@@ -32,8 +32,8 @@ interface MergeDriverData {
 }
 
 const COLLISION_HINT =
-  "две живые базы под одним site_id — обычно копия каталога воркспейса (cp -R/rsync), " +
-  "а не клон; см. S65 в docs/design/ARCHITECTURE.md";
+  "two live databases under one site_id — usually a copy of the workspace directory (cp -R/rsync), " +
+  "not a clone; see S65 in docs/design/ARCHITECTURE.md";
 
 export function createMergeDriverCommand(): Command {
   return {
@@ -52,7 +52,7 @@ export function createMergeDriverCommand(): Command {
       }
       for (const p of [parsed.ours, parsed.theirs]) {
         if (!existsSync(p)) {
-          return failure("notfound.file", `файл не найден: ${p}`, ExitCode.NOTFOUND);
+          return failure("notfound.file", `file not found: ${p}`, ExitCode.NOTFOUND);
         }
       }
       let run: MergeDriverRun;

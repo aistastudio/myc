@@ -159,7 +159,7 @@ describe("init: выбранная реализация код-интеллек�
     expect(readFileSync(join(dir, ".myc", "workspace.toml"), "utf8")).toContain(
       'code_intel = "builtin"',
     );
-    expect(r.stdout as string).toContain("код-интеллект");
+    expect(r.stdout as string).toContain("code intel");
     expect(r.stdout as string).toContain("builtin");
   });
 
@@ -317,7 +317,7 @@ describe("init: идемпотентность", () => {
 
     const second = await myc(dir, "init");
     expect(second.code).toBe(ExitCode.OK);
-    expect(second.stdout as string).toContain("уже существует");
+    expect(second.stdout as string).toContain("already exists");
 
     const dbAfter = readFileSync(join(dir, ".myc", "myc.db"));
     expect(Buffer.compare(dbBefore, dbAfter)).toBe(0);
@@ -394,7 +394,7 @@ describe("init: личный ярус ~/.myc (S41)", () => {
     expect(data.personal.exists).toBe(true);
 
     const human = await myc(dir, "init", "--force");
-    expect(human.stdout as string).toContain("личный ~/.myc");
+    expect(human.stdout as string).toContain("personal ~/.myc");
   });
 
   test("повторный `myc init --global` идемпотентен, не пересоздаёт базу", async () => {
@@ -404,7 +404,7 @@ describe("init: личный ярус ~/.myc (S41)", () => {
 
     const second = await myc(dir, "init", "--global");
     expect(second.code).toBe(ExitCode.OK);
-    expect(second.stdout as string).toContain("уже существует");
+    expect(second.stdout as string).toContain("already exists");
     // Про разрушительный флаг человек узнаёт здесь, а не упёршись в отказ.
     expect(second.stdout as string).toContain("--wipe-memory");
 
@@ -508,8 +508,8 @@ describe("init --global --force: личная память не стираетс
     // тоже часть ответа: «1 узлов» в самом важном сообщении команды читается
     // как сбой, а не как ответ.
     expect(before.nodes).toBe(1);
-    expect(text).toContain("1 узел,");
-    expect(text).toMatch(new RegExp(`${before.ops} операц\\S+ оплога`));
+    expect(text).toContain("1 node,");
+    expect(text).toMatch(new RegExp(`${before.ops} oplog operations?\\b`));
     expect(text).toContain("cp -R");
     expect(text).toContain("--wipe-memory");
   });
@@ -532,8 +532,8 @@ describe("init --global --force: личная память не стираетс
 
     const r = await myc(dir, "init", "--global", "--force", "--wipe-memory");
     expect(r.code).toBe(ExitCode.OK);
-    expect(r.stdout as string).toContain("память стёрта");
-    expect(r.stdout as string).toContain(`${before.nodes} узел`);
+    expect(r.stdout as string).toContain("memory erased");
+    expect(r.stdout as string).toContain(`${before.nodes} node`);
 
     const after = personalCounts();
     expect(after.nodes).toBe(0);
@@ -560,7 +560,7 @@ describe("init --global --force: личная память не стираетс
     const r = await myc(dir, "init", "--global", "--force");
     expect(r.code).toBe(ExitCode.OK);
     expect(existsSync(join(homeDir, ".myc", "myc.db"))).toBe(true);
-    expect(r.stdout as string).not.toContain("память стёрта");
+    expect(r.stdout as string).not.toContain("memory erased");
   });
 
   test("нечитаемая база: отказ по незнанию, а не стирание по незнанию", async () => {
@@ -574,7 +574,7 @@ describe("init --global --force: личная память не стираетс
 
     const r = await myc(dir, "init", "--global", "--force");
     expect(r.code).toBe(ExitCode.PRECOND);
-    expect(`${r.stderr ?? ""}`).toContain("база не читается");
+    expect(`${r.stderr ?? ""}`).toContain("database can't be read");
     expect(readFileSync(dbPath, "utf8")).toBe("это не sqlite");
   });
 
@@ -627,7 +627,7 @@ describe("init --global --force: личная память не стираетс
     const r = await myc(dir, "init", "--global", "--force", "--wipe-memory");
     expect(r.code).toBe(ExitCode.OK);
     expect(readFileSync(join(homeDir, ".myc", "bin", "myc"), "utf8")).toBe("#!/bin/sh\n");
-    expect(r.stdout as string).toContain("не тронуто");
+    expect(r.stdout as string).toContain("left alone");
   });
 
   test("выгрузка оплога рядом с базой тоже держит --force", async () => {
@@ -765,12 +765,12 @@ describe("init --global --force: писатель вышел начисто (н�
     // Терять нечего — и отказ здесь не осторожность, а сломанный безопасный
     // путь: человек, которому --force отказывает всегда, приучается писать
     // --wipe-memory, и защита исчезает ровно там, где нужна.
-    expect(`${r.err}${r.out}`).not.toContain("база не читается");
+    expect(`${r.err}${r.out}`).not.toContain("database can't be read");
     expect(r.code).toBe(ExitCode.OK);
     expect(existsSync(join(homeDir, ".myc", "projections"))).toBe(false);
     expect(existsSync(join(homeDir, ".myc", "myc.db"))).toBe(true);
     expect(meta("site_id")).toBe(siteBefore);
-    expect(r.out).toContain("память не тронута");
+    expect(r.out).toContain("memory untouched");
   });
 
   test("память на месте: отказ называет числа потери и не пишет ни байта", async () => {
@@ -786,7 +786,7 @@ describe("init --global --force: писатель вышел начисто (н�
     // «expected to contain» не говорит, чем именно. Подпроцесс живёт отдельно
     // и на другой платформе может отвечать иначе — печатаем то, что он
     // ответил на самом деле, иначе разбор упирается в отсутствие фактов.
-    if (r.code !== ExitCode.PRECOND || !r.err.includes("1 узел,")) {
+    if (r.code !== ExitCode.PRECOND || !r.err.includes("1 node,")) {
       console.log(
         `[диагностика] init --global --force вернул ${r.code} (ожидался ${ExitCode.PRECOND})\n` +
           `stderr: ${r.err.slice(0, 800)}\nstdout: ${r.out.slice(0, 400)}`,
@@ -795,9 +795,9 @@ describe("init --global --force: писатель вышел начисто (н�
     expect(r.code).toBe(ExitCode.PRECOND);
     // «База не читается» — не ответ, а признак слепоты защиты: файл на месте
     // и прекрасно читается, а человеку нужны цифры того, что он теряет.
-    expect(r.err).not.toContain("база не читается");
-    expect(r.err).toContain("1 узел,");
-    expect(r.err).toMatch(/\d+ операц\S+ оплога/);
+    expect(r.err).not.toContain("database can't be read");
+    expect(r.err).toContain("1 node,");
+    expect(r.err).toMatch(/\d+ oplog operations?\b/);
     // И чтение не оставляет следов. Лечение из просмотрщика (пересоздать
     // соединение читаемым handle-ом под query_only) здесь бы это уронило:
     // закрытие такого соединения делает чекпойнт — замер на подставном ~/.myc
@@ -815,7 +815,7 @@ describe("init --global --force: писатель вышел начисто (н�
     // Вторая попытка чтения не смеет быть попыткой «прочитать хоть что-то»:
     // не прочли — не стираем, и так и сказано.
     expect(r.code).toBe(ExitCode.PRECOND);
-    expect(r.err).toContain("база не читается");
+    expect(r.err).toContain("database can't be read");
     expect(readFileSync(dbPath, "utf8")).toBe("это не sqlite");
   });
 });

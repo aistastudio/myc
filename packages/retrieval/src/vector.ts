@@ -113,7 +113,7 @@ function expandLayers(layerMin: Layer | undefined, layerMax: Layer | undefined):
   const max = layerMax ?? 3;
   if (min > max) {
     throw new TypeError(
-      `vectorSearch: layerMin (${min}) > layerMax (${max}) — фильтр по слою не может быть пустым (S27)`,
+      `vectorSearch: layerMin (${min}) > layerMax (${max}) — the layer filter cannot be empty (S27)`,
     );
   }
   const out: number[] = [];
@@ -130,7 +130,7 @@ function expandLayers(layerMin: Layer | undefined, layerMax: Layer | undefined):
 function quantizeQuery(vec: Float32Array): Buffer {
   if (vec.length !== EMBED_DIM) {
     throw new TypeError(
-      `vectorSearch: ожидался вектор длины ${EMBED_DIM}, получено ${vec.length}`,
+      `vectorSearch: expected a vector of length ${EMBED_DIM}, got ${vec.length}`,
     );
   }
   let maxAbs = 0;
@@ -138,7 +138,7 @@ function quantizeQuery(vec: Float32Array): Buffer {
     const v = vec[i]!;
     if (!Number.isFinite(v)) {
       throw new TypeError(
-        `vectorSearch: компонент ${i} вектора запроса не конечен (${v})`,
+        `vectorSearch: query vector component ${i} is not finite (${v})`,
       );
     }
     const a = Math.abs(v);
@@ -245,24 +245,24 @@ function degradedOutcome(reason: string): VectorSearchOutcome {
 export function vectorSearch(db: DbDriver, params: VectorSearchParams): VectorSearchOutcome {
   if (params.scopes.length === 0) {
     throw new TypeError(
-      "vectorSearch: scopes пуст — векторный запрос без фильтра по (scope, layer) " +
-        "является ошибкой, а не медленным путём (S27)",
+      "vectorSearch: scopes is empty — a vector query without a (scope, layer) filter " +
+        "is an error, not a slow path (S27)",
     );
   }
   const vector = params.vector;
   if (!(vector instanceof Float32Array)) {
     throw new TypeError(
-      `vectorSearch: vector должен быть Float32Array[${EMBED_DIM}], получено ${typeof vector}`,
+      `vectorSearch: vector must be Float32Array[${EMBED_DIM}], got ${typeof vector}`,
     );
   }
   if (vector.length !== EMBED_DIM) {
     throw new TypeError(
-      `vectorSearch: ожидался вектор длины ${EMBED_DIM}, получено ${vector.length}`,
+      `vectorSearch: expected a vector of length ${EMBED_DIM}, got ${vector.length}`,
     );
   }
   if (params.queryInt8 !== undefined && params.queryInt8.length !== EMBED_DIM) {
     throw new TypeError(
-      `vectorSearch: queryInt8 ожидался длины ${EMBED_DIM}, получено ${params.queryInt8.length}`,
+      `vectorSearch: expected queryInt8 of length ${EMBED_DIM}, got ${params.queryInt8.length}`,
     );
   }
   // Контракт фильтра и квантизация проверяются ДО деградации: программная
@@ -279,7 +279,7 @@ export function vectorSearch(db: DbDriver, params: VectorSearchParams): VectorSe
     db.one<{ name: string }>(vectorQueries.tableExists, ["nodes_vec"]) !== undefined;
   if (!hasVecTable) {
     return degradedOutcome(
-      "nodes_vec отсутствует — vec0 не загружен в рантайме, векторные миграции не применялись (S26)",
+      "nodes_vec is missing — vec0 is not loaded in the runtime, vector migrations were not applied (S26)",
     );
   }
 
@@ -306,7 +306,7 @@ export function vectorSearch(db: DbDriver, params: VectorSearchParams): VectorSe
     const message = String((error as Error).message);
     if (message.includes("no such module: vec0")) {
       return degradedOutcome(
-        `nodes_vec есть, но модуль vec0 не загружен в этом соединении: ${message}`,
+        `nodes_vec exists, but the vec0 module is not loaded on this connection: ${message}`,
       );
     }
     throw error;

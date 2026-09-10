@@ -79,9 +79,10 @@ export interface FileCursor {
  * классификацию фиксированного набора образцов в отпечаток и держит историю
  * «версия → отпечаток» (statusline-session.test.ts, «отпечаток поведения»).
  *
- * 1 — первая сдача; 2 — тела heredoc, комментарии и сверка подкоманды с реестром.
+ * 1 — первая сдача; 2 — тела heredoc, комментарии и сверка подкоманды с реестром;
+ * 3 — английские подвалы шести команд рядом с русскими (вывод CLI переведён).
  */
-export const CLASSIFIER_VERSION = 2;
+export const CLASSIFIER_VERSION = 3;
 
 export interface SessionState {
   readonly v: 1;
@@ -460,15 +461,19 @@ export function emptyData(cmd: string, data: unknown): boolean | undefined {
  * команд, и каждое сверено тестом с настоящим выводом CLI
  * (statusline-session.test.ts, «подвалы совпадают с живым CLI»): формат
  * поменяется — покраснеет тест, а не молча соврёт строка.
+ *
+ * Словарь разбора, а не вывод: у каждой команды две формы подвала — русская
+ * (транскрипты сессий, начатых до перевода CLI, и старые сборки) и английская
+ * (текущий вывод). Русскую не убирать, пока такие транскрипты читаются.
  */
 const HUMAN_COUNTERS: Readonly<Record<string, RegExp>> = {
-  recall: /^(\d+) из \d+/m,
-  search: /^(\d+) из \d+/m,
-  list: /^(\d+) из \d+/m,
+  recall: /^(\d+) (?:из|of) \d+/m,
+  search: /^(\d+) (?:из|of) \d+/m,
+  list: /^(\d+) (?:из|of) \d+/m,
   ready: /^(\d+) ready\b/m,
-  "code search": /^(\d+) файл/m,
-  "code grep": /— (\d+) вхожден/,
-  callers: /групп (\d+)/,
+  "code search": /^(\d+) (?:файл|file)/m,
+  "code grep": /— (\d+) (?:вхожден|occurrence)/,
+  callers: /(?:групп|groups) (\d+)/,
 };
 
 /** Машинный код пустоты в WARN-строке. */

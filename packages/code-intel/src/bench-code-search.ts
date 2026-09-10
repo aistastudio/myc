@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     n: number;
   }).n;
   if (units === 0) {
-    console.error(`корпуса нет: code_units пуст для repo '${repoId}'. Сначала: myc code index`);
+    console.error(`no corpus: code_units is empty for repo '${repoId}'. First run: myc code index`);
     process.exit(1);
   }
 
@@ -116,11 +116,11 @@ async function main(): Promise<void> {
     if (mode === "files") for (const line of detail) console.log(line);
     rows.push(
       `${mode.padEnd(6)} MRR ${(mrr / n).toFixed(3)}  top1 ${top1}/${n}  top3 ${top3}/${n}  ` +
-        `top10 ${found}/${n}  ${(ms / n).toFixed(1)} мс/запрос`,
+        `top10 ${found}/${n}  ${(ms / n).toFixed(1)} ms/query`,
     );
   }
   console.log("");
-  console.log(`корпус: ${units} единиц, ${spec.cases.length} размеченных вопросов`);
+  console.log(`corpus: ${units} units, ${spec.cases.length} labelled queries`);
   for (const r of rows) console.log(r);
 }
 

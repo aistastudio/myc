@@ -28,6 +28,12 @@
  *   M2 — показывать `[auto:graft]` при одном бинаре без индекса;
  *   M3 — вернуть «, callers/search/map недоступны» в reason режима builtin;
  *   M4 — захардкодить «ts/tsx/js/jsx» вместо L1_LANGS_LABEL в одной поверхности.
+ *
+ * После перевода вывода на английский (memory-347rah165vkk) M1–M4 перепрогнаны
+ * в английской форме — все убиты. Добавлены M1′ («graft missing: …, so no
+ * callers/search/map here» в bootstrap) и M3′ («callers and code search won't
+ * work» в reason builtin): с DENIAL из HEAD их не ловила ни одна проверка
+ * поверхностей, с нынешним — ловит «ни одна поверхность не отрицает».
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -55,9 +61,12 @@ import { realStoreDeps } from "./store.ts";
 type Cap = "callers" | "search" | "map";
 const CAPS: readonly Cap[] = ["callers", "search", "map"];
 
-/** Как поверхность могла бы назвать возможность. */
+/**
+ * Как поверхность могла бы назвать возможность. Словарь двуязычный: вывод CLI
+ * теперь английский, русские формы остаются для старых сборок и транскриптов.
+ */
 const CAP_WORDS: Readonly<Record<Cap, RegExp>> = {
-  callers: /\bcallers\b|кто зовёт|вызывающ/iu,
+  callers: /\bcallers\b|who calls|кто зовёт|вызывающ/iu,
   search: /\bsearch\b|поиск по коду/iu,
   map: /\bmap\b|карт[аыу] (?:кода|репозитория)/iu,
 };
@@ -65,9 +74,17 @@ const CAP_WORDS: Readonly<Record<Cap, RegExp>> = {
 /**
  * Отрицание. `\b` в JS не видит границы у кириллицы (S48), поэтому «нет»
  * ограничено буквами явно, а не `\b`.
+ *
+ * Английская половина повторяет русскую по смыслу, а не одно слово «not»:
+ * недоступ → unavailable / not available; не будет → will not / won't;
+ * не работа → not work / doesn't work; не поддерж → unsupported / not
+ * supported; отсутству → missing / absent; «нет» → no / none. Голое «not»
+ * не берётся ровно по той же причине, по какой в русской половине нет голого
+ * «не»: «index not built yet» — предусловие, а не отрицание возможности.
+ * «no» и «missing» — только словом: `precond.no_index` и `hook_missing` — коды.
  */
 const DENIAL =
-  /недоступ|не будет|не работа|не поддерж|отсутству|(?<!\p{L})нет(?!\p{L})|unavailable|not available|unsupported|not supported|disabled/iu;
+  /недоступ|не будет|не работа|не поддерж|отсутству|(?<!\p{L})нет(?!\p{L})|unavailable|(?:not|n't) (?:available|supported)|unsupported|disabled|(?:will not|won't)(?![\p{L}\p{N}_])|(?:not|n't) work|cannot|can't|(?<![\p{L}\p{N}_.])(?:no|none|missing|absent)(?![\p{L}\p{N}_])/iu;
 
 /** Клауза — кусок между разделителями: утверждение и его подлежащее рядом. */
 function clauses(text: string): string[] {
@@ -265,24 +282,55 @@ describe("детекторы ловят ровно ту ложь, что был�
     "builtin (code_intel=builtin, умолчание): символы и fan_in по тексту для ts/tsx/js/jsx/py — после `myc code index` (фон собирает сам, когда в репозитории есть якоря), callers/search/map недоступны",
   ];
 
-  test("каждая прежняя строка отрицает все три возможности", () => {
-    for (const line of OLD) {
+  /**
+   * Те же три лжи так, как их напечатал бы английский CLI: вывод переведён, и
+   * детектор, знающий одну русскую половину, пропустил бы их молча.
+   */
+  const OLD_EN = [
+    "[auto:degraded] graft.absent: graft unavailable: code intel on builtin — text-only symbols for ts/tsx/js/jsx, callers/search/map unavailable",
+    "WARN degraded.graft: graft not found — code intel on builtin (text), callers/search/map unavailable",
+    "builtin (code_intel=builtin, default): symbols and fan_in by text for ts/tsx/js/jsx/py — after `myc code index` (the background builds it on its own once the repo has anchors), callers/search/map unavailable",
+  ];
+
+  test("каждая прежняя строка отрицает все три возможности — по-русски и по-английски", () => {
+    for (const line of [...OLD, ...OLD_EN]) {
       for (const cap of CAPS) expect({ line, cap, hit: denialsOf(line, cap).length > 0 }).toEqual({ line, cap, hit: true });
     }
   });
 
   test("неполный список языков пойман, полный — нет", () => {
     expect(incompleteLists(OLD[0]!)).toEqual(["ts/tsx/js/jsx — нет py"]);
+    expect(incompleteLists(OLD_EN[0]!)).toEqual(["ts/tsx/js/jsx — нет py"]);
     expect(incompleteLists(`символы для ${L1_LANGS_LABEL}`)).toEqual([]);
     expect(langLists(`символы для ${L1_LANGS_LABEL}`)).toEqual([L1_LANGS_LABEL]);
+    expect(incompleteLists(`symbols for ${L1_LANGS_LABEL}`)).toEqual([]);
+    expect(langLists(`symbols for ${L1_LANGS_LABEL}`)).toEqual([L1_LANGS_LABEL]);
   });
 
   // Словарь отрицаний проверен мутацией на приёмке: «callers не поддерживаются»
   // и «callers unsupported» проходили guard, пока в DENIAL не было этих форм.
+  // Английские формы — по одной на каждую русскую группу DENIAL.
   test("отрицание другими словами — тоже отрицание", () => {
-    for (const line of ["callers не поддерживаются", "code search unsupported", "map is not supported", "callers отсутствуют", "search disabled"]) {
+    for (const line of [
+      "callers не поддерживаются",
+      "code search unsupported",
+      "map is not supported",
+      "callers отсутствуют",
+      "search disabled",
+      "callers won't work here",
+      "code search will not answer",
+      "code map doesn't work",
+      "callers do not work without graft",
+      "search isn't available",
+      "no callers for this language",
+      "none of the code map works",
+      "callers are missing",
+      "code search is absent",
+      "map cannot be built",
+      "who calls can't be answered",
+    ]) {
       const cap = CAPS.find((c) => CAP_WORDS[c].test(line))!;
-      expect({ line, hit: denialsOf(line, cap).length > 0 }).toEqual({ line, hit: true });
+      expect({ line, cap, hit: denialsOf(line, cap).length > 0 }).toEqual({ line, cap: cap ?? "?", hit: true });
     }
   });
 
@@ -290,6 +338,13 @@ describe("детекторы ловят ровно ту ложь, что был�
     expect(denialsOf("символы, callers, code search и code map для ts/tsx/js/jsx/py", "callers")).toEqual([]);
     expect(denialsOf("cmds: bootstrap,callers,code,init", "callers")).toEqual([]);
     expect(denialsOf("индекса graft/INDEX.md нет", "map")).toEqual([]);
+    expect(denialsOf("symbols, callers, code search and code map for ts/tsx/js/jsx/py", "callers")).toEqual([]);
+    expect(denialsOf("no graft/INDEX.md index", "map")).toEqual([]);
+    // Коды — не слова: `precond.no_index` и `hook_missing` отрицанием не считаются,
+    // как и предусловие «index not built yet».
+    expect(denialsOf("callers refuse with precond.no_index until the index exists", "callers")).toEqual([]);
+    expect(denialsOf("code search index not built yet — run myc code index", "search")).toEqual([]);
+    expect(denialsOf("map degraded.hook_missing", "map")).toEqual([]);
   });
 });
 
@@ -442,8 +497,8 @@ describe("[auto:graft] только при graft/INDEX.md", () => {
 
     const noBin = registryWith(probeEnv(() => null, "/usr/bin"));
     const b = textOf(await myc(noBin, dir, "bootstrap", "--no-cache"));
-    expect(b).toContain("[auto:graft] bin=нет index=graft/");
-    expect(b).toContain("граф есть, бинаря нет");
+    expect(b).toContain("[auto:graft] bin=none index=graft/");
+    expect(b).toContain("graph present, binary missing");
   });
 });
 

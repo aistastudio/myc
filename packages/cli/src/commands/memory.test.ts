@@ -154,7 +154,7 @@ describe("myc remember", () => {
 
   test("отсутствие chat-LLM написано в выводе (И2), а не спрятано", async () => {
     const r = await myc("remember", "факт");
-    expect(text(r.stdout)).toContain("absorb(эвристика — chat-LLM выключен)");
+    expect(text(r.stdout)).toContain("absorb(heuristic — chat-LLM off)");
 
     const withLlm = new Registry();
     withLlm.register(createRememberCommand(rememberDeps({ chatLlm: () => true })));
@@ -163,7 +163,7 @@ describe("myc remember", () => {
       env: { MYC_ACTOR: "tester", MYC_HOME: home },
     });
     expect(text(r2.stdout)).toContain("queue     embed, absorb\n");
-    expect(text(r2.stdout)).not.toContain("эвристика");
+    expect(text(r2.stdout)).not.toContain("heuristic");
   });
 
   test("--anchor ПРИВЯЗЫВАЕТ, а не откладывает: узел, строка anchors, ребро touches", async () => {
@@ -212,11 +212,11 @@ describe("myc remember", () => {
     const anchors = env.data["anchors"] as Array<Record<string, unknown>>;
     expect(anchors[0]!["anchor_id"]).toBeUndefined();
     expect(anchors[0]!["state"]).toBe("pending");
-    expect(String(anchors[0]!["reason"])).toContain("файла нет");
+    expect(String(anchors[0]!["reason"])).toContain("no such file");
     expect(env.warn.map((w) => w.code)).toContain("anchor.unbound");
     // Человеческий вывод — отдельным вызовом: в --json строка не рендерится.
     const human = await myc("remember", "второй факт про пропажу", "--anchor", "src/нет.ts:1-2");
-    expect(text(human.stdout)).toContain("@— не привязан:");
+    expect(text(human.stdout)).toContain("@— not bound:");
     expect(text(human.stdout)).toContain("(myc anchor add)");
     expect(text(human.stdout)).not.toContain("anchor bind");
     // Узел записан: опечатка в пути не имеет права стоить текста факта.
@@ -293,7 +293,7 @@ describe("myc recall", () => {
     const r = await myc("recall", "Dolt");
     const out = text(r.stdout);
     expect(out).toContain("отказ от Dolt");
-    expect(out).toMatch(/1 из 1 · bm25[^·]*· [\d.]+ мс · \d+ симв из 2000/);
+    expect(out).toMatch(/1 of 1 · bm25[^·]*· [\d.]+ ms · \d+ chars of 2000/);
   });
 
   test("mode_used в конверте соответствует напечатанному ярлыку", async () => {
@@ -344,16 +344,16 @@ describe("myc recall", () => {
     // пять символов шире, и на 450 крайняя карточка перестала помещаться
     // даже свёрнутой — тест начал проверять отказ вместо свёртки.
     const midOut = text((await myc("recall", "ретривал", "--budget", "480")).stdout);
-    expect(midOut).toContain("(свёрнуто)");
-    expect(midOut).toMatch(/симв из 480/);
+    expect(midOut).toContain("(collapsed)");
+    expect(midOut).toMatch(/chars of 480/);
 
     // Тесный бюджет: движок оставляет только узлы, влезающие ЦЕЛИКОМ,
     // остальное объявляет partial — не молча (И2).
     const tight = await myc("recall", "ретривал", "--budget", "260");
     const out = text(tight.stdout);
-    expect(out).toMatch(/симв из 260/);
+    expect(out).toMatch(/chars of 260/);
     expect(out).toContain("partial:");
-    expect(out).toContain("сверх бюджета");
+    expect(out).toContain("over budget");
 
     const tightJson = await mycJson("recall", "ретривал", "--budget", "260");
     const used = tightJson.env.meta["used_chars"] as number;
@@ -388,7 +388,7 @@ describe("myc recall", () => {
     expect(clipped.env.data["dropped"]).toEqual([]);
     expect(clipped.env.meta["used_chars"] as number).toBeLessThanOrEqual(tight);
     const out = text((await myc("recall", "слияние", "--budget", String(tight))).stdout);
-    const line = out.split("\n").find((l) => l.includes("(свёрнуто)"))!;
+    const line = out.split("\n").find((l) => l.includes("(collapsed)"))!;
     expect(line).toContain("…");
     expect(line.length + 1).toBeLessThanOrEqual(tight);
   });
@@ -406,18 +406,18 @@ describe("myc recall", () => {
   test("бюджет предсказуем: тот же запрос даёт тот же вывод", async () => {
     const a = text((await myc("recall", "ретривал", "--budget", "300")).stdout);
     const b = text((await myc("recall", "ретривал", "--budget", "300")).stdout);
-    expect(a.replace(/[\d.]+ мс/, "")).toBe(b.replace(/[\d.]+ мс/, ""));
+    expect(a.replace(/[\d.]+ ms/, "")).toBe(b.replace(/[\d.]+ ms/, ""));
   });
 
   test("бюджет считается по факту напечатанного", async () => {
     const r = await myc("recall", "ретривал", "--budget", "400");
     const out = text(r.stdout);
-    const m = /(\d+) симв из 400/.exec(out);
+    const m = /(\d+) chars of 400/.exec(out);
     expect(m).not.toBeNull();
     const declared = Number(m![1]);
     // Всё, кроме футера и WARN-строк, — это то, что бюджет считает.
     const lines = out.split("\n");
-    const footerAt = lines.findIndex((l) => l.includes("симв из 400"));
+    const footerAt = lines.findIndex((l) => l.includes("chars of 400"));
     const body = lines.slice(0, footerAt).map((l) => l.length + 1).reduce((a, b) => a + b, 0);
     expect(body).toBe(declared);
   });
@@ -446,7 +446,7 @@ describe("myc search", () => {
     const out = text(r.stdout);
     expect(out).toContain("ID");
     expect(out).toContain("ACL");
-    expect(out).toMatch(/1 из 1 · bm25[^·]*· [\d.]+ мс/);
+    expect(out).toMatch(/1 of 1 · bm25[^·]*· [\d.]+ ms/);
   });
 
   test("--fields выбирает колонки, неизвестное поле — usage", async () => {
@@ -531,7 +531,7 @@ describe("два яруса", () => {
 
     const human = text((await myc("recall", "RRF")).stdout);
     expect(human).toContain("·me");
-    expect(human).toContain("2 яруса");
+    expect(human).toContain("2 tiers");
 
     const table = text((await myc("search", "RRF", "--fields", "id,tier,title")).stdout);
     expect(table).toContain("personal");
@@ -543,7 +543,7 @@ describe("два яруса", () => {
     const { env } = await mycJson("recall", "RRF");
     const mode = env.meta["mode_used"] as { personalQueried: boolean; why: string };
     expect(mode.personalQueried).toBe(false);
-    expect(mode.why).toContain("не открыт");
+    expect(mode.why).toContain("not open");
   });
 
   test("дедупликация не показывает один и тот же факт дважды", async () => {
@@ -643,7 +643,7 @@ describe("разбор параметров", () => {
     expect(modeLabelOf(mk(["fts"]), 60)).toBe("bm25 only");
     expect(modeLabelOf(mk(["fts", "graph"]), 60)).toBe("bm25+graph");
     expect(modeLabelOf(mk(["fts", "vector"]), 60)).toBe("vec+bm25 rrf(k=60)");
-    expect(modeLabelOf(mk([]), 60)).toBe("пусто");
+    expect(modeLabelOf(mk([]), 60)).toBe("empty");
   });
 
   test("embedTimeoutFromEnv: по умолчанию 0 — вектор в одноразовом CLI не звался", () => {

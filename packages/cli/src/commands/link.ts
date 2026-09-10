@@ -74,7 +74,7 @@ export function renderLinkHuman(raw: unknown): string {
   const head =
     d.removed === true ? `${d.type} ${d.from} → ${d.to} removed` : `${d.from} ${d.type} ${d.to}`;
   const effects = d.effects.length > 0 ? `\neffects   ${d.effects.join(" · ")}` : "";
-  return `${head}${effects}\n${d.took_ms} мс\n`;
+  return `${head}${effects}\n${d.took_ms} ms\n`;
 }
 
 /** Данные `myc dep add|rm` — ровно то, чем отвечает подкоманда dep. */
@@ -102,7 +102,7 @@ async function viaDep(
   const dep = createDepCommand(deps);
   const sub = (dep.subcommands ?? []).find((s) => s.name === (remove ? "rm" : "add"));
   if (sub?.handler === undefined) {
-    return failure("internal.unexpected", `у dep нет подкоманды ${remove ? "rm" : "add"}`, ExitCode.ERR);
+    return failure("internal.unexpected", `dep has no subcommand ${remove ? "rm" : "add"}`, ExitCode.ERR);
   }
   const result = await sub.handler(ctx);
   if (!result.ok) return result;
@@ -112,9 +112,9 @@ async function viaDep(
   // событие — это вопрос «а какой правильный?» вместо ответа.
   const effects =
     d.left_ready === true
-      ? [`${d.left_ready_id} вышла из ready`]
+      ? [`${d.left_ready_id} left ready`]
       : d.back_ready === true
-        ? [`${d.back_ready_id} снова ready`]
+        ? [`${d.back_ready_id} is ready again`]
         : [];
   const data: LinkData = {
     from: d.src,
@@ -151,15 +151,15 @@ export function createLinkCommand(deps: StoreDeps = realStoreDeps): Command {
       if (fromInput === undefined || type === undefined || toInput === undefined) {
         return failure(
           "usage.invalid",
-          "нужно: myc link <from> <type> <to>",
+          "usage: myc link <from> <type> <to>",
           ExitCode.USAGE,
-          `тип — один из: ${LINK_TYPES.join(", ")}`,
+          `type is one of: ${LINK_TYPES.join(", ")}`,
         );
       }
       if (!(LINK_TYPES as readonly string[]).includes(type)) {
         return failure(
           "usage.invalid",
-          `неверный type '${type}'; допустимы ${LINK_TYPES.join(", ")}`,
+          `invalid type '${type}'; allowed: ${LINK_TYPES.join(", ")}`,
           ExitCode.USAGE,
         );
       }
@@ -168,7 +168,7 @@ export function createLinkCommand(deps: StoreDeps = realStoreDeps): Command {
       if (REASON_REQUIRED.has(type) && reason === undefined) {
         return failure(
           "usage.missing",
-          `для ${type} обязателен reason — история не переписывается`,
+          `${type} requires a reason — history is not rewritten`,
           ExitCode.USAGE,
         );
       }
@@ -193,7 +193,7 @@ export function createLinkCommand(deps: StoreDeps = realStoreDeps): Command {
         const effects: string[] = [];
         if (remove) {
           if (!h.store.removeEdge(src, kind, dst)) {
-            return failure("notfound.edge", `ребра ${src} ${type} ${dst} нет`, ExitCode.NOTFOUND);
+            return failure("notfound.edge", `no edge ${src} ${type} ${dst}`, ExitCode.NOTFOUND);
           }
         } else {
           const existing = h.store.getEdge(src, kind, dst);
@@ -201,7 +201,7 @@ export function createLinkCommand(deps: StoreDeps = realStoreDeps): Command {
           if (existing !== undefined && existing.deleted_at === null) {
             return failure(
               "conflict.edge_exists",
-              `ребро ${src} ${type} ${dst} уже есть`,
+              `edge ${src} ${type} ${dst} already exists`,
               ExitCode.CONFLICT,
             );
           }
@@ -214,7 +214,7 @@ export function createLinkCommand(deps: StoreDeps = realStoreDeps): Command {
           }
           if (type === "supersedes") {
             h.store.updateNode(dst, { attrs: { superseded_by: src } });
-            effects.push(`${dst} помечен superseded_by ${src}; старый узел сохранён`);
+            effects.push(`${dst} marked superseded_by ${src}; the old node is kept`);
           }
           if (reason !== undefined) effects.push(`reason: ${reason}`);
         }

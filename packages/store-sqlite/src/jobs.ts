@@ -318,7 +318,7 @@ export function enqueue(db: Database, kind: string, options: EnqueueOptions = {}
   // DO NOTHING сработал — значит строка на эту пару уже есть.
   const existing = db.query(SQL_FIND_DEDUP).get(kind, entityId) as JobRow | null;
   if (existing === null) {
-    throw new Error(`jobs.enqueue: конфликт по (${kind}, ${String(entityId)}) без строки-владельца`);
+    throw new Error(`jobs.enqueue: conflict on (${kind}, ${String(entityId)}) with no owning row`);
   }
   return { id: existing.id, inserted: false, row: existing };
 }
@@ -337,7 +337,7 @@ export function claim(
   holder: string,
   options: ClaimOptions = {},
 ): JobRow[] {
-  if (holder.length === 0) throw new Error("jobs.claim: holder не может быть пустым");
+  if (holder.length === 0) throw new Error("jobs.claim: holder must not be empty");
   const now = options.now ?? Date.now();
   const leaseMs = options.leaseMs ?? DEFAULT_JOB_LEASE_MS;
   const limit = options.limit ?? 1;

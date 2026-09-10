@@ -144,9 +144,9 @@ describe("myc doctor: здоровый воркспейс", () => {
     const res = await doctor();
     expect(res.code).toBe(ExitCode.OK);
     const out = text(res);
-    expect(out).toContain("схема");
-    expect(out).toContain("счётчики");
-    expect(out).toContain("хуки");
+    expect(out).toMatch(/^schema$/m);
+    expect(out).toMatch(/^counters$/m);
+    expect(out).toMatch(/^hooks$/m);
   });
 
   test("в конверте — все три раздела и вердикт по каждому пункту", async () => {
@@ -170,9 +170,9 @@ describe("myc doctor: здоровый воркспейс", () => {
    */
   test("непроверенное не называется «ок»", async () => {
     const env = await envelope("--schema");
-    const vec = env.data?.schema?.checks.find((c) => c.name === "векторы");
+    const vec = env.data?.schema?.checks.find((c) => c.name === "vectors");
     expect(vec?.verdict).toBe("n/a");
-    expect(vec?.detail).toContain("по потребности");
+    expect(vec?.detail).toContain("on demand");
   });
 });
 
@@ -185,7 +185,7 @@ describe("myc doctor --recount: испорченное состояние", () =
 
     const res = await doctor("--recount");
     expect(res.code).toBe(ExitCode.PRECOND);
-    expect(text(res)).toContain(`${a.id}: в базе 7, пересчёт 0`);
+    expect(text(res)).toContain(`${a.id}: stored 7, recount 0`);
 
     const env = await envelope("--recount");
     expect(env.ok).toBe(false);
@@ -248,8 +248,8 @@ describe("myc doctor --schema", () => {
 
     const env = await envelope("--schema");
     expect(env.error?.code).toBe("precond.drift"); // а НЕ precond.schema от миграции
-    const version = env.data?.schema?.checks.find((c) => c.name === "версия");
-    expect(env.error?.msg).toContain("база новее бинаря");
+    const version = env.data?.schema?.checks.find((c) => c.name === "version");
+    expect(env.error?.msg).toContain("database is newer than the binary");
     expect(version ?? env.error?.msg).toBeDefined();
   });
 
@@ -259,7 +259,7 @@ describe("myc doctor --schema", () => {
     db.close();
     const res = await doctor("--schema");
     expect(res.code).toBe(ExitCode.PRECOND);
-    expect(text(res)).toContain("лишний в базе: table:future_thing");
+    expect(text(res)).toContain("extra in the database: table:future_thing");
   });
 
   test("пропавший объект тоже назван", async () => {
@@ -268,7 +268,7 @@ describe("myc doctor --schema", () => {
     db.close();
     const res = await doctor("--schema");
     expect(res.code).toBe(ExitCode.PRECOND);
-    expect(text(res)).toContain("нет в базе: table:digest_cache");
+    expect(text(res)).toContain("missing from the database: table:digest_cache");
   });
 });
 
@@ -288,7 +288,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     const pre = env.data?.hooks?.hooks.find((h) => h.event === "pre-compact");
     expect(pre?.verdict).toBe("ok");
     expect(pre?.count).toBe(3);
-    expect(pre?.detail).toContain("срабатывал 3 раз");
+    expect(pre?.detail).toContain("fired 3 times");
   });
 
   /**
@@ -304,9 +304,9 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     const res = await doctor("--hooks");
     expect(res.code).toBe(ExitCode.PRECOND);
     const env = await envelope("--hooks");
-    expect(hookLine(env, "pre-compact")).toContain("не срабатывал ни разу");
-    expect(hookLine(env, "session-start")).toContain("не срабатывал ни разу");
-    expect(hookLine(env, "session-start")).not.toContain("себя не отмечает");
+    expect(hookLine(env, "pre-compact")).toContain("never fired");
+    expect(hookLine(env, "session-start")).toContain("never fired");
+    expect(hookLine(env, "session-start")).not.toContain("does not report itself");
   });
 
   /**
@@ -321,8 +321,8 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     const start = env.data?.hooks?.hooks.find((h) => h.event === "session-start");
     expect(start?.verdict).toBe("ok");
     expect(start?.count).toBe(4);
-    expect(start?.detail).toContain("срабатывал 4 раз");
-    expect(start?.detail).toContain("агенты: claude");
+    expect(start?.detail).toContain("fired 4 times");
+    expect(start?.detail).toContain("agents: claude");
   });
 
   /**
@@ -340,7 +340,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
     const line = hookLine(await envelope("--hooks"), "session-start");
     expect(line).toContain("no-session");
-    expect(line).toContain("хост не назвал сессию");
+    expect(line).toContain("the host did not name the session");
     expect(line).toContain("myc wire");
   });
 
@@ -356,12 +356,12 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"], 60_000);
     expect((await doctor("--hooks")).code).toBe(ExitCode.OK);
     const fresh = await envelope("--hooks");
-    expect(hookLine(fresh, "pre-compact")).toContain("не знаю");
-    expect(hookLine(fresh, "pre-compact")).toContain("не было повода случиться");
+    expect(hookLine(fresh, "pre-compact")).toContain("unknown: installed");
+    expect(hookLine(fresh, "pre-compact")).toContain("had no occasion to happen");
 
     writeWireJournal(["SessionStart", "PreCompact", "PostToolUse"], 2 * 24 * 60 * 60 * 1000);
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
-    expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("не срабатывал ни разу");
+    expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("never fired");
   });
 
   /**
@@ -375,14 +375,14 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 11, "empty"], ["opencode:post-edit", 5]);
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
     const line = hookLine(await envelope("--hooks"), "pre-compact");
-    expect(line).toContain("сохранять было нечего");
+    expect(line).toContain("nothing to save");
     expect(line).toContain("empty");
-    expect(line).toContain("работы не сделал");
+    expect(line).toContain("did no work last time");
 
     // И обратная сторона: успешный хук по-прежнему здоровье, иначе «починка»
     // свелась бы к тому, что pre-compact не может быть зелёным никогда.
     writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 11, "ok"], ["opencode:post-edit", 5]);
-    expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("срабатывал 11 раз");
+    expect(hookLine(await envelope("--hooks"), "pre-compact")).toContain("fired 11 times");
     expect(
       (await envelope("--hooks")).data?.hooks?.hooks.find((h) => h.event === "pre-compact")?.verdict,
     ).toBe("ok");
@@ -412,7 +412,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 3], ["opencode:post-edit", 5]);
     for (const event of ["session-start", "pre-compact", "post-edit"]) {
       const line = hookLine(await envelope("--hooks"), event);
-      expect(line).not.toContain("не поставлен");
+      expect(line).not.toContain("not installed");
       expect(line).not.toContain("drift");
     }
     // Обратная сторона: журнал БЕЗ нашего файла по-прежнему значит «не
@@ -430,7 +430,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     // твёрдое, чем журнал, и ветка «срабатывал N раз» перекрыла бы вопрос
     // об установке вовсе. Поэтому счётчик post-edit убираем.
     writeCounters(["opencode:session-start", 2], ["opencode:pre-compact", 3]);
-    expect(hookLine(await envelope("--hooks"), "post-edit")).toContain("не поставлен");
+    expect(hookLine(await envelope("--hooks"), "post-edit")).toContain("not installed");
   });
 
   test("не поставленное событие названо не поставленным, а не «не срабатывало»", async () => {
@@ -441,8 +441,8 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     const res = await doctor("--hooks");
     expect(res.code).toBe(ExitCode.PRECOND);
     const env = await envelope("--hooks");
-    expect(hookLine(env, "post-edit")).toContain("не поставлен");
-    expect(hookLine(env, "post-edit")).toContain("нет в журнале");
+    expect(hookLine(env, "post-edit")).toContain("not installed");
+    expect(hookLine(env, "post-edit")).toContain("not in the `myc wire` journal");
   });
 
   /**
@@ -456,7 +456,7 @@ describe("myc doctor --hooks: «не знаю» и «не срабатывал»
     const env = await envelope("--hooks");
     const stop = env.data?.hooks?.hooks.find((h) => h.event === "stop");
     expect(stop?.verdict).toBe("n/a");
-    expect(stop?.detail).toContain("нет в этой сборке");
+    expect(stop?.detail).toContain("this build has no");
     expect(env.ok).toBe(true);
   });
 });
@@ -515,7 +515,7 @@ describe("myc doctor --hooks: устаревший или подменённый
     putHelper(text);
     journalFor(wireHash(text));
     expect((await doctor("--hooks")).code).toBe(ExitCode.OK);
-    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("актуален");
+    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("up to date");
   });
 
   /**
@@ -532,7 +532,7 @@ describe("myc doctor --hooks: устаревший или подменённый
     journalFor(wireHash(stale));
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
     const line = generatedLine(await envelope("--hooks"), HELPER);
-    expect(line).toContain("устарел");
+    expect(line).toContain("stale");
     expect(line).toContain("myc wire");
     expect(line).toContain(wireHash(stale)); // назван хеш журнала
     expect(line).toContain(wireHash(currentHelper())); // и хеш нынешней сборки
@@ -548,15 +548,15 @@ describe("myc doctor --hooks: устаревший или подменённый
     journalFor(wireHash(currentHelper()));
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
     const line = generatedLine(await envelope("--hooks"), HELPER);
-    expect(line).toContain("изменён после нас");
+    expect(line).toContain("changed after we wrote it");
     expect(line).toContain(".myc.bak");
-    expect(line).not.toContain("устарел");
+    expect(line).not.toContain("stale");
   });
 
   test("пропавший файл — расхождение, а не тишина", async () => {
     journalFor(wireHash(currentHelper()));
     expect((await doctor("--hooks")).code).toBe(ExitCode.PRECOND);
-    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("пропал");
+    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("gone:");
   });
 
   /**
@@ -570,7 +570,7 @@ describe("myc doctor --hooks: устаревший или подменённый
     putHelper(text);
     journalFor(wireHash(text), "text");
     expect((await doctor("--hooks")).code).toBe(ExitCode.OK);
-    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("актуален");
+    expect(generatedLine(await envelope("--hooks"), HELPER)).toContain("up to date");
   });
 
   test("без журнала сверка отвечает «не знаю», а не «ок»", async () => {
@@ -616,7 +616,7 @@ describe("отчёт читается одинаково на нуле и на �
     driver.close();
     const bad = text(await doctor("--recount"));
 
-    for (const line of ["счётчики", "open_blockers", "anc_blockers", "parent_closure"]) {
+    for (const line of ["counters", "open_blockers", "anc_blockers", "parent_closure"]) {
       expect(ok).toContain(line);
       expect(bad).toContain(line);
     }

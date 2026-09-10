@@ -160,7 +160,7 @@ export function resolveGrepScope(
 ): { readonly ok: true; readonly scopes: readonly GrepScope[] } | GrepScopeRefusal {
   const wanted = inputs.map((x) => x.trim()).filter((x) => x.length > 0);
   if (wanted.length === 0) {
-    return { ok: false, code: "usage.invalid", msg: "--in без пути: нужен путь от корня репозитория" };
+    return { ok: false, code: "usage.invalid", msg: "--in without a path: give a path from the repo root" };
   }
   const toRel = (abs: string): string => relative(repoRoot, abs).split(sep).join("/");
   const outside = (rel: string): boolean => rel === ".." || rel.startsWith("../") || isAbsolute(rel);
@@ -174,26 +174,26 @@ export function resolveGrepScope(
       return {
         ok: false,
         code: "usage.outside_repo",
-        msg: `--in ${input}: путь выходит за корень репозитория — искать можно только внутри него`,
+        msg: `--in ${input}: the path leads outside the repo root — search works only inside it`,
       };
     }
     let dir: boolean;
     try {
       dir = statSync(abs).isDirectory();
     } catch {
-      let hint = "путь считается от корня репозитория — так же, как пути в выдаче grep";
+      let hint = "the path is relative to the repo root — the same as paths in grep output";
       if (cwd !== undefined && !isAbsolute(posix)) {
         const fromCwd = toRel(resolve(cwd, posix));
         if (fromCwd !== rel && !outside(fromCwd) && fromCwd.length > 0) {
           try {
             statSync(join(repoRoot, fromCwd));
-            hint += `; от текущего каталога это --in ${fromCwd}`;
+            hint += `; from the current directory that is --in ${fromCwd}`;
           } catch {
             // и от текущего каталога такого пути нет — подсказать нечего
           }
         }
       }
-      return { ok: false, code: "notfound.path", msg: `--in ${input}: такого пути в репозитории нет`, hint };
+      return { ok: false, code: "notfound.path", msg: `--in ${input}: no such path in the repo`, hint };
     }
     const path = dir ? (rel.length === 0 ? "" : `${rel}/`) : rel;
     const scope: GrepScope = { label: dir ? (rel.length === 0 ? "." : `${rel}/`) : rel, path, dir };
@@ -203,9 +203,9 @@ export function resolveGrepScope(
         ok: false,
         code: "notfound.scope",
         msg: dir
-          ? `--in ${input}: каталог есть, но в реестре индекса под ним нет ни одного файла — искать там нечего`
-          : `--in ${input}: файл есть, но в реестре индекса его нет — искать нечего`,
-        hint: "индекс не заходит в node_modules, .git, dist и подобные; новые файлы — myc code index",
+          ? `--in ${input}: the directory exists, but the file registry has no files under it — nothing to search there`
+          : `--in ${input}: the file exists, but it is not in the file registry — nothing to search`,
+        hint: "the index skips node_modules, .git, dist and the like; for new files run myc code index",
       };
     }
     if (!scopes.some((s) => s.path === scope.path)) scopes.push(scope);

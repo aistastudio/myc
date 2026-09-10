@@ -80,7 +80,7 @@ describe("myc prime — пустой воркспейс", () => {
     const r = await myc("prime");
     expect(r.code).toBe(0);
     const out = text(r.stdout);
-    expect(out).toContain("Воркспейс пуст");
+    expect(out).toContain("Workspace is empty");
     expect(out).toContain("NEXT");
   });
 
@@ -103,7 +103,7 @@ describe("myc prime — пустой воркспейс", () => {
     mkdirSync(join(dir, ".beads"), { recursive: true });
     const with_ = text((await myc("prime")).stdout);
     expect(with_).toContain("myc import --from beads");
-    expect(with_).not.toContain("если есть");
+    expect(with_).not.toContain("if any");
     expect((await data("prime"))["beads"]).toBe(true);
   });
 });
@@ -124,7 +124,7 @@ describe("myc prime — наполненный воркспейс", () => {
     expect(out).toContain("DECISIONS L2");
     expect(out).toContain("правило ядра проекта");
     expect(out).toContain("решение про хранилище");
-    expect(out).toMatch(/\d+ симв · \d+ мс · cache (hit|miss)/);
+    expect(out).toMatch(/\d+ chars · \d+ ms · cache (hit|miss)/);
   });
 
   test("data содержит ready/core/decisions", async () => {
@@ -274,14 +274,14 @@ describe("prime: скрытое по охвату репозитория наз�
     const d = await data("prime", "--budget", "3000", "--repo", "repoX");
     expect(d["mem_repo_foreign"]).toBe(1);
     const human = text((await myc("prime", "--budget", "3000", "--repo", "repoX")).stdout);
-    expect(human).toContain("1 заметок из других репозиториев скрыто");
+    expect(human).toContain("1 note from other repos hidden");
 
     // И обратная сторона: в своём репозитории она видна и прятать нечего —
     // счётчик, всегда печатающий число, был бы так же бесполезен.
     const own = await data("prime", "--budget", "3000", "--repo", "repoY");
     expect(own["mem_repo_foreign"]).toBe(0);
     const ownHuman = text((await myc("prime", "--budget", "3000", "--repo", "repoY")).stdout);
-    expect(ownHuman).not.toContain("из других репозиториев скрыто");
+    expect(ownHuman).not.toContain("from other repos hidden");
   });
 });
 

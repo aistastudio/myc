@@ -53,7 +53,7 @@ import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import { flagBool, flagStr, realStoreDeps, type StoreDeps } from "./store.ts";
-import { codeRepo } from "./code.ts";
+import { codeRepo, count } from "./code.ts";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
@@ -234,14 +234,14 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const raw = ctx.args[0];
       if (raw === undefined || raw.trim().length === 0) {
-        return failure("usage.invalid", "нужно: myc callers <name>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc callers <name>", ExitCode.USAGE);
       }
       const name = raw.trim();
       const direction = (flagStr(ctx, "direction") ?? "in").trim().toLowerCase();
       if (direction !== "in" && direction !== "out") {
         return failure(
           "usage.invalid",
-          `--direction принимает in или out, а не "${direction}"`,
+          `--direction takes in or out, not "${direction}"`,
           ExitCode.USAGE,
         );
       }
@@ -249,7 +249,7 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
       if (depth === "bad") {
         return failure(
           "usage.invalid",
-          `--depth принимает целое от 1 или all, а не "${flagStr(ctx, "depth")}"`,
+          `--depth takes an integer from 1, or all, not "${flagStr(ctx, "depth")}"`,
           ExitCode.USAGE,
         );
       }
@@ -257,7 +257,7 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
       if (kinds === "bad") {
         return failure(
           "usage.invalid",
-          `--kind принимает all или виды через запятую из: ${REF_KINDS.join(", ")}`,
+          `--kind takes all, or comma-separated kinds from: ${REF_KINDS.join(", ")}`,
           ExitCode.USAGE,
         );
       }
@@ -280,8 +280,8 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         if (scope.files === 0) {
           return failure(
             "precond.no_index",
-            `код-индекс этого репозитория (${repoId.length > 0 ? repoId : "корень воркспейса"}) не построен: ` +
-              "в code_files ноль строк — граф вызовов строить не из чего",
+            `the code index of this repo (${repoId.length > 0 ? repoId : "workspace root"}) is not built: ` +
+              "code_files has zero rows — nothing to build the call graph from",
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -290,8 +290,8 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         if (refs === 0) {
           return failure(
             "precond.no_refs",
-            `ссылок в индексе ноль при ${scope.files} файлах и ${scope.defs} символах: ` +
-              "таблица code_ref_sites пуста — «никто не зовёт» и «ссылки не построены» здесь неразличимы",
+            `the index has zero references across ${count(scope.files, "file")} and ${count(scope.defs, "symbol")}: ` +
+              "the code_ref_sites table is empty — \"nobody calls it\" and \"references were never built\" look the same here",
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -301,10 +301,10 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         if (direction === "out" && defs.length === 0) {
           return failure(
             "notfound.symbol",
-            `символа ${name} нет в code_defs: тела в этом репозитории нет, и спрашивать, ` +
-              `что он зовёт, не у чего (просмотрено ${scope.files} файлов, ${scope.defs} символов)`,
+            `symbol ${name} is not in code_defs: its body is not in this repo, so there is nothing ` +
+              `to ask what it calls (scanned ${count(scope.files, "file")}, ${count(scope.defs, "symbol")})`,
             ExitCode.NOTFOUND,
-            "myc callers " + name + "   # кто зовёт — работает и для внешнего имени",
+            "myc callers " + name + "   # who calls it: works for an external name too",
           );
         }
 
@@ -425,32 +425,32 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         if (graph.edges.length === 0 && defs.length === 0) {
           return failure(
             "notfound.symbol",
-            `имени ${name} нет ни в определениях, ни в ссылках: просмотрено ${scope.files} файлов, ` +
-              `${scope.defs} символов, ${refs} ссылок`,
+            `name ${name} is in neither definitions nor references: scanned ${count(scope.files, "file")}, ` +
+              `${count(scope.defs, "symbol")}, ${count(refs, "reference")}`,
             ExitCode.NOTFOUND,
-            "индекс мог отстать: myc code index",
+            "the index may be behind: myc code index",
           );
         }
         if (defs.length === 0) {
           ctx.warn(
             "callers.external",
-            `определения ${name} в этом репозитории нет — имя внешнее (импорт) либо объявлено ` +
-              "на языке без разбора символов; показаны только вхождения",
+            `${name} has no definition in this repo — the name is external (an import) or declared ` +
+              "in a language without symbol parsing; only occurrences are shown",
           );
         }
         if (data.ambiguous) {
           ctx.warn(
             "callers.ambiguous",
-            `имя ${name} определено ${defs.length} раз (${defs
+            `name ${name} is defined ${defs.length} times (${defs
               .map((d) => `${d.path}:${d.spanStart}`)
               .slice(0, 4)
-              .join(", ")}${defs.length > 4 ? ", …" : ""}) — ссылки по имени между ними НЕ разделены`,
+              .join(", ")}${defs.length > 4 ? ", …" : ""}) — references by name are NOT split between them`,
           );
         }
         if (graph.stopped !== null) {
           ctx.warn(
             "callers.truncated",
-            `обход остановлен на потолке ${graph.stopped.limit} символов — радиус НЕПОЛОН`,
+            `the walk stopped at the cap of ${graph.stopped.limit} symbols — the radius is INCOMPLETE`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms, count: data.total_edges } };
@@ -470,11 +470,11 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
                   `${x.exported ? " · exported" : ""}`,
               )
               .join("\n")
-          : `${d.name} · определения в индексе нет (внешнее имя)`;
+          : `${d.name} · no definition in the index (external name)`;
       out.push(head);
-      const kindsLabel = d.kinds.length === REF_KINDS.length ? "все виды" : d.kinds.join(",");
+      const kindsLabel = d.kinds.length === REF_KINDS.length ? "all kinds" : d.kinds.join(",");
       out.push(
-        `${d.direction === "in" ? "кто зовёт" : "кого зовёт"} · глубина ${d.depth} · ${kindsLabel}`,
+        `${d.direction === "in" ? "callers" : "callees"} · depth ${d.depth} · ${kindsLabel}`,
         "",
       );
 
@@ -482,10 +482,10 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
       for (const e of d.edges) {
         if (d.depth !== 1 && e.depth !== lastDepth) {
           const added = d.levels[e.depth - 1] ?? 0;
-          out.push(`шаг ${e.depth}  (+${added} символов)`);
+          out.push(`step ${e.depth}  (+${count(added, "symbol")})`);
           lastDepth = e.depth;
         }
-        const owner = e.caller.length > 0 ? e.caller : "верхний уровень";
+        const owner = e.caller.length > 0 ? e.caller : "top level";
         const at =
           e.caller_start > 0
             ? `${e.path}:${e.caller_start}${e.caller_end > 0 ? `-${e.caller_end}` : ""}`
@@ -494,8 +494,8 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         const label = d.direction === "in" ? owner : e.callee;
         const tail =
           d.direction === "out"
-            ? `${e.callee_defined === false ? "  [внешнее]" : ""}` +
-              `${owner !== d.name && owner.length > 0 ? `  (в ${owner})` : ""}`
+            ? `${e.callee_defined === false ? "  [external]" : ""}` +
+              `${owner !== d.name && owner.length > 0 ? `  (in ${owner})` : ""}`
             : "";
         out.push(`${arrow} ${label}  ${at}${tail}`);
         for (const s of e.sites) {
@@ -505,12 +505,12 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
       if (d.edges.length === 0) {
         out.push(
           d.direction === "in"
-            ? "никто не зовёт: вхождений этого имени в индексе нет"
-            : "этот символ не ссылается ни на что: вхождений в его спане нет",
+            ? "nobody calls it: the index has no occurrences of this name"
+            : "this symbol references nothing: its span has no occurrences",
         );
       }
       if (d.shown < d.total_edges) {
-        out.push("", `показано ${d.shown} из ${d.total_edges} групп — остальное за --limit`);
+        out.push("", `shown ${d.shown} of ${d.total_edges} groups — the rest is past --limit`);
       }
 
       const kinds = Object.entries(d.kind_counts)
@@ -519,22 +519,22 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         .join(", ");
       out.push(
         "",
-        `символов ${d.nodes}, групп ${d.total_edges}, вхождений ${d.sites}${kinds.length > 0 ? `  [${kinds}]` : ""}`,
+        `symbols ${d.nodes}, groups ${d.total_edges}, occurrences ${d.sites}${kinds.length > 0 ? `  [${kinds}]` : ""}`,
       );
-      if (d.levels.length > 1) out.push(`прирост по шагам  ${d.levels.join(" → ")}`);
+      if (d.levels.length > 1) out.push(`growth per step  ${d.levels.join(" → ")}`);
       if (d.ambiguous_nodes.length > 0) {
         out.push(
-          `обход прошёл через неоднозначные имена: ` +
+          `the walk went through ambiguous names: ` +
             d.ambiguous_nodes.map((a) => `${a.name} (${a.defs})`).join(", ") +
-            " — их поддеревья склеены",
+            " — their subtrees are merged",
         );
       }
       if (d.stopped !== null) {
-        out.push(`ОБХОД ОБОРВАН: потолок ${d.stopped.limit} символов, радиус неполон`);
+        out.push(`WALK CUT OFF: cap of ${d.stopped.limit} symbols, the radius is incomplete`);
       }
       out.push(
-        `просмотрено ${d.searched.files} файлов, ${d.searched.defs} символов, ${d.searched.refs} ссылок; ` +
-          `запросов ${d.queries}, прочитано файлов ${d.files_read}  ${d.took_ms} мс`,
+        `scanned ${count(d.searched.files, "file")}, ${count(d.searched.defs, "symbol")}, ${count(d.searched.refs, "reference")}; ` +
+          `queries ${d.queries}, files read ${d.files_read}  ${d.took_ms} ms`,
       );
       return `${out.join("\n")}\n`;
     },

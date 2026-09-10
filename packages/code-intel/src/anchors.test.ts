@@ -312,7 +312,7 @@ describe("три уровня детекта протухания", () => {
     const r = checkAnchor(a, f.file);
     expect(r.state).toBe("stale");
     expect(r.level).toBe(0);
-    expect(r.reason).toContain("не найден");
+    expect(r.reason).toContain("not found");
   });
 
   test("пустой crux не ищется: пустая игла нашлась бы где угодно", () => {
@@ -321,7 +321,7 @@ describe("три уровня детекта протухания", () => {
     f.write(REWRITTEN);
     const r = checkAnchor(a, f.file);
     expect(r.state).toBe("stale");
-    expect(r.reason).toContain("crux пуст");
+    expect(r.reason).toContain("crux is empty");
   });
 });
 

@@ -299,12 +299,12 @@ export type EmbedderResolution =
 
 export async function resolveAbsorbEmbedder(timeoutMs: number): Promise<EmbedderResolution> {
   if (timeoutMs <= 0) {
-    return { ok: false, reason: "эмбеддер выключен (--no-embed / --embed-timeout 0)" };
+    return { ok: false, reason: "embedder off (--no-embed / --embed-timeout 0)" };
   }
   try {
     const embed = await import("@myc/embed");
     if (!(await embed.isModelPresent(embed.DEFAULT_MODEL_ID))) {
-      return { ok: false, reason: "модель эмбеддингов не скачана → myc models fetch" };
+      return { ok: false, reason: "embedding model not downloaded → myc models fetch" };
     }
     const embedder = embed.createEmbedder({ backend: "local" });
     const warmed = await Promise.race([
@@ -317,8 +317,8 @@ export async function resolveAbsorbEmbedder(timeoutMs: number): Promise<Embedder
         ok: false,
         reason:
           warmed === "timeout"
-            ? `эмбеддер не прогрелся за ${timeoutMs} мс`
-            : `эмбеддер в состоянии ${warmed}`,
+            ? `embedder did not warm up within ${timeoutMs} ms`
+            : `embedder is in state ${warmed}`,
       };
     }
     return {
@@ -334,7 +334,7 @@ export async function resolveAbsorbEmbedder(timeoutMs: number): Promise<Embedder
       },
     };
   } catch (e) {
-    return { ok: false, reason: `эмбеддер не поднялся: ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, reason: `embedder failed to start: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
@@ -409,7 +409,7 @@ async function ensureVector(
   if (embedder === null) return { vector: null, embeddedHere: false };
   const vec = await embedder.embed(text);
   if (vec === null) {
-    s.degradedReason = s.degradedReason ?? "эмбеддер не вернул вектор";
+    s.degradedReason = s.degradedReason ?? "embedder returned no vector";
     return { vector: null, embeddedHere: false };
   }
   if (s.h.vec0 && !s.dryRun) {
@@ -575,7 +575,9 @@ function applyVerdict(
         ...(canSupersede(n.kind) ? { status: "superseded" } : {}),
       });
     }
-    actions.push(`head_id = ${plan.head} у ${plan.rehead.length} узл.`);
+    actions.push(
+      `head_id = ${plan.head} on ${plan.rehead.length} ${plan.rehead.length === 1 ? "node" : "nodes"}`,
+    );
     for (const type of ["touches", "mentions"] as const) {
       for (const e of h.store.edgesFrom(old.id, type)) {
         addEdgeOnce(h, node.id, type, e.dst, e.weight, actions);
@@ -602,9 +604,9 @@ function applyVerdict(
 export async function absorbOne(s: Session, id: string): Promise<AbsorbNodeResult> {
   const h = s.h;
   const node = h.store.getNode(id);
-  if (node === undefined) throw new Error(`узел ${id} не найден или удалён`);
+  if (node === undefined) throw new Error(`node ${id} not found or deleted`);
   const rowid = h.driver.one<{ rowid: number }>(Q.node_rowid, [id])?.rowid;
-  if (rowid === undefined) throw new Error(`узел ${id} без rowid`);
+  if (rowid === undefined) throw new Error(`node ${id} has no rowid`);
   const text = nodeAsText(node);
 
   const { vector, embeddedHere } = await ensureVector(s, node, rowid, text);
@@ -638,7 +640,7 @@ export async function absorbOne(s: Session, id: string): Promise<AbsorbNodeResul
     };
     const attrs: Record<string, JsonValue> = { absorb };
     if (verdict.quality === "lexical") {
-      absorb["degraded"] = s.degradedReason ?? "векторы недоступны";
+      absorb["degraded"] = s.degradedReason ?? "vectors unavailable";
       attrs["degraded_at"] = s.now;
     }
     h.store.updateNode(node.id, { attrs });
@@ -705,19 +707,19 @@ function loadThresholds(ctx: CommandContext): AbsorbThresholds {
 function renderAbsorbHuman(raw: unknown): string {
   const d = raw as AbsorbData;
   const lines: string[] = [];
-  if (d.degraded !== null) lines.push(`DEGRADED  absorb без векторов: ${d.degraded}`);
+  if (d.degraded !== null) lines.push(`DEGRADED  absorb without vectors: ${d.degraded}`);
   for (const n of d.nodes) {
     const sim =
       n.cos === null ? `jac ${n.jac.toFixed(3)} (lexical)` : `cos ${n.cos.toFixed(3)} jac ${n.jac.toFixed(3)}`;
     const target = n.target === null ? "" : ` → ${n.target}`;
-    lines.push(`${n.id}  ${n.class}${target}  ${sim}  кандидатов ${n.candidates}${n.error ? `  ОШИБКА ${n.error}` : ""}`);
+    lines.push(`${n.id}  ${n.class}${target}  ${sim}  candidates ${n.candidates}${n.error ? `  ERROR ${n.error}` : ""}`);
     for (const a of n.actions) lines.push(`          ${a}`);
   }
   const counts = (Object.keys(d.by_class) as AbsorbClass[])
     .filter((c) => d.by_class[c] > 0)
     .map((c) => `${c} ${d.by_class[c]}`)
     .join(", ");
-  lines.push(`${d.dry_run ? "dry-run: " : ""}разобрано ${d.processed}${counts ? ` (${counts})` : ""} · ${d.took_ms} мс`);
+  lines.push(`${d.dry_run ? "dry-run: " : ""}processed ${d.processed}${counts ? ` (${counts})` : ""} · ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -753,7 +755,7 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
         dryRun,
         now,
         embedder: null,
-        degradedReason: h.vec0 ? null : (h.vec0Reason ?? "vec0 не загружен — nodes_vec недоступна"),
+        degradedReason: h.vec0 ? null : (h.vec0Reason ?? "vec0 not loaded — nodes_vec unavailable"),
         fingerprintMismatch: null,
         resolveEmbedder: async () => {
           // Расхождение уже обнаружено этим прогоном — второй раз эмбеддер
@@ -762,7 +764,7 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
           if (s.embedder !== null) return s.embedder;
           if (s.degradedReason !== null && !h.vec0) return null;
           if (embedTimeout <= 0) {
-            s.degradedReason = "эмбеддер выключен (--no-embed / --embed-timeout 0)";
+            s.degradedReason = "embedder off (--no-embed / --embed-timeout 0)";
             return null;
           }
           const r = await deps.resolveEmbedder(embedTimeout);
@@ -884,13 +886,13 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
             code: fingerprintMismatch.code,
             msg: fingerprintMismatch.message,
             exit: ExitCode.PRECOND,
-            hint: "векторы уже в индексе целы; переиндексируй корпус текущей моделью: `bun run reindex:vectors --force`",
+            hint: "vectors already in the index are intact; reindex the corpus with the current model: `bun run reindex:vectors --force`",
           };
         }
 
         // Деградация — вслух: строка узла (выше), myc_health и meta.degraded[].
         const degraded = nodes.some((n) => n.quality === "lexical" && n.error === undefined)
-          ? (s.degradedReason ?? "векторы недоступны")
+          ? (s.degradedReason ?? "vectors unavailable")
           : null;
         if (!dryRun && nodes.length > 0) {
           try {
@@ -905,7 +907,7 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
           }
         }
         if (degraded !== null) {
-          ctx.warn("degraded.embed", `absorb без векторов: ${degraded} — кандидаты стали relates, ничего не слито`);
+          ctx.warn("degraded.embed", `absorb without vectors: ${degraded} — candidates became relates, nothing merged`);
         }
 
         const data: AbsorbData = {

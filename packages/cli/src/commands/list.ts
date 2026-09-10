@@ -115,7 +115,7 @@ function renderListHuman(raw: unknown): string {
         .trimEnd(),
     );
   }
-  lines.push(`${d.shown} из ${d.total} · ${d.took_ms} мс`);
+  lines.push(`${d.shown} of ${d.total} · ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -168,7 +168,7 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
         if (unknown.length > 0) {
           return failure(
             "usage.invalid",
-            `неизвестный --kind '${unknown.join(",")}'; допустимы ${Object.keys(KIND_FILTER).join(", ")}`,
+            `unknown --kind '${unknown.join(",")}'; allowed: ${Object.keys(KIND_FILTER).join(", ")}`,
             ExitCode.USAGE,
           );
         }
@@ -180,7 +180,7 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
         for (const p of pRaw.split(",")) {
           const parsed = parsePriority(p);
           if (parsed === undefined) {
-            return failure("usage.invalid", `неверный приоритет '${p}'; допустимы P0..P3 или 0..3`, ExitCode.USAGE);
+            return failure("usage.invalid", `invalid priority '${p}'; allowed: P0..P3 or 0..3`, ExitCode.USAGE);
           }
           priorities.push(parsed);
         }
@@ -188,7 +188,7 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
 
       const sortRaw = flagStr(ctx, "sort") ?? "updated";
       if (!["priority", "updated", "created", "status"].includes(sortRaw)) {
-        return failure("usage.invalid", `неверный --sort '${sortRaw}'`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid --sort '${sortRaw}'`, ExitCode.USAGE);
       }
 
       const parseBound = (raw: string, isSince: boolean): number | undefined => {
@@ -202,12 +202,12 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
       const sinceRaw = flagStr(ctx, "since");
       if (sinceRaw !== undefined) {
         since = parseBound(sinceRaw, true);
-        if (since === undefined) return failure("usage.invalid", `неверный --since '${sinceRaw}'`, ExitCode.USAGE);
+        if (since === undefined) return failure("usage.invalid", `invalid --since '${sinceRaw}'`, ExitCode.USAGE);
       }
       const untilRaw = flagStr(ctx, "until");
       if (untilRaw !== undefined) {
         until = parseBound(untilRaw, false);
-        if (until === undefined) return failure("usage.invalid", `неверный --until '${untilRaw}'`, ExitCode.USAGE);
+        if (until === undefined) return failure("usage.invalid", `invalid --until '${untilRaw}'`, ExitCode.USAGE);
       }
 
       const opened = await deps.openStore(ctx);
@@ -263,7 +263,7 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
         }
 
         if (truncated) {
-          ctx.warn("list.truncated", `выборка обрезана до ${FETCH_PER_KIND} узлов на kind; уточните фильтры`);
+          ctx.warn("list.truncated", `results cut to ${FETCH_PER_KIND} nodes per kind; narrow the filters`);
         }
 
         let rows = matched.map(rowOf);

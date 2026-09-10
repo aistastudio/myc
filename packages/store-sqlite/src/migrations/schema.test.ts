@@ -503,7 +503,7 @@ describe("векторный набор (S26)", () => {
         writable: true,
         migrations: [tampered],
       }),
-    ).rejects.toThrow(/изменилась после применения/);
+    ).rejects.toThrow(/changed after it was applied/);
   });
 
   test("БД новее бинаря — schema.newer", async () => {
@@ -516,7 +516,7 @@ describe("векторный набор (S26)", () => {
     });
     await expect(
       migrateVectors(store, { vec0Loaded: true, writable: true, migrations: [FAKE] }),
-    ).rejects.toThrow(/новее известной бинарю/);
+    ).rejects.toThrow(/is newer than this binary knows/);
   });
 
   test("объект не создан после наката — накат падает, а не тихо проходит", async () => {
@@ -528,7 +528,7 @@ describe("векторный набор (S26)", () => {
         writable: true,
         migrations: [{ ...FAKE, objects: ["vec_fake", "nodes_vec"] }],
       }),
-    ).rejects.toThrow(/объекты не созданы после наката: nodes_vec/);
+    ).rejects.toThrow(/objects not created after applying: nodes_vec/);
   });
 
   // Правка: набор объединяет объекты по признаку «нужны только когда

@@ -258,7 +258,7 @@ export class LocalEmbedder implements Embedder {
       this._state = "degraded";
       this._reason = "load_error";
       console.warn(
-        `[embed] файлы модели не сходятся с чек-суммами (${presence.badFiles.join(", ")}); выполни myc models fetch повторно, эмбеддинги отключены`,
+        `[embed] model files do not match their checksums (${presence.badFiles.join(", ")}); run myc models fetch again, embeddings disabled`,
       );
       return;
     }
@@ -293,7 +293,7 @@ export class LocalEmbedder implements Embedder {
         this._reason = "load_error";
         this.nativeCore = null;
         console.warn(
-          `[embed] нативная модель не загрузилась (${String(cause)}); эмбеддинги отключены, BM25 и граф работают`,
+          `[embed] native model failed to load (${String(cause)}); embeddings disabled, BM25 and graph still work`,
         );
         return;
       }
@@ -308,7 +308,7 @@ export class LocalEmbedder implements Embedder {
       this._reason = "load_error";
       this.core = null;
       console.warn(
-        `[embed] локальная модель не загрузилась (${String(cause)}); эмбеддинги отключены, BM25 и граф работают`,
+        `[embed] local model failed to load (${String(cause)}); embeddings disabled, BM25 and graph still work`,
       );
       return;
     }

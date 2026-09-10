@@ -184,6 +184,6 @@ describe("openStore через CLI: сквозная приёмка R1", () => {
       env: { MYC_ACTOR: "tester" },
     });
     expect(result.code).toBe(7);
-    expect(result.stderr).toContain(`нет ${missing}`);
+    expect(result.stderr).toContain(`no ${missing}`);
   });
 });

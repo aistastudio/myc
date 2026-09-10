@@ -167,7 +167,7 @@ async function realEmbedder(): Promise<EmbedderResult> {
         failure: {
           ok: false,
           code: "precond.model_absent",
-          msg: `модель ${embed.DEFAULT_MODEL_ID} не скачана`,
+          msg: `model ${embed.DEFAULT_MODEL_ID} is not downloaded`,
           exit: ExitCode.PRECOND,
           hint: "myc models fetch",
         },
@@ -182,7 +182,7 @@ async function realEmbedder(): Promise<EmbedderResult> {
         failure: {
           ok: false,
           code: "embed.warmup_failed",
-          msg: `эмбеддер в состоянии ${state} — индексация отменена`,
+          msg: `embedder is in state ${state} — indexing cancelled`,
           exit: ExitCode.PRECOND,
         },
       };
@@ -202,7 +202,7 @@ async function realEmbedder(): Promise<EmbedderResult> {
       failure: {
         ok: false,
         code: "embed.load_failed",
-        msg: `эмбеддер не загрузился: ${error instanceof Error ? error.message : String(error)}`,
+        msg: `embedder failed to load: ${error instanceof Error ? error.message : String(error)}`,
         exit: ExitCode.ERR,
       },
     };
@@ -477,7 +477,7 @@ async function planJob(
     // Вектор актуален, нужен только кеш переранжирования.
     if (donorF32 !== null) return { kind: "write", job, node, int8: null, f32: donorF32, via: "donor" };
     const vec = await embedder.embed(nodeText(node));
-    if (vec === null) return { kind: "fail", job, error: "эмбеддер не вернул вектор" };
+    if (vec === null) return { kind: "fail", job, error: "embedder returned no vector" };
     return { kind: "write", job, node, int8: null, f32: f32Blob(vec), via: "embed" };
   }
 
@@ -498,7 +498,7 @@ async function planJob(
   }
 
   const vec = await embedder.embed(nodeText(node));
-  if (vec === null) return { kind: "fail", job, error: "эмбеддер не вернул вектор" };
+  if (vec === null) return { kind: "fail", job, error: "embedder returned no vector" };
   // f32 пишем, только если его просили или строка кеша уже существует и
   // протухла вместе с вектором: раздувать кеш на весь корпус нельзя (vec-002).
   const f32 = needF32 || f32Row !== null ? f32Blob(vec) : null;
@@ -715,7 +715,7 @@ export function createReindexCommand(deps: StoreDeps = realStoreDeps): Command {
         if (!h.vec0) {
           return failure(
             "precond.vec0_unavailable",
-            `vec0 не загружен — векторный индекс недоступен (${h.vec0Reason ?? "причина не названа"})`,
+            `vec0 is not loaded — the vector index is unavailable (${h.vec0Reason ?? "no reason given"})`,
             ExitCode.NOTFOUND,
             "myc doctor",
           );
@@ -726,7 +726,7 @@ export function createReindexCommand(deps: StoreDeps = realStoreDeps): Command {
         } catch {
           return failure(
             "precond.vec_schema",
-            "векторная схема не накатывалась: нет nodes_vec",
+            "the vector schema was never applied: no nodes_vec",
             ExitCode.PRECOND,
             "myc doctor",
           );
@@ -754,9 +754,9 @@ export function createReindexCommand(deps: StoreDeps = realStoreDeps): Command {
           if (!check.compatible) {
             return failure(
               "embed.fingerprint_mismatch",
-              check.mismatch ?? "отпечаток векторного пространства не совпадает",
+              check.mismatch ?? "the vector space fingerprint does not match",
               ExitCode.PRECOND,
-              "полная перестройка: bun run scripts/reindex-vectors.ts --force",
+              "full rebuild: bun run scripts/reindex-vectors.ts --force",
             );
           }
 
@@ -832,7 +832,7 @@ export function createReindexCommand(deps: StoreDeps = realStoreDeps): Command {
               took_ms: Math.round(performance.now() - t0),
             },
             ...(totals.failed > 0
-              ? { meta: { degraded: [`отказов эмбеддера: ${totals.failed}`] } }
+              ? { meta: { degraded: [`embedder refusals: ${totals.failed}`] } }
               : {}),
           };
         } finally {

@@ -104,9 +104,9 @@ export function markHookCall(
  * одного узла session в базе).
  */
 export const HOLLOW_STATUS: Readonly<Record<string, string>> = {
-  empty: "сохранять было нечего — эпизод не создан, проверьте, что хук передаёт транскрипт",
-  "no-session": "хост не назвал сессию — сессионная память в контекст не попала; перезапустите `myc wire`, старый helper не передаёт --session",
-  "log-unwritable": "журнал грязных пометок недоступен для записи — правки не попадут в очередь `myc anchor check`",
+  empty: "nothing to save — no episode was created; check that the hook passes the transcript",
+  "no-session": "the host did not name the session — session memory did not reach the context; rerun `myc wire`, the old helper does not pass --session",
+  "log-unwritable": "the dirty-file log is not writable — edits will not reach the `myc anchor check` queue",
 };
 
 export interface HookCounter {

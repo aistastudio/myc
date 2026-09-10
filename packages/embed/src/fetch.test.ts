@@ -146,7 +146,7 @@ describe("fetchModel", () => {
       await fetchModel({ modelId: "no-such-model", dir, fetchImpl: fetch });
       expect.unreachable();
     } catch (e) {
-      expect(String(e)).toContain("неизвестная модель");
+      expect(String(e)).toContain("unknown model");
     }
   });
 });

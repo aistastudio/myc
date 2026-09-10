@@ -93,7 +93,7 @@ export function parseEdgeEntityId(value: string): {
   if (parts.length !== 3) {
     throw new GraphError(
       "graph.edge_type",
-      `битый ключ ребра в оплоге: ${JSON.stringify(value)}`,
+      `malformed edge key in the oplog: ${JSON.stringify(value)}`,
     );
   }
   return { src: parts[0]!, type: parts[1]!, dst: parts[2]! };
@@ -109,7 +109,7 @@ function splitMemoryEdgeKey(key: string): {
   if (parts.length !== 3) {
     throw new GraphError(
       "graph.edge_type",
-      `битый ключ ребра: ${JSON.stringify(key)}`,
+      `malformed edge key: ${JSON.stringify(key)}`,
     );
   }
   return { src: parts[0]!, type: parts[1]!, dst: parts[2]! };
@@ -695,7 +695,7 @@ function nodeSetQuery(field: string): QueryDef {
   if (def === undefined) {
     throw new GraphError(
       "graph.unknown_field",
-      `нет запроса на запись поля '${field}'`,
+      `no write query for field '${field}'`,
     );
   }
   return def;
@@ -885,7 +885,7 @@ function seqOfOpId(opId: string, siteId: string): number {
 function collisionError(op: Op, entityId: string): GraphError {
   return new GraphError(
     "graph.clock_collision",
-    `поле ${entityId}.${op.field}: пара (hlc ${op.hlc.ts}:${op.hlc.ctr}, site ${op.site_id}) уже занята записью с другим значением — ничью разорвать нечем, запись отклонена`,
+    `field ${entityId}.${op.field}: the pair (hlc ${op.hlc.ts}:${op.hlc.ctr}, site ${op.site_id}) is already taken by a write with a different value — nothing can break the tie, write rejected`,
   );
 }
 
@@ -916,7 +916,7 @@ export class GraphStore {
     if (siteId === undefined || siteId.length === 0) {
       throw new GraphError(
         "graph.range",
-        "site_id не задан: ни в myc_meta, ни в опциях GraphStore",
+        "site_id is not set: neither in myc_meta nor in the GraphStore options",
       );
     }
     this.siteId = siteId;
@@ -1194,7 +1194,7 @@ export class GraphStore {
 
       const created = tx.one<RawRow>(Q.node_get, [id]);
       if (created === undefined) {
-        throw new GraphError("graph.not_found", `узел ${id} не записался`);
+        throw new GraphError("graph.not_found", `node ${id} was not written`);
       }
       return rowToNode(created);
     });
@@ -1208,7 +1208,7 @@ export class GraphStore {
   updateNode(id: string, patch: NodePatch): NodeRecord {
     const current = this.getNode(id, true);
     if (current === undefined) {
-      throw new GraphError("graph.not_found", `узел ${id} не найден`);
+      throw new GraphError("graph.not_found", `node ${id} not found`);
     }
     const kind = assertNodeKind(current.kind);
     const changed = nodePatchFields(kind, patch).filter(([field, value]) => {
@@ -1227,7 +1227,7 @@ export class GraphStore {
     );
     const after = this.getNode(id, true);
     if (after === undefined) {
-      throw new GraphError("graph.not_found", `узел ${id} исчез при записи`);
+      throw new GraphError("graph.not_found", `node ${id} vanished during the write`);
     }
     return after;
   }
@@ -1264,12 +1264,12 @@ export class GraphStore {
     if (!Number.isInteger(delta) || delta <= 0) {
       throw new GraphError(
         "graph.range",
-        `инкремент G-counter должен быть положительным целым, получено ${delta}`,
+        `G-counter increment must be a positive integer, got ${delta}`,
       );
     }
     const current = this.getNode(id, true);
     if (current === undefined) {
-      throw new GraphError("graph.not_found", `узел ${id} не найден`);
+      throw new GraphError("graph.not_found", `node ${id} not found`);
     }
     // Накопленное значение сайта читается под той же блокировкой, что и
     // запись: соседний процесс того же site_id мог поднять его между чтением
@@ -1313,10 +1313,10 @@ export class GraphStore {
     assertEdgeEndpoints(src, dst);
     const source = this.getNode(src, true);
     if (source === undefined) {
-      throw new GraphError("graph.not_found", `узел src ${src} не найден`);
+      throw new GraphError("graph.not_found", `src node ${src} not found`);
     }
     if (this.getNode(dst, true) === undefined) {
-      throw new GraphError("graph.not_found", `узел dst ${dst} не найден`);
+      throw new GraphError("graph.not_found", `dst node ${dst} not found`);
     }
     const entityId = edgeEntityId(src, edgeType, dst);
     const attrs = JSON.stringify(opts.attrs ?? {});
@@ -1339,7 +1339,7 @@ export class GraphStore {
 
     const created = this.getEdge(src, edgeType, dst);
     if (created === undefined) {
-      throw new GraphError("graph.not_found", `ребро ${entityId} не записалось`);
+      throw new GraphError("graph.not_found", `edge ${entityId} was not written`);
     }
     return created;
   }
@@ -1833,7 +1833,7 @@ export class GraphStore {
     if (inserted.changes !== 1) {
       throw new GraphError(
         "graph.clock_collision",
-        `операция ${meta.op_id} уже в оплоге — повторный journal claim недопустим`,
+        `operation ${meta.op_id} is already in the oplog — a repeated journal claim is not allowed`,
       );
     }
   }
@@ -1888,7 +1888,7 @@ export class GraphStore {
     if (!this.journal(tx, op, entity, entityId, scope, 1)) {
       throw new GraphError(
         "graph.clock_collision",
-        `op_id ${op.op_id} уже в оплоге: два процесса пишут под site_id ${op.site_id} с расходящимся seq — запись отклонена, а не проглочена`,
+        `op_id ${op.op_id} is already in the oplog: two processes write under site_id ${op.site_id} with diverging seq — write rejected, not swallowed`,
       );
     }
   }
@@ -2199,7 +2199,7 @@ export function rowToOp(row: OplogRow): Op {
     default:
       throw new GraphError(
         "graph.unknown_field",
-        `операция '${row.op}' не проецируется в Op: claim и purge — отдельные задачи`,
+        `operation '${row.op}' does not project into an Op: claim and purge are separate tasks`,
       );
   }
 }

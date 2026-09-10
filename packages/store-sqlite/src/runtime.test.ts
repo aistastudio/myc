@@ -201,7 +201,7 @@ describe("громкая деградация и явные ошибки (суб
     expect(state.sqlite.extensions).toBe(false);
     expect(state.sqlite.source).toBe("builtin");
     expect(typeof state.sqlite.version).toBe("string");
-    expect(state.sqlite.reason).toContain("не найдена");
+    expect(state.sqlite.reason).toContain("not found");
     expect(state.vec.loaded).toBe(false);
     expect(state.vec.version).toBeNull();
     expect(state.vec.reason).not.toBeNull();

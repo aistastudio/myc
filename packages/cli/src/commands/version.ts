@@ -62,7 +62,7 @@ export function createVersionCommand(): Command {
       "Without --check there is no network at all: the verdict comes from the cache written by " +
       "the last check, and its age is printed. With --check the npm registry is asked directly " +
       "(explicit, human-typed, bounded by MYC_UPDATE_CHECK_TIMEOUT_MS, default 3000).\n\n" +
-      "An unreachable registry is reported as 'не смогли проверить' with the reason and a WARN " +
+      "An unreachable registry is reported as 'could not check' with the reason and a WARN " +
       "line — never as 'no updates'. Versions are compared numerically, so 0.10.0 is newer than " +
       "0.9.0.\n\n" +
       "Off switches, both directions: MYC_UPDATE_CHECK=0 forbids the network even for --check; " +
@@ -85,12 +85,12 @@ export function createVersionCommand(): Command {
       // код 6 при --strict). Молча вернуть статус в поле — значит позволить
       // прочитать вывод как «всё в порядке».
       if (verdict.status === "unreachable") {
-        ctx.warn("update.unreachable", `реестр не ответил — обновления НЕ проверены: ${verdict.reason}`);
+        ctx.warn("update.unreachable", `the registry did not answer — updates NOT checked: ${verdict.reason}`);
       }
       // Запрошенную проверку запретила политика — тоже деградация: человек
       // просил проверить, и не узнать об отказе он не должен.
       if (check && verdict.status === "disabled") {
-        ctx.warn("update.disabled", `проверка обновлений запрещена: ${verdict.reason}`);
+        ctx.warn("update.disabled", `update check forbidden: ${verdict.reason}`);
       }
 
       const data: VersionData = {
@@ -109,33 +109,33 @@ export function createVersionCommand(): Command {
       const lines = [`myc ${d.version} (schema ${d.schema})`];
       switch (v.status) {
         case "update_available":
-          lines.push(`обновление: ${v.current} → ${v.latest}`, `  ${UPGRADE_COMMAND}`);
+          lines.push(`update: ${v.current} → ${v.latest}`, `  ${UPGRADE_COMMAND}`);
           break;
         case "up_to_date":
-          lines.push(`последняя в реестре: ${v.latest} — обновляться некуда`);
+          lines.push(`latest in the registry: ${v.latest} — nothing to update to`);
           break;
         case "ahead":
-          lines.push(`в реестре ${v.latest} — эта сборка новее опубликованной`);
+          lines.push(`the registry has ${v.latest} — this build is newer than the published one`);
           break;
         case "unreachable":
           // Слово «не» здесь несёт весь смысл строки: без него вывод
           // читается как «проверено, всё хорошо».
-          lines.push(`обновления НЕ проверены: ${v.reason}`);
+          lines.push(`updates NOT checked: ${v.reason}`);
           break;
         case "disabled":
-          lines.push(`проверка обновлений выключена: ${v.reason}`);
+          lines.push(`update check is off: ${v.reason}`);
           break;
         case "never_checked":
-          lines.push("обновления не проверялись — `myc version --check`");
+          lines.push("updates never checked — `myc version --check`");
           break;
       }
       if (v.source === "cache" && v.age_ms !== undefined) {
         const notice = updateNotice(v);
         if (notice !== null || v.status === "up_to_date" || v.status === "ahead") {
-          lines.push(`  из кеша, проверено ${Math.max(1, Math.round(v.age_ms / 60_000))} мин назад`);
+          lines.push(`  from cache, checked ${Math.max(1, Math.round(v.age_ms / 60_000))} min ago`);
         }
       }
-      lines.push(`реестр: ${d.registry} · режим: ${d.mode} (MYC_UPDATE_CHECK)`);
+      lines.push(`registry: ${d.registry} · mode: ${d.mode} (MYC_UPDATE_CHECK)`);
       return `${lines.join("\n")}\n`;
     },
   };

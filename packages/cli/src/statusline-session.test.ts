@@ -263,6 +263,33 @@ describe("Bash: код выхода → строка ошибки → конве
     const line = { message: { content: [{ content: "" }] }, toolUseResult: { stdout: "", stderr: "", interrupted: true } };
     expect(classifyCli("recall", line.message.content[0]!, line)).toBe("error");
   });
+
+  // Подвал читается в ОБЕИХ формах: английской (текущий вывод CLI) и русской
+  // (транскрипты сессий, начатых до перевода). Ноль — пусто, не ноль — польза;
+  // без WARN-строки, чтобы решал именно счётчик подвала.
+  test("подвалы шести команд: английские и русские, ноль и не ноль", () => {
+    const cases: readonly (readonly [string, string, "empty" | "useful"])[] = [
+      ["recall", "0 of 0 · 4 ms\n", "empty"],
+      ["recall", "2 of 5 · 4 ms\n", "useful"],
+      ["search", "0 of 0 · 3 ms\n", "empty"],
+      ["search", "1 of 1 · 3 ms\n", "useful"],
+      ["list", "0 of 0 · 6 ms\n", "empty"],
+      ["list", "3 of 3 · 6 ms\n", "useful"],
+      ["code grep", '"zz" — 0 occurrences in 0 symbols, files 0 (scanned 602)\n', "empty"],
+      ["code grep", '"fooBar" — 1 occurrence in 1 symbol, files 1 (scanned 3)\n', "useful"],
+      ["code search", "0 files · stages — · 2 ms\n", "empty"],
+      ["code search", "1 file · stages bm25 · 2 ms\n", "useful"],
+      ["callers", "symbols 1, groups 0, occurrences 0\n", "empty"],
+      ["callers", "symbols 1, groups 2, occurrences 11  [call 10, import 1]\n", "useful"],
+      ["recall", "0 из 0 · 4 мс\n", "empty"],
+      ["list", "3 из 3 · 6 мс\n", "useful"],
+      ["code grep", '"zz" — 0 вхождений в 0 символах, файлов 0 (просмотрено 602)\n', "empty"],
+      ["code search", "0 файлов · ступени — · 2 мс\n", "empty"],
+      ["code search", "2 файла · ступени bm25 · 2 мс\n", "useful"],
+      ["callers", "символов 1, групп 0, вхождений 0\n", "empty"],
+    ];
+    for (const [cmd, out, want] of cases) expect({ cmd, out, got: call(cmd, out) }).toEqual({ cmd, out, got: want });
+  });
 });
 
 /**
@@ -473,6 +500,7 @@ describe("транскрипт читается с курсора, а не за�
 const CLASSIFIER_HISTORY: readonly { readonly version: number; readonly fingerprint: string; readonly what: string }[] = [
   { version: 1, fingerprint: "926e2e816bb860c2", what: "первая сдача" },
   { version: 2, fingerprint: "c8c6a1ecdadc2a8d", what: "тела heredoc, комментарии, подкоманда из реестра" },
+  { version: 3, fingerprint: "b33577519b460c4f", what: "английские подвалы шести команд рядом с русскими" },
 ];
 
 describe("CLASSIFIER_VERSION держится отпечатком поведения", () => {

@@ -204,7 +204,7 @@ describe("цепочка из 5 версий (§6.3)", () => {
     const r = await myc(dir, "show", ids[0]!, "--chain");
     const out = text(r.stdout);
     expect(r.code).toBe(0);
-    expect(out).toContain("история   5 верс.");
+    expect(out).toContain("history   5 versions");
     for (const id of ids) expect(out).toContain(id);
     expect(out).toContain("версия 5 заменила 4");
     expect(out).toContain("superseded");
@@ -215,8 +215,8 @@ describe("цепочка из 5 версий (§6.3)", () => {
   test("человеческий вывод по умолчанию называет актуальную версию, но не всю историю", async () => {
     const r = await myc(dir, "show", ids[0]!);
     const out = text(r.stdout);
-    expect(out).toContain(`актуальна ${ids[4]!}`);
-    expect(out).not.toContain("история");
+    expect(out).toContain(`current   ${ids[4]!}`);
+    expect(out).not.toContain("history");
     expect(out).not.toContain(ids[2]!);
   });
 
@@ -265,7 +265,7 @@ describe("цепочка из 5 версий (§6.3)", () => {
     const v = await showJson<ShowView>(dir, ids[0]!, "--chain");
     expect(v.stale).toEqual([ids[1]!]);
     const out = text((await myc(dir, "show", ids[0]!)).stdout);
-    expect(out).toContain("ВНИМАНИЕ  head_id не проставлен");
+    expect(out).toContain("WARNING   head_id not set");
     expect(out).toContain(ids[1]!);
   });
 
@@ -300,7 +300,7 @@ describe("contradicts читается симметрично (§4.1, §6.2)", (
     expect(va.contradicts.map((c) => c.id)).toEqual([b.id]);
 
     const out = text((await myc(dir, "show", a.id)).stdout);
-    expect(out).toContain(`противоречит ${b.id}`);
+    expect(out).toContain(`contradicts ${b.id}`);
   });
 
   test("без противоречий строка не печатается", async () => {
@@ -310,7 +310,7 @@ describe("contradicts читается симметрично (§4.1, §6.2)", (
     drivers.pop();
     const v = await showJson<ShowView>(dir, a.id);
     expect(v.contradicts).toEqual([]);
-    expect(text((await myc(dir, "show", a.id)).stdout)).not.toContain("противоречит");
+    expect(text((await myc(dir, "show", a.id)).stdout)).not.toContain("contradicts");
   });
 });
 
@@ -398,7 +398,7 @@ describe("нить обсуждения: смешанные виды узлов 
     expect(byId.get(m.message)).toBe("agent9");
 
     const out = text((await myc(dir, "show", m.task)).stdout);
-    expect(out).toContain("нить      3");
+    expect(out).toContain("thread    3");
     expect(out).toContain("macoeshka");
     expect(out).toContain("agent7");
   });

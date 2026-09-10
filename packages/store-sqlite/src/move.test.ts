@@ -395,7 +395,7 @@ describe("R4 защиты", () => {
       ...plan,
       ops: plan.ops.filter((r) => r.field !== "kind"),
     };
-    expect(() => executeMove(a, b, holed)).toThrow(/не взял историю целиком/);
+    expect(() => executeMove(a, b, holed)).toThrow(/did not take the whole history/);
     // Источник по-прежнему владеет: фаза фиксации не начиналась.
     expect(a.store.getNode(id)!.scope).toBe("aaa");
     expect(readyIds(a)).toEqual([id]);

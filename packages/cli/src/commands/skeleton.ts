@@ -31,7 +31,7 @@ import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import { flagStr, realStoreDeps, type StoreDeps } from "./store.ts";
-import { codeRepo } from "./code.ts";
+import { codeRepo, count } from "./code.ts";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
@@ -87,7 +87,7 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
       const t0 = performance.now();
       const raw = ctx.args[0];
       if (raw === undefined || raw.trim().length === 0) {
-        return failure("usage.invalid", "нужно: myc skeleton <path>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc skeleton <path>", ExitCode.USAGE);
       }
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
@@ -100,8 +100,8 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
         if (scope.files === 0) {
           return failure(
             "precond.no_index",
-            `код-индекс этого репозитория (${repoId.length > 0 ? repoId : "корень воркспейса"}) не построен: ` +
-              "в code_files ноль строк — скелет брать неоткуда",
+            `the code index of this repo (${repoId.length > 0 ? repoId : "workspace root"}) is not built: ` +
+              "code_files has zero rows — nowhere to take a skeleton from",
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -117,9 +117,9 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
         if (known === null) {
           return failure(
             "notfound.file",
-            `файла ${path} нет в индексе этого репозитория: просмотрено ${scope.files} файлов`,
+            `file ${path} is not in this repo's index: scanned ${count(scope.files, "file")}`,
             ExitCode.NOTFOUND,
-            "путь относительный от корня репозитория; индекс мог отстать: myc code index",
+            "the path is relative to the repo root; the index may be behind: myc code index",
           );
         }
 
@@ -167,19 +167,19 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
         if (!sk.onDisk) {
           ctx.warn(
             "skeleton.gone",
-            `файл ${path} есть в индексе, но не на диске — сигнатур не будет, спаны из индекса`,
+            `file ${path} is in the index but not on disk — no signatures, spans come from the index`,
           );
         } else if (sk.stale) {
           ctx.warn(
             "skeleton.stale",
-            `содержимое ${path} разошлось с индексом: спаны и сигнатуры могут указывать не туда`,
+            `the content of ${path} differs from the index: spans and signatures may point to the wrong place`,
           );
         }
         if (sk.entries.length === 0) {
           ctx.warn(
             "skeleton.no_defs",
-            `в ${path} (${sk.lang}) объявлений не найдено: ` +
-              "либо язык уровня L0 (в индексе только путь и хеш), либо файл действительно пуст",
+            `no declarations found in ${path} (${sk.lang}): ` +
+              "either an L0 language (the index holds only path and hash) or the file really is empty",
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms, count: data.entries.length } };
@@ -189,7 +189,7 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
     },
     renderHuman: (data) => {
       const d = data as SkeletonData;
-      const out: string[] = [`${d.path}  ${d.lang}  ${d.file_lines} строк, ${d.file_bytes} Б`];
+      const out: string[] = [`${d.path}  ${d.lang}  ${count(d.file_lines, "line")}, ${d.file_bytes} B`];
       for (const e of d.entries) {
         const pad = "  ".repeat(e.nesting);
         const span = `${e.span_start}-${e.span_end}`.padEnd(11);
@@ -197,12 +197,12 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
           `${span} ${pad}${e.exported ? "+" : " "} ${e.signature.length > 0 ? e.signature : `${e.kind} ${e.name}`}`,
         );
       }
-      if (d.entries.length === 0) out.push("объявлений нет");
-      if (d.hidden > 0) out.push(`скрыто фильтром: ${d.hidden}`);
-      if (d.stale) out.push("ВНИМАНИЕ: файл изменился после индексации — спаны могут не совпадать");
+      if (d.entries.length === 0) out.push("no declarations");
+      if (d.hidden > 0) out.push(`hidden by filter: ${d.hidden}`);
+      if (d.stale) out.push("WARNING: the file changed after indexing — spans may not match");
       out.push(
-        `скелет ${d.skeleton_bytes} Б против ${d.file_bytes} Б файла` +
-          `${d.cheaper > 0 ? ` — дешевле в ${d.cheaper}×` : ""}  ${d.took_ms} мс`,
+        `skeleton ${d.skeleton_bytes} B vs file ${d.file_bytes} B` +
+          `${d.cheaper > 0 ? ` — ${d.cheaper}× cheaper` : ""}  ${d.took_ms} ms`,
       );
       return `${out.join("\n")}\n`;
     },

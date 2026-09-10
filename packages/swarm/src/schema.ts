@@ -91,7 +91,7 @@ export function ensureSwarmSchema(
       if (version > maxKnown) {
         throw new SwarmSchemaError(
           "schema.newer",
-          `база новее известной бинарю версии схемы роя: ${version} > ${maxKnown}`,
+          `database is newer than the swarm schema version this binary knows: ${version} > ${maxKnown}`,
         );
       }
     }
@@ -103,7 +103,7 @@ export function ensureSwarmSchema(
         if (appliedChecksum !== checksum(migrationText(migration))) {
           throw new SwarmSchemaError(
             "schema.checksum",
-            `миграция ${migration.version} (${migration.name}) изменилась после применения`,
+            `migration ${migration.version} (${migration.name}) changed after it was applied`,
           );
         }
         continue;
@@ -119,7 +119,7 @@ export function ensureSwarmSchema(
       if (missing.length > 0) {
         throw new SwarmSchemaError(
           "schema.objects",
-          `объекты не созданы после наката ${migration.name}: ${missing.join(", ")}`,
+          `objects not created after applying ${migration.name}: ${missing.join(", ")}`,
         );
       }
       db.query(

@@ -117,24 +117,24 @@ describe("S44 в CLI — воспроизведение координатора
     expect(data.total).toBe(1);
     expect(data.rows[0]?.title).toBe(NOTE);
     // mode_used не просто «нашлось», а ЧЕМ нашлось.
-    expect(data.mode).toContain("И→");
+    expect(data.mode).toContain("AND→");
   });
 
   test("«оплог мерж» по-прежнему отвечает строгим И — откат его не трогает", async () => {
     const r = await myc("recall", "оплог мерж", "--json");
     const data = (JSON.parse(r.stdout as string) as { data: RecallData }).data;
     expect(data.total).toBe(1);
-    expect(data.mode).not.toContain("И→");
+    expect(data.mode).not.toContain("AND→");
   });
 
   test("пустая выдача при НЕпустой базе объясняет причину прямо в футере", async () => {
     const r = await myc("recall", "гуашь мольберт натюрморт");
     const out = r.stdout as string;
-    expect(out).toContain("пусто");
+    expect(out).toContain("empty");
     // Три вещи, которые обязан различать пользователь: сколько узлов видно,
     // каким оператором искали и участвовала ли векторная ветка.
-    expect(out).toMatch(/ни один из \d+ видимых узлов не совпал/);
-    expect(out).toContain("векторная ветка не участвовала");
+    expect(out).toMatch(/none of the \d+ visible nodes matched/);
+    expect(out).toContain("vector branch did not take part");
   });
 
   test("пустая выдача при ПУСТОЙ базе говорит именно это, а не «не нашлось»", async () => {
@@ -148,18 +148,18 @@ describe("S44 в CLI — воспроизведение координатора
       env: process.env as never,
       registry,
     });
-    expect(r.stdout as string).toContain("нет ни одного видимого узла");
+    expect(r.stdout as string).toContain("has no visible nodes");
     rmSync(empty, { recursive: true, force: true });
   });
 
   test("всё отфильтровано — это третья причина, и она названа отдельно", async () => {
     const r = await myc("recall", "оплог", "--kind", "task");
     const out = r.stdout as string;
-    expect(out).toContain("отсеяно");
+    expect(out).toContain("filtered out");
     // Назван СРАБОТАВШИЙ фильтр и команда его снятия, а не дежурный список:
     // отсеял --kind, и совет говорит про --kind.
-    expect(out).toContain("тип — 1");
-    expect(out).toContain("убери --kind");
+    expect(out).toContain("kind — 1");
+    expect(out).toContain("drop --kind");
     // Ни одна ручка, которой здесь не крутили, в совет не попала.
     expect(out).not.toContain("--tag");
     expect(out).not.toContain("--layer");
@@ -251,14 +251,14 @@ describe("S44 — чистые функции ярлыка и причины", (
   test("ярлык называет ступень, а не факт отката", () => {
     expect(lexicalLabelOf(modeOf({ operator: "and" }))).toBeUndefined();
     expect(lexicalLabelOf(modeOf({ operator: "prefix_and", fallbackUsed: true }))).toBe(
-      "И→префиксы",
+      "AND→prefixes",
     );
     expect(lexicalLabelOf(modeOf({ operator: "prefix_relaxed", fallbackUsed: true }))).toBe(
-      "И→без одного слова",
+      "AND→minus one word",
     );
     expect(
       lexicalLabelOf(modeOf({ operator: "or", fallbackUsed: true, coverageApplied: true })),
-    ).toBe("И→ИЛИ+покрытие");
+    ).toBe("AND→OR+coverage");
   });
 
   const noKnobs = { flags: [], repo: "", layer: "" };
@@ -269,7 +269,7 @@ describe("S44 — чистые функции ярлыка и причины", (
 
   test("три причины пустоты не смешиваются", () => {
     // Нашлось, но отфильтровано.
-    expect(emptyReasonOf(modeOf({}), 7, 0, drops({ kind: 7 }), noKnobs)).toContain("отсеяно");
+    expect(emptyReasonOf(modeOf({}), 7, 0, drops({ kind: 7 }), noKnobs)).toContain("filtered out");
     // Не нашлось: причина приходит из яруса.
     const noMatch = modeOf(
       {},
@@ -291,7 +291,7 @@ describe("S44 — чистые функции ярлыка и причины", (
 
   test("ярлык режима при пустой выдаче несёт причину", () => {
     expect(modeLabelOf(modeOf({}), 60)).toBe("bm25 only");
-    expect(modeLabelOf(modeOf({}), 60, "база пуста")).toContain("пусто · база пуста");
+    expect(modeLabelOf(modeOf({}), 60, "база пуста")).toContain("empty · база пуста");
   });
 
   test("myc-ye3.9: выдача только на векторе без лексики помечена в ярлыке", () => {
@@ -299,7 +299,7 @@ describe("S44 — чистые функции ярлыка и причины", (
       { operator: "and", hits: 0 },
       { sources: ["vector"], vector: "used", vectorOnly: true },
     );
-    expect(modeLabelOf(vectorOnly, 60)).toContain("только вектор");
+    expect(modeLabelOf(vectorOnly, 60)).toContain("vector only");
 
     // Тот же источник "vector", но лексика что-то нашла (сочетается с ним) —
     // ярлык не паникует по одному лишь наличию вектора в sources.
@@ -307,7 +307,7 @@ describe("S44 — чистые функции ярлыка и причины", (
       { operator: "and", hits: 1 },
       { sources: ["fts", "vector"], vector: "used", vectorOnly: false },
     );
-    expect(modeLabelOf(fused, 60)).not.toContain("только вектор");
+    expect(modeLabelOf(fused, 60)).not.toContain("vector only");
   });
 });
 

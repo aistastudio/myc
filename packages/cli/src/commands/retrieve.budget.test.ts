@@ -114,7 +114,7 @@ describe("бюджетированный ретривал на CLI (§2.7)", () 
     // Футер человеческого вывода называет partial.
     const human = text((await myc("recall", "бюджет", "--budget", "1500")).stdout);
     expect(human).toContain("partial:");
-    expect(human).toMatch(/сверх бюджета/);
+    expect(human).toMatch(/over budget/);
   });
 
   test("cursor продолжает выдачу тем же механизмом, что --offset", async () => {
@@ -166,7 +166,7 @@ describe("бюджетированный ретривал на CLI (§2.7)", () 
     // Человеческий вывод: обрезанные строки помечены у строки, футер — partial.
     const human = text((await myc("search", "бюджет", "--full", "--limit", "12")).stdout);
     if (rows.some((row) => row.content_kind === "crux")) {
-      expect(human).toContain("(обрезано по бюджету)");
+      expect(human).toContain("(truncated by budget)");
     }
   });
 

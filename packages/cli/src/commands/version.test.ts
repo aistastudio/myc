@@ -90,7 +90,7 @@ describe("myc version без --check: сети нет вовсе", () => {
     answerWith("9.9.9");
     const res = await version(["version"]);
     expect(calls).toEqual([]);
-    expect(String(res.stdout)).toContain("обновление:");
+    expect(String(res.stdout)).toContain("update:");
     expect(String(res.stdout)).toContain("99.0.0");
   });
 });
@@ -101,7 +101,7 @@ describe("myc version --check: единственный сетевой путь"
     const res = await version(["version", "--check"]);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain("registry.npmjs.org");
-    expect(String(res.stdout)).toContain("обновление:");
+    expect(String(res.stdout)).toContain("update:");
     expect(String(res.stdout)).toContain(`bun install -g ${PACKAGE_NAME}`);
   });
 
@@ -109,9 +109,9 @@ describe("myc version --check: единственный сетевой путь"
     answerWith(null);
     const res = await version(["version", "--check"]);
     const out = String(res.stdout);
-    expect(out).toContain("обновления НЕ проверены");
+    expect(out).toContain("updates NOT checked");
     expect(out).toContain("WARN update.unreachable");
-    expect(out).not.toContain("обновляться некуда");
+    expect(out).not.toContain("nothing to update to");
     expect(res.code).toBe(ExitCode.OK);
   });
 
@@ -150,9 +150,9 @@ describe("отключаемость видна в выводе", () => {
     const res = await version(["version", "--check"]);
     expect(calls).toEqual([]);
     const out = String(res.stdout);
-    expect(out).toContain("проверка обновлений выключена");
+    expect(out).toContain("update check is off");
     expect(out).toContain("WARN update.disabled");
-    expect(out).not.toContain("обновляться некуда");
+    expect(out).not.toContain("nothing to update to");
   });
 
   test("--offline: тот же отказ на один вызов", async () => {
@@ -164,7 +164,7 @@ describe("отключаемость видна в выводе", () => {
 
   test("режим и адрес реестра печатаются всегда — «куда оно ходит» не гадают", async () => {
     const res = await version(["version"]);
-    expect(String(res.stdout)).toContain("режим: manual");
+    expect(String(res.stdout)).toContain("mode: manual");
     expect(String(res.stdout)).toContain("registry.npmjs.org");
   });
 });

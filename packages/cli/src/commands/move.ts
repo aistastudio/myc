@@ -69,18 +69,18 @@ function refusalToFailure(r: MoveRefusal): CommandFailure {
       "precond.cross_boundary_parent",
       r.msg,
       ExitCode.PRECOND,
-      "снимите блокер с эпика, или увезите поддерево целиком, или снимите ребро parent",
+      "unblock the epic, or move the whole subtree, or remove the parent edge",
     );
   }
   if (r.code === "leased") {
-    return failure("precond.leased", r.msg, ExitCode.PRECOND, "дождитесь конца аренды или myc release");
+    return failure("precond.leased", r.msg, ExitCode.PRECOND, "wait for the lease to end, or myc release");
   }
   const list = r.crossing.slice(0, 5).map((e) => `${e.src} blocks ${e.dst}`).join("; ");
   return failure(
     "precond.cross_boundary",
     `${r.msg}: ${list}${r.crossing.length > 5 ? "…" : ""}`,
     ExitCode.PRECOND,
-    "--with-blockers увезёт связный кусок целиком, --dry-run покажет его размер",
+    "--with-blockers moves the whole connected piece, --dry-run shows its size",
   );
 }
 
@@ -89,25 +89,28 @@ function renderMoveHuman(raw: unknown): string {
   const lines: string[] = [];
   const head = d.dry_run ? "dry-run: " : "";
   lines.push(
-    `${head}${d.id}: ${d.from === "" ? "(без слага)" : d.from} → ${d.to === "" ? "(без слага)" : d.to} (${d.to_dir})`,
+    `${head}${d.id}: ${d.from === "" ? "(no slug)" : d.from} → ${d.to === "" ? "(no slug)" : d.to} (${d.to_dir})`,
   );
   lines.push(
-    `  едет ${d.members.length} узлов, ${d.edges.length} рёбер, ${d.ops} операций истории` +
-      (d.expanded ? " (набор расширен по blocks)" : ""),
+    `  moving ${d.members.length} ${d.members.length === 1 ? "node" : "nodes"}, ` +
+      `${d.edges.length} ${d.edges.length === 1 ? "edge" : "edges"}, ` +
+      `${d.ops} history ${d.ops === 1 ? "operation" : "operations"}` +
+      (d.expanded ? " (set expanded along blocks)" : ""),
   );
-  if (d.members.length > 1) lines.push(`  узлы: ${d.members.join(", ")}`);
+  if (d.members.length > 1) lines.push(`  nodes: ${d.members.join(", ")}`);
   if (d.staying.length > 0) {
     lines.push(
-      `  остаётся в источнике ${d.staying.length} рёбер: второй конец не едет, их держит надгробие`,
+      `  staying in the source: ${d.staying.length} ${d.staying.length === 1 ? "edge" : "edges"} — ` +
+        `the other end is not moving, the tombstone holds them`,
     );
   }
   if (!d.dry_run) {
     lines.push(
-      `  применено ${d.applied ?? 0}, повторов ${d.duplicate ?? 0}, отчеканено переездов ${d.minted ?? 0}` +
-        (d.resumed === true ? " (доигран прерванный переезд)" : ""),
+      `  applied ${d.applied ?? 0}, duplicates ${d.duplicate ?? 0}, moves minted ${d.minted ?? 0}` +
+        (d.resumed === true ? " (resumed an interrupted move)" : ""),
     );
   }
-  lines.push(`готово за ${d.took_ms} мс`);
+  lines.push(`done in ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -155,11 +158,11 @@ export function createMoveCommand(deps: StoreDeps = realStoreDeps): Command {
 
         const id = ctx.args[0];
         if (id === undefined) {
-          return failure("usage.id", "нужен id задачи: myc move <id> --to <каталог>", ExitCode.USAGE);
+          return failure("usage.id", "task id required: myc move <id> --to <dir>", ExitCode.USAGE);
         }
         const toDir = flagStr(ctx, "to");
         if (toDir === undefined) {
-          return failure("usage.to", "нужен каталог приёмника: --to <каталог>", ExitCode.USAGE);
+          return failure("usage.to", "target directory required: --to <dir>", ExitCode.USAGE);
         }
         const resolved = resolveId(source, id);
         if (!resolved.ok) return resolved.failure;
@@ -201,12 +204,13 @@ export function createMoveCommand(deps: StoreDeps = realStoreDeps): Command {
           result = executeMove(source, target, plan as MovePlan);
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
-          return failure("precond.move_ingest", msg, ExitCode.PRECOND, "myc move ... повторно доиграет");
+          return failure("precond.move_ingest", msg, ExitCode.PRECOND, "re-running myc move ... finishes it");
         }
         if (result.staying.length > 0) {
           ctx.warn(
             "move.edges_stayed",
-            `${result.staying.length} рёбер осталось в источнике: второй конец не переехал`,
+            `${result.staying.length} ${result.staying.length === 1 ? "edge" : "edges"} stayed in the source: ` +
+              `the other end did not move`,
           );
         }
         return {
@@ -230,8 +234,8 @@ export function createMoveCommand(deps: StoreDeps = realStoreDeps): Command {
       const d = raw as { stranded?: unknown };
       if (Array.isArray(d.stranded)) {
         const rows = d.stranded as Array<{ id: string; scope: string }>;
-        if (rows.length === 0) return "недоигранных переездов нет\n";
-        return `${rows.map((r) => `${r.id}  приехал со scope '${r.scope}' — переезд не доигран`).join("\n")}\n`;
+        if (rows.length === 0) return "no unfinished moves\n";
+        return `${rows.map((r) => `${r.id}  arrived with scope '${r.scope}' — move not finished`).join("\n")}\n`;
       }
       return renderMoveHuman(raw);
     },

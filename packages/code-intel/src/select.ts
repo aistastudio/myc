@@ -351,11 +351,11 @@ function cmpVersion(a: string, b: string): number {
 function builtinAbility(dir: string): string {
   const probe = probeL1Files(dir);
   if (probe.found) {
-    return `символы, callers, code search и code map для ${L1_LANGS_LABEL} (разбор tree-sitter; fan_in — счёт по тексту) — после \`myc code index\` (фон собирает сам, когда в репозитории есть якоря)`;
+    return `symbols, callers, code search and code map for ${L1_LANGS_LABEL} (tree-sitter parse; fan_in is a text count) — after \`myc code index\` (the background builds it on its own once the repo has anchors)`;
   }
-  const seen = probe.langs.length > 0 ? ` (видно: ${probe.langs.slice(0, 5).join(", ")})` : "";
-  const how = probe.capped ? `в первых ${probe.seen} файлах нет` : "нет";
-  return `файлов ${L1_LANGS_LABEL} ${how}${seen} — символов, callers и code search не будет, code map покажет только реестр файлов (code grep, якоря, протухание и ре-привязка работают на любом языке)`;
+  const seen = probe.langs.length > 0 ? ` (seen: ${probe.langs.slice(0, 5).join(", ")})` : "";
+  const how = probe.capped ? ` in the first ${probe.seen} files` : "";
+  return `no ${L1_LANGS_LABEL} files${how}${seen} — no symbols, callers or code search here; code map shows only the file registry (code grep, anchors, staleness and rebind work for any language)`;
 }
 
 /**
@@ -385,7 +385,7 @@ export function selectCodeIntel(
   const badConfig = resolved.invalid !== undefined ? [CODE_INTEL_DEGRADED.badConfig] : [];
   const badReason =
     resolved.invalid !== undefined
-      ? ` (в конфиге было code_intel="${resolved.invalid}" — не из auto|builtin|graft|off)`
+      ? ` (config had code_intel="${resolved.invalid}" — not one of auto|builtin|graft|off)`
       : "";
 
   if (mode === "off") {
@@ -394,7 +394,7 @@ export function selectCodeIntel(
       id: null,
       state: "off",
       source,
-      reason: `код-интеллект выключен (code_intel=off): работает только уровень anchor${badReason}`,
+      reason: `code intel is off (code_intel=off): only the anchor level works${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.off, ...badConfig],
       graft: null,
       cache: "off",
@@ -407,7 +407,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `builtin (code_intel=builtin${source === "default" ? ", умолчание" : ""}): ${builtinAbility(dir)}${badReason}`,
+      reason: `builtin (code_intel=builtin${source === "default" ? ", default" : ""}): ${builtinAbility(dir)}${badReason}`,
       degraded: badConfig,
       graft: null,
       cache: "off",
@@ -437,7 +437,7 @@ export function selectCodeIntel(
         id: "graft",
         state: "missing",
         source,
-        reason: `graft запрошен (code_intel=graft), но не найден в PATH — это ошибка конфигурации, не повод молча работать на builtin: поставьте graft или смените ключ на builtin/auto${badReason}`,
+        reason: `graft requested (code_intel=graft) but not found in PATH — a config error, not a reason to silently run on builtin: install graft or set the key to builtin/auto${badReason}`,
         degraded: [CODE_INTEL_DEGRADED.missing, ...badConfig],
         graft: probe,
         cache,
@@ -449,7 +449,7 @@ export function selectCodeIntel(
         id: "graft",
         state: "incompatible",
         source,
-        reason: `graft ${probe.version} старше минимальной ${MIN_GRAFT_VERSION} (code_intel=graft): обновите graft или смените ключ${badReason}`,
+        reason: `graft ${probe.version} is older than the minimum ${MIN_GRAFT_VERSION} (code_intel=graft): update graft or change the key${badReason}`,
         degraded: [CODE_INTEL_DEGRADED.incompatible, ...badConfig],
         graft: probe,
         cache,
@@ -461,8 +461,8 @@ export function selectCodeIntel(
       state: probe.index ? "ok" : "stale",
       source,
       reason: probe.index
-        ? `graft ${probe.version ?? "?"} (code_intel=graft): все возможности${badReason}`
-        : `graft ${probe.version ?? "?"} есть, индекса graft/INDEX.md нет (code_intel=graft): соберите его командой graft build${badReason}`,
+        ? `graft ${probe.version ?? "?"} (code_intel=graft): all capabilities${badReason}`
+        : `graft ${probe.version ?? "?"} present, but no graft/INDEX.md index (code_intel=graft): build it with graft build${badReason}`,
       degraded: badConfig,
       graft: probe,
       cache,
@@ -476,7 +476,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `graft не найден (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}${badReason}`,
+      reason: `graft not found (code_intel=auto) — running on builtin: ${builtinAbility(dir)}${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.builtin, ...badConfig],
       graft: probe,
       cache,
@@ -488,7 +488,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `graft ${probe.version} старше минимальной ${MIN_GRAFT_VERSION} (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}${badReason}`,
+      reason: `graft ${probe.version} is older than the minimum ${MIN_GRAFT_VERSION} (code_intel=auto) — running on builtin: ${builtinAbility(dir)}${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.incompatible, CODE_INTEL_DEGRADED.builtin, ...badConfig],
       graft: probe,
       cache,
@@ -500,8 +500,8 @@ export function selectCodeIntel(
     state: probe.index ? "ok" : "stale",
     source,
     reason: probe.index
-      ? `graft ${probe.version ?? "?"} найден (code_intel=auto): все возможности${badReason}`
-      : `graft ${probe.version ?? "?"} найден, индекса graft/INDEX.md нет (code_intel=auto): graft build${badReason}`,
+      ? `graft ${probe.version ?? "?"} found (code_intel=auto): all capabilities${badReason}`
+      : `graft ${probe.version ?? "?"} found, but no graft/INDEX.md index (code_intel=auto): graft build${badReason}`,
     degraded: badConfig,
     graft: probe,
     cache,

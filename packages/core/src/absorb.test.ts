@@ -207,7 +207,7 @@ describe("classifyPair — порядок правил", () => {
       { text: "Обход укладывается в 8–10 мс и не выводит выдачу за бюджет.", vector: vec(0) },
     );
     expect(numbers.class).toBe("contradiction");
-    expect(numbers.reason).toContain("числа разошлись");
+    expect(numbers.reason).toContain("numbers diverged");
   });
 
   test("маркер без структурного сходства — не update: это другая задача", () => {

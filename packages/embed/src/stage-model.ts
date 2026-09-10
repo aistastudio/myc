@@ -26,14 +26,14 @@ async function main(): Promise<void> {
     const source = join(src, name);
     try {
       await copyFile(source, join(target, name));
-      console.log(`скопирован ${name} из ${source}`);
+      console.log(`copied ${name} from ${source}`);
     } catch {
-      console.warn(`в ${src} нет ${name} — попробую fetchModel`);
+      console.warn(`no ${name} in ${src} — trying fetchModel`);
     }
   }
   const result = await fetchModel({ modelId: DEFAULT_MODEL_ID, dir: base });
-  console.log(`модель готова: ${result.dir}`);
-  console.log(`пропущено (уже целые): ${result.skipped.join(", ") || "нет"}`);
+  console.log(`model ready: ${result.dir}`);
+  console.log(`skipped (already intact): ${result.skipped.join(", ") || "none"}`);
 }
 
 await main();

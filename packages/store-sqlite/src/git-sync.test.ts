@@ -447,7 +447,7 @@ describe("S42: оплог как предмет мержа", () => {
     // Файл оплога siteB на ветке a не существовал, git добавил его без
     // вызова драйвера — пересечения нет, и драйверу нечего было делать.
     expect(mergeLogA).not.toContain("CONFLICT");
-    expect(mergeLogA).not.toContain("проекция");
+    expect(mergeLogA).not.toContain("projection");
     // Оба сайта писали в разные файлы оплога: пересечение по файлам — ноль.
     const changedA = gitOk(sc.cloneA, "diff", "--name-only", "main", "origin/a").trim().split("\n");
     const changedB = gitOk(sc.cloneA, "diff", "--name-only", "main", "origin/b").trim().split("\n");
@@ -637,7 +637,7 @@ describe("хвостовой файл одного сайта с двух вет
     // Драйвер: объединение, ни одного конфликта, файл равен экспорту базы.
     configureDrivers(cloneA2, sc.shim);
     const log = gitOk(cloneA2, "-c", "commit.gpgsign=false", "merge", "--no-edit", "origin/a");
-    expect(log).toContain("объединение по op_id");
+    expect(log).toContain("union by op_id");
     expect(gitOk(cloneA2, "diff", "--name-only", "--diff-filter=U").trim()).toBe("");
     expect(readFileSync(join(cloneA2, tail), "utf8")).toBe(expected);
     // Импорт после такого мержа для базы-источника — пустой; кеш в новом
@@ -682,7 +682,7 @@ describe("драйвер слияния оплога", () => {
   });
 
   test("битая строка не выбрасывается молча", () => {
-    expect(() => mergeOplogText('{"op_id":"s:1"}\n', "")).toThrow(/неполна/);
-    expect(() => mergeOplogText("not json\n", "")).toThrow(/не JSON/);
+    expect(() => mergeOplogText('{"op_id":"s:1"}\n', "")).toThrow(/incomplete/);
+    expect(() => mergeOplogText("not json\n", "")).toThrow(/not JSON/);
   });
 });

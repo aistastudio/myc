@@ -174,14 +174,14 @@ function renderCreateHuman(raw: unknown): string {
   // каждой выдаче быть не должен; неудача вывода, наоборот, обязана быть
   // видна ровно там, где случилась (И2).
   if (d.repo === null) {
-    lines.push(`repo      не определён — ${d.repo_reason}`);
+    lines.push(`repo      undetermined — ${d.repo_reason}`);
   } else if (d.repo.length > 0) {
     lines.push(`repo      ${d.repo}`);
   }
   if (d.body_stdin_chars !== undefined) {
-    lines.push(`body      ${d.body_stdin_chars} симв из stdin`);
+    lines.push(`body      ${d.body_stdin_chars} chars from stdin`);
   }
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -206,7 +206,7 @@ function buildCreateCommand(
       const t0 = performance.now();
       const title = ctx.args.join(" ").trim();
       if (title.length === 0) {
-        return failure("usage.invalid", "нужен заголовок: myc create <title>", ExitCode.USAGE);
+        return failure("usage.invalid", "title required: myc create <title>", ExitCode.USAGE);
       }
 
       let spec = fixed;
@@ -216,7 +216,7 @@ function buildCreateCommand(
         if (spec === undefined) {
           return failure(
             "usage.invalid",
-            `неизвестный --kind '${kindName}'; допустимы ${Object.keys(CLI_KINDS).join(", ")}`,
+            `unknown --kind '${kindName}'; allowed: ${Object.keys(CLI_KINDS).join(", ")}`,
             ExitCode.USAGE,
           );
         }
@@ -227,7 +227,7 @@ function buildCreateCommand(
       if (pRaw !== undefined) {
         priority = parsePriority(pRaw);
         if (priority === undefined) {
-          return failure("usage.invalid", `неверный приоритет '${pRaw}'; допустимы P0..P3 или 0..3`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid priority '${pRaw}'; allowed: P0..P3 or 0..3`, ExitCode.USAGE);
         }
       } else if (spec.defaultPriority !== undefined) {
         priority = spec.defaultPriority;
@@ -246,7 +246,7 @@ function buildCreateCommand(
       if (eRaw !== undefined) {
         const dur = parseDuration(eRaw);
         if (dur === undefined) {
-          return failure("usage.invalid", `неверная оценка '${eRaw}'; формат 30m, 2h, 1d`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid estimate '${eRaw}'; format: 30m, 2h, 1d`, ExitCode.USAGE);
         }
         estimateMin = Math.round(dur / 60_000);
       }
@@ -256,7 +256,7 @@ function buildCreateCommand(
       if (aRaw !== undefined) {
         anchor = parseTarget(aRaw);
         if (anchor === undefined || anchor.path.length === 0) {
-          return failure("usage.invalid", `неверный якорь '${aRaw}'; формат file[:a-b]`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid anchor '${aRaw}'; format: file[:a-b]`, ExitCode.USAGE);
         }
       }
 
@@ -348,10 +348,10 @@ function buildCreateCommand(
           if (spec.kind === "message" && target.node.kind !== "message" && target.node.kind !== "session") {
             ctx.warn(
               "comment.kind_wrong",
-              `ответ на ${target.node.kind} записан как kind='message' — это слой L0, сырой диалог ` +
-                `сессии: по проекту его тело через 14 суток уезжает в bodies_cold, а в векторный ` +
-                `индекс L0 не попадает. Комментарий — это ` +
-                `\`myc comment ${target.node.id} <текст>\`: kind=note, attrs.type='comment' (S64)`,
+              `reply to ${target.node.kind} written as kind='message' — that is layer L0, raw session ` +
+                `dialogue: by design its body moves to bodies_cold after 14 days, and L0 never reaches ` +
+                `the vector index. A comment is ` +
+                `\`myc comment ${target.node.id} <text>\`: kind=note, attrs.type='comment' (S64)`,
             );
           }
         }
@@ -430,14 +430,14 @@ interface CommentData {
 function renderCommentHuman(raw: unknown): string {
   const d = raw as CommentData;
   const lines = [
-    `${d.id}  комментарий  ${d.actor}`,
-    `к         ${d.replies_to}  ${d.target_title}`,
-    `текст     ${d.title}`,
+    `${d.id}  comment  ${d.actor}`,
+    `to        ${d.replies_to}  ${d.target_title}`,
+    `text      ${d.title}`,
   ];
   if (d.body_stdin_chars !== undefined) {
-    lines.push(`body      ${d.body_stdin_chars} симв из stdin`);
+    lines.push(`body      ${d.body_stdin_chars} chars from stdin`);
   }
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -478,7 +478,7 @@ export function createCommentCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const targetInput = ctx.args[0];
       if (targetInput === undefined || targetInput.trim().length === 0) {
-        return failure("usage.invalid", "нужен адресат: myc comment <target> <текст>", ExitCode.USAGE);
+        return failure("usage.invalid", "target required: myc comment <target> <text>", ExitCode.USAGE);
       }
       let text = ctx.args.slice(1).join(" ").trim();
       const bRaw = flagStr(ctx, "body");
@@ -492,7 +492,7 @@ export function createCommentCommand(deps: StoreDeps = realStoreDeps): Command {
       if (text.length === 0) {
         return failure(
           "usage.invalid",
-          "нужен текст комментария: myc comment <target> <текст> либо -b -",
+          "comment text required: myc comment <target> <text> or -b -",
           ExitCode.USAGE,
         );
       }
@@ -570,14 +570,14 @@ function renderUpdateHuman(raw: unknown): string {
   head.push(d.status, `updated: ${d.changed.join(", ")}`);
   const lines = [head.join("  ")];
   if (d.parent_to !== undefined || d.parent_from !== undefined) {
-    const from = d.parent_from ?? "без эпика";
-    const to = d.parent_to ?? "без эпика";
-    lines.push(`эпик: ${from} → ${to}`);
+    const from = d.parent_from ?? "no epic";
+    const to = d.parent_to ?? "no epic";
+    lines.push(`epic: ${from} → ${to}`);
   }
   if (d.unblocked !== undefined && d.unblocked.length > 0) {
-    lines.push(`unblocked ${d.unblocked.join(", ")}   (теперь ready)`);
+    lines.push(`unblocked ${d.unblocked.join(", ")}   (now ready)`);
   }
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -617,7 +617,7 @@ function guardTaskStatus(
   if (next === "in_progress") {
     return failure(
       "precond.use_claim",
-      `${node.id}: «в работе» берётся арендой, а не записью статуса — иначе задачу одновременно считают своей двое`,
+      `${node.id}: "in progress" is taken with a lease, not by writing the status — otherwise two agents both count the task as theirs`,
       ExitCode.PRECOND,
       `myc claim ${node.id}`,
     );
@@ -625,7 +625,7 @@ function guardTaskStatus(
   if (next === "blocked") {
     return failure(
       "precond.derived",
-      `${node.id}: «заблокирована» вычисляется из открытых блокеров (сейчас их ${node.open_blockers}), а не выставляется вручную`,
+      `${node.id}: "blocked" is derived from open blockers (currently ${node.open_blockers}), not set by hand`,
       ExitCode.PRECOND,
       `myc dep add ${node.id} blocked-by <id>`,
     );
@@ -633,7 +633,7 @@ function guardTaskStatus(
   if (next === "closed") {
     return failure(
       "precond.use_close",
-      `${node.id}: закрытие требует владения и причины и сообщает, кого разблокировало`,
+      `${node.id}: closing requires ownership and a reason, and reports what it unblocked`,
       ExitCode.PRECOND,
       `myc close ${node.id} --reason "…"`,
     );
@@ -643,7 +643,7 @@ function guardTaskStatus(
     if (lease !== undefined && lease.holder.length > 0 && lease.expires > Date.now()) {
       return failure(
         "conflict.claimed",
-        `${node.id} взята ${lease.holder} (аренда до ${new Date(lease.expires).toISOString().slice(11, 19)}Z); статус open при живой аренде делает задачу невзятной: она видна в ready, а claim отказывает`,
+        `${node.id} is claimed by ${lease.holder} (lease until ${new Date(lease.expires).toISOString().slice(11, 19)}Z); status open under a live lease makes the task unclaimable: it shows in ready, but claim refuses`,
         ExitCode.CONFLICT,
         `myc release ${node.id}${lease.holder !== h.actor ? " --force" : ""}`,
       );
@@ -673,7 +673,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужен id: myc update <id> [flags]", ExitCode.USAGE);
+        return failure("usage.invalid", "id required: myc update <id> [flags]", ExitCode.USAGE);
       }
 
       const pRaw = flagStr(ctx, "priority");
@@ -681,7 +681,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       if (pRaw !== undefined) {
         priority = parsePriority(pRaw);
         if (priority === undefined) {
-          return failure("usage.invalid", `неверный приоритет '${pRaw}'; допустимы P0..P3 или 0..3`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid priority '${pRaw}'; allowed: P0..P3 or 0..3`, ExitCode.USAGE);
         }
       }
       const eRaw = flagStr(ctx, "estimate");
@@ -689,7 +689,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       if (eRaw !== undefined) {
         const dur = parseDuration(eRaw);
         if (dur === undefined) {
-          return failure("usage.invalid", `неверная оценка '${eRaw}'; формат 30m, 2h, 1d`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid estimate '${eRaw}'; format: 30m, 2h, 1d`, ExitCode.USAGE);
         }
         estimateMin = Math.round(dur / 60_000);
       }
@@ -769,7 +769,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
         if (parentRaw !== undefined && detach) {
           return failure(
             "usage.invalid",
-            "--parent и --no-parent взаимно исключают друг друга",
+            "--parent and --no-parent are mutually exclusive",
             ExitCode.USAGE,
           );
         }
@@ -781,7 +781,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
             if (current === null) {
               return failure(
                 "precond.no_parent",
-                `${node.id} и так не входит ни в один эпик`,
+                `${node.id} is not in any epic to begin with`,
                 ExitCode.PRECOND,
               );
             }
@@ -799,14 +799,14 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
             if (parent.node.id === node.id) {
               return failure(
                 "precond.self_parent",
-                `${node.id} не может входить сам в себя`,
+                `${node.id} cannot be its own parent`,
                 ExitCode.PRECOND,
               );
             }
             if (current === parent.node.id) {
               return failure(
                 "precond.same_parent",
-                `${node.id} уже входит в ${parent.node.id}`,
+                `${node.id} is already in ${parent.node.id}`,
                 ExitCode.PRECOND,
               );
             }
@@ -824,7 +824,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
         }
 
         if (changed.length === 0) {
-          return failure("usage.invalid", "нечего обновлять: ни одного флага изменения", ExitCode.USAGE);
+          return failure("usage.invalid", "nothing to update: no change flags given", ExitCode.USAGE);
         }
 
         let updated: NodeRecord;
@@ -885,9 +885,9 @@ type LeaseSource = "flag" | "estimate" | "capped" | "floor" | "default";
 
 const LEASE_WHY: Record<LeaseSource, string> = {
   flag: "",
-  estimate: " по оценке",
-  capped: " предел суток",
-  floor: " минимум",
+  estimate: " (estimate)",
+  capped: " (1-day cap)",
+  floor: " (minimum)",
   default: "",
 };
 
@@ -918,15 +918,15 @@ function renderClaimHuman(raw: unknown): string {
   const d = raw as ClaimData;
   let head: string;
   if (d.renewed === true) {
-    head = `renewed ${d.id} by ${d.holder} · аренда ${fmtAge(d.lease_ttl_ms)} до ${fmtClock(d.lease_expires)}`;
+    head = `renewed ${d.id} by ${d.holder} · lease ${fmtAge(d.lease_ttl_ms)} until ${fmtClock(d.lease_expires)}`;
     return `${head}\n`;
   }
   head = `claimed ${d.id} by ${d.holder}`;
   if (d.stolen_from !== undefined) {
-    head += ` (отобрана у ${d.stolen_from}, аренда истекла ${fmtAge(d.expired_ago_ms ?? 0)} назад)`;
+    head += ` (taken over from ${d.stolen_from}, lease expired ${fmtAge(d.expired_ago_ms ?? 0)} ago)`;
   } else {
     const why = LEASE_WHY[d.lease_source];
-    head += ` · аренда ${fmtAge(d.lease_ttl_ms)}${why} до ${fmtClock(d.lease_expires)}`;
+    head += ` · lease ${fmtAge(d.lease_ttl_ms)}${why} until ${fmtClock(d.lease_expires)}`;
   }
   return `${head}\n${d.id} ${fmtPriority(d.priority)} ${d.type} ${d.prev_status}→in_progress\n`;
 }
@@ -963,7 +963,7 @@ export function createReleaseCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужен id: myc release <id>", ExitCode.USAGE);
+        return failure("usage.invalid", "id required: myc release <id>", ExitCode.USAGE);
       }
       const force = ctx.flags["force"] === true;
 
@@ -979,14 +979,14 @@ export function createReleaseCommand(deps: StoreDeps = realStoreDeps): Command {
         if (lease === undefined || lease.holder.length === 0) {
           return failure(
             "precond.not_claimed",
-            `${node.id} никем не взята — отпускать нечего`,
+            `${node.id} is not claimed by anyone — nothing to release`,
             ExitCode.PRECOND,
           );
         }
         if (lease.holder !== h.actor && !force) {
           return failure(
             "conflict.claimed",
-            `${node.id} взята ${lease.holder} (аренда до ${fmtClock(lease.expires)}); отпустить чужую можно только явно`,
+            `${node.id} is claimed by ${lease.holder} (lease until ${fmtClock(lease.expires)}); releasing someone else's claim must be explicit`,
             ExitCode.CONFLICT,
             `myc release ${node.id} --force`,
           );
@@ -994,13 +994,13 @@ export function createReleaseCommand(deps: StoreDeps = realStoreDeps): Command {
         if (lease.holder !== h.actor) {
           ctx.warn(
             "release.forced",
-            `аренда отобрана у ${lease.holder}; его правки могут быть в рабочем дереве`,
+            `lease taken from ${lease.holder}; their edits may still be in the working tree`,
           );
         }
         if (!h.store.releaseLease(node.id, lease.holder, lease.epoch)) {
           return failure(
             "conflict.claimed",
-            `${node.id}: владение уже перешло (эпоха устарела) — отпускать нечего`,
+            `${node.id}: ownership has already moved on (stale epoch) — nothing to release`,
             ExitCode.CONFLICT,
           );
         }
@@ -1018,7 +1018,7 @@ export function createReleaseCommand(deps: StoreDeps = realStoreDeps): Command {
     },
     renderHuman: (raw) => {
       const d = raw as ReleaseData;
-      return `${d.id} отпущена (была у ${d.released_from})${d.forced ? " — принудительно" : ""} → open
+      return `${d.id} released (was held by ${d.released_from})${d.forced ? " — forced" : ""} → open
 `;
     },
   };
@@ -1037,7 +1037,7 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужен id: myc claim <id>", ExitCode.USAGE);
+        return failure("usage.invalid", "id required: myc claim <id>", ExitCode.USAGE);
       }
 
       let ttl: number | undefined;
@@ -1045,7 +1045,7 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
       if (leaseRaw !== undefined) {
         const dur = parseDuration(leaseRaw);
         if (dur === undefined) {
-          return failure("usage.invalid", `неверная аренда '${leaseRaw}'; формат 30m, 2h`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid lease '${leaseRaw}'; format: 30m, 2h`, ExitCode.USAGE);
         }
         ttl = dur;
       }
@@ -1059,12 +1059,12 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
         const node = resolved.node;
 
         if (node.status === "closed" || node.status === "cancelled") {
-          return failure("precond.closed", `${node.id} уже ${node.status}`, ExitCode.PRECOND);
+          return failure("precond.closed", `${node.id} already ${node.status}`, ExitCode.PRECOND);
         }
         if (node.open_blockers > 0) {
           return failure(
             "precond.blocked",
-            `${node.id} заблокирована ${node.open_blockers} открытыми зависимостями`,
+            `${node.id} is blocked by ${node.open_blockers} open ${node.open_blockers === 1 ? "dependency" : "dependencies"}`,
             ExitCode.PRECOND,
             `myc dep why ${node.id}`,
           );
@@ -1084,7 +1084,7 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
             .join(", ");
           ctx.warn(
             "task.blocked_via_parent",
-            `${node.id} не в ready: блокер на предке ${via} — работа встанет на неготовое основание`,
+            `${node.id} is not in ready: blocker on ancestor ${via} — the work would rest on an unready foundation`,
           );
         }
 
@@ -1139,7 +1139,7 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
           if (expiredBy !== undefined) {
             ctx.warn(
               "claim.stolen",
-              "предыдущий владелец не закрыл задачу; его правки могут быть в рабочем дереве",
+              "the previous owner did not close the task; their edits may still be in the working tree",
             );
           }
           const data: ClaimData = {
@@ -1191,12 +1191,12 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
         if (lease !== undefined && lease.holder.length > 0) {
           return failure(
             "conflict.claimed",
-            `${node.id} уже взята ${lease.holder} (аренда до ${fmtClock(lease.expires)})`,
+            `${node.id} already claimed by ${lease.holder} (lease until ${fmtClock(lease.expires)})`,
             ExitCode.CONFLICT,
-            `дождаться истечения аренды или myc claim ${node.id} --steal`,
+            `wait for the lease to expire or myc claim ${node.id} --steal`,
           );
         }
-        return failure("conflict.claimed", `${node.id} недоступна для захвата`, ExitCode.CONFLICT);
+        return failure("conflict.claimed", `${node.id} cannot be claimed`, ExitCode.CONFLICT);
       } finally {
         h.close();
       }
@@ -1260,13 +1260,13 @@ interface CloseData {
 
 function renderCloseHuman(raw: unknown): string {
   const d = raw as CloseData;
-  if (d.already === true) return `${d.id} уже ${d.status}\n`;
+  if (d.already === true) return `${d.id} already ${d.status}\n`;
   const headParts = [`closed ${d.id}`];
   if (d.in_progress_ms !== undefined) headParts.push(`in_progress ${fmtAge(d.in_progress_ms)}`);
   headParts.push(`@${d.closed_by}`);
   const lines = [headParts.join(" · ")];
   if (d.unblocked.length > 0) {
-    lines.push(`unblocked ${d.unblocked.join(", ")}   (теперь ready)`);
+    lines.push(`unblocked ${d.unblocked.join(", ")}   (now ready)`);
   }
   const oc = d.outcome;
   if (oc !== undefined) {
@@ -1278,22 +1278,22 @@ function renderCloseHuman(raw: unknown): string {
       const co = typeof oc["cost_out"] === "number" ? oc["cost_out"] : 0;
       parts.push(`in ${fmtTokens(ci)} / out ${fmtTokens(co)}`);
     }
-    if (parts.length > 0) lines.push(`outcome  записан (${parts.join(", ")})`);
+    if (parts.length > 0) lines.push(`outcome  recorded (${parts.join(", ")})`);
   }
   const at = d.attribution;
   if (at !== undefined) {
     if (at.recorded) {
       const caveats = at.caveats ?? [];
       lines.push(
-        `атрибуция ${at.model_id} · ${at.task_class} · ${at.verdict}` +
-          `${caveats.length > 0 ? ` (оговорки: ${caveats.join(", ")})` : ""}` +
+        `attribution ${at.model_id} · ${at.task_class} · ${at.verdict}` +
+          `${caveats.length > 0 ? ` (caveats: ${caveats.join(", ")})` : ""}` +
           ` · q=${(at.quality ?? 0).toFixed(2)}`,
       );
     } else if (at.skipped !== undefined) {
-      lines.push(`атрибуция НЕ записана: ${at.skipped}`);
+      lines.push(`attribution NOT recorded: ${at.skipped}`);
     }
   }
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -1346,10 +1346,10 @@ function prepareAttribution(
     return {
       plan: {
         kind: "none",
-        skipped: `открытая попытка ${open.attemptId} осталась без исхода`,
+        skipped: `open attempt ${open.attemptId} left without an outcome`,
         warn: [
           "attribution.open",
-          `у ${node.id} открыта попытка ${open.attemptId}; закрытие без --verdict оставляет её без исхода`,
+          `${node.id} has open attempt ${open.attemptId}; closing without --verdict leaves it without an outcome`,
         ],
       },
     };
@@ -1368,7 +1368,7 @@ function prepareAttribution(
       modelRejected = modelRaw;
       ctx.warn(
         "attribution.env_model",
-        `$MYC_MODEL="${modelRaw}" мимо ростера: ${resolved.failure.msg}`,
+        `$MYC_MODEL="${modelRaw}" is not in the roster: ${resolved.failure.msg}`,
       );
     } else {
       canonicalModel = resolved.modelId;
@@ -1386,15 +1386,15 @@ function prepareAttribution(
         kind: "none",
         skipped:
           modelRejected === undefined
-            ? "нет открытой попытки и не названа модель"
-            : `нет открытой попытки, а модель "${modelRejected}" не из ростера`,
+            ? "no open attempt and no model named"
+            : `no open attempt, and model "${modelRejected}" is not in the roster`,
         warn: [
           "attribution.no_model",
-          `${node.id}: исход в статистику роя не попал — ` +
+          `${node.id}: the outcome did not reach swarm stats — ` +
             (modelRejected === undefined
-              ? "вердикт назван, а модель нет"
-              : `модель "${modelRejected}" не из ростера`) +
-            " (myc attempt start <id> --model … или --model на закрытии)",
+              ? "a verdict was given but no model"
+              : `model "${modelRejected}" is not in the roster`) +
+            " (myc attempt start <id> --model … or --model on close)",
         ],
       },
     };
@@ -1498,13 +1498,13 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужен id: myc close <id>", ExitCode.USAGE);
+        return failure("usage.invalid", "id required: myc close <id>", ExitCode.USAGE);
       }
       const verify = flagStr(ctx, "verify");
       if (verify !== undefined && !(VERIFY_MODES as readonly string[]).includes(verify)) {
         return failure(
           "usage.invalid",
-          `неверный --verify '${verify}'; допустимы ${VERIFY_MODES.join(", ")}`,
+          `invalid --verify '${verify}'; allowed: ${VERIFY_MODES.join(", ")}`,
           ExitCode.USAGE,
         );
       }
@@ -1512,13 +1512,13 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
       if (outcome !== undefined && !(OUTCOMES as readonly string[]).includes(outcome)) {
         return failure(
           "usage.invalid",
-          `неверный --outcome '${outcome}'; допустимы ${OUTCOMES.join(", ")}`,
+          `invalid --outcome '${outcome}'; allowed: ${OUTCOMES.join(", ")}`,
           ExitCode.USAGE,
         );
       }
       const dupInput = flagStr(ctx, "dup");
       if (outcome === "duplicate" && dupInput === undefined) {
-        return failure("usage.invalid", "--outcome duplicate требует --dup <id>", ExitCode.USAGE);
+        return failure("usage.invalid", "--outcome duplicate requires --dup <id>", ExitCode.USAGE);
       }
       // Вердикт и оговорки разбираются ДО закрытия: опечатка в вердикте не
       // имеет права оставить задачу закрытой без атрибуции.
@@ -1526,7 +1526,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
       if (verdict !== undefined && !(VERDICTS as readonly string[]).includes(verdict)) {
         return failure(
           "usage.verdict",
-          `неверный --verdict '${verdict}'; допустимы ${VERDICTS.join(", ")}`,
+          `invalid --verdict '${verdict}'; allowed: ${VERDICTS.join(", ")}`,
           ExitCode.USAGE,
         );
       }
@@ -1535,7 +1535,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
       if (verdict === undefined && caveats.length > 0) {
         return failure(
           "usage.verdict",
-          "--caveat без --verdict: оговорка бывает только у вердикта",
+          "--caveat without --verdict: a caveat only qualifies a verdict",
           ExitCode.USAGE,
         );
       }
@@ -1562,7 +1562,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
         if (node.status === "blocked") {
           return failure(
             "precond.blocked",
-            `${node.id} заблокирована; сначала закройте зависимости`,
+            `${node.id} is blocked; close its dependencies first`,
             ExitCode.PRECOND,
             `myc dep why ${node.id}`,
           );
@@ -1581,7 +1581,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
           if (lease.holder !== h.actor) {
             return failure(
               "conflict.claimed",
-              `${node.id} взята ${lease.holder}; закрыть может только владелец`,
+              `${node.id} is claimed by ${lease.holder}; only the owner can close it`,
               ExitCode.CONFLICT,
               `myc close ${node.id} --as ${lease.holder}`,
             );
@@ -1589,7 +1589,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
           if (!h.store.closeClaimed(node.id, lease.holder, lease.epoch)) {
             return failure(
               "conflict.claimed",
-              `${node.id}: владение потеряно (эпоха устарела)`,
+              `${node.id}: ownership lost (stale epoch)`,
               ExitCode.CONFLICT,
             );
           }
@@ -1661,7 +1661,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
             // Задача УЖЕ закрыта: отдать ошибку значило бы сказать, что не
             // произошло ничего. Громкая деградация (И2): закрытие состоялось,
             // исход — нет, причина названа. Под --strict это код выхода 7.
-            ctx.warn("attribution.failed", `исход не записан: ${applied.msg}`);
+            ctx.warn("attribution.failed", `outcome not recorded: ${applied.msg}`);
             attribution = { recorded: false, skipped: applied.msg };
           } else {
             attribution = applied;
@@ -1669,7 +1669,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
         } else if (prepared.plan.kind === "none") {
           const skipped =
             prepared.plan.skipped ??
-            (verdict !== undefined ? "исход записать не удалось" : undefined);
+            (verdict !== undefined ? "could not record the outcome" : undefined);
           if (prepared.plan.warn !== undefined) ctx.warn(...prepared.plan.warn);
           if (skipped !== undefined) attribution = { recorded: false, skipped };
         }

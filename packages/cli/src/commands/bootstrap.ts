@@ -80,8 +80,11 @@ export const BOOTSTRAP_FORMAT_VERSION = 1;
  * Файл версии 1 целиком считается промахом, какой бы отпечаток в нём ни лежал:
  * так старый кеш не отдаётся даже сборке, собранной из исходников без смены
  * CLI_VERSION.
+ *
+ * 3 — тексты зондов переведены на английский без смены CLI_VERSION: блоки,
+ * посчитанные версией 2, говорили бы агенту по-русски до следующего релиза.
  */
-export const BOOTSTRAP_CACHE_VERSION = 2;
+export const BOOTSTRAP_CACHE_VERSION = 3;
 
 /** Слой ручных блоков. L3 — то, что prime отдаёт каждой сессии (§2.3). */
 export const BOOTSTRAP_LAYER = 3;
@@ -307,7 +310,7 @@ export function renderBootstrap(input: RenderInput): RenderResult {
   if (body.length > room) body = body.slice(0, Math.max(0, room));
   let footer =
     `# ${body.length} body chars / ${input.budget} budget` +
-    ` · ${input.stats.tookMs} мс · cache ${input.stats.cache}`;
+    ` · ${input.stats.tookMs} ms · cache ${input.stats.cache}`;
   if (footer.length > FOOTER_MAX) footer = footer.slice(0, FOOTER_MAX);
   const text = `${body}\n${footer}\n`;
   return {
@@ -481,15 +484,16 @@ function dirNames(path: string, limit = 200): string[] {
   }
 }
 
-/** Русское согласование числительного: 1 сервер, 2 сервера, 5 серверов. */
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 14) return `${n} ${many}`;
-  const mod10 = n % 10;
-  if (mod10 === 1) return `${n} ${one}`;
-  if (mod10 >= 2 && mod10 <= 4) return `${n} ${few}`;
-  return `${n} ${many}`;
+/** `1 server`, `2 servers`. */
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
+
+/**
+ * Признак уложенной модели в тексте блока `models`: его ставит probeModels и
+ * по нему же печать решает, есть ли деградация `embed.model_absent`.
+ */
+const MODELS_READY = "with manifest:";
 
 /** Плотный список: не больше `max` имён, остальное числом. */
 function names(list: readonly string[], max: number): string {
@@ -506,11 +510,11 @@ function probeMyc(commands: readonly string[]): BootstrapBlock {
   return autoBlock(
     "myc",
     [
-      "память и задачи проекта; флаги: --json|--ndjson|--strict|-C <dir>|--db <path>",
+      "project memory and tasks; flags: --json|--ndjson|--strict|-C <dir>|--db <path>",
       `cmds: ${commands.join(",")}`,
       "exit 0=ok 1=err 2=usage 3=notfound 4=conflict 5=precond 6=degraded 7=no-ws 8=denied 9=timeout",
       "loop: myc ready --claim -> myc show <id> -> myc close <id>",
-      'правило запуска, которого нет в автодетекте: myc bootstrap set <ключ> "<текст>"',
+      'a launch rule autodetect cannot see: myc bootstrap set <key> "<text>"',
     ].join("\n"),
   );
 }
@@ -552,13 +556,13 @@ function probeMcp(dir: string): BootstrapBlock | null {
   return autoBlock(
     "mcp",
     [
-      `${plural(list.length, "сервер", "сервера", "серверов")}: ${list.map((s) => `${s.name}(${s.command})`).join(" ")}`,
+      `${plural(list.length, "server", "servers")}: ${list.map((s) => `${s.name}(${s.command})`).join(" ")}`,
       // Перечислить ИНСТРУМЕНТЫ каждого сервера дёшево нельзя: список отдаёт
       // только сам сервер по handshake — процесс и сотни миллисекунд против
       // бюджета в 30 мс. Конфиг даёт имена и команды; инструменты агент
       // видит от своего хоста.
-      `конфиг: ${[...new Set(list.map((s) => s.from))].join(",")};` +
-        " список инструментов даёт хост, не конфиг",
+      `config: ${[...new Set(list.map((s) => s.from))].join(",")};` +
+        " the host lists the tools, not the config",
     ].join("\n"),
   );
 }
@@ -576,14 +580,14 @@ function probeSkills(dir: string, env: ProbeEnv): BootstrapBlock | null {
   if (project.length + user.length + orca.length === 0 && orcaBin === null) return null;
   const lines: string[] = [];
   if (project.length > 0) {
-    lines.push(`проектные .claude/skills ${project.length}: ${names(project, 16)}`);
+    lines.push(`project .claude/skills ${project.length}: ${names(project, 16)}`);
   }
   if (user.length > 0) {
-    lines.push(`личные ~/.claude/skills ${user.length}: ${names(user, 12)}`);
+    lines.push(`personal ~/.claude/skills ${user.length}: ${names(user, 12)}`);
   }
   if (orca.length > 0) lines.push(`orca skills ${orca.length}: ${names(orca, 12)}`);
   else if (orcaBin !== null) {
-    lines.push("orca cli есть, каталога skills нет: полный список даёт `orca skills list`");
+    lines.push("orca cli present, no skills directory: `orca skills list` gives the full list");
   }
   return autoBlock("skills", lines.join("\n"));
 }
@@ -611,11 +615,11 @@ function probeGraft(dir: string, env: ProbeEnv): BootstrapBlock | null {
   const bin = probe.bin;
   if (!indexed) return null;
   const lines = [
-    `bin=${bin ?? "нет"} index=graft/`,
-    'ask "<задача>" --source | grep "<литерал>" | skeleton <файл> | callers <символ> [--depth all] | map',
+    `bin=${bin ?? "none"} index=graft/`,
+    'ask "<task>" --source | grep "<literal>" | skeleton <file> | callers <symbol> [--depth all] | map',
   ];
   if (bin === null) {
-    lines.push("граф есть, бинаря нет: поставить graft или читать graft/*.md напрямую");
+    lines.push("graph present, binary missing: install graft or read graft/*.md directly");
   }
   return autoBlock("graft", lines.join("\n"));
 }
@@ -635,14 +639,14 @@ function probeModels(env: ProbeEnv): BootstrapBlock {
     (existsSync(join(env.modelsDir, id, "manifest.json")) ? ready : partial).push(id);
   }
   if (ready.length === 0 && partial.length === 0) {
-    return autoBlock("models", `эмбеддинги не уложены (${env.modelsDir}); myc models fetch`);
+    return autoBlock("models", `no embedding model installed (${env.modelsDir}); myc models fetch`);
   }
   const bits: string[] = [];
-  if (ready.length > 0) bits.push(`по манифесту: ${names(ready, 8)}`);
-  if (partial.length > 0) bits.push(`без манифеста: ${names(partial, 4)}`);
+  if (ready.length > 0) bits.push(`${MODELS_READY} ${names(ready, 8)}`);
+  if (partial.length > 0) bits.push(`no manifest: ${names(partial, 4)}`);
   return autoBlock(
     "models",
-    `эмбеддинги ${bits.join("; ")} (${env.modelsDir}); побайтовая сверка — myc models list`,
+    `embedding models ${bits.join("; ")} (${env.modelsDir}); byte-level check: myc models list`,
   );
 }
 
@@ -664,11 +668,11 @@ function probeTiers(
 ): BootstrapBlock {
   const status = personalWorkspaceStatus(env.mycHome);
   const tail = !status.exists
-    ? "нет (myc init --global); всё ручное — проектное"
+    ? "none (myc init --global); every manual block is a project one"
     : personal > 0
-      ? `${plural(personal, "ручной блок", "ручных блока", "ручных блоков")};` +
-        " проектный блок с тем же ключом вытесняет личный"
-      : "есть, ручных блоков нет";
+      ? `${plural(personal, "manual block", "manual blocks")};` +
+        " a project block with the same key overrides the personal one"
+      : "present, no manual blocks";
   return autoBlock(
     "tiers",
     `project=${mycDir ?? join(dir, ".myc")} personal=${status.dir} ${tail}`,
@@ -849,7 +853,7 @@ function badKey(key: string): CommandFailure {
   return {
     ok: false,
     code: "usage.invalid",
-    msg: `ключ '${key}' не годится: ожидается ${KEY_RE.source}`,
+    msg: `key '${key}' is not valid: expected ${KEY_RE.source}`,
     exit: ExitCode.USAGE,
   };
 }
@@ -939,7 +943,7 @@ async function openTier(
       failure: {
         ok: false,
         code: "ws.not_initialized",
-        msg: `личный ярус не создан: нет ${personalWorkspaceStatus(deps.env.mycHome).dbPath}`,
+        msg: `personal tier not created: no ${personalWorkspaceStatus(deps.env.mycHome).dbPath}`,
         exit: ExitCode.NOWS,
         hint: "myc init --global",
       },
@@ -1012,7 +1016,7 @@ function resolveBudget(
     return {
       ok: false,
       code: "usage.invalid",
-      msg: `--budget ${raw}: минимум ${MIN_BUDGET} символов, иначе не влезает даже шапка`,
+      msg: `--budget ${raw}: minimum is ${MIN_BUDGET} chars, below that not even the header fits`,
       exit: ExitCode.USAGE,
     };
   }
@@ -1024,9 +1028,9 @@ function buildPrint(deps: BootstrapDeps): Command {
     name: "bootstrap",
     summary: "mandatory start-of-session context block for an agent",
     help:
-      "Печатает готовый к вставке блок: автодетект окружения плюс ручные блоки " +
-      "(myc bootstrap set). Источник каждого блока помечен — [auto:*] или " +
-      "[manual:*]. Автодетект кешируется по отпечатку окружения.",
+      "Prints a ready-to-paste block: environment autodetect plus manual blocks " +
+      "(myc bootstrap set). Every block is tagged with its source — [auto:*] or " +
+      "[manual:*]. Autodetect is cached by an environment fingerprint.",
     flags: [
       BUDGET_FLAG,
       { name: "no-cache", description: "ignore and do not write the autodetect cache" },
@@ -1061,10 +1065,10 @@ function buildPrint(deps: BootstrapDeps): Command {
       const degraded: Degradation[] = [];
       const handle: StoreHandle | undefined = opened.ok ? opened.handle : undefined;
       if (handle === undefined) {
-        ctx.warn("ws.absent", `воркспейс не инициализирован, ручных блоков нет: ${dir}`);
+        ctx.warn("ws.absent", `workspace not initialized, no manual blocks: ${dir}`);
         degraded.push({
           code: "ws.absent",
-          msg: "воркспейс не инициализирован, ручных блоков нет: myc init",
+          msg: "workspace not initialized, no manual blocks: myc init",
         });
       }
 
@@ -1086,10 +1090,10 @@ function buildPrint(deps: BootstrapDeps): Command {
 
         const personal = await deps.personalBlocks(ctx, env);
         const models = auto.find((b) => b.key === "models");
-        if (models !== undefined && !models.text.includes("по манифесту:")) {
+        if (models !== undefined && !models.text.includes(MODELS_READY)) {
           degraded.push({
             code: "embed.model_absent",
-            msg: "модель эмбеддингов не уложена, ретривал без векторов: myc models fetch",
+            msg: "embedding model not installed, retrieval runs without vectors: myc models fetch",
           });
         }
         // Отсутствие graft деградацией НЕ считается (memory-bn4cs836df52): он
@@ -1168,8 +1172,8 @@ function buildSet(deps: BootstrapDeps): Command {
     name: "set",
     summary: "pin a manual bootstrap block (L3 note, survives compaction)",
     help:
-      "myc bootstrap set [--global] <ключ> <текст>; текст '-' читается из stdin. " +
-      "Без --global блок ложится в проектный ярус, с ним — в личный ~/.myc.",
+      "myc bootstrap set [--global] <key> <text>; text '-' is read from stdin. " +
+      "Without --global the block goes to the project tier, with it to the personal one in ~/.myc.",
     flags: [GLOBAL_FLAG],
     handler: async (ctx): Promise<CommandResult> => {
       const t0 = performance.now();
@@ -1178,7 +1182,7 @@ function buildSet(deps: BootstrapDeps): Command {
         return {
           ok: false,
           code: "usage.missing_arg",
-          msg: "нужен ключ: myc bootstrap set <ключ> <текст>",
+          msg: "key required: myc bootstrap set <key> <text>",
           exit: ExitCode.USAGE,
         };
       }
@@ -1188,13 +1192,13 @@ function buildSet(deps: BootstrapDeps): Command {
         return {
           ok: false,
           code: "usage.missing_arg",
-          msg: "нужен текст: myc bootstrap set <ключ> <текст> (или '-' для stdin)",
+          msg: "text required: myc bootstrap set <key> <text> (or '-' for stdin)",
           exit: ExitCode.USAGE,
         };
       }
       const text = rest === "-" ? (await new Response(Bun.stdin.stream()).text()).trim() : rest;
       if (text.length === 0) {
-        return { ok: false, code: "usage.empty", msg: "пустой текст блока", exit: ExitCode.USAGE };
+        return { ok: false, code: "usage.empty", msg: "empty block text", exit: ExitCode.USAGE };
       }
 
       const opened = await openTier(ctx, deps, ctx.flags["global"] === true);
@@ -1242,7 +1246,7 @@ function buildSet(deps: BootstrapDeps): Command {
       const d = raw as SetData;
       const verb = d.created ? "set" : "updated";
       const tier = d.tier === "personal" ? "@personal" : "";
-      return `${verb} [manual:${d.key}${tier}] ${d.id} · ${d.chars} симв · ${d.took_ms} мс\n`;
+      return `${verb} [manual:${d.key}${tier}] ${d.id} · ${d.chars} chars · ${d.took_ms} ms\n`;
     },
   };
 }
@@ -1266,7 +1270,7 @@ function buildRm(deps: BootstrapDeps): Command {
         return {
           ok: false,
           code: "usage.missing_arg",
-          msg: "нужен ключ: myc bootstrap rm <ключ>",
+          msg: "key required: myc bootstrap rm <key>",
           exit: ExitCode.USAGE,
         };
       }
@@ -1279,7 +1283,7 @@ function buildRm(deps: BootstrapDeps): Command {
           return {
             ok: false,
             code: "notfound.block",
-            msg: `ручного блока '${key}' нет`,
+            msg: `no manual block '${key}'`,
             exit: ExitCode.NOTFOUND,
             hint: "myc bootstrap list",
           };
@@ -1301,7 +1305,7 @@ function buildRm(deps: BootstrapDeps): Command {
     renderHuman: (raw) => {
       const d = raw as RmData;
       const tier = d.tier === "personal" ? "@personal" : "";
-      return `removed [manual:${d.key}${tier}] ${d.id} · ${d.took_ms} мс\n`;
+      return `removed [manual:${d.key}${tier}] ${d.id} · ${d.took_ms} ms\n`;
     },
   };
 }
@@ -1346,11 +1350,11 @@ function buildList(deps: BootstrapDeps): Command {
     },
     renderHuman: (raw) => {
       const rows = raw as ListRow[];
-      if (rows.length === 0) return "ручных блоков нет · myc bootstrap set <ключ> <текст>\n";
+      if (rows.length === 0) return "no manual blocks · myc bootstrap set <key> <text>\n";
       const body = rows
         .map(
           (r) =>
-            `${r.key.padEnd(16)} ${r.tier.padEnd(8)} ${String(r.chars).padStart(5)} симв  ${r.id}`,
+            `${r.key.padEnd(16)} ${r.tier.padEnd(8)} ${String(r.chars).padStart(5)} chars  ${r.id}`,
         )
         .join("\n");
       return `${body}\n`;

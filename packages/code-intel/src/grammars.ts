@@ -141,7 +141,7 @@ export const GRAMMAR_BY_LANG: Readonly<Record<LangId, GrammarName>> = (() => {
 
 export function grammarSpecFor(lang: LangId): GrammarSpec {
   const name = GRAMMAR_BY_LANG[lang];
-  if (name === undefined) throw new Error(`нет грамматики для языка "${lang}"`);
+  if (name === undefined) throw new Error(`no grammar for language "${lang}"`);
   return GRAMMARS[name];
 }
 
@@ -404,7 +404,7 @@ export async function fetchGrammar(
   if (s === undefined) {
     throw new FetchGrammarError(
       "unknown_grammar",
-      `неизвестная грамматика "${name}"; известно: ${Object.keys(GRAMMARS).join(", ")}`,
+      `unknown grammar "${name}"; known: ${Object.keys(GRAMMARS).join(", ")}`,
     );
   }
   const dir = options.dir ?? grammarsCacheDir(options.env ?? process.env);
@@ -425,7 +425,7 @@ export async function fetchGrammar(
   try {
     await mkdir(dir, { recursive: true });
   } catch (cause) {
-    throw new FetchGrammarError("fs_error", `не создать ${dir}: ${String(cause)}`);
+    throw new FetchGrammarError("fs_error", `cannot create ${dir}: ${String(cause)}`);
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -435,11 +435,11 @@ export async function fetchGrammar(
   } catch (cause) {
     throw new FetchGrammarError(
       "network_error",
-      `не удалось скачать ${s.url}: ${String(cause)}`,
+      `could not download ${s.url}: ${String(cause)}`,
     );
   }
   if (!response.ok || response.body === null) {
-    throw new FetchGrammarError("http_error", `${s.url}: HTTP ${response.status} без тела`);
+    throw new FetchGrammarError("http_error", `${s.url}: HTTP ${response.status} with no body`);
   }
 
   const total = Number(response.headers.get("content-length") ?? "0") || null;
@@ -460,7 +460,7 @@ export async function fetchGrammar(
   if (digest !== s.sha256) {
     throw new FetchGrammarError(
       "checksum_mismatch",
-      `sha256 не сошёлся для ${s.file}: ожидалось ${s.sha256}, получено ${digest}`,
+      `sha256 mismatch for ${s.file}: expected ${s.sha256}, got ${digest}`,
     );
   }
 
@@ -470,7 +470,7 @@ export async function fetchGrammar(
     await rename(part, dest);
   } catch (cause) {
     await rm(part, { force: true }).catch(() => {});
-    throw new FetchGrammarError("fs_error", `не записать ${dest}: ${String(cause)}`);
+    throw new FetchGrammarError("fs_error", `cannot write ${dest}: ${String(cause)}`);
   }
   report({ grammar: name, phase: "done", loadedBytes: s.bytes, totalBytes: s.bytes });
   return {
@@ -521,8 +521,8 @@ export async function grammarStates(
 
 /** Человеку: «2.3 МБ». Один формат на весь код-интеллект. */
 export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} Б`;
-  const units = ["КБ", "МБ", "ГБ"];
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB"];
   let v = n / 1024;
   let i = 0;
   while (v >= 1024 && i < units.length - 1) {

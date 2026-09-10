@@ -29,15 +29,15 @@ interface McpCommandContext {
 }
 
 const SERVER_RULES =
-  "myc — память и задачи этого проекта. Правила: сессию начинай с myc_prime " +
-  "и повторяй его сразу после сжатия контекста; работу бери myc_ready{claim:true} " +
-  "(один вызов — и задача твоя, и весь её контекст); перед изменением кода ищи " +
-  "контекст через myc_recall; выводы и решения сразу пиши через myc_remember — " +
-  "следующая сессия их не узнает иначе. Про сам код спрашивай инструменты кода, " +
-  "а не читай файлы целиком: myc_code_map — ориентация, myc_code_search и " +
-  "myc_code_symbol — найти, myc_skeleton — API файла, myc_callers — радиус " +
-  "правки, myc_code_grep — все вхождения. WARN/degraded в ответе — не шум, а " +
-  "признак, что часть системы не работает.";
+  "myc — this project's memory and tasks. Rules: start the session with myc_prime " +
+  "and repeat it right after context compaction; take work with myc_ready{claim:true} " +
+  "(one call — the task is yours, with all its context); before changing code, look " +
+  "for context with myc_recall; write conclusions and decisions right away with myc_remember — " +
+  "otherwise the next session won't know them. Ask the code tools about the code itself " +
+  "instead of reading whole files: myc_code_map — orientation, myc_code_search and " +
+  "myc_code_symbol — find, myc_skeleton — a file's API, myc_callers — blast radius " +
+  "of an edit, myc_code_grep — every occurrence. WARN/degraded in an answer is not noise, " +
+  "it means part of the system is down.";
 
 /** "prime/ready/update" — имена без префикса, тот же вид, что был в справке. */
 function toolList(tools: readonly McpToolDef[]): string {
@@ -118,14 +118,14 @@ export function createMcpCommand(registry?: Registry) {
       {
         name: "profile",
         value: "string" as const,
-        description: "agent (default); leader/full — отдельная задача myc-zdk",
+        description: "agent (default); leader/full — separate task myc-zdk",
       },
     ],
     help:
-      `Поднимает MCP-сервер на stdio (NDJSON JSON-RPC 2.0). Профиль agent — ` +
-      `${AGENT_TOOLS.length} инструментов: работа — ${toolList(WORK_TOOLS)}; ` +
-      `код — ${toolList(CODE_TOOLS)} (индекс строит \`myc code index\`). ` +
-      "Правила работы и bootstrap-блок уезжают клиенту в initialize.instructions.",
+      `Starts the MCP server on stdio (NDJSON JSON-RPC 2.0). Profile agent — ` +
+      `${AGENT_TOOLS.length} tools: work — ${toolList(WORK_TOOLS)}; ` +
+      `code — ${toolList(CODE_TOOLS)} (\`myc code index\` builds the index). ` +
+      "Working rules and the bootstrap block reach the client in initialize.instructions.",
     handler: async (ctx: McpCommandContext) => {
       const profileRaw = ctx.flags["profile"];
       const profile = (typeof profileRaw === "string" ? profileRaw : "agent") as McpProfile;
@@ -161,10 +161,10 @@ export function createMcpCommand(registry?: Registry) {
         instructions: () => buildInstructions(runCli),
       });
       // stderr — единственный легальный канал логов в stdio-транспорте
-      process.stderr.write(`myc mcp: профиль ${profile}, ${tools.length} инструментов, stdio\n`);
+      process.stderr.write(`myc mcp: profile ${profile}, ${tools.length} tools, stdio\n`);
       if (vectorFailure !== undefined) {
         process.stderr.write(
-          `myc mcp: рантайм расширений не поднялся, векторная ветка недоступна: ${vectorFailure}\n`,
+          `myc mcp: extension runtime failed to load, vector search unavailable: ${vectorFailure}\n`,
         );
       }
       await serveStdio(server, Bun.stdin.stream(), (chunk) => {

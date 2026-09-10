@@ -154,7 +154,7 @@ describe("отказ называет ресурс, а не сбой", () => {
       expect(err.lang).toBe("py");
       expect(err.hint).toBe("myc code fetch py");
       expect(err.message).toContain("tree-sitter-python.wasm");
-      expect(err.message).toContain("464.9 КБ"); // вес назван, а не только факт
+      expect(err.message).toContain("464.9 KB"); // вес назван, а не только факт
     } finally {
       if (saved === undefined) delete process.env.MYC_TREE_SITTER_GRAMMAR_DIR;
       else process.env.MYC_TREE_SITTER_GRAMMAR_DIR = saved;

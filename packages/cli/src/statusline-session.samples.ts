@@ -84,6 +84,20 @@ export const CLI_SAMPLES: readonly (readonly [string, Block, { toolUseResult?: u
   ["callers", ...bash("символов 1, групп 2, вхождений 11  [call 10, import 1]\n")],
   ["show", ...bash("x  task  P1  open\n")],
   ["recall", ...bash("", 0, "", true)],
+  // Английские подвалы (v3): те же шесть команд, ноль и не ноль у каждой.
+  // Код поиска — без WARN-строки: иначе пустоту решает она, а не счётчик.
+  ["recall", ...bash("0 of 0 · 4 ms\n")],
+  ["recall", ...bash("2 of 5 · 4 ms\n")],
+  ["search", ...bash("0 of 0 · 3 ms\n")],
+  ["search", ...bash("1 of 1 · 3 ms\n")],
+  ["list", ...bash("0 of 0 · 6 ms\n")],
+  ["list", ...bash("3 of 3 · 6 ms\n")],
+  ["code grep", ...bash('"zz" — 0 occurrences in 0 symbols, files 0 (scanned 602)\n')],
+  ["code grep", ...bash('"fooBar" — 2 occurrences in 1 symbol, files 1 (scanned 3)\n')],
+  ["code search", ...bash("0 files · stages — · 2 ms\n")],
+  ["code search", ...bash("1 file · stages bm25 · 2 ms\n")],
+  ["callers", ...bash("symbols 1, groups 0, occurrences 0\n")],
+  ["callers", ...bash("symbols 1, groups 2, occurrences 11  [call 10, import 1]\n")],
 ];
 
 /** Отпечаток поведения: как классификатор отвечает на все образцы. */

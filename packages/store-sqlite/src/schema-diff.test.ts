@@ -104,7 +104,7 @@ describe("diffColumns", () => {
     const expected = db("CREATE TABLE a (id TEXT, only_left INTEGER)");
     const actual = db("CREATE TABLE a (id TEXT, only_right INTEGER)");
     const diff = diffColumns(expected, actual, ["a"]);
-    expect(diff.unexplained.sort()).toEqual(["a.only_left нет", "a.only_right лишняя"]);
+    expect(diff.unexplained.sort()).toEqual(["a.only_left missing", "a.only_right extra"]);
   });
 
   test("объявленное с причиной отличие не считается расхождением", () => {

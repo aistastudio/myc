@@ -223,9 +223,9 @@ describe("attempt list --live", () => {
     env = { ...env, CLAUDE_PID: "6706" };
     clock += 3_600_000;
     const r = await myc("attempt", "list", "--live");
-    expect(r.stdout as string).toContain("ОСИРОТЕЛО 1");
+    expect(r.stdout as string).toContain("ORPHANED 1");
     expect(r.stdout as string).toContain("kill 81610");
-    expect(r.stdout as string).toContain("снимает тот, кто запускал");
+    expect(r.stdout as string).toContain("whoever launched it kills it");
   });
 
   test("ложный сирота memory-kgnyph7x367v: попытка, записанная координатором постфактум своим attempt start, не сирота", async () => {
@@ -246,7 +246,7 @@ describe("attempt list --live", () => {
     expect(r.envelope.meta).toMatchObject({ count: 0, orphans: 0 });
 
     const human = await myc("attempt", "list", "--live");
-    expect(human.stdout as string).not.toContain("ОСИРОТЕЛО");
+    expect(human.stdout as string).not.toContain("ORPHANED");
     expect(human.stdout as string).not.toContain("kill 6706");
   });
 

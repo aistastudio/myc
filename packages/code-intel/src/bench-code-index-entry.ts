@@ -41,7 +41,7 @@ const arg = (name: string, fallback: string): string => {
 const ROOT = arg("--root", process.env["MYC_BENCH_ROOT"] ?? new URL("../../..", import.meta.url).pathname);
 
 const m = machine();
-console.log(`[bench] код-индекс: корень ${ROOT}, ${m.cpus} ядер, load1 ${m.load1}`);
+console.log(`[bench] code index: root ${ROOT}, ${m.cpus} cores, load1 ${m.load1}`);
 
 // ---------------------------------------------------------------------------
 // Копия дерева
@@ -51,7 +51,7 @@ const work = mkdtempSync(join(tmpdir(), "code-index-entry-"));
 const tree = join(work, "tree");
 mkdirSync(tree);
 const ls = spawnSync("git", ["ls-files", "-z"], { cwd: ROOT });
-if (ls.status !== 0) throw new Error("нужен git-репозиторий: список файлов берётся из git ls-files");
+if (ls.status !== 0) throw new Error("needs a git repository: the file list comes from git ls-files");
 const rels = ls.stdout.toString().split("\0").filter((s) => s.length > 0);
 let copied = 0;
 let bytes = 0;
@@ -70,7 +70,7 @@ for (const rel of rels) {
   copied++;
   bytes += st.size;
 }
-console.log(`[bench] дерево: ${copied} файлов, ${(bytes / 1024 / 1024).toFixed(1)} МБ`);
+console.log(`[bench] tree: ${copied} files, ${(bytes / 1024 / 1024).toFixed(1)} MB`);
 
 function freshDb(): Database {
   const path = join(work, `db-${Math.random().toString(36).slice(2)}.sqlite`);
@@ -85,7 +85,7 @@ function freshDb(): Database {
 
 const dbs: Database[] = [];
 const full = await measureAsync(
-  "code-index full (пустая база, всё дерево)",
+  "code-index full (empty db, whole tree)",
   async () => {
     const db = freshDb();
     await migrate(db, { migrations, writable: true, ignoreSchemaSkew: false });
@@ -97,9 +97,9 @@ const full = await measureAsync(
   },
   { warmup: 1, iters: 3, trials: 1 },
 );
-report(full, `индекс: ${(() => {
+report(full, `index: ${(() => {
   const s = indexScope(dbs[dbs.length - 1]!, "bench");
-  return `${s.files} файлов, ${s.defs} символов, ${s.l1Files} L1`;
+  return `${s.files} files, ${s.defs} symbols, ${s.l1Files} L1`;
 })()}`);
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ report(full, `индекс: ${(() => {
 
 const warm = dbs[dbs.length - 1]!;
 const incr = await measureAsync(
-  "code-index повторный (дерево не менялось)",
+  "code-index repeat (tree unchanged)",
   async () => {
     const t0 = performance.now();
     await runCodeIndex(warm, { repoId: "bench", root: tree });
@@ -128,7 +128,7 @@ stepDb
   .query("INSERT INTO myc_meta (key, value) VALUES ('code_indexed_at', ?1)")
   .run(String(Date.now()));
 const step = await measureAsync(
-  "шаг дренажа: решение о воркере (то, что платит команда)",
+  "drain step: worker decision (what the command pays)",
   async () => {
     const t0 = performance.now();
     const stamp = stepDb.query("SELECT value FROM myc_meta WHERE key = 'code_indexed_at'").get() as
@@ -140,12 +140,12 @@ const step = await measureAsync(
   },
   { warmup: 20, iters: 200, trials: 3, budgetMs: 1 },
 );
-report(step, "бюджет всего дренажа — 50 мс (DEFAULT_DRAIN_BUDGET_MS)");
+report(step, "whole drain budget — 50 ms (DEFAULT_DRAIN_BUDGET_MS)");
 
 console.log(
-  `[bench] ВЫВОД: полная сборка p50=${(full.stats.p50 / 1000).toFixed(2)} с — ` +
-    `${(full.stats.p50 / 50).toFixed(0)} бюджетов дренажа; инлайн она не пойдёт никогда (И1). ` +
-    `Команда платит только шаг: p99=${step.stats.p99.toFixed(3)} мс.`,
+  `[bench] VERDICT: full build p50=${(full.stats.p50 / 1000).toFixed(2)} s — ` +
+    `${(full.stats.p50 / 50).toFixed(0)} drain budgets; it will never run inline (I1). ` +
+    `The command pays only the step: p99=${step.stats.p99.toFixed(3)} ms.`,
 );
 
 for (const db of dbs) db.close();

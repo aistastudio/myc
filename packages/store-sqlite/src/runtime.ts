@@ -104,7 +104,7 @@ export function getSqliteRuntimeState(): SqliteRuntimeState | null {
 export function applySqliteRuntime(db: Database): void {
   if (!cached) {
     throw new Error(
-      "runtime SQLite не инициализирован: ensureSqliteRuntime() обязан вызываться до открытия соединения",
+      "SQLite runtime not initialized: ensureSqliteRuntime() must be called before a connection is opened",
     );
   }
   if (!cached.vec.loaded) return;
@@ -121,11 +121,11 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
     if (!existsSync(candidate.path)) {
       if (candidate.source === "env") {
         throw new Error(
-          `MYC_SQLITE=${candidate.path}: библиотека задана явно, но файла нет ` +
-            "(явная конфигурация не может молча откатываться на автопоиск)",
+          `MYC_SQLITE=${candidate.path}: the library is set explicitly, but the file does not exist ` +
+            "(an explicit setting cannot silently fall back to auto-discovery)",
         );
       }
-      triedLibs.push(`${candidate.path} — нет файла`);
+      triedLibs.push(`${candidate.path} — no file`);
       continue;
     }
     let ok: boolean;
@@ -135,15 +135,15 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
       const message = (error as Error).message;
       if (message.includes(ALREADY_LOADED)) {
         throw new Error(
-          "ensureSqliteRuntime() вызван после открытия первого соединения: " +
-            "Database.setCustomSQLite обязан выполняться до первого new Database " +
-            "(включая соединения, которые открывают тесты). " +
-            `Исходная ошибка: ${message}`,
+          "ensureSqliteRuntime() was called after the first connection was opened: " +
+            "Database.setCustomSQLite must run before the first new Database " +
+            "(including connections opened by tests). " +
+            `Original error: ${message}`,
         );
       }
       if (candidate.source === "env") {
         throw new Error(
-          `MYC_SQLITE=${candidate.path}: библиотека задана явно, но не загружается: ${message}`,
+          `MYC_SQLITE=${candidate.path}: the library is set explicitly, but it does not load: ${message}`,
         );
       }
       triedLibs.push(`${candidate.path} — ${message}`);
@@ -155,10 +155,10 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
     }
     if (candidate.source === "env") {
       throw new Error(
-        `MYC_SQLITE=${candidate.path}: библиотека задана явно, но setCustomSQLite её не принял`,
+        `MYC_SQLITE=${candidate.path}: the library is set explicitly, but setCustomSQLite rejected it`,
       );
     }
-    triedLibs.push(`${candidate.path} — setCustomSQLite вернул false`);
+    triedLibs.push(`${candidate.path} — setCustomSQLite returned false`);
   }
 
   const probe = new Database(":memory:");
@@ -173,8 +173,8 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
           extensions: false,
           source: "builtin",
           reason:
-            "libsqlite3 с поддержкой загрузки расширений не найдена — используется встроенная в Bun сборка " +
-            "(без неё sqlite-vec не грузится). Проверяли: " +
+            "libsqlite3 with extension loading support not found — using the build bundled with Bun " +
+            "(sqlite-vec does not load without it). Tried: " +
             (triedLibs.join("; ") || "—"),
         },
         vec: {
@@ -182,7 +182,7 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
           path: null,
           version: null,
           source: null,
-          reason: "нет libsqlite3 с поддержкой загрузки расширений — vec0 не загружается",
+          reason: "no libsqlite3 with extension loading support — vec0 does not load",
         },
       });
     }
@@ -196,11 +196,11 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
       if (!existsSync(candidate.path)) {
         if (candidate.source === "env") {
           throw new Error(
-            `MYC_SQLITE_VEC=${candidate.path}: расширение задано явно, но файла нет ` +
-              "(явная конфигурация не может молча откатываться на автопоиск)",
+            `MYC_SQLITE_VEC=${candidate.path}: the extension is set explicitly, but the file does not exist ` +
+              "(an explicit setting cannot silently fall back to auto-discovery)",
           );
         }
-        triedVecs.push(`${candidate.path} — нет файла`);
+        triedVecs.push(`${candidate.path} — no file`);
         continue;
       }
       try {
@@ -218,7 +218,7 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
         const message = (error as Error).message;
         if (candidate.source === "env") {
           throw new Error(
-            `MYC_SQLITE_VEC=${candidate.path}: расширение задано явно, но не загружается: ${message}`,
+            `MYC_SQLITE_VEC=${candidate.path}: the extension is set explicitly, but it does not load: ${message}`,
           );
         }
         triedVecs.push(`${candidate.path} — ${message}`);
@@ -248,15 +248,15 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
           extensions: false,
           source: lib.source,
           reason:
-            `библиотека ${lib.path} не поддерживает загрузку расширений ` +
-            "(нет SQLITE_ENABLE_LOAD_EXTENSION)",
+            `library ${lib.path} does not support loading extensions ` +
+            "(no SQLITE_ENABLE_LOAD_EXTENSION)",
         },
         vec: {
           loaded: false,
           path: null,
           version: null,
           source: null,
-          reason: "библиотека без поддержки загрузки расширений — vec0 не загружается",
+          reason: "the library has no extension loading support — vec0 does not load",
         },
       });
     }
@@ -275,7 +275,7 @@ function initRuntime(options: SqliteRuntimeOptions): SqliteRuntimeState {
         version: null,
         source: null,
         reason:
-          "vec0 не найден или не загрузился. Проверяли: " +
+          "vec0 not found or failed to load. Tried: " +
           (triedVecs.join("; ") || "—"),
       },
     });

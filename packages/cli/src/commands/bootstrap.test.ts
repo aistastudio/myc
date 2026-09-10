@@ -367,7 +367,7 @@ describe("бюджет вывода", () => {
   test("обрезка детерминирована: два вызова подряд дают тот же текст", async () => {
     const first = (await data("bootstrap", "--budget", "500"))["text"] as string;
     const second = (await data("bootstrap", "--budget", "500"))["text"] as string;
-    const strip = (t: string): string => t.replace(/· \d+ мс · cache \w+/, "");
+    const strip = (t: string): string => t.replace(/· \d+ ms · cache \w+/, "");
     expect(strip(second)).toBe(strip(first));
   });
 
@@ -547,6 +547,13 @@ describe("обновление myc: блоки прошлой логики из 
     expect(after["fp"]).toBe(first["fp"] as string);
     expect(after["cache"]).toBe("miss");
     expect(after["text"] as string).not.toContain("[auto:graft]");
+
+    // v2 — тексты зондов ещё русские: такой файл тоже промах, иначе агент
+    // получал бы из кеша русский блок до следующего релиза.
+    plant(2);
+    const v2 = await data("bootstrap");
+    expect(v2["cache"]).toBe("miss");
+    expect(v2["text"] as string).not.toContain("[auto:graft]");
     // Промах переписал файл под текущей версией — следующий вызов снова hit.
     expect((JSON.parse(readFileSync(cacheFile(), "utf8")) as RawCache).v).toBe(
       BOOTSTRAP_CACHE_VERSION,
@@ -596,7 +603,7 @@ describe("автодетект", () => {
       JSON.stringify({ mcp: { graft: { command: ["other"] }, extra: { command: ["ex"] } } }),
     );
     const mcp = autoBlocks(dir, env, COMMANDS).find((b) => b.key === "mcp");
-    expect(mcp?.text).toContain("2 сервера");
+    expect(mcp?.text).toContain("2 servers");
     expect(mcp?.text).toContain("graft(graft)");
     expect(mcp?.text).toContain("extra(ex)");
   });
@@ -609,8 +616,8 @@ describe("автодетект", () => {
       });
     }
     const skills = autoBlocks(dir, env, COMMANDS).find((b) => b.key === "skills");
-    expect(skills?.text).toContain("проектные .claude/skills 1: alpha");
-    expect(skills?.text).toContain("личные ~/.claude/skills 20:");
+    expect(skills?.text).toContain("project .claude/skills 1: alpha");
+    expect(skills?.text).toContain("personal ~/.claude/skills 20:");
     expect(skills?.text).toContain(",+8");
   });
 
@@ -620,10 +627,10 @@ describe("автодетект", () => {
     const withBin = autoBlocks(dir, makeEnv({ which: () => "/usr/local/bin/graft" }), COMMANDS);
     const graft = withBin.find((b) => b.key === "graft");
     expect(graft?.text).toContain("bin=/usr/local/bin/graft index=graft/");
-    expect(graft?.text).toContain("skeleton <файл>");
+    expect(graft?.text).toContain("skeleton <file>");
 
     const noBin = autoBlocks(dir, env, COMMANDS).find((b) => b.key === "graft");
-    expect(noBin?.text).toContain("бинаря нет");
+    expect(noBin?.text).toContain("binary missing");
   });
 
   test("без graft вовсе блока нет — не выдумываем несуществующий инструмент", () => {
@@ -647,12 +654,12 @@ describe("автодетект", () => {
     const model = join(env.modelsDir, "bge-small-en-v1.5");
     mkdirSync(model, { recursive: true });
     const partial = autoBlocks(dir, env, COMMANDS).find((b) => b.key === "models");
-    expect(partial?.text).toContain("без манифеста: bge-small-en-v1.5");
-    expect(partial?.text).not.toContain("по манифесту:");
+    expect(partial?.text).toContain("no manifest: bge-small-en-v1.5");
+    expect(partial?.text).not.toContain("with manifest:");
 
     writeFileSync(join(model, "manifest.json"), "{}");
     const ready = autoBlocks(dir, env, COMMANDS).find((b) => b.key === "models");
-    expect(ready?.text).toContain("по манифесту: bge-small-en-v1.5");
+    expect(ready?.text).toContain("with manifest: bge-small-en-v1.5");
   });
 
   test("недокачанная модель — деградация, а не тихое 'модель есть'", async () => {
@@ -671,7 +678,7 @@ describe("автодетект", () => {
     const after = await data("bootstrap");
     expect(after["fp"]).not.toBe(before["fp"]);
     expect(after["cache"]).toBe("miss");
-    expect(after["text"] as string).toContain("по манифесту:");
+    expect(after["text"] as string).toContain("with manifest:");
   });
 
   test("каталог моделей не разъехался с @myc/embed", () => {
@@ -716,7 +723,7 @@ describe("ярусы (S41)", () => {
 
   test("без личного яруса блок tiers честно говорит, что его нет", async () => {
     await myc("init");
-    expect((await myc("bootstrap")).stdout as string).toContain("нет (myc init --global)");
+    expect((await myc("bootstrap")).stdout as string).toContain("none (myc init --global)");
   });
 
   test("set --global пишет в ~/.myc, вывод помечает ярус, ключ проекта вытесняет личный", async () => {
@@ -776,7 +783,7 @@ describe("ярусы (S41)", () => {
     await createPersonalWorkspace(home);
     await myc("init");
     await myc("bootstrap", "set", "--global", "tone", "личное");
-    expect((await myc("bootstrap")).stdout as string).toContain("1 ручной блок;");
+    expect((await myc("bootstrap")).stdout as string).toContain("1 manual block;");
   });
 });
 

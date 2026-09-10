@@ -114,7 +114,7 @@ export class UnigramTokenizer {
     const eos = ids.get("</s>");
     const pad = ids.get("<pad>");
     if (bos === undefined || eos === undefined || pad === undefined) {
-      throw new Error("словарь не содержит <s>/</s>/<pad> — это не tokenizer.json XLM-R");
+      throw new Error("vocabulary lacks <s>/</s>/<pad> — this is not an XLM-R tokenizer.json");
     }
     this.bosId = bos;
     this.eosId = eos;
@@ -125,9 +125,9 @@ export class UnigramTokenizer {
     entries: readonly UnigramVocabEntry[],
     unkId: number,
   ): UnigramTokenizer {
-    if (entries.length === 0) throw new Error("пустой словарь Unigram");
+    if (entries.length === 0) throw new Error("empty Unigram vocabulary");
     if (unkId < 0 || unkId >= entries.length) {
-      throw new Error(`unk_id=${unkId} вне словаря длиной ${entries.length}`);
+      throw new Error(`unk_id=${unkId} is outside a vocabulary of length ${entries.length}`);
     }
     return new UnigramTokenizer(entries, unkId);
   }
@@ -137,16 +137,16 @@ export class UnigramTokenizer {
     try {
       parsed = JSON.parse(text) as ParsedTokenizerJson;
     } catch (cause) {
-      throw new Error(`tokenizer.json не разбирается: ${String(cause)}`);
+      throw new Error(`tokenizer.json does not parse: ${String(cause)}`);
     }
     const model = parsed.model;
     if (model === undefined || model.type !== "Unigram") {
       throw new Error(
-        `tokenizer.json: ожидалась модель Unigram, получено ${String(model?.type)}`,
+        `tokenizer.json: expected a Unigram model, got ${String(model?.type)}`,
       );
     }
     const raw = model.vocab;
-    if (!Array.isArray(raw)) throw new Error("tokenizer.json: model.vocab не массив");
+    if (!Array.isArray(raw)) throw new Error("tokenizer.json: model.vocab is not an array");
     const entries: UnigramVocabEntry[] = new Array(raw.length);
     for (let i = 0; i < raw.length; i++) {
       const row = raw[i] as [string, number];

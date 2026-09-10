@@ -20,12 +20,12 @@ const models = ids.length > 0 ? ids : [DEFAULT_MODEL_ID];
 
 for (const modelId of models) {
   if (MODELS[modelId] === undefined) {
-    console.error(`неизвестная модель ${modelId}; известно: ${Object.keys(MODELS).join(", ")}`);
+    console.error(`unknown model ${modelId}; known: ${Object.keys(MODELS).join(", ")}`);
     process.exitCode = 2;
     continue;
   }
   if (!(await isModelPresent(modelId))) {
-    console.error(`${modelId}: не скачана → myc models fetch --model ${modelId}`);
+    console.error(`${modelId}: not downloaded → myc models fetch --model ${modelId}`);
     process.exitCode = 2;
     continue;
   }
@@ -33,16 +33,16 @@ for (const modelId of models) {
   const embedder = createLocalEmbedder({ modelId });
   const state = await embedder.warmup();
   if (state !== "ok") {
-    console.error(`${modelId}: эмбеддер в состоянии ${state}`);
+    console.error(`${modelId}: embedder in state ${state}`);
     await embedder.destroy();
     process.exitCode = 2;
     continue;
   }
-  console.log(`\n${modelId} (${spec.languages}, пулинг ${spec.pooling}, токенизатор ${spec.tokenizer})`);
+  console.log(`\n${modelId} (${spec.languages}, pooling ${spec.pooling}, tokenizer ${spec.tokenizer})`);
   for (const corpus of CORPORA) {
     const report = await measureSeparation(corpus, async (text, role) => {
       const r = await embedder.embed(text, role);
-      if (r.vec === null) throw new Error(`эмбеддер вернул ${r.state}/${r.reason}`);
+      if (r.vec === null) throw new Error(`embedder returned ${r.state}/${r.reason}`);
       return r.vec;
     });
     console.log("  " + formatSeparation(report));

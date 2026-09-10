@@ -226,18 +226,18 @@ function whyOf(
   const queried = reports.filter((r) => r.queried);
   const skipped = reports.filter((r) => !r.queried);
   const parts = [
-    `опрошено ${queried.length} из ${reports.length}: ${queried.map((r) => r.id).join(", ")}`,
+    `queried ${queried.length} of ${reports.length}: ${queried.map((r) => r.id).join(", ")}`,
   ];
   if (skipped.length > 0) {
     // Причина у каждого своя и названа поимённо: «пропущено 11» без имён —
     // ровно то молчание, которое запрещает И2.
-    parts.push(`пропущено ${skipped.length}: ${skipped.map((r) => `${r.id} (${r.skipped})`).join(", ")}`);
+    parts.push(`skipped ${skipped.length}: ${skipped.map((r) => `${r.id} (${r.skipped})`).join(", ")}`);
   }
-  parts.push(`потолок ${cap}, дедлайн ${deadlineMs} мс`);
+  parts.push(`cap ${cap}, deadline ${deadlineMs} ms`);
   if (!hasPersonalSource) {
     // Дословно прежняя формулировка S41: личного яруса нет на диске, значит
     // второго запроса к БД не делалось вовсе.
-    parts.push("личный ярус не открыт — второй запрос к БД не выполнялся (И1, S41)");
+    parts.push("personal tier not open — no second DB query was made (I1, S41)");
   }
   return parts.join("; ");
 }
@@ -253,7 +253,7 @@ export async function federatedSearch(params: FederatedSearchParams): Promise<Fe
   const { sources, maxSources: _cap, deadlineMs: _dl, clock: _clock, ...shared } = params;
 
   if (sources.length === 0) {
-    throw new Error("federatedSearch: нужен хотя бы один источник");
+    throw new Error("federatedSearch: at least one source required");
   }
 
   interface Queried {
@@ -276,7 +276,7 @@ export async function federatedSearch(params: FederatedSearchParams): Promise<Fe
         kind: src.kind,
         weight,
         queried: false,
-        skipped: `сверх потолка ${cap} источников (И1: бюджет recall 25 мс)`,
+        skipped: `over the cap of ${cap} sources (I1: recall budget 25 ms)`,
         hits: 0,
       });
       continue;
@@ -291,7 +291,7 @@ export async function federatedSearch(params: FederatedSearchParams): Promise<Fe
         kind: src.kind,
         weight,
         queried: false,
-        skipped: `дедлайн ${deadlineMs} мс исчерпан на ${i}-м источнике (потрачено ${Math.round(elapsed * 10) / 10} мс)`,
+        skipped: `deadline ${deadlineMs} ms exhausted at source #${i} (spent ${Math.round(elapsed * 10) / 10} ms)`,
         hits: 0,
       });
       continue;
@@ -318,7 +318,7 @@ export async function federatedSearch(params: FederatedSearchParams): Promise<Fe
         kind: src.kind,
         weight,
         queried: false,
-        skipped: `не открылся: ${e instanceof Error ? e.message : String(e)}`,
+        skipped: `failed to open: ${e instanceof Error ? e.message : String(e)}`,
         hits: 0,
       });
       continue;

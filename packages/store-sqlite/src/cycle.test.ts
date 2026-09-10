@@ -156,10 +156,10 @@ describe("blocks: предел глубины", () => {
     expect(e.code).toBe("closure.depth");
     expect(e.path).toEqual([]);
     expect(e.message).toContain(String(MAX_BLOCKS_DEPTH));
-    expect(e.message).toContain("предела глубины");
+    expect(e.message).toContain("the depth limit");
     // Отказ по глубине не притворяется циклом (И2: разные новости).
-    expect(e.message).not.toContain("создало бы цикл");
-    expect(e.message).toContain("не проверена");
+    expect(e.message).not.toContain("would create a cycle");
+    expect(e.message).toContain("not verified");
   });
 
   test("на границе предела вставка ещё проходит", () => {
@@ -183,8 +183,8 @@ describe("blocks: предел глубины", () => {
     const e = catchClosure(() => store.addEdge(head, "blocks", hub));
     expect(e.code).toBe("closure.depth");
     expect(e.message).toContain(String(MAX_BLOCKS_REACH));
-    expect(e.message).toContain("предел обхода");
-    expect(e.message).not.toContain("создало бы цикл");
+    expect(e.message).toContain("traversal limit");
+    expect(e.message).not.toContain("would create a cycle");
   });
 
   test("checkEdgeAcyclic зовётся отдельно как чистая проверка", () => {

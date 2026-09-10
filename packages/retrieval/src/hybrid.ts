@@ -754,14 +754,14 @@ export const hybridQueries = defineQueries({
         ORDER BY bm25_score ASC
         LIMIT ?9
       ),
-      -- MATERIALIZED ОБЯЗАТЕЛЕН, и это не «на всякий случай». lex читается
-      -- четырьмя местами (сиды, анти-джойн первого хопа, анти-джойн второго,
-      -- итоговое объединение), а без подсказки SQLite пересчитывает CTE на
-      -- КАЖДОЕ упоминание: это заново GROUP BY + ORDER BY по всему пулу
-      -- matches, который на откате по ИЛИ содержит десятки тысяч строк.
-      -- Замер на 100k (./hybrid.fallback.test.ts): без подсказки добавление
-      -- второго хопа подняло p95 с 14.4 до 26.7 мс — платил не обход, платил
-      -- четвёртый пересчёт сортировки пула.
+      -- MATERIALIZED IS REQUIRED, and not "just in case". lex is read in
+      -- four places (seeds, first-hop anti-join, second-hop anti-join, the
+      -- final union), and without the hint SQLite recomputes the CTE on
+      -- EVERY reference: GROUP BY + ORDER BY over the whole matches pool
+      -- again, which on the OR fallback holds tens of thousands of rows.
+      -- Measured at 100k (./hybrid.fallback.test.ts): without the hint, adding
+      -- the second hop raised p95 from 14.4 to 26.7 ms — the cost was not the
+      -- walk, it was the fourth re-sort of the pool.
       lex AS MATERIALIZED (
         SELECT node_id, bm25_score, RANK() OVER (ORDER BY bm25_score ASC) AS r
         FROM pool
@@ -770,12 +770,12 @@ export const hybridQueries = defineQueries({
         SELECT node_id, r FROM lex WHERE r <= ?10
       ),
       hop1_raw AS (
-        -- CROSS JOIN здесь — не декартово произведение, а подсказка порядка
-        -- (SQLite гарантирует: левая таблица снаружи). Без неё планировщик
-        -- заходит со стороны edges и СКАНИРУЕТ их целиком, вместо того чтобы
-        -- взять 15 сидов и сделать 15 seek'ов по PK. На корпусе 100k это
-        -- стоило 4.7 мс против 0.8 мс — замер в EXPLAIN QUERY PLAN показывал
-        -- «SCAN e» вместо «SEARCH e USING PRIMARY KEY (src=?)».
+        -- CROSS JOIN here is not a cartesian product but an order hint
+        -- (SQLite guarantees the left table is the outer one). Without it the
+        -- planner enters from edges and SCANS them whole instead of taking
+        -- 15 seeds and doing 15 PK seeks. On a 100k corpus that cost 4.7 ms
+        -- versus 0.8 ms — EXPLAIN QUERY PLAN showed "SCAN e" instead of
+        -- "SEARCH e USING PRIMARY KEY (src=?)".
         SELECT e.dst AS node_id, s.node_id AS via_id, s.r AS via_rank,
                e.weight AS w, e.type AS etype
         FROM seeds s CROSS JOIN edges e ON e.src = s.node_id
@@ -792,19 +792,19 @@ export const hybridQueries = defineQueries({
         FROM hop1_raw
         WHERE node_id NOT IN (SELECT node_id FROM lex)
       ),
-      -- MATERIALIZED обязателен: hop1 читается трижды (сиды второго хопа,
-      -- анти-джойн второго хопа, итоговое объединение). Без подсказки SQLite
-      -- пересчитывает CTE на каждое упоминание, то есть делает обход первого
-      -- хопа три раза вместо одного.
+      -- MATERIALIZED is required: hop1 is read three times (second-hop seeds,
+      -- second-hop anti-join, the final union). Without the hint SQLite
+      -- recomputes the CTE on every reference, i.e. walks the first hop
+      -- three times instead of once.
       hop1 AS MATERIALIZED (
         SELECT node_id, via_id, via_rank, w, etype FROM hop1_ranked WHERE rn = 1
         ORDER BY via_rank ASC, w DESC, node_id ASC
         LIMIT ?13
       ),
-      -- ВЕЕР ВТОРОГО ХОПА ОГРАНИЧЕН СВЕРХУ КОНФИГОМ (?12), а не данными:
-      -- иначе цена обхода = степень самого связного узла окрестности.
-      -- ?12 = 0 (graphMaxHops < 2) делает LIMIT 0, и весь второй хоп
-      -- схлопывается в пустое множество ещё до обращения к edges.
+      -- THE SECOND-HOP FAN-OUT IS CAPPED BY CONFIG (?12), not by the data:
+      -- otherwise the walk costs the degree of the best-connected nearby node.
+      -- ?12 = 0 (graphMaxHops < 2) gives LIMIT 0, and the whole second hop
+      -- collapses to an empty set before edges is even touched.
       hop2_seeds AS MATERIALIZED (
         SELECT node_id, via_rank FROM hop1
         ORDER BY via_rank ASC, w DESC, node_id ASC
@@ -822,12 +822,12 @@ export const hybridQueries = defineQueries({
         WHERE e.deleted_at IS NULL AND e.weight >= ?11
       ),
       hop2_ranked AS (
-        -- Анти-джойн с hop1 — ОГРАНИЧЕНИЕ ЦЕНЫ, а не корректности: узел,
-        -- достижимый и за один хоп, и за два, слияние всё равно оставит один
-        -- раз и по лучшему пути (см. expandedById). Мутация «убрать эту
-        -- строку» не роняет ни одного теста — она роняет цену: без неё тот же
-        -- узел гидратируется дважды. Записано здесь, чтобы строку не сняли
-        -- как мёртвую.
+        -- The anti-join with hop1 is a COST limit, not a correctness one: a node
+        -- reachable in one hop and in two is kept once anyway, by the best
+        -- path, when merging (see expandedById). The mutation "drop this
+        -- line" fails no test — it hurts cost: without it the same node is
+        -- hydrated twice. Written down here so the line is not removed as
+        -- dead code.
         SELECT node_id, via_id, via_rank, w, etype,
                ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY via_rank ASC, w DESC) AS rn
         FROM hop2_raw
@@ -865,10 +865,10 @@ export const hybridQueries = defineQueries({
              n.updated_at  AS updated_at,
              n.title       AS title,
              n.excerpt     AS excerpt
-      -- И здесь CROSS JOIN обязателен: у nodes есть индекс по scope, и
-      -- планировщик соблазняется зайти со стороны nodes, вычитав тысячи строк
-      -- скоупа, чтобы потом искать в merged. Порядок «сначала merged (сотня
-      -- строк), потом seek по id» быстрее на порядок.
+      -- CROSS JOIN is required here too: nodes has an index on scope, and
+      -- the planner is tempted to enter from nodes, reading thousands of the
+      -- scope's rows only to look them up in merged. The order "merged first
+      -- (a hundred rows), then seek by id" is an order of magnitude faster.
       FROM merged m
       CROSS JOIN nodes n ON n.id = m.node_id
       WHERE n.deleted_at IS NULL
@@ -1346,22 +1346,22 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
 
   if (parsed === null) {
     const c = corpus();
-    return emptyResult("пустой запрос: после разбора не осталось ни одного терма", roundTrips, {
+    return emptyResult("empty query: no terms left after parsing", roundTrips, {
       code: "empty_query",
       text:
-        "запрос не содержит ни одного слова: после разбора не осталось ни одного терма — " +
-        "искать нечего, база не при чём",
+        "query contains no words: no terms left after parsing — " +
+        "nothing to search for, the database is not the cause",
       corpusSize: c.size,
       corpusAtLeast: c.atLeast,
     });
   }
   if (params.scopes.length === 0) {
     return emptyResult(
-      "пустой список скоупов: запрос без partition key не выполняется (S27)",
+      "empty scope list: a query without a partition key is not run (S27)",
       roundTrips,
       {
         code: "no_scopes",
-        text: "запрос без partition key (пустой список скоупов) не выполняется — S27",
+        text: "a query without a partition key (empty scope list) is not run — S27",
         corpusSize: 0,
         corpusAtLeast: false,
       },
@@ -1545,23 +1545,23 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
   if (mode === "never") {
     wantVector = false;
     disposition = "disabled";
-    why = "векторная ветка выключена явно (vectorMode: never)";
+    why = "vector branch explicitly off (vectorMode: never)";
   } else if (mode === "always") {
     wantVector = true;
     disposition = "used";
-    why = "векторная ветка включена безусловно (vectorMode: always) — эталон для сравнения";
+    why = "vector branch unconditionally on (vectorMode: always) — the reference for comparison";
   } else if (trigger.fired) {
     wantVector = true;
     disposition = "used";
-    why = `лексики не хватило: ${trigger.reasons.join(", ")}`;
+    why = `lexical fell short: ${trigger.reasons.join(", ")}`;
   } else {
     wantVector = false;
     disposition = "skipped";
     why =
-      `лексики достаточно (${trigger.metrics.lexicalHits} кандидатов, ` +
-      `разброс BM25 ${fmt(trigger.metrics.bm25Spread)}, ` +
-      `якорных термов ${trigger.metrics.anchorTerms}/${trigger.metrics.queryTerms}) — ` +
-      `эмбеддинг запроса не считался, ~23 мс сэкономлено (S31)`;
+      `lexical is enough (${trigger.metrics.lexicalHits} candidates, ` +
+      `BM25 spread ${fmt(trigger.metrics.bm25Spread)}, ` +
+      `anchor terms ${trigger.metrics.anchorTerms}/${trigger.metrics.queryTerms}) — ` +
+      `query embedding not computed, ~23 ms saved (S31)`;
   }
 
   // ---- проход 2: вектор, только если решили его звать ----------------------
@@ -1571,10 +1571,10 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
     const vector = params.embedQuery ? params.embedQuery() : null;
     if (vector === null) {
       disposition = "unavailable";
-      why = `${why}; но эмбеддинга запроса нет — выдача только по лексике и графу`;
+      why = `${why}; but there is no query embedding — results only from lexical and graph`;
       degraded.push(
-        "vector-branch: эмбеддинг запроса недоступен (нет эмбеддера или кеша) — " +
-          "векторная ветка не участвовала",
+        "vector-branch: query embedding unavailable (no embedder or cache) — " +
+          "the vector branch did not take part",
       );
     } else {
       const source = params.vectorSource ?? vectorSearch;
@@ -1594,11 +1594,11 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
 
       if (outcome.degraded) {
         disposition = "degraded";
-        why = `${why}; векторный источник деградировал: ${outcome.reason ?? "причина не указана"}`;
+        why = `${why}; vector source degraded: ${outcome.reason ?? "no reason given"}`;
         degraded.push(`vector-source: ${outcome.reason ?? "degraded"}`);
       } else if (outcome.hits.length === 0) {
         disposition = "empty";
-        why = `${why}; векторная ветка отработала, но кандидатов не дала`;
+        why = `${why}; the vector branch ran but gave no candidates`;
       } else {
         vectorDistanceMean = outcome.distanceMean;
         vectorDistanceStd = outcome.distanceStd;
@@ -1759,8 +1759,8 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
   const vectorOnly = hits.length > 0 && lexical.hits === 0 && usedSources.has("vector");
   if (vectorOnly) {
     degraded.push(
-      "vector-only: лексика не дала ни одного кандидата — вся выдача построена на " +
-        "одном слабом векторе без подтверждения (S47: MRR ~0.24 на этой модели)",
+      "vector-only: lexical gave no candidates — the whole result rests on " +
+        "a single weak vector with no confirmation (S47: MRR ~0.24 on this model)",
     );
   }
 
@@ -1769,9 +1769,9 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
   // расширенный набор, а не на точное совпадение (И2, S44).
   if (fallbackUsed) {
     why =
-      `строгое И не дало ни одного кандидата (${parsed.terms.length} терминов) — ` +
-      `пул собран ступенью отката '${operator}' (${STAGE_WHY[operator] ?? "откат"})` +
-      `${coverageApplied ? " с бустом полного совпадения" : ""}, ранжирование BM25; ${why}`;
+      `strict AND gave no candidates (${parsed.terms.length} ${parsed.terms.length === 1 ? "term" : "terms"}) — ` +
+      `the pool was built by fallback stage '${operator}' (${STAGE_WHY[operator] ?? "fallback"})` +
+      `${coverageApplied ? " with a full-match boost" : ""}, BM25 ranking; ${why}`;
   }
 
   // ПУСТАЯ ВЫДАЧА ОБЯЗАНА ОБЪЯСНИТЬСЯ (И2, S44). «Не нашлось», «ветка не
@@ -1783,7 +1783,7 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
     if (c.size === 0) {
       emptyReason = {
         code: "store_empty",
-        text: "в этом ярусе нет ни одного видимого узла — искать нечего, а не «не нашлось»",
+        text: "this tier has no visible nodes — there is nothing to search, which is not 'not found'",
         corpusSize: 0,
         corpusAtLeast: false,
       };
@@ -1791,18 +1791,19 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
       const sizeText = c.atLeast ? "1000+" : String(c.size);
       const branch =
         disposition === "used" || disposition === "empty"
-          ? "лексика и вектор отработали обе"
-          : `векторная ветка не участвовала (${disposition})`;
+          ? "lexical and vector both ran"
+          : `the vector branch did not take part (${disposition})`;
+      const terms = `${parsed.terms.length} ${parsed.terms.length === 1 ? "term" : "terms"}`;
       const how =
         stagesTried === 0
-          ? `строгое И, ${parsed.terms.length} терминов`
+          ? `strict AND, ${terms}`
           : fallbackUsed
-            ? `ступень отката '${operator}', ${parsed.terms.length} терминов`
-            : `строгое И и ${stagesTried} ступ. отката, ${parsed.terms.length} терминов — ` +
-              "не совпало ни на одной";
+            ? `fallback stage '${operator}', ${terms}`
+            : `strict AND and ${stagesTried} fallback ${stagesTried === 1 ? "stage" : "stages"}, ` +
+              `${terms} — no match at any`;
       emptyReason = {
         code: "no_match",
-        text: `ни один из ${sizeText} видимых узлов не совпал с запросом (${how}); ${branch}`,
+        text: `none of the ${sizeText} visible nodes matched the query (${how}); ${branch}`,
         corpusSize: c.size,
         corpusAtLeast: c.atLeast,
       };
@@ -1831,11 +1832,11 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
 
 /** Человеческое объяснение ступени — для mode_used.why. */
 const STAGE_WHY: Readonly<Record<string, string>> = {
-  prefix_and: "не совпала форма слова, пересечение по префиксам",
-  prefix_relaxed: "лишнее слово в вопросе, все термины кроме одного",
-  prefix_relaxed2: "два лишних слова, все термины кроме любых двух",
-  prefix_or: "объединение префиксов",
-  or: "плоское объединение терминов",
+  prefix_and: "word forms differ, intersection by prefixes",
+  prefix_relaxed: "an extra word in the question, all terms but one",
+  prefix_relaxed2: "two extra words, all terms but any two",
+  prefix_or: "union of prefixes",
+  or: "flat union of terms",
 };
 
 /**
@@ -1852,5 +1853,5 @@ function asPrefix(quoted: string): string {
 }
 
 function fmt(x: number): string {
-  return Number.isFinite(x) ? x.toFixed(3) : "н/д";
+  return Number.isFinite(x) ? x.toFixed(3) : "n/a";
 }

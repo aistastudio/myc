@@ -125,15 +125,15 @@ const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
  * настоящий конфликт для человека, а не для драйвера.
  */
 export const GITATTRIBUTES = [
-  "# myc (S42): в git идёт только оплог, он сливается объединением по op_id;",
-  "# проекции — локальный кеш, `myc import` пересобирает их. Драйвер один:",
+  "# myc (S42): only the oplog goes to git, and it is merged by union on op_id;",
+  "# projections are a local cache that `myc import` rebuilds. There is one driver:",
   `#   git config merge.${OPLOG_MERGE_DRIVER}.driver "myc merge-driver %O %A %B %L %P"`,
   `${OPLOG_DIR}/**/*.jsonl merge=${OPLOG_MERGE_DRIVER}`,
   "",
 ].join("\n");
 
 /** Кеш проекций игнорирует сам себя — независимо от корневого .gitignore. */
-export const PROJECTION_CACHE_GITIGNORE = "# myc (S42): кеш проекций, пересобирается `myc import`\n*\n";
+export const PROJECTION_CACHE_GITIGNORE = "# myc (S42): projection cache, rebuilt by `myc import`\n*\n";
 
 // ---------------------------------------------------------------------------
 // Запросы экспорта — свои, потому что читают таблицы целиком в фиксированном
@@ -193,10 +193,10 @@ export interface OplogLine {
 /** op_id = `<site_id>:<seq>`; site_id сам может содержать двоеточие. */
 export function splitOpId(opId: string): { siteId: string; seq: number } {
   const at = opId.lastIndexOf(":");
-  if (at <= 0) throw new Error(`op_id без разделителя сайта: '${opId}'`);
+  if (at <= 0) throw new Error(`op_id without a site separator: '${opId}'`);
   const seq = Number(opId.slice(at + 1));
   if (!Number.isInteger(seq) || seq <= 0) {
-    throw new Error(`op_id с некорректным seq: '${opId}'`);
+    throw new Error(`op_id with an invalid seq: '${opId}'`);
   }
   return { siteId: opId.slice(0, at), seq };
 }
@@ -227,10 +227,10 @@ export function lineToRow(text: string): OplogRow {
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error(`строка оплога не JSON: ${text.slice(0, 80)}`);
+    throw new Error(`oplog line is not JSON: ${text.slice(0, 80)}`);
   }
   if (typeof parsed !== "object" || parsed === null) {
-    throw new Error(`строка оплога не объект: ${text.slice(0, 80)}`);
+    throw new Error(`oplog line is not an object: ${text.slice(0, 80)}`);
   }
   const l = parsed as Record<string, unknown>;
   const opId = l["op_id"];
@@ -245,7 +245,7 @@ export function lineToRow(text: string): OplogRow {
     typeof l["entity"] !== "string" ||
     typeof l["entity_id"] !== "string"
   ) {
-    throw new Error(`строка оплога неполна: ${text.slice(0, 80)}`);
+    throw new Error(`oplog line is incomplete: ${text.slice(0, 80)}`);
   }
   const { siteId } = splitOpId(opId);
   const packed = (BigInt(hlc[0]) << 16n) | BigInt(hlc[1]);
@@ -685,8 +685,8 @@ export class OplogCollisionError extends Error {
 
   constructor(opId: string, kept: string, dropped: string, path?: string) {
     super(
-      `коллизия op_id ${opId}${path === undefined ? "" : ` в ${path}`}: ` +
-        `одна и та же операция с разным содержимым с двух сторон\n  A: ${kept}\n  B: ${dropped}`,
+      `op_id collision ${opId}${path === undefined ? "" : ` in ${path}`}: ` +
+        `the same operation with different content on the two sides\n  A: ${kept}\n  B: ${dropped}`,
     );
     this.name = "OplogCollisionError";
     this.opId = opId;

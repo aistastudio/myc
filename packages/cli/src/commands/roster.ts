@@ -68,7 +68,7 @@ function realOpenRoster(ctx: CommandContext): RosterHandle | CommandFailure {
     return {
       ok: false,
       code: "ws.not_initialized",
-      msg: `воркспейс не инициализирован: нет ${dbPath}`,
+      msg: `workspace not initialized: no ${dbPath}`,
       exit: ExitCode.NOWS,
       hint: "myc init",
     };
@@ -153,7 +153,7 @@ function priceDate(ctx: CommandContext): number | CommandFailure {
   if (raw === undefined) return Date.now();
   const bad = usage(
     "usage.date",
-    `--price-date обязан быть YYYY-MM-DD или YYYY-MM-DDTHH:MM:SS[.mmm]Z, получено "${raw}"`,
+    `--price-date must be YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[.mmm]Z, got "${raw}"`,
   );
   if (!DATE_RE.test(raw) && !TIMESTAMP_RE.test(raw)) return bad;
   const ms = Date.parse(DATE_RE.test(raw) ? `${raw}T00:00:00Z` : raw);
@@ -180,7 +180,7 @@ function cachePrice(ctx: CommandContext, usdPerMIn: number): CachePrice | Comman
     ["--price-cache-write", write],
   ] as const) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
-      return usage("usage.price", `${flag} обязан быть числом ≥ 0, получено "${value}"`);
+      return usage("usage.price", `${flag} must be a number ≥ 0, got "${value}"`);
     }
   }
   const defaulted: string[] = [];
@@ -201,9 +201,9 @@ function warnDefaulted(ctx: CommandContext, cache: CachePrice, usdPerMIn: number
   if (cache.defaulted.length === 0) return;
   ctx.warn(
     "price.cache_defaulted",
-    `ставки кеша не заданы: применено умолчание ${cache.defaulted.join(", ")} от --price-in ` +
+    `cache rates not set: applied the default ${cache.defaulted.join(", ")} of --price-in ` +
       `${usdPerMIn} → read ${cache.usdPerMCacheRead}, write ${cache.usdPerMCacheWrite} $/1M. ` +
-      "Это допущение, а не прайс провайдера: задайте --price-cache-read/--price-cache-write",
+      "This is an assumption, not the provider's price list: set --price-cache-read/--price-cache-write",
   );
 }
 
@@ -251,19 +251,19 @@ function buildAddCommand(deps: RosterDeps): Command {
   return {
     name: "add",
     summary: "add a model to the roster",
-    help: "Цена обязательна и хранится с датой (--price-date, по умолчанию сегодня): факт, а не константа.",
+    help: "A price is required and stored with a date (--price-date, default today): a fact, not a constant.",
     flags: MODEL_FLAGS,
     handler: (ctx): CommandResult => {
       const modelId = ctx.args[0];
-      if (modelId === undefined) return usage("usage.input", "нужен id модели: myc model add <id> …");
+      if (modelId === undefined) return usage("usage.input", "model id required: myc model add <id> …");
       const family = flagStr(ctx, "family");
-      if (family === undefined) return usage("usage.input", "нужен --family");
+      if (family === undefined) return usage("usage.input", "--family required");
       const harness = flagStr(ctx, "harness");
-      if (harness === undefined) return usage("usage.input", "нужен --harness");
+      if (harness === undefined) return usage("usage.input", "--harness required");
       const priceIn = flagNum(ctx, "price-in");
       const priceOut = flagNum(ctx, "price-out");
       if (priceIn === undefined || priceOut === undefined) {
-        return usage("usage.price", "нужны --price-in и --price-out (USD за 1M токенов)");
+        return usage("usage.price", "--price-in and --price-out required (USD per 1M tokens)");
       }
       const validFrom = priceDate(ctx);
       if (typeof validFrom !== "number") return validFrom;
@@ -310,7 +310,7 @@ function buildUpdateCommand(deps: RosterDeps): Command {
     flags: MODEL_FLAGS,
     handler: (ctx): CommandResult => {
       const modelId = ctx.args[0];
-      if (modelId === undefined) return usage("usage.input", "нужен id модели: myc model update <id> …");
+      if (modelId === undefined) return usage("usage.input", "model id required: myc model update <id> …");
 
       const patch: {
         -readonly [K in keyof UpdateModelInput]?: UpdateModelInput[K];
@@ -339,7 +339,7 @@ function buildUpdateCommand(deps: RosterDeps): Command {
       let validFrom = 0;
       if (priceTouched) {
         if ((priceIn === undefined) !== (priceOut === undefined)) {
-          return usage("usage.price", "цену меняем парой: --price-in и --price-out вместе");
+          return usage("usage.price", "a price changes as a pair: --price-in and --price-out together");
         }
         const parsed = priceDate(ctx);
         if (typeof parsed !== "number") return parsed;
@@ -347,7 +347,7 @@ function buildUpdateCommand(deps: RosterDeps): Command {
       }
 
       if (Object.keys(patch).length === 0 && !priceTouched) {
-        return usage("usage.input", "нечего менять: передайте хотя бы один флаг");
+        return usage("usage.input", "nothing to change: pass at least one flag");
       }
 
       const opened = deps.openRoster(ctx);
@@ -364,14 +364,14 @@ function buildUpdateCommand(deps: RosterDeps): Command {
               return {
                 ok: false,
                 code: "notfound.model",
-                msg: `модель "${modelId}" не найдена в ростере`,
+                msg: `model "${modelId}" not found in the roster`,
                 exit: ExitCode.NOTFOUND,
               };
             }
             if (current.price === null) {
               return usage(
                 "usage.price",
-                "у модели нет цены, на которую опереться: задайте --price-in и --price-out",
+                "the model has no price to build on: set --price-in and --price-out",
               );
             }
             base = { in: current.price.usdPerMIn, out: current.price.usdPerMOut };
@@ -427,7 +427,7 @@ function buildShowCommand(deps: RosterDeps): Command {
     summary: "one roster entry with full price history",
     handler: (ctx): CommandResult => {
       const modelId = ctx.args[0];
-      if (modelId === undefined) return usage("usage.input", "нужен id модели: myc model show <id>");
+      if (modelId === undefined) return usage("usage.input", "model id required: myc model show <id>");
       const opened = deps.openRoster(ctx);
       if (!("roster" in opened)) return opened;
       try {
@@ -436,7 +436,7 @@ function buildShowCommand(deps: RosterDeps): Command {
           return {
             ok: false,
             code: "notfound.model",
-            msg: `модель "${modelId}" не найдена в ростере`,
+            msg: `model "${modelId}" not found in the roster`,
             exit: ExitCode.NOTFOUND,
           };
         }
@@ -468,7 +468,7 @@ function buildSetActiveCommand(deps: RosterDeps, active: boolean): Command {
       : "soft-delete: hide from list, keep record and price history",
     handler: (ctx): CommandResult => {
       const modelId = ctx.args[0];
-      if (modelId === undefined) return usage("usage.input", `нужен id модели: myc model ${name} <id>`);
+      if (modelId === undefined) return usage("usage.input", `model id required: myc model ${name} <id>`);
       const opened = deps.openRoster(ctx);
       if (!("roster" in opened)) return opened;
       try {

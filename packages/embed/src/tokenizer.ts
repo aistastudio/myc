@@ -108,7 +108,7 @@ export class WordPieceTokenizer implements TextTokenizer {
       if (!vocab.has(tok)) vocab.set(tok, vocab.size);
     }
     if (!vocab.has(CLS) || !vocab.has(SEP) || !vocab.has(UNK)) {
-      throw new Error("словарь не содержит [CLS]/[SEP]/[UNK] — это не vocab.txt BERT");
+      throw new Error("vocabulary lacks [CLS]/[SEP]/[UNK] — this is not a BERT vocab.txt");
     }
     return new WordPieceTokenizer(vocab);
   }

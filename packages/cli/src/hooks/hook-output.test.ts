@@ -110,11 +110,11 @@ describe("деградация не ломает разбор: настоящи�
       warn: { code: string; msg: string }[];
     };
     expect(parsed.hookSpecificOutput.hookEventName).toBe("PreCompact");
-    expect(parsed.hookSpecificOutput.additionalContext).toContain("контекст сжимается");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("context is being compacted");
 
     // Деградация действительно была — и она в разобранном объекте, а не рядом.
     expect(parsed.warn.map((w) => w.code)).toContain("degraded.transcript");
-    expect(parsed.warn.some((w) => w.msg.includes("несуществующий транскрипт"))).toBe(true);
+    expect(parsed.warn.some((w) => w.msg.includes("transcript that does not exist"))).toBe(true);
 
     // Ни одной строки WARN мимо документа: после JSON нет ничего, кроме \n.
     expect(r.stdout.trimEnd().split("\n").length).toBe(1);
@@ -138,7 +138,7 @@ describe("каналы разведены: машине — документ, ч
 
     // Человек, позвавший хук руками, обязан прочитать это словами.
     expect(r.stderr ?? "").toContain("WARN degraded.transcript");
-    expect(r.stderr ?? "").toContain("несуществующий транскрипт");
+    expect(r.stderr ?? "").toContain("transcript that does not exist");
   });
 
   test("без деградации stderr пуст: тишина остаётся тишиной", async () => {

@@ -131,7 +131,7 @@ describe("собранный бинарь: пул разбора", () => {
     resetIndex();
     const run = await myc(["code", "index"], { MYC_PARSE_POOL_MUTATION: "entry-from-source" });
     expect(run.code).not.toBe(0);
-    expect(run.out).toContain("воркер разбора");
+    expect(run.out).toContain("parse worker");
     expect(run.out).toContain("web-tree-sitter");
   }, 120_000);
 

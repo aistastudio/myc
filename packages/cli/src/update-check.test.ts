@@ -97,12 +97,12 @@ describe("И2: «не смогли проверить» ≠ «обновлени
       async () => {
         throw new Error("getaddrinfo ENOTFOUND");
       },
-      "сеть недоступна",
+      "network unavailable",
     ],
     [
       "код ответа 503",
       async () => ({ ok: false, status: 503, json: async () => ({}) }),
-      "реестр ответил 503",
+      "the registry answered 503",
     ],
     [
       "тело не JSON",
@@ -113,17 +113,17 @@ describe("И2: «не смогли проверить» ≠ «обновлени
           throw new Error("Unexpected token <");
         },
       }),
-      "не разобрался как JSON",
+      "did not parse as JSON",
     ],
     [
       "в ответе нет dist-tags.latest",
       async () => ({ ok: true, status: 200, json: async () => ({ name: PACKAGE_NAME }) }),
-      "нет dist-tags.latest",
+      "has no dist-tags.latest",
     ],
     [
       "версия из реестра не разбирается",
       registryAnswering("latest"),
-      "не удалось разобрать",
+      "could not be parsed",
     ],
   ];
 
@@ -135,7 +135,7 @@ describe("И2: «не смогли проверить» ≠ «обновлени
       expect(v.reason ?? "").toContain(reasonPart);
       expect(v.latest).toBeUndefined();
       // Человеческая строка тоже обязана СКАЗАТЬ, а не промолчать.
-      expect(updateNotice(v)).toContain("не проверены");
+      expect(updateNotice(v)).toContain("not checked");
     });
   }
 
@@ -150,7 +150,7 @@ describe("И2: «не смогли проверить» ≠ «обновлени
       });
     const v = await checkForUpdate({ current: "0.1.1", env, fetchImpl: slow, timeoutMs: 30 });
     expect(v.status).toBe("unreachable");
-    expect(v.reason).toContain("не ответил за 30 мс");
+    expect(v.reason).toContain("did not answer within 30 ms");
   });
 
   test("провал записан в кеш как провал: следующий вызов не увидит «свежо»", async () => {

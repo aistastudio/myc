@@ -80,7 +80,7 @@ describe("python стал L1", () => {
     const s = selectCodeIntel(dir, env(), "builtin");
     expect(s.reason).toContain("py");
     expect(s.reason).toContain("myc code index");
-    expect(s.reason).not.toContain("не будет");
+    expect(s.reason).not.toContain("no symbols");
   });
 });
 
@@ -98,11 +98,11 @@ describe("строка init обещает ровно то, что будет", 
     mkdirSync(join(dir, "app"), { recursive: true });
     writeFileSync(join(dir, "app", "main.rb"), "def f\n  1\nend\n");
     const s = selectCodeIntel(dir, env(), "builtin");
-    expect(s.reason).toContain("не будет");
-    expect(s.reason).toContain("якоря");
+    expect(s.reason).toContain("no symbols");
+    expect(s.reason).toContain("anchors");
     expect(s.reason).toContain("rb");
     // Ровно то обещание, которого не должно остаться.
-    expect(s.reason).not.toContain("символы и fan_in по тексту для");
+    expect(s.reason).not.toContain("symbols and fan_in by text for");
   });
 
   test("auto без graft говорит про builtin то же самое, а не своё", () => {
@@ -110,7 +110,7 @@ describe("строка init обещает ровно то, что будет", 
     writeFileSync(join(dir, "app", "main.rb"), "def f\n  1\nend\n");
     const s = selectCodeIntel(dir, env(), "auto");
     expect(s.id).toBe("builtin");
-    expect(s.reason).toContain("не будет");
+    expect(s.reason).toContain("no symbols");
     expect(s.reason).toContain("callers");
   });
 });
@@ -144,10 +144,10 @@ describe("builtin с L1-файлами: строка называет то, чт
       writeFileSync(join(dir, "src", "b.py"), "def b():\n    return 1\n");
       const s = pick();
       expect(s.id).toBe("builtin");
-      expect(s.reason).not.toContain("недоступ");
+      expect(s.reason).not.toMatch(/unavailable|not available|недоступ/iu);
       // «символы … по тексту» до первой точки с запятой — прежнее «символы и
       // fan_in по тексту»; текстовым в строке имеет право быть только fan_in.
-      expect(s.reason).not.toMatch(/символы[^;]*по тексту/u);
+      expect(s.reason).not.toMatch(/symbols[^;]*(?:by|from|as) text|символы[^;]*по тексту/iu);
       expect(s.reason).toContain("tree-sitter");
       for (const cap of ["callers", "code search", "code map"]) expect(s.reason).toContain(cap);
       expect(s.reason).toContain(L1_LANGS_LABEL);

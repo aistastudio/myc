@@ -176,7 +176,7 @@ async function readTranscript(
   } catch (e) {
     return failure(
       "io.read",
-      `не читается транскрипт ${abs}: ${e instanceof Error ? e.message : String(e)}`,
+      `cannot read transcript ${abs}: ${e instanceof Error ? e.message : String(e)}`,
       ExitCode.ERR,
     );
   }
@@ -329,7 +329,7 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
       const origin = (source as TranscriptSource).origin;
       mark("read", tRead);
       if (origin.startsWith("missing:")) {
-        ctx.warn("degraded.transcript", `хост назвал несуществующий транскрипт: ${origin.slice(8)}`);
+        ctx.warn("degraded.transcript", `the host named a transcript that does not exist: ${origin.slice(8)}`);
       }
 
       // Ключ сессии: хост → uuid стенограммы → эпизод (см. шапку файла).
@@ -394,9 +394,9 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
             if (written.tookMs > budgetMs) {
               ctx.warn(
                 "degraded.budget",
-                `сырой эпизод записан за ${written.tookMs.toFixed(1)} мс при бюджете ` +
-                  `${budgetMs.toFixed(1)} мс (${EPISODE_BUDGET_MS} мс + ${EPISODE_BUDGET_MS_PER_MB} мс/МБ ` +
-                  `на ${(Buffer.byteLength(raw, "utf8") / 1_000_000).toFixed(1)} МБ)`,
+                `raw episode written in ${written.tookMs.toFixed(1)} ms against a budget of ` +
+                  `${budgetMs.toFixed(1)} ms (${EPISODE_BUDGET_MS} ms + ${EPISODE_BUDGET_MS_PER_MB} ms/MB ` +
+                  `for ${(Buffer.byteLength(raw, "utf8") / 1_000_000).toFixed(1)} MB)`,
               );
             }
           } catch (e) {
@@ -404,11 +404,11 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
             // пакет: лучше сохранить часть, чем не сохранить ничего.
             ctx.warn(
               "degraded.episode",
-              `сырой эпизод НЕ записан: ${e instanceof Error ? e.message : String(e)}`,
+              `raw episode NOT written: ${e instanceof Error ? e.message : String(e)}`,
             );
           }
         } else {
-          ctx.warn("degraded.transcript", "пустой транскрипт: эпизод не записан, пакет собран из графа");
+          ctx.warn("degraded.transcript", "empty transcript: no episode written, the packet was built from the graph");
         }
 
         // Шаг 4: дешёвая экстракция без LLM. После эпизода и под дедлайном.
@@ -447,7 +447,7 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
               candidates = written.written;
               candidatesKnown = written.known;
               if (written.error !== undefined) {
-                ctx.warn("degraded.candidates", `кандидаты записаны частично: ${written.error}`);
+                ctx.warn("degraded.candidates", `candidates only partly written: ${written.error}`);
               }
             }
             // Шаг 5: дистилляция уходит в ФОН — здесь только строка в очереди.
@@ -462,12 +462,12 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
             } catch (e) {
               ctx.warn(
                 "degraded.queue",
-                `фоновая очередь недоступна: ${e instanceof Error ? e.message : String(e)}`,
+                `background queue unavailable: ${e instanceof Error ? e.message : String(e)}`,
               );
             }
           }
         } else if (raw.length > 0) {
-          ctx.warn("degraded.timeout", `бюджет ${timeoutMs} мс исчерпан до разбора: эпизод сохранён, атомы отложены`);
+          ctx.warn("degraded.timeout", `budget of ${timeoutMs} ms spent before parsing: episode saved, atoms deferred`);
         }
         mark("extract", tExtract);
 
@@ -486,8 +486,8 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
         // сжатиями и совпадает с тем, что хост даёт `prime`.
         const reachNote =
           sessionSource === "episode" && episodeId !== null
-            ? `охват выведен из эпизода (${episodeSessionKey(episodeId)}): нет ни --session, ни uuid ` +
-              "в имени стенограммы; следующее сжатие той же сессии получит другой ключ"
+            ? `reach derived from the episode (${episodeSessionKey(episodeId)}): no --session and no uuid ` +
+              "in the transcript name; the next compaction of the same session will get a different key"
             : undefined;
         const packet = buildRescuePacket(
           {
@@ -518,7 +518,7 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
           if (adopted.length > 0) {
             ctx.warn(
               "degraded.adopted",
-              `восстановлено ${adopted.length} эпизод(ов) после обрыва прошлого хука: ${adopted.join(", ")}`,
+              `recovered ${adopted.length} episode${adopted.length === 1 ? "" : "s"} after the previous hook was cut off: ${adopted.join(", ")}`,
             );
           }
         }
@@ -558,7 +558,7 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
           budget_exceeded: tookMs > timeoutMs,
         };
         if (data.budget_exceeded) {
-          ctx.warn("degraded.timeout", `хук занял ${tookMs} мс при бюджете ${timeoutMs} мс`);
+          ctx.warn("degraded.timeout", `hook took ${tookMs} ms against a budget of ${timeoutMs} ms`);
         }
         return { ok: true, data, meta: { took_ms: tookMs, episode: episodeId, stages } };
       } finally {

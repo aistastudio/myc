@@ -27,7 +27,7 @@ function main(): void {
     title === undefined ||
     body === undefined
   ) {
-    throw new Error("нужны аргументы: <db-path> <node-id> <scope> <title> <body>");
+    throw new Error("arguments required: <db-path> <node-id> <scope> <title> <body>");
   }
   const driver = openSqlite(dbPath);
   try {

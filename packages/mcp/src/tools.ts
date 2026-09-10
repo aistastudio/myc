@@ -26,20 +26,20 @@ export interface McpToolDef {
 
 const WS = {
   type: "string",
-  description: "воркспейс; M0: один, параметр игнорируется",
+  description: "workspace; M0: single, ignored",
 } as const;
 
 export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_prime",
     description:
-      "Стартовый пакет проекта: окружение, правила работы, состояние очереди. " +
-      "Вызывай ОДИН раз в начале сессии и ещё раз сразу после сжатия контекста — " +
-      "заменяет чтение README, планов и истории задач.",
+      "Project start packet: environment, working rules, ready queue state. " +
+      "Call ONCE at session start and again right after context compaction — " +
+      "replaces reading the README, plans and task history.",
     inputSchema: {
       type: "object",
       properties: {
-        budget: { type: "integer", default: 2000, minimum: 200, maximum: 8000, description: "бюджет ответа в символах" },
+        budget: { type: "integer", default: 2000, minimum: 200, maximum: 8000, description: "answer budget in chars" },
         ws: WS,
       },
       additionalProperties: false,
@@ -48,20 +48,20 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_ready",
     description:
-      "Задачи без открытых блокеров — за что можно браться прямо сейчас. " +
-      "С claim=true атомарно берёт верхнюю (или указанную в id) и сразу отдаёт " +
-      "описание, зависимости и якоря — дальше работай, лишних вызовов не нужно.",
+      "Tasks with no open blockers — what you can take right now. " +
+      "With claim=true it atomically takes the top one (or the one in id) and returns " +
+      "its description, deps and anchors at once — then just work, no extra calls.",
     inputSchema: {
       type: "object",
       properties: {
         n: { type: "integer", default: 5, minimum: 1, maximum: 50 },
-        claim: { type: "boolean", default: false, description: "атомарно взять задачу и вернуть её контекст" },
-        id: { type: "string", description: "взять конкретную задачу (только с claim=true)" },
+        claim: { type: "boolean", default: false, description: "atomically take a task and return its context" },
+        id: { type: "string", description: "take a specific task (only with claim=true)" },
         kind: { type: "array", items: { type: "string", enum: ["task", "bug", "epic", "chore"] }, maxItems: 1 },
         priority: { type: "array", items: { type: "string", enum: ["P0", "P1", "P2", "P3"] }, maxItems: 1 },
         tag: { type: "array", items: { type: "string" }, maxItems: 1 },
         lease_minutes: { type: "integer", default: 30, minimum: 5, maximum: 480 },
-        why: { type: "boolean", default: false, description: "объяснить порядок сортировки" },
+        why: { type: "boolean", default: false, description: "explain the sort order" },
         ws: WS,
       },
       additionalProperties: false,
@@ -70,9 +70,9 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_update",
     description:
-      "Все переходы состояния задачи одним тулом: claim, release, close, reopen, " +
-      "assign, priority, note, extend. Для close и reopen обязателен reason — " +
-      "он попадает в память проекта и виден следующим сессиям.",
+      "Every task state change in one tool: claim, release, close, reopen, " +
+      "assign, priority, note, extend. close and reopen require a reason — " +
+      "it goes into project memory and later sessions see it.",
     inputSchema: {
       type: "object",
       required: ["id", "op"],
@@ -86,21 +86,21 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
           // задачи в очередь. Сказано здесь, а не только в отказе, чтобы агент
           // знал это ДО попытки и не искал обход.
           description:
-            "cancel в списке нет намеренно: отмена — человеческое суждение, " +
-            "сообщите о ненужности работы в отчёте",
+            "cancel is left out on purpose: cancelling is a human judgment, " +
+            "say in your report that the work is not needed",
         },
-        reason: { type: "string", description: "обязателен для close и reopen" },
+        reason: { type: "string", description: "required for close and reopen" },
         outcome: { type: "string", enum: ["done", "wontfix", "duplicate", "superseded"], default: "done" },
-        duplicate_of: { type: "string", description: "каноничный узел при outcome=duplicate" },
+        duplicate_of: { type: "string", description: "canonical node for outcome=duplicate" },
         assignee: { type: "string" },
         priority: { type: "string", enum: ["P0", "P1", "P2", "P3"] },
-        note: { type: "string", description: "текст заметки для op=note" },
+        note: { type: "string", description: "note text for op=note" },
         lease_minutes: { type: "integer", minimum: 5, maximum: 480 },
-        steal: { type: "boolean", default: false, description: "отобрать истёкшую аренду" },
+        steal: { type: "boolean", default: false, description: "take over an expired lease" },
         verify: { type: "string", enum: ["tests", "review", "human", "none"], default: "none" },
         cost: {
           type: "object",
-          description: "заполняется хостом: tokens_in, tokens_out, model, retries",
+          description: "filled in by the host: tokens_in, tokens_out, model, retries",
           properties: {
             tokens_in: { type: "integer" },
             tokens_out: { type: "integer" },
@@ -118,9 +118,9 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
     name: "myc_recall",
     needsVector: true,
     description:
-      "Поиск по памяти проекта своими словами: факты, решения, задачи, эпизоды. " +
-      "Ответ отсортирован и урезан по бюджету — читай сверху и останавливайся. " +
-      "WARN/degraded в ответе = часть индекса не работает, качество ниже обычного.",
+      "Search project memory in your own words: facts, decisions, tasks, episodes. " +
+      "The answer is ranked and cut to the budget — read from the top and stop. " +
+      "WARN/degraded in the answer = part of the index is down, quality is lower than usual.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -129,10 +129,10 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
         n: { type: "integer", default: 6, minimum: 1, maximum: 50 },
         budget: { type: "integer", default: 2000, minimum: 200, maximum: 8000 },
         kind: { type: "array", items: { type: "string" }, description: "task,bug,epic,memory,decision,document,skill,message" },
-        layer: { type: "array", items: { type: "string", enum: ["L0", "L1", "L2", "L3"] }, description: "по умолчанию L1-L3" },
+        layer: { type: "array", items: { type: "string", enum: ["L0", "L1", "L2", "L3"] }, description: "default L1-L3" },
         tag: { type: "array", items: { type: "string" } },
-        since: { type: "string", description: "например 7d, 3w, 12h" },
-        anchor: { type: "string", description: "путь к файлу — сузить до привязанных узлов" },
+        since: { type: "string", description: "e.g. 7d, 3w, 12h" },
+        anchor: { type: "string", description: "file path — narrow to nodes anchored there" },
         mode: { type: "string", enum: ["hybrid", "vec", "bm25"], default: "hybrid" },
         ws: WS,
       },
@@ -142,19 +142,19 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_remember",
     description:
-      "Записать вывод, решение или факт, чтобы следующие сессии его знали. " +
-      "Одно утверждение за раз, конкретно, со своей причиной. " +
-      "Не пиши сырой код и секреты. Противоречие будет помечено, а не затрёт старое.",
+      "Record a conclusion, decision or fact so later sessions know it. " +
+      "One claim at a time, concrete, with its reason. " +
+      "No raw code or secrets. A contradiction gets flagged, it does not overwrite the old one.",
     inputSchema: {
       type: "object",
       required: ["text"],
       properties: {
         text: { type: "string", minLength: 8, maxLength: 8000 },
         tag: { type: "array", items: { type: "string" }, maxItems: 8 },
-        anchor: { type: "array", items: { type: "string" }, maxItems: 1, description: "путь или путь:начало-конец" },
-        layer: { type: "string", enum: ["L1", "L2", "L3"], default: "L1", description: "L1 факт, L2 решение, L3 константа (только с согласия человека)" },
-        source: { type: "string", description: "url, путь к файлу, id задачи" },
-        absorb: { type: "boolean", default: true, description: "false — записать как есть, без сверки с известным" },
+        anchor: { type: "array", items: { type: "string" }, maxItems: 1, description: "path or path:start-end" },
+        layer: { type: "string", enum: ["L1", "L2", "L3"], default: "L1", description: "L1 fact, L2 decision, L3 constant (only with human consent)" },
+        source: { type: "string", description: "url, file path, task id" },
+        absorb: { type: "boolean", default: true, description: "false — write as is, without checking against what is known" },
         ws: WS,
       },
       additionalProperties: false,
@@ -163,16 +163,16 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_show",
     description:
-      "Полное содержимое одного или нескольких узлов сразу: тело, зависимости, " +
-      "связи, якоря в коде. Передавай список id одним вызовом, а не по одному.",
+      "Full content of one or more nodes at once: body, deps, " +
+      "links, code anchors. Pass the list of ids in one call, not one by one.",
     inputSchema: {
       type: "object",
       required: ["ids"],
       properties: {
         ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 20 },
-        depth: { type: "integer", enum: [0, 1], default: 0, description: "1 — заголовки соседей по рёбрам" },
-        source: { type: "boolean", default: false, description: "подтянуть код по свежим якорям" },
-        fields: { type: "array", items: { type: "string" }, description: "ограничить поля — экономит токены" },
+        depth: { type: "integer", enum: [0, 1], default: 0, description: "1 — titles of neighbours along edges" },
+        source: { type: "boolean", default: false, description: "pull in code from fresh anchors" },
+        fields: { type: "array", items: { type: "string" }, description: "limit fields — saves tokens" },
         ws: WS,
       },
       additionalProperties: false,
@@ -181,9 +181,9 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_link",
     description:
-      "Создать или удалить связь между узлами: blocks/blocked-by (зависимость), " +
+      "Create or remove a link between nodes: blocks/blocked-by (dependency), " +
       "relates-to, duplicates, supersedes, contradicts, replies-to, derived-from, " +
-      "part-of. Для supersedes и duplicates обязателен reason — история не переписывается.",
+      "part-of. supersedes and duplicates require a reason — history is not rewritten.",
     inputSchema: {
       type: "object",
       required: ["from", "type", "to"],
@@ -194,7 +194,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
           type: "string",
           enum: ["blocks", "blocked-by", "relates-to", "duplicates", "supersedes", "contradicts", "replies-to", "derived-from", "part-of"],
         },
-        reason: { type: "string", description: "обязателен для supersedes и duplicates" },
+        reason: { type: "string", description: "required for supersedes and duplicates" },
         remove: { type: "boolean", default: false },
         ws: WS,
       },
@@ -230,16 +230,16 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_code_search",
     description:
-      "Найти код по вопросу своими словами, когда имени не знаешь: файлы по рангу " +
-      "и совпавшие в них символы с path:line — читай сверху. Поиск лексический: " +
-      "чем ближе слова к коду, тем точнее. Имя известно — myc_code_symbol; " +
-      "нужны ВСЕ вхождения — myc_code_grep.",
+      "Find code by a question in your own words when you don't know the name: files by rank " +
+      "and the symbols matched in them with path:line — read from the top. Search is lexical: " +
+      "the closer your words are to the code, the better. Know the name — myc_code_symbol; " +
+      "need ALL occurrences — myc_code_grep.",
     inputSchema: {
       type: "object",
       required: ["query"],
       properties: {
         query: { type: "string", minLength: 1 },
-        limit: { type: "integer", default: 10, minimum: 1, description: "файлов" },
+        limit: { type: "integer", default: 10, minimum: 1, description: "files" },
       },
       additionalProperties: false,
     },
@@ -247,10 +247,10 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_code_grep",
     description:
-      "Каждое вхождение строки в файлах репозитория с владельцем (функция, класс) — " +
-      "исчерпывающе, в отличие от поиска. Для правки константы, SQL, ключа, текста " +
-      "ошибки. Читает диск и от кода не отстаёт; число вхождений полное, даже если " +
-      "группы урезаны.",
+      "Every occurrence of a string in the repo's files, with its owner (function, class) — " +
+      "exhaustive, unlike search. For editing a constant, SQL, a key, an error " +
+      "text. Reads the disk, so it never lags behind the code; the occurrence count is full even when " +
+      "groups are cut.",
     inputSchema: {
       type: "object",
       required: ["literal"],
@@ -258,8 +258,8 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
         literal: { type: "string", minLength: 1 },
         ignore_case: { type: "boolean", default: false },
         lang: { type: "array", items: { type: "string" }, description: "ts, py, md…" },
-        in: { type: "array", items: { type: "string" }, description: "каталоги/файлы от корня репозитория" },
-        limit: { type: "integer", default: 60, minimum: 1, description: "групп" },
+        in: { type: "array", items: { type: "string" }, description: "dirs/files from the repo root" },
+        limit: { type: "integer", default: 60, minimum: 1, description: "groups" },
       },
       additionalProperties: false,
     },
@@ -267,9 +267,9 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_code_symbol",
     description:
-      "Где определён символ с точным именем: path:span, вид, экспорт, число " +
-      "упоминаний — и какие задачи и факты памяти привязаны к этому участку. " +
-      "Самый дешёвый ответ, когда имя известно.",
+      "Where a symbol with this exact name is defined: path:span, kind, export, mention " +
+      "count — and which tasks and memory facts are anchored to that span. " +
+      "The cheapest answer when you know the name.",
     inputSchema: {
       type: "object",
       required: ["name"],
@@ -282,10 +282,10 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_callers",
     description:
-      "Кто зовёт символ (in) или что зовёт он сам (out): ребро на каждого зовущего, " +
-      "внутри — строки кода. depth N или \"all\" — радиус правки: вызывай ДО " +
-      "переименования и смены сигнатуры. Граф по именам: WARN callers.ambiguous — " +
-      "одноимённые символы склеены.",
+      "Who calls a symbol (in) or what it calls (out): one edge per caller, " +
+      "with the code lines inside. depth N or \"all\" — the blast radius of an edit: call it BEFORE " +
+      "renaming or changing a signature. The graph is by name: WARN callers.ambiguous — " +
+      "same-name symbols are merged.",
     inputSchema: {
       type: "object",
       required: ["name"],
@@ -294,13 +294,13 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
         direction: { type: "string", enum: ["in", "out"], default: "in" },
         // Без type — как у graft_trace_calls: целое ИЛИ "all", а объединение
         // типов часть клиентов не переваривает.
-        depth: { default: 1, description: "1, N или \"all\"" },
+        depth: { default: 1, description: "1, N or \"all\"" },
         kind: {
           type: "array",
           items: { type: "string", enum: [...CODE_REF_KINDS, "all"] },
-          description: "умолч. все для in, call+new для out",
+          description: "default: all for in, call+new for out",
         },
-        limit: { type: "integer", default: 40, minimum: 1, description: "групп" },
+        limit: { type: "integer", default: 40, minimum: 1, description: "groups" },
       },
       additionalProperties: false,
     },
@@ -308,15 +308,15 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_skeleton",
     description:
-      "API файла вместо чтения целиком: объявления с сигнатурами и спанами, " +
-      "вложенность сдвигом, и во сколько раз это дешевле файла. Дальше читай " +
-      "нужный спан, а не файл. WARN skeleton.stale — файл изменился после индексации.",
+      "A file's API instead of reading it whole: declarations with signatures and spans, " +
+      "nesting by indent, and how many times cheaper this is than the file. Then read " +
+      "the span you need, not the file. WARN skeleton.stale — the file changed after indexing.",
     inputSchema: {
       type: "object",
       required: ["path"],
       properties: {
-        path: { type: "string", minLength: 1, description: "от корня репозитория" },
-        exported: { type: "boolean", default: false, description: "только видимое снаружи" },
+        path: { type: "string", minLength: 1, description: "from the repo root" },
+        exported: { type: "boolean", default: false, description: "only what is visible outside" },
       },
       additionalProperties: false,
     },
@@ -324,13 +324,13 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_code_map",
     description:
-      "Карта незнакомого репозитория: каталоги по весу, их хаб-символы и кто от " +
-      "кого зависит по import. Один вызов для ориентации, дальше — " +
-      "myc_code_search и myc_callers.",
+      "Map of an unfamiliar repo: directories by weight, their hub symbols and who " +
+      "depends on whom by import. One call to get oriented, then " +
+      "myc_code_search and myc_callers.",
     inputSchema: {
       type: "object",
       properties: {
-        top: { type: "integer", default: 14, minimum: 1, description: "каталогов" },
+        top: { type: "integer", default: 14, minimum: 1, description: "directories" },
       },
       additionalProperties: false,
     },
@@ -343,7 +343,7 @@ export function toolsForProfile(profile: McpProfile): readonly McpToolDef[] {
   // leader/full — отдельная задача (myc-zdk); сюда они попадут расширением
   // таблицы, а не параметризацией agent.
   if (profile !== "agent") {
-    throw new Error(`профиль '${profile}' пока не реализован (myc-zdk); доступен agent`);
+    throw new Error(`profile '${profile}' is not implemented yet (myc-zdk); available: agent`);
   }
   return AGENT_TOOLS;
 }

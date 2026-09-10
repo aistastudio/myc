@@ -247,15 +247,15 @@ describe("область --in", () => {
     // Отказ по пути называет введённое, а подсказка — базу пути.
     const r = resolveGrepScope(db, "r", dir, ["src/нет"]);
     expect(r.ok ? null : { msg: r.msg, hint: r.hint }).toEqual({
-      msg: "--in src/нет: такого пути в репозитории нет",
-      hint: "путь считается от корня репозитория — так же, как пути в выдаче grep",
+      msg: "--in src/нет: no such path in the repo",
+      hint: "the path is relative to the repo root — the same as paths in grep output",
     });
   });
 
   test("путь от текущего каталога вместо корня — отказ подсказывает верный", () => {
     const r = resolveGrepScope(db, "r", dir, ["a.ts"], join(dir, "src"));
     expect(r.ok).toBe(false);
-    expect(r.ok ? "" : r.hint).toContain("от текущего каталога это --in src/a.ts");
+    expect(r.ok ? "" : r.hint).toContain("from the current directory that is --in src/a.ts");
   });
 });
 

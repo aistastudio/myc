@@ -192,7 +192,7 @@ test("без --session хук говорит вслух, что охват вы�
   expect(data["session"]).toBe(`episode:${data["episode"] as string}`);
   // Сказано это пакетом, а не WARN-строкой: читателю знание нужно ВНУТРИ
   // контекста — пакет и есть то, что доезжает до агента.
-  expect(data["packet"] as string).toContain("охват выведен из эпизода");
+  expect(data["packet"] as string).toContain("reach derived from the episode");
 
   // И такое знание всё равно доступно тому, кто назовёт этот ключ.
   const derived = await primeData(`episode:${data["episode"] as string}`);

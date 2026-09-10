@@ -101,7 +101,7 @@ describe("myc_link: не-dep рёбра через прямой стор", () =>
     const r = await d("myc_link", { from: newNode, type: "supersedes", to: oldNode, reason: "точнее" });
     expect(r.isError).toBeUndefined();
     const sc = r.structuredContent as { effects: string[] };
-    expect(sc.effects.join(" ")).toContain(`${oldNode} помечен superseded_by ${newNode}`);
+    expect(sc.effects.join(" ")).toContain(`${oldNode} marked superseded_by ${newNode}`);
     await withStore((h) => {
       const n = h.store.getNode(oldNode);
       expect(n?.attrs["superseded_by"]).toBe(newNode);
@@ -177,7 +177,7 @@ describe("myc_update: note / release / extend / reopen через прямой �
     const a = await makeTask("А");
     const r = await d("myc_update", { id: a, op: "reopen", reason: "нашёлся ещё случай" });
     expect(r.isError).toBeUndefined();
-    expect(r.content[0]!.text).toContain("reason записан заметкой");
+    expect(r.content[0]!.text).toContain("reason saved as note");
     const sc = r.structuredContent as { status: string; meta: { degraded: string[] } };
     expect(sc.status).toBe("open");
     expect(sc.meta.degraded).toEqual([]);

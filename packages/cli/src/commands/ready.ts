@@ -260,7 +260,7 @@ function freshnessNorm(ageMs: number): number {
 }
 
 function anchorNorm(states: readonly string[] | undefined): { norm: number; label: string } {
-  if (states === undefined || states.length === 0) return { norm: 0.5, label: "нет якорей" };
+  if (states === undefined || states.length === 0) return { norm: 0.5, label: "none" };
   if (states.every((s) => s === "fresh")) return { norm: 1.0, label: "fresh" };
   if (states.some((s) => s === "stale" || s === "lost")) return { norm: 0.2, label: "stale" };
   return { norm: 0.6, label: "drifted" };
@@ -378,8 +378,8 @@ function buildItem(
     why: {
       priority: fmtPriority(row.priority),
       unblocks: `unblocks ${unblocksN}`,
-      freshness: `свежесть ${fmtAge(age)}`,
-      anchors: `якоря ${anchor.label}`,
+      freshness: `freshness ${fmtAge(age)}`,
+      anchors: `anchors ${anchor.label}`,
       type,
     },
   };
@@ -529,7 +529,7 @@ function fmtTerm(n: number): string {
 function ownerLabel(it: ReadyItem): string {
   if (it.expired_lease !== undefined) {
     const ago = fmtAge(Math.max(0, Date.now() - it.expired_lease.expires_at));
-    return `EXPIRED @${it.expired_lease.holder} (${ago} назад)`;
+    return `EXPIRED @${it.expired_lease.holder} (${ago} ago)`;
   }
   return it.assignee.length > 0 ? `@${it.assignee}` : "free";
 }
@@ -575,9 +575,9 @@ function renderItems(items: readonly ReadyItem[], why: boolean): string[] {
 function repoFooter(d: ReadyData): string[] {
   const out: string[] = [];
   if (d.repo.length > 0) out.push(`repo ${d.repo}`);
-  if (d.repo_undetermined) out.push(`охват репозитория не определён: ${d.repo_reason}`);
-  if (d.repo_foreign > 0) out.push(`${d.repo_foreign} из других репозиториев скрыто`);
-  if (d.repo_unknown > 0) out.push(`${d.repo_unknown} без охвата репозитория`);
+  if (d.repo_undetermined) out.push(`repo reach undetermined: ${d.repo_reason}`);
+  if (d.repo_foreign > 0) out.push(`${d.repo_foreign} from other repos hidden`);
+  if (d.repo_unknown > 0) out.push(`${d.repo_unknown} without repo reach`);
   return out;
 }
 
@@ -587,14 +587,14 @@ function renderReadyHuman(raw: unknown): string {
 
   if (d.claimed !== undefined) {
     const c = d.claimed;
-    lines.push(`claimed ${c.id} by ${c.holder} · аренда ${fmtAge(c.lease_ttl_ms)} до ${fmtClock(c.lease_expires)}`);
+    lines.push(`claimed ${c.id} by ${c.holder} · lease ${fmtAge(c.lease_ttl_ms)} until ${fmtClock(c.lease_expires)}`);
     lines.push(`${fmtPriority(c.priority)} ${c.type} · ${c.title}`);
     if (c.body !== null && c.body.trim().length > 0) {
-      lines.push("описание");
+      lines.push("description");
       for (const l of c.body.trimEnd().split("\n")) lines.push(`  ${l}`);
     }
     if (c.blocked_by.length > 0) lines.push(`deps      blocked-by ${c.blocked_by.join(", ")}`);
-    lines.push(`${d.took_ms} мс`);
+    lines.push(`${d.took_ms} ms`);
     return `${lines.join("\n")}\n`;
   }
 
@@ -604,15 +604,15 @@ function renderReadyHuman(raw: unknown): string {
       `${d.ready} ready`,
       blockedFooter(d),
       `${d.in_progress} in_progress`,
-      `${d.took_ms} мс`,
+      `${d.took_ms} ms`,
       ...repoFooter(d),
     ].join(" · "),
   );
   if (d.ready === 0 && d.blocked > 0 && d.top_blocker !== undefined) {
     const b = d.top_blocker;
-    lines.push("все открытые задачи заблокированы. верхний блокер:");
+    lines.push("all open tasks are blocked. top blocker:");
     const who = b.assignee.length > 0 ? `@${b.assignee}` : "free";
-    lines.push(`  ${b.id} ${fmtPriority(b.priority)} ${b.title}  ${who} (блокирует ${b.blocks})`);
+    lines.push(`  ${b.id} ${fmtPriority(b.priority)} ${b.title}  ${who} (blocks ${b.blocks})`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -627,7 +627,7 @@ function renderReadyHuman(raw: unknown): string {
 function blockedFooter(d: ReadyData): string {
   const anc = d.blocked_by_ancestor;
   return anc > 0
-    ? `${d.blocked + anc} blocked (${anc} через предка)`
+    ? `${d.blocked + anc} blocked (${anc} via ancestor)`
     : `${d.blocked} blocked`;
 }
 
@@ -640,7 +640,7 @@ function renderReadyWhyHuman(raw: unknown): string {
       `${d.ready} ready`,
       blockedFooter(d),
       `${d.in_progress} in_progress`,
-      `${d.took_ms} мс`,
+      `${d.took_ms} ms`,
       ...repoFooter(d),
     ].join(" · "),
   );
@@ -653,15 +653,15 @@ function renderReadyWhyHuman(raw: unknown): string {
 
 function parseFilters(ctx: CommandContext): CommandFailure | undefined {
   if (ctx.flags["assignee"] !== undefined && ctx.flags["free"] === true) {
-    return failure("usage.invalid", "--assignee и --free несовместимы", ExitCode.USAGE);
+    return failure("usage.invalid", "--assignee and --free are mutually exclusive", ExitCode.USAGE);
   }
   const pRaw = flagStr(ctx, "priority");
   if (pRaw !== undefined && parsePriority(pRaw) === undefined) {
-    return failure("usage.invalid", `неверный приоритет '${pRaw}'; допустимы P0..P3 или 0..3`, ExitCode.USAGE);
+    return failure("usage.invalid", `invalid priority '${pRaw}'; allowed: P0..P3 or 0..3`, ExitCode.USAGE);
   }
   const kind = flagStr(ctx, "kind");
   if (kind !== undefined && !["task", "bug", "epic", "chore"].includes(kind)) {
-    return failure("usage.invalid", `неверный --kind '${kind}'; допустимы task, bug, epic, chore`, ExitCode.USAGE);
+    return failure("usage.invalid", `invalid --kind '${kind}'; allowed: task, bug, epic, chore`, ExitCode.USAGE);
   }
   return undefined;
 }
@@ -811,7 +811,7 @@ export function createReadyCommand(deps: StoreDeps = realStoreDeps): Command {
       if (leaseRaw !== undefined) {
         const dur = parseDuration(leaseRaw);
         if (dur === undefined) {
-          return failure("usage.invalid", `неверная аренда '${leaseRaw}'; формат 30m, 2h`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid lease '${leaseRaw}'; format: 30m, 2h`, ExitCode.USAGE);
         }
         ttl = dur;
       }

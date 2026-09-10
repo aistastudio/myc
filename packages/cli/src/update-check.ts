@@ -208,7 +208,7 @@ export function verdictFromLatest(
       ...base,
       status: "unreachable",
       current,
-      reason: `реестр вернул версию, которую не удалось разобрать: ${JSON.stringify(latest)}`,
+      reason: `the registry returned a version that could not be parsed: ${JSON.stringify(latest)}`,
     };
   }
   if (cmp === 1) {
@@ -269,24 +269,24 @@ export async function probeRegistry(opts: ProbeOptions = {}): Promise<RegistryPr
       signal: controller.signal,
       headers: { accept: "application/vnd.npm.install-v1+json" },
     });
-    if (!res.ok) return { ok: false, reason: `реестр ответил ${res.status}` };
+    if (!res.ok) return { ok: false, reason: `the registry answered ${res.status}` };
     let body: unknown;
     try {
       body = await res.json();
     } catch (e) {
-      return { ok: false, reason: `ответ реестра не разобрался как JSON: ${message(e)}` };
+      return { ok: false, reason: `the registry response did not parse as JSON: ${message(e)}` };
     }
     const tags = (body as { "dist-tags"?: Record<string, unknown> } | null)?.["dist-tags"];
     const latest = tags?.["latest"];
     if (typeof latest !== "string" || latest.length === 0) {
-      return { ok: false, reason: "в ответе реестра нет dist-tags.latest" };
+      return { ok: false, reason: "the registry response has no dist-tags.latest" };
     }
     return { ok: true, latest };
   } catch (e) {
     const reason =
       e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")
-        ? `реестр не ответил за ${timeoutMs} мс`
-        : `сеть недоступна: ${message(e)}`;
+        ? `the registry did not answer within ${timeoutMs} ms`
+        : `network unavailable: ${message(e)}`;
     return { ok: false, reason };
   } finally {
     clearTimeout(timer);
@@ -333,7 +333,7 @@ export function cachedVerdict(opts: VerdictOptions): UpdateVerdict {
       source: "cache",
       checked_at: entry.checked_at,
       age_ms: age,
-      reason: entry.error ?? "прошлая попытка не удалась, причина не записана",
+      reason: entry.error ?? "the last attempt failed, no reason recorded",
     };
   }
   return verdictFromLatest(opts.current, entry.latest, {
@@ -345,8 +345,8 @@ export function cachedVerdict(opts: VerdictOptions): UpdateVerdict {
 
 /** Причина запрета — коротко и по имени: её печатают ПОСЛЕ слова «выключена». */
 function disabledReason(env: NodeJS.ProcessEnv, offlineFlag: boolean): string {
-  if (offlineFlag) return "флаг --offline запрещает сеть в этом вызове";
-  return `переменная MYC_UPDATE_CHECK=${JSON.stringify(env.MYC_UPDATE_CHECK ?? "")}`;
+  if (offlineFlag) return "the --offline flag forbids the network for this call";
+  return `env MYC_UPDATE_CHECK=${JSON.stringify(env.MYC_UPDATE_CHECK ?? "")}`;
 }
 
 export interface CheckOptions extends VerdictOptions, ProbeOptions {}
@@ -476,9 +476,9 @@ function spawnDetachedCheck(argv: string[]): void {
 
 function ageHuman(ms: number): string {
   const h = Math.floor(ms / 3_600_000);
-  if (h < 1) return `${Math.max(1, Math.floor(ms / 60_000))} мин назад`;
-  if (h < 48) return `${h} ч назад`;
-  return `${Math.floor(h / 24)} дн назад`;
+  if (h < 1) return `${Math.max(1, Math.floor(ms / 60_000))} min ago`;
+  if (h < 48) return `${h} h ago`;
+  return `${Math.floor(h / 24)} d ago`;
 }
 
 /**
@@ -492,11 +492,11 @@ export function updateNotice(v: UpdateVerdict): string | null {
   const age = v.age_ms !== undefined && v.source === "cache" ? ` (${ageHuman(v.age_ms)})` : "";
   switch (v.status) {
     case "update_available":
-      return `обновление: ${v.current} → ${v.latest}${age} · ${UPGRADE_COMMAND}`;
+      return `update: ${v.current} → ${v.latest}${age} · ${UPGRADE_COMMAND}`;
     case "unreachable":
-      return `обновления не проверены: ${v.reason}${age}`;
+      return `updates not checked: ${v.reason}${age}`;
     case "never_checked":
-      return "обновления не проверялись — `myc version --check`";
+      return "updates never checked — `myc version --check`";
     case "disabled":
     case "up_to_date":
     case "ahead":

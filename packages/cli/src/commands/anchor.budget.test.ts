@@ -346,12 +346,12 @@ test("выше порога: якорь записан, crux отложен, р�
 
   // И2: цена названа вслух — и в машинном выводе, и в человеческом.
   expect((env.warn ?? []).map((w) => w.code)).toContain("anchor.deferred");
-  expect((env.warn ?? []).find((w) => w.code === "anchor.deferred")?.msg).toContain("КБ");
+  expect((env.warn ?? []).find((w) => w.code === "anchor.deferred")?.msg).toContain("KB");
   const text = await run(
     ["-C", s.dir, "remember", `факт ${s.seq++} про якорь`, "--anchor", "src/big.ts:200-240"],
     { registry: s.registry, env: { MYC_ACTOR: "tester", MYC_HOME: s.home } },
   );
-  expect(text.stdout as string).toContain("crux отложен в фон");
+  expect(text.stdout as string).toContain("crux deferred to the background");
 });
 
 test("ниже порога: crux снят на месте, работы нет, отсрочки нет", async () => {
@@ -485,7 +485,7 @@ test(
     report(m, "мутация приёмки");
     // Гейта здесь нет намеренно: мутант дороже записи без якоря вчетверо и на
     // свободной машине (×3.90), и в общем прогоне под нагрузкой (×4.42).
-    expect(() => expectCostAtMost(m, BIG_OVER_PLAIN_MAX)).toThrow(/относительная регрессия/);
+    expect(() => expectCostAtMost(m, BIG_OVER_PLAIN_MAX)).toThrow(/relative regression/);
   },
   180_000,
 );
@@ -510,7 +510,7 @@ test(
     );
     report(m, "мутация приёмки");
     expect(m.slowdown).toBeLessThan(BIG_MIN_SLOWDOWN);
-    expect(() => expectAheadOfRival(m, BIG_MIN_SLOWDOWN)).toThrow(/относительная регрессия/);
+    expect(() => expectAheadOfRival(m, BIG_MIN_SLOWDOWN)).toThrow(/relative regression/);
   },
   180_000,
 );

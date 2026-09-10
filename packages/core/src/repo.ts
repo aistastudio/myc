@@ -123,7 +123,7 @@ export function visibleInRepo(info: RepoInfo, target: string): boolean {
 
 /** Короткая метка охвата для плотной выдачи (`myc recall`). */
 export function repoTag(info: RepoInfo): string {
-  if (info.state === "root") return "все";
+  if (info.state === "root") return "all";
   if (info.state === "unknown") return "?";
   return info.repo;
 }
@@ -149,8 +149,8 @@ export interface RepoDerivation {
 
 /** Человеческое объяснение неудачи — одно на CLI и на MCP. */
 export function repoReasonText(d: RepoDerivation): string {
-  if (d.reason === "no-workspace") return "корень воркспейса неизвестен";
-  if (d.reason === "outside-workspace") return `путь вне воркспейса: ${d.from}`;
+  if (d.reason === "no-workspace") return "workspace root unknown";
+  if (d.reason === "outside-workspace") return `path outside the workspace: ${d.from}`;
   return "";
 }
 

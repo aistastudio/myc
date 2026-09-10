@@ -55,7 +55,7 @@ describe("readRepo: три состояния, а не два", () => {
     const unknown = readRepo({});
     expect(root.repo).toBe(unknown.repo); // оба пустые по имени
     expect(root.state).not.toBe(unknown.state); // и это единственное, что их различает
-    expect(repoTag(root)).toBe("все");
+    expect(repoTag(root)).toBe("all");
     expect(repoTag(unknown)).toBe("?");
   });
 
@@ -143,7 +143,7 @@ describe("deriveRepo: охват берётся из ПУТИ, а не из сл
     const d = deriveRepo(undefined, "/ws/collector", isRepo);
     expect(d.repo).toBeUndefined();
     expect(d.reason).toBe("no-workspace");
-    expect(repoReasonText(d)).toBe("корень воркспейса неизвестен");
+    expect(repoReasonText(d)).toBe("workspace root unknown");
   });
 
   test("хвостовой слэш корня не ломает вывод", () => {

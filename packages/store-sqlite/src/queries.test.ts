@@ -198,7 +198,7 @@ describe("CRUD узлов", () => {
       GraphError,
     );
     expect(() => store.createNode({ kind: "epic" as never })).toThrow(
-      /неизвестный kind/,
+      /unknown node kind/,
     );
   });
 
@@ -264,16 +264,16 @@ describe("рёбра всех одиннадцати типов", () => {
 
   test("ребро в себя и неизвестный тип отвергаются", () => {
     const a = store.createNode({ kind: "note", title: "a" });
-    expect(() => store.addEdge(a.id, "relates", a.id)).toThrow(/в себя/);
+    expect(() => store.addEdge(a.id, "relates", a.id)).toThrow(/to itself/);
     expect(() =>
       store.addEdge(a.id, "blocked_by" as EdgeKind, a.id),
-    ).toThrow(/неизвестный тип ребра/);
+    ).toThrow(/unknown edge type/);
   });
 
   test("ребро на несуществующий узел отвергается до вставки", () => {
     const a = store.createNode({ kind: "note", title: "a" });
     expect(() => store.addEdge(a.id, "relates", "myc-000000000000")).toThrow(
-      /не найден/,
+      /not found/,
     );
     expect(store.edgesFrom(a.id)).toHaveLength(0);
   });

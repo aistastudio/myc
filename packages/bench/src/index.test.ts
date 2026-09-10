@@ -80,8 +80,8 @@ describe("абсолютный бюджет — пункт 3 методики", 
   test("нарушен на свободной машине — падает и называет числа", () => {
     const m = measured({ stats: stats(3, 9), ref: stats(1, 1) });
     expect(m.verdict).toBe("over");
-    expect(() => expectWithinBudget(m)).toThrow(/бюджет нарушен/);
-    expect(() => expectWithinBudget(m)).toThrow(/это регрессия, а не загрузка машины/);
+    expect(() => expectWithinBudget(m)).toThrow(/budget exceeded/);
+    expect(() => expectWithinBudget(m)).toThrow(/this is a regression, not machine load/);
   });
 
   /**
@@ -97,7 +97,7 @@ describe("абсолютный бюджет — пункт 3 методики", 
   test("строгий режим возвращает обязательность при любых условиях", () => {
     const m = measured({ stats: stats(3, 9), ref: stats(1, JITTER_MAX + 1), strict: true });
     expect(m.verdict).toBe("over");
-    expect(() => expectWithinBudget(m)).toThrow(/строгий режим/);
+    expect(() => expectWithinBudget(m)).toThrow(/strict mode/);
   });
 
   test("дрожание ровно на пороге — условия ещё годны", () => {
@@ -126,17 +126,17 @@ describe("относительные утверждения — пункт 2 м�
       budgetMs: 100,
     });
     expect(m.verdict).toBe("ok"); // абсолют цел: бюджет большой
-    expect(() => expectAheadOfRival(m, 2)).toThrow(/относительная регрессия/);
+    expect(() => expectAheadOfRival(m, 2)).toThrow(/relative regression/);
   });
 
   test("без соперника относительное утверждение невозможно и говорит об этом", () => {
-    expect(() => expectAheadOfRival(measured(), 2)).toThrow(/соперник не измерен/);
+    expect(() => expectAheadOfRival(measured(), 2)).toThrow(/rival not measured/);
   });
 
   test("цена относительно эталонной соседней операции — потолок сверху", () => {
     const cheap = measured({ stats: stats(3), rival: stats(1) });
     expect(() => expectCostAtMost(cheap, 5)).not.toThrow();
-    expect(() => expectCostAtMost(cheap, 2)).toThrow(/дороже в ×3\.00/);
+    expect(() => expectCostAtMost(cheap, 2)).toThrow(/costlier by ×3\.00/);
   });
 });
 

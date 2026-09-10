@@ -30,7 +30,7 @@ function checkFinite(vec: Float32Array): void {
     if (!Number.isFinite(v)) {
       throw new QuantizeError(
         "non_finite_input",
-        `квантизация отменена: компонент ${i} не конечен (${v})`,
+        `quantization aborted: component ${i} is not finite (${v})`,
       );
     }
   }
@@ -39,7 +39,7 @@ function checkFinite(vec: Float32Array): void {
 /** q = round(127 × v / max|v|); scale = max|v|. */
 export function quantizeInt8(vec: Float32Array): QuantizedVector {
   if (vec.length === 0) {
-    throw new QuantizeError("empty_vector", "квантизация пустого вектора");
+    throw new QuantizeError("empty_vector", "quantization of an empty vector");
   }
   checkFinite(vec);
   let maxAbs = 0;
@@ -69,7 +69,7 @@ export function dequantizeInt8(qv: QuantizedVector): Float32Array {
 /** Косинусное сходство; нулевые векторы дают 0. */
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length || a.length === 0) {
-    throw new QuantizeError("dim_mismatch", "косинус: размерности не совпадают");
+    throw new QuantizeError("dim_mismatch", "cosine: dimensions do not match");
   }
   let dot = 0;
   let na = 0;

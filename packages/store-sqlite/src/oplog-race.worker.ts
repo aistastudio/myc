@@ -49,7 +49,7 @@ function parseArgs(argv: readonly string[]): Args {
   };
   const db = get("db");
   const own = get("own");
-  if (db === undefined || own === undefined) throw new Error("нужны --db и --own");
+  if (db === undefined || own === undefined) throw new Error("--db and --own are required");
   return {
     db,
     site: get("site") ?? "siteA",
@@ -105,7 +105,7 @@ for (let k = 0; k < args.ops; k++) {
       store.bumpCounter(args.own, "seen_count", 1);
     } else {
       const target = args.targets[Math.floor(k / 4) % args.targets.length];
-      if (target === undefined) throw new Error("нет узлов-целей для рёбер");
+      if (target === undefined) throw new Error("no target nodes for edges");
       // Повторное добавление живого ребра — новая строка оплога (edge_add
       // журналируется всегда), строка edges при этом обновляется.
       store.addEdge(args.own, "relates", target, { attrs: { k } });
@@ -113,7 +113,7 @@ for (let k = 0; k < args.ops; k++) {
     done++;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("clock_collision") || message.includes("уже занята") || message.includes("уже в оплоге")) {
+    if (message.includes("clock_collision") || message.includes("is already taken") || message.includes("already in the oplog")) {
       collisions++;
     }
     errors.push(`${args.worker}#${k}: ${message}`);

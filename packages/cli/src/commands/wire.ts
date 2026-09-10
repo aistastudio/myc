@@ -30,7 +30,6 @@ import type { Command, CommandContext, CommandFailure, Registry } from "../regis
 import { flagStr } from "./store.ts";
 import { maybeSpawnUpdateCheck, updateNoticeFor } from "../update-check.ts";
 import { CLI_VERSION } from "../index.ts";
-import { plural } from "../render.ts";
 import { HARNESSES, type Harness } from "@myc/swarm";
 import {
   isOurStatusLine,
@@ -155,6 +154,11 @@ export interface StatusLineRecord {
   readonly passthrough: "project" | "user" | "none";
 }
 
+/** `1 node`, `3 nodes` — отчёт читает человек, а не парсер. */
+function countNodes(n: number): string {
+  return `${n} ${n === 1 ? "node" : "nodes"}`;
+}
+
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
@@ -172,13 +176,13 @@ function planOwnFile(plan: Plan, root: string, rel: string, content: string): vo
   const abs = join(root, rel);
   const current = fileText(abs);
   if (current === content) {
-    plan.actions.push({ path: rel, kind: "unchanged", detail: "уже актуален", content, nodes: [], backup: false });
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "up to date", content, nodes: [], backup: false });
     return;
   }
   plan.actions.push({
     path: rel,
     kind: current === null ? "new" : "rewrite",
-    detail: `${(Buffer.byteLength(content, "utf8") / 1024).toFixed(1)} КБ`,
+    detail: `${(Buffer.byteLength(content, "utf8") / 1024).toFixed(1)} KB`,
     content,
     nodes: [],
     backup: current !== null,
@@ -331,7 +335,7 @@ function mergeHookNodes(
     const node = `hooks.${event}`;
 
     if (foreign.length > 0 && mode === undefined) {
-      conflicts.push({ path: relPath, node, command: foreignCommand(foreign[0]) ?? "(неизвестна)" });
+      conflicts.push({ path: relPath, node, command: foreignCommand(foreign[0]) ?? "(unknown)" });
       continue;
     }
     if (foreign.length > 0 && mode === "skip") continue;
@@ -342,7 +346,7 @@ function mergeHookNodes(
         const commands = foreignCommands(entry);
         // Запись без единой команды — тоже потеря, и назвать её надо: молчание
         // здесь ничем не лучше молчания про команду, которую мы прочитали.
-        for (const command of commands.length > 0 ? commands : ["(команда не прочитана)"]) {
+        for (const command of commands.length > 0 ? commands : ["(command not readable)"]) {
           evicted.push({ path: relPath, event, ...(matcher !== undefined ? { matcher } : {}), command });
         }
       }
@@ -353,8 +357,8 @@ function mergeHookNodes(
       const moved = foreign.filter((e, i) => existing.indexOf(e) !== i);
       if (moved.length > 0) {
         notes.push(
-          `${relPath}: ${node} — myc-хук переставлен в конец массива, чужие поднялись выше и ` +
-            `запустятся раньше него: ${moved.map((e) => foreignCommands(e).join(", ") || "(команда не прочитана)").join("; ")}`,
+          `${relPath}: ${node} — myc's hook moved to the end of the array, foreign hooks moved up and ` +
+            `will run before it: ${moved.map((e) => foreignCommands(e).join(", ") || "(command not readable)").join("; ")}`,
         );
       }
     }
@@ -414,7 +418,7 @@ function planJsonMerge(
   const abs = join(root, rel);
   const source = readJsonSource(abs);
   if (source.broken) {
-    plan.conflicts.push({ path: rel, node: "(файл)", command: "не разбирается как JSON" });
+    plan.conflicts.push({ path: rel, node: "(file)", command: "not valid JSON" });
     return;
   }
   const merged = merge(source);
@@ -430,20 +434,20 @@ function planJsonMerge(
   // сравниваем с оригиналом.
   const original = fileText(abs);
   if (original !== null && serializeJson(source.value, source.indent) !== original) {
-    plan.notes.push(`${rel}: переформатируется (перенос переносов строк), содержимое сохраняется; копия — ${rel}${BAK_SUFFIX}`);
+    plan.notes.push(`${rel}: will be reformatted (line breaks change), content is kept; backup — ${rel}${BAK_SUFFIX}`);
   }
 
   const content = serializeJson(merged.value, source.indent);
   const current = fileText(abs);
   const preexisting = source.exists ? preexistingContainers(source.value) : [];
   if (current === content) {
-    plan.actions.push({ path: rel, kind: "unchanged", detail: "уже актуален", content, nodes: merged.nodes, backup: false, preexisting });
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "up to date", content, nodes: merged.nodes, backup: false, preexisting });
     return;
   }
   plan.actions.push({
     path: rel,
     kind: source.exists ? "merge" : "new",
-    detail: merged.nodes.length > 0 ? `+${merged.nodes.length} узла: ${merged.nodes.join(", ")}` : "без изменений узлов",
+    detail: merged.nodes.length > 0 ? `+${countNodes(merged.nodes.length)}: ${merged.nodes.join(", ")}` : "no node changes",
     content,
     nodes: merged.nodes,
     backup: source.exists,
@@ -619,9 +623,9 @@ function planClaude(plan: Plan, o: WireOptions): void {
   });
   plan.untouched.push("CLAUDE.md");
   if (o.statusLine) {
-    plan.untouched.push(".claude/settings.local.json", "~/.claude/settings.json (только читается)");
+    plan.untouched.push(".claude/settings.local.json", "~/.claude/settings.json (read only)");
   } else if (plan.statusLine === undefined) {
-    plan.untouched.push(`${settings}:statusLine (нужен --status-line)`);
+    plan.untouched.push(`${settings}:statusLine (needs --status-line)`);
   }
 }
 
@@ -650,7 +654,7 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
   const ours = isOurStatusLine(current);
   const recorded = o.previousJournal?.status_line;
   const notes = [...(base.notes ?? [])];
-  const unknownPrevious = `${rel}: наша statusLine стоит без записи о прежней (журнала нет) — unwire снимет её, вернуть прежнюю будет не из чего`;
+  const unknownPrevious = `${rel}: our statusLine is set with no record of the previous one (no journal) — unwire will remove it, and there is nothing to restore`;
 
   if (!o.statusLine) {
     if (!ours) return base;
@@ -680,7 +684,7 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
       return {
         ...base,
         conflicts: [
-          { path: userPath, node: "statusLine", command: "не разбирается как JSON — не знаю, чья строка там стоит, передать ей ввод нельзя" },
+          { path: userPath, node: "statusLine", command: "not valid JSON — can't tell whose line is there, so its input can't be passed on" },
         ],
       };
     }
@@ -702,7 +706,7 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
         {
           path: rel,
           node: "statusLine",
-          command: `передача ввода чужой строке на Windows не реализована — поверх «${shortCommand(foreignCmd)}» не ставлю`,
+          command: `passing input to a foreign line is not implemented on Windows — not installing over "${shortCommand(foreignCmd)}"`,
         },
       ],
     };
@@ -720,22 +724,22 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
   }
   const value = { ...base.value, statusLine: next };
 
-  const wait = "её не ждём и не убиваем — над нашей строкой вывод её последнего завершённого запуска";
+  const wait = "it is neither awaited nor killed — its output from the last finished run shows above our line";
   if (passthrough === "project") {
-    notes.push(`${rel}: statusLine — наша; прежняя проектная «${shortCommand(foreignCmd ?? "")}» получает тот же stdin (--then), ${wait}`);
+    notes.push(`${rel}: statusLine is ours; the previous project line "${shortCommand(foreignCmd ?? "")}" gets the same stdin (--then), ${wait}`);
   } else if (passthrough === "user") {
     notes.push(
-      `${rel}: statusLine — наша; пользовательская «${shortCommand(foreignCmd ?? "")}» из ${userSettingsPath(o.env)} ` +
-        `получает тот же stdin (читается при каждой отрисовке), ${wait}`,
+      `${rel}: statusLine is ours; the user line "${shortCommand(foreignCmd ?? "")}" from ${userSettingsPath(o.env)} ` +
+        `gets the same stdin (read on every redraw), ${wait}`,
     );
   } else {
-    notes.push(`${rel}: statusLine — наша; прежней строки нет ни в проекте, ни у пользователя — передавать ввод некому`);
+    notes.push(`${rel}: statusLine is ours; there was no previous line in the project or user settings — no one to pass input to`);
   }
   const local = readStatusLine(join(o.root, ".claude/settings.local.json"));
   if (local.value !== undefined) {
     notes.push(
-      ".claude/settings.local.json: там своя statusLine — локальные настройки старше проектных, " +
-        "и Claude Code покажет её, а не строку myc (файл не трогаю)",
+      ".claude/settings.local.json: has its own statusLine — local settings override project ones, " +
+        "so Claude Code will show that line, not myc's (file left alone)",
     );
   }
   return { ...base, value, nodes: [...base.nodes, "statusLine"], notes, statusLine: { path: rel, previous, passthrough } };
@@ -774,7 +778,7 @@ function planCodex(plan: Plan, o: WireOptions): void {
   // Таблица безопасна в конце файла; чужая [mcp_servers.myc] вне маркеров —
   // конфликт, потому что переписать её значило бы отобрать чужой сервер.
   if (!hasBlock(next, TOML_MCP_START, TOML_MCP_END) && /^\s*\[mcp_servers\.myc\]/m.test(next)) {
-    plan.conflicts.push({ path: rel, node: "[mcp_servers.myc]", command: "секция уже есть вне маркеров myc" });
+    plan.conflicts.push({ path: rel, node: "[mcp_servers.myc]", command: "the section already exists outside the myc markers" });
   } else {
     next = replaceBlock(next, TOML_MCP_START, TOML_MCP_END, mcpBlock);
     nodes.push("[mcp_servers.myc]");
@@ -788,8 +792,8 @@ function planCodex(plan: Plan, o: WireOptions): void {
   if (hasBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END)) {
     next = removeBlock(next, TOML_NOTIFY_START, TOML_NOTIFY_END);
     plan.notes.push(
-      `${rel}: снят наш прежний notify на .codex/myc-notify.mjs — ${CODEX_NO_EPISODE}. ` +
-        "Сам файл .codex/myc-notify.mjs уберёт `myc unwire`",
+      `${rel}: removed our old notify on .codex/myc-notify.mjs — ${CODEX_NO_EPISODE}. ` +
+        "The .codex/myc-notify.mjs file itself is removed by `myc unwire`",
     );
   }
 
@@ -800,7 +804,7 @@ function planCodex(plan: Plan, o: WireOptions): void {
     planJsonMerge(plan, o.root, CODEX_HOOKS_REL, (source) =>
       mergeCodexHooks(source, specs, o.mode, CODEX_HOOKS_REL),
     );
-    plan.untouched.push("~/.codex/config.toml (доверие проекту и просмотр хуков — только руками)");
+    plan.untouched.push("~/.codex/config.toml (project trust and hook review — by hand only)");
     plan.notes.push(`Codex: ${CODEX_NEEDS_REVIEW}`);
   }
 
@@ -809,20 +813,20 @@ function planCodex(plan: Plan, o: WireOptions): void {
     // встроенных элементов (current-dir, git-branch, context-remaining…),
     // настраиваемый `/statusline`; своей команды он не принимает.
     plan.notes.push(
-      "Codex: строка статуса не ставится — в codex 0.153.4 tui.status_line это список встроенных " +
-        "элементов (/statusline), команду туда не подставить",
+      "Codex: status line not installed — in codex 0.153.4 tui.status_line is a list of built-in " +
+        "items (/statusline), a command can't go there",
     );
   }
 
   if (plan.conflicts.some((c) => c.path === rel)) return;
   if (next === current) {
-    plan.actions.push({ path: rel, kind: "unchanged", detail: "уже актуален", content: next, nodes, backup: false });
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "up to date", content: next, nodes, backup: false });
     return;
   }
   plan.actions.push({
     path: rel,
     kind: current.length === 0 ? "new" : "merge",
-    detail: `+${nodes.length} узла: ${nodes.join(", ")}`,
+    detail: `+${countNodes(nodes.length)}: ${nodes.join(", ")}`,
     content: next,
     nodes,
     backup: current.length > 0,
@@ -833,7 +837,7 @@ function planCodex(plan: Plan, o: WireOptions): void {
 function planOpencode(plan: Plan, o: WireOptions): void {
   if (o.statusLine) {
     plan.notes.push(
-      "opencode: строка статуса не ставится — ключа конфигурации для неё нет, строку рисует сам TUI",
+      "opencode: status line not installed — there is no config key for it, the TUI draws its own line",
     );
   }
   planOwnFile(plan, o.root, ".opencode/plugin/myc.ts", opencodePlugin({ events: o.events, hookOutput: o.hookOutput }));
@@ -883,17 +887,17 @@ function planKimi(plan: Plan, o: WireOptions): void {
     value["mcpServers"] = servers;
     return { nodes: ["mcpServers.myc"], conflicts: [], value };
   });
-  plan.untouched.push("~/.kimi-code/config.toml (у Kimi конфиг хуков только пользовательский)");
+  plan.untouched.push("~/.kimi-code/config.toml (Kimi has a user-level hook config only)");
   if (o.statusLine) {
     plan.notes.push(
-      "Kimi: строка статуса этой версией wire не ставится — status_line с командой у Kimi есть, " +
-        "но только в пользовательском tui.toml, а myc за пределы проекта не пишет",
+      "Kimi: this version of wire does not install the status line — Kimi has a status_line with a command, " +
+        "but only in the user's tui.toml, and myc does not write outside the project",
     );
   }
   plan.notes.push(
-    "Kimi читает хуки только из ~/.kimi-code/config.toml — проектного конфига у него нет, " +
-      "и myc за пределы проекта не пишет. Скилл и MCP уже на месте; чтобы был ещё prime на " +
-      "старте и эпизод перед сжатием, вставь себе один раз:\n" +
+    "Kimi reads hooks only from ~/.kimi-code/config.toml — it has no project config, " +
+      "and myc does not write outside the project. The skill and MCP are already in place; to also get prime at " +
+      "startup and an episode before compaction, paste this once:\n" +
       kimiHooksToml(o.events),
   );
 }
@@ -914,18 +918,18 @@ function planAgentsMd(plan: Plan, o: WireOptions): void {
   const abs = join(o.root, rel);
   const current = fileText(abs);
   if (!o.agentsMd) {
-    plan.untouched.push(`${rel} (нужен --agents-md)`);
+    plan.untouched.push(`${rel} (needs --agents-md)`);
     return;
   }
   const next = replaceBlock(current ?? "", AGENTS_START, AGENTS_END, agentsBlock());
   if (current === next) {
-    plan.actions.push({ path: rel, kind: "unchanged", detail: "блок уже на месте", content: next, nodes: ["myc-block"], backup: false });
+    plan.actions.push({ path: rel, kind: "unchanged", detail: "block already in place", content: next, nodes: ["myc-block"], backup: false });
     return;
   }
   plan.actions.push({
     path: rel,
     kind: current === null ? "new" : "merge",
-    detail: "блок между маркерами myc:start/myc:end",
+    detail: "block between the myc:start/myc:end markers",
     content: next,
     nodes: ["myc-block"],
     backup: current !== null,
@@ -1149,7 +1153,7 @@ const WIRE_FLAGS: readonly FlagSpec[] = [
 export type StatusLineProbe = (root: string, bin: MycBinChoice) => { readonly ok: boolean; readonly why?: string };
 
 export const probeStatusLineBin: StatusLineProbe = (root, bin) => {
-  if (bin.source === "none") return { ok: false, why: "исполняемый myc не найден" };
+  if (bin.source === "none") return { ok: false, why: "no myc executable found" };
   const exe = bin.source === "repo" ? join(root, bin.command) : bin.command;
   try {
     const r = Bun.spawnSync([exe, STATUSLINE_COMMAND, "--help"], {
@@ -1161,9 +1165,9 @@ export const probeStatusLineBin: StatusLineProbe = (root, bin) => {
     });
     if (r.exitCode === 0 && r.stdout.toString().includes(STATUSLINE_COMMAND)) return { ok: true };
     const err = r.stderr.toString().trim().split("\n")[0] ?? "";
-    return { ok: false, why: `${bin.command} ${STATUSLINE_COMMAND} --help: код ${r.exitCode}${err.length > 0 ? ` (${err})` : ""}` };
+    return { ok: false, why: `${bin.command} ${STATUSLINE_COMMAND} --help: exit ${r.exitCode}${err.length > 0 ? ` (${err})` : ""}` };
   } catch (e) {
-    return { ok: false, why: `${bin.command} не запускается: ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, why: `${bin.command} does not start: ${e instanceof Error ? e.message : String(e)}` };
   }
 };
 
@@ -1231,18 +1235,18 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       const root = resolve(ctx.globals.directory ?? process.cwd());
       const agents = parseAgents(flagStr(ctx, "agents"));
       if (agents === null) {
-        return failure("usage.invalid", `--agents принимает ${HARNESSES.join(", ")}`, ExitCode.USAGE);
+        return failure("usage.invalid", `--agents takes ${HARNESSES.join(", ")}`, ExitCode.USAGE);
       }
 
       const modeRaw = flagStr(ctx, "hook-mode");
       if (modeRaw !== undefined && !["append", "replace", "skip"].includes(modeRaw)) {
-        return failure("usage.invalid", `--hook-mode принимает append, replace, skip`, ExitCode.USAGE);
+        return failure("usage.invalid", `--hook-mode takes append, replace, skip`, ExitCode.USAGE);
       }
       const mode = modeRaw as HookMode | undefined;
 
       const outRaw = flagStr(ctx, "hook-output") ?? "json";
       if (outRaw !== "json" && outRaw !== "text") {
-        return failure("usage.invalid", "--hook-output принимает json или text", ExitCode.USAGE);
+        return failure("usage.invalid", "--hook-output takes json or text", ExitCode.USAGE);
       }
 
       // Хук на команду, которой в этой сборке нет, — обещание, которое некому
@@ -1251,12 +1255,12 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       const skipped: { event: string; reason: string }[] = [];
       for (const spec of HOOK_SPECS) {
         if (registry.hasTop(spec.command)) available.push(spec.event);
-        else skipped.push({ event: spec.event, reason: `команды \`myc ${spec.command}\` нет в этой сборке` });
+        else skipped.push({ event: spec.event, reason: `no \`myc ${spec.command}\` command in this build` });
       }
       if (!available.includes("pre-compact")) {
         return failure(
           "precond.missing_command",
-          "нет команды `myc absorb-session` — pre-compact поставить не на что",
+          "no `myc absorb-session` command — nothing to install pre-compact on",
           ExitCode.PRECOND,
         );
       }
@@ -1281,10 +1285,10 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         if (!probe.ok) {
           return failure(
             "precond.statusline_bin",
-            `строку статуса ставить некуда: ${probe.why ?? "бинарь не отвечает"}. Строка на такой ` +
-              "бинарь показала бы пустоту и отрезала бы прежнюю строку от ввода — ничего не записано",
+            `nowhere to install the status line: ${probe.why ?? "the binary does not answer"}. A line on that ` +
+              "binary would show nothing and cut the previous line off from its input — nothing written",
             ExitCode.PRECOND,
-            mycBin.source === "repo" ? "bun run build" : "MYC_BIN=<путь к свежему myc> myc wire --status-line",
+            mycBin.source === "repo" ? "bun run build" : "MYC_BIN=<path to a fresh myc> myc wire --status-line",
           );
         }
       }
@@ -1297,14 +1301,14 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       }
       planAgentsMd(plan, options);
       if (statusLine && !agents.includes("claude")) {
-        plan.notes.push("строка статуса ставится только для Claude Code, а его нет в --agents — statusLine не тронут");
+        plan.notes.push("the status line is installed only for Claude Code, which is not in --agents — statusLine left alone");
       }
 
       const slConflicts = plan.conflicts.filter((c) => c.node === "statusLine");
       if (slConflicts.length > 0) {
         return failure(
           "conflict.status_line",
-          ["строка статуса не поставлена, ничего не записано:", ...slConflicts.map((c) => `  ${c.path}: ${c.command}`)].join("\n"),
+          ["status line not installed, nothing written:", ...slConflicts.map((c) => `  ${c.path}: ${c.command}`)].join("\n"),
           ExitCode.CONFLICT,
         );
       }
@@ -1314,12 +1318,12 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         return failure(
           "conflict.foreign_hook",
           [
-            "чужие узлы на месте наших, ничего не записано:",
+            "foreign nodes where ours go, nothing written:",
             ...lines,
             "",
-            "  --hook-mode append   добавить myc-хук вторым в тот же массив (рекомендую)",
-            "  --hook-mode replace  заменить (будет .myc.bak)",
-            "  --hook-mode skip     не ставить этот хук (myc потеряет контекст при сжатии)",
+            "  --hook-mode append   add the myc hook second in the same array (recommended)",
+            "  --hook-mode replace  replace it (a .myc.bak is kept)",
+            "  --hook-mode skip     don't install this hook (myc loses context on compaction)",
           ].join("\n"),
           ExitCode.CONFLICT,
           "myc wire --hook-mode append",
@@ -1343,13 +1347,13 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         } catch (e) {
           ctx.warn(
             "degraded.journal",
-            `журнал ${jPath} не записан (${e instanceof Error ? e.message : String(e)}): myc unwire не сможет снять хуки`,
+            `journal ${jPath} not written (${e instanceof Error ? e.message : String(e)}): myc unwire won't be able to remove the hooks`,
           );
         }
       }
 
       for (const skip of skipped) {
-        ctx.warn("degraded.hook_missing", `хук ${skip.event} не поставлен: ${skip.reason}`);
+        ctx.warn("degraded.hook_missing", `hook ${skip.event} not installed: ${skip.reason}`);
       }
 
       // Конфиг записан, но команду в нём запустить нечем: MCP-сервер молча не
@@ -1358,9 +1362,9 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       if (mycBin.source === "none" && agents.includes("claude")) {
         ctx.warn(
           "degraded.bin_unresolved",
-          "исполняемый myc не найден: ни MYC_BIN, ни node_modules/.bin/myc, ни dist/myc, " +
-            "ни .myc/bin/myc, ни ~/.myc/bin/myc, ни PATH. В .mcp.json записано 'myc' — " +
-            "MCP-сервер не поднимется, пока myc не появится в PATH или в MYC_BIN",
+          "no myc executable found: not in MYC_BIN, node_modules/.bin/myc, dist/myc, " +
+            ".myc/bin/myc, ~/.myc/bin/myc or PATH. .mcp.json says 'myc' — " +
+            "the MCP server won't start until myc is on PATH or in MYC_BIN",
         );
       }
 
@@ -1382,13 +1386,13 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
     },
     renderHuman: (data) => {
       const d = data as WireData;
-      const verb = d.dry_run ? "записал бы:" : "записано:";
+      const verb = d.dry_run ? "would write:" : "written:";
       const lines: string[] = [verb];
       const width = Math.max(...d.actions.map((a) => a.path.length), 10);
       for (const a of d.actions) {
         lines.push(`  ${a.action.padEnd(9)} ${a.path.padEnd(width)}  ${a.detail}`);
       }
-      if (d.untouched.length > 0) lines.push(`не тронуто: ${d.untouched.join(", ")}`);
+      if (d.untouched.length > 0) lines.push(`untouched: ${d.untouched.join(", ")}`);
       // Вытесненное печатается ПЕРЕД служебными заметками и журналом: это
       // единственная строка отчёта, за которой стоит потеря чужой работы, а не
       // наша собственная запись. Каждый обработчик назван — событие и команда, —
@@ -1397,7 +1401,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       if (d.evicted.length > 0) {
         const paths = [...new Set(d.evicted.map((e) => e.path))];
         lines.push(
-          `вытеснено --hook-mode replace: ${d.evicted.length} ${plural(d.evicted.length, "чужой обработчик", "чужих обработчика", "чужих обработчиков")}`,
+          `evicted by --hook-mode replace: ${d.evicted.length} foreign ${d.evicted.length === 1 ? "handler" : "handlers"}`,
         );
         for (const e of d.evicted) {
           const at = e.matcher !== undefined ? `${e.event}[${e.matcher}]` : e.event;
@@ -1405,17 +1409,17 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         }
         lines.push(
           d.dry_run
-            ? `  вернуть: они останутся на месте — ничего не записано (--dry-run)`
-            : `  вернуть: ${paths.map((p) => `cp ${p}${BAK_SUFFIX} ${p}`).join(" && ")}`,
+            ? `  to restore: they stay in place — nothing written (--dry-run)`
+            : `  to restore: ${paths.map((p) => `cp ${p}${BAK_SUFFIX} ${p}`).join(" && ")}`,
         );
       }
       for (const note of d.notes) lines.push(`! ${note}`);
       if (d.journal !== null) {
-        const kept = d.journal_kept > 0 ? `; сохранено записей прежних прогонов: ${d.journal_kept}` : "";
-        lines.push(`журнал: ${d.journal} (для myc unwire${kept})`);
+        const kept = d.journal_kept > 0 ? `; entries kept from earlier runs: ${d.journal_kept}` : "";
+        lines.push(`journal: ${d.journal} (for myc unwire${kept})`);
       }
-      if (d.dry_run) lines.push("ничего не записано (--dry-run)");
-      else if (d.changed === 0) lines.push("всё уже на месте, файлы не тронуты");
+      if (d.dry_run) lines.push("nothing written (--dry-run)");
+      else if (d.changed === 0) lines.push("everything already in place, no files touched");
       // Обновление — новость для человека, и только для него: в конверте
       // --json этой строки нет (решение 2). Сети здесь тоже нет — кеш.
       const notice = updateNoticeFor(CLI_VERSION);
@@ -1509,13 +1513,13 @@ export function createUnwireCommand(): Command {
       const jPath = journalPath(root, ctx);
       const raw = fileText(jPath);
       if (raw === null) {
-        return failure("notfound.journal", `нет журнала ${jPath}: снимать нечего`, ExitCode.NOTFOUND, "myc wire");
+        return failure("notfound.journal", `no journal ${jPath}: nothing to remove`, ExitCode.NOTFOUND, "myc wire");
       }
       let journal: Journal;
       try {
         journal = JSON.parse(raw) as Journal;
       } catch (e) {
-        return failure("io.read", `журнал не разбирается: ${e instanceof Error ? e.message : String(e)}`, ExitCode.ERR);
+        return failure("io.read", `journal can't be parsed: ${e instanceof Error ? e.message : String(e)}`, ExitCode.ERR);
       }
 
       const dryRun = ctx.flags["dry-run"] === true;
@@ -1533,7 +1537,7 @@ export function createUnwireCommand(): Command {
           continue;
         }
         if (sha256(current) !== entry.hash) {
-          kept.push({ path: entry.path, reason: "изменён после нас — не трогаю" });
+          kept.push({ path: entry.path, reason: "changed after we wrote it — left alone" });
           continue;
         }
         if (entry.nodes.length === 0) {
@@ -1548,7 +1552,7 @@ export function createUnwireCommand(): Command {
         const writeOrDrop = (next: string, empty: boolean, label: string): void => {
           if (created && empty) {
             if (!dryRun) rmSync(abs, { force: true });
-            removed.push(`${entry.path} (${label}; файл создан wire — удалён)`);
+            removed.push(`${entry.path} (${label}; file created by wire — deleted)`);
           } else {
             if (!dryRun) writeFileSync(abs, next);
             removed.push(`${entry.path} (${label})`);
@@ -1556,18 +1560,18 @@ export function createUnwireCommand(): Command {
         };
         if (entry.path.endsWith(".md")) {
           const next = removeBlock(current, AGENTS_START, AGENTS_END);
-          writeOrDrop(next, next.trim().length === 0, "блок myc");
+          writeOrDrop(next, next.trim().length === 0, "the myc block");
           continue;
         }
         if (entry.path.endsWith(".toml")) {
           let next = removeBlock(current, TOML_NOTIFY_START, TOML_NOTIFY_END);
           next = removeBlock(next, TOML_MCP_START, TOML_MCP_END);
-          writeOrDrop(next, next.trim().length === 0, "блоки myc");
+          writeOrDrop(next, next.trim().length === 0, "the myc blocks");
           continue;
         }
         const source = readJsonSource(abs);
         if (source.broken) {
-          kept.push({ path: entry.path, reason: "не разбирается как JSON" });
+          kept.push({ path: entry.path, reason: "not valid JSON" });
           continue;
         }
         const sl = journal.status_line;
@@ -1576,7 +1580,7 @@ export function createUnwireCommand(): Command {
         const stripped = stripJsonNodes(source.value, own, keep);
         const restored =
           isOurStatusLine(source.value["statusLine"]) && own?.previous !== undefined && own.previous !== null
-            ? "; statusLine возвращена прежняя"
+            ? "; previous statusLine restored"
             : "";
         // В созданный нами opencode.json мы же положили и `$schema` — снимается с ним.
         const rest = { ...stripped };
@@ -1591,11 +1595,11 @@ export function createUnwireCommand(): Command {
     },
     renderHuman: (data) => {
       const d = data as UnwireData;
-      const lines = [d.dry_run ? "снял бы:" : "снято:"];
+      const lines = [d.dry_run ? "would remove:" : "removed:"];
       for (const r of d.removed) lines.push(`  - ${r}`);
       for (const k of d.kept) lines.push(`  ! ${k.path}: ${k.reason}`);
-      for (const g of d.gone) lines.push(`  · ${g}: файла уже нет`);
-      if (d.removed.length === 0) lines.push("  (нечего снимать)");
+      for (const g of d.gone) lines.push(`  · ${g}: file already gone`);
+      if (d.removed.length === 0) lines.push("  (nothing to remove)");
       return `${lines.join("\n")}\n`;
     },
   };

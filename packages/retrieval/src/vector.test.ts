@@ -584,7 +584,7 @@ describe("vectorSearch: запрет запроса без фильтра (S27)"
         scopes: [],
         caller: ANON_CALLER,
       }),
-    ).toThrow(/scopes пуст/);
+    ).toThrow(/scopes is empty/);
     db.close();
   });
 
@@ -602,7 +602,7 @@ describe("vectorSearch: запрет запроса без фильтра (S27)"
         scopes: ["s1"],
         caller: ANON_CALLER,
       }),
-    ).toThrow(/длины 384/);
+    ).toThrow(/length 384/);
     expect(() =>
       vectorSearch(db, {
         vector: new Float32Array(384),
@@ -618,7 +618,7 @@ describe("vectorSearch: запрет запроса без фильтра (S27)"
     const db = freshDb();
     const bad = new Float32Array(384);
     bad[7] = Number.NaN;
-    expect(() => search(db, { vector: bad })).toThrow(/не конечен/);
+    expect(() => search(db, { vector: bad })).toThrow(/not finite/);
     db.close();
   });
 });

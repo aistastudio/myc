@@ -79,7 +79,7 @@ export async function runClaimWorkers(
       ]);
       const code = await proc.exited;
       if (code !== 0) {
-        throw new Error(`воркер w${i} завершился с кодом ${code}: ${err}`);
+        throw new Error(`worker w${i} exited with code ${code}: ${err}`);
       }
       return JSON.parse(out) as WorkerReport;
     }),

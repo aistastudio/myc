@@ -125,7 +125,7 @@ function addExact(total: number, add: number, field: string): number {
   if (!Number.isSafeInteger(sum)) {
     throw new TranscriptError(
       "transcript.overflow",
-      `сумма ${field} вышла за точные целые (${sum}); прочитанному числу верить нельзя`,
+      `sum of ${field} exceeded exact integers (${sum}); the number read cannot be trusted`,
     );
   }
   return sum;
@@ -135,9 +135,9 @@ function requireCount(value: unknown, field: string, line: number, path: string)
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new TranscriptError(
       "transcript.bad_field",
-      `${path}:${line}: usage.${field} = ${JSON.stringify(value)} — не целое число ≥ 0; ` +
-        "формат стенограммы не тот, расход не прочитан",
-      "перепроверьте формат или заполните расход флагами --tokens-in/--tokens-out",
+      `${path}:${line}: usage.${field} = ${JSON.stringify(value)} — not an integer ≥ 0; ` +
+        "unexpected transcript format, usage not read",
+      "check the format or fill in usage with --tokens-in/--tokens-out",
     );
   }
   return value;
@@ -151,8 +151,8 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
   if (!existsSync(path)) {
     throw new TranscriptError(
       "transcript.missing",
-      `стенограммы нет: ${path}`,
-      "myc attempt finish … --from-session <uuid> или флаги расхода вручную",
+      `no transcript: ${path}`,
+      "myc attempt finish … --from-session <uuid> or manual usage flags",
     );
   }
   let text: string;
@@ -161,7 +161,7 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
   } catch (e) {
     throw new TranscriptError(
       "transcript.unreadable",
-      `стенограмма ${path} не читается: ${(e as Error).message}`,
+      `transcript ${path} is unreadable: ${(e as Error).message}`,
     );
   }
 
@@ -212,9 +212,9 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
     if (key === undefined) {
       throw new TranscriptError(
         "transcript.no_key",
-        `${path}:${i + 1}: у записи с usage нет ни message.id, ни requestId; ` +
-          "склеить копии одного ответа нечем, сумма была бы завышена",
-        "формат стенограммы сменился — заполните расход флагами вручную",
+        `${path}:${i + 1}: a record with usage has neither message.id nor requestId; ` +
+          "there is nothing to merge copies of one response by, the sum would be inflated",
+        "the transcript format changed — fill in usage with manual flags",
       );
     }
 
@@ -238,32 +238,32 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
   if (records === 0) {
     throw new TranscriptError(
       "transcript.empty",
-      `в стенограмме ${path} не разобрано ни одной записи`,
+      `not a single record parsed in transcript ${path}`,
     );
   }
   if (usageRecords === 0) {
     throw new TranscriptError(
       "transcript.no_usage",
-      `ни в одном из ${records} сообщений ${path} нет message.usage; ` +
-        "расход не прочитан — это отказ, а не ноль",
-      "формат стенограммы сменился; заполните расход флагами --tokens-in/--tokens-out",
+      `none of the ${records} messages in ${path} has message.usage; ` +
+        "usage not read — this is a refusal, not zero",
+      "the transcript format changed; fill in usage with --tokens-in/--tokens-out",
     );
   }
   if (recognized === 0) {
     throw new TranscriptError(
       "transcript.no_fields",
-      `usage есть в ${usageRecords} сообщениях ${path}, но ни одного знакомого поля ` +
-        `(${USAGE_FIELDS.map(([w]) => w).join(", ")}); расход не прочитан`,
-      "формат стенограммы сменился; заполните расход флагами вручную",
+      `usage present in ${usageRecords} messages of ${path}, but not a single known field ` +
+        `(${USAGE_FIELDS.map(([w]) => w).join(", ")}); usage not read`,
+      "the transcript format changed; fill in usage with manual flags",
     );
   }
   const lost = USAGE_FIELDS.filter(([wire]) => !seenFields.has(wire)).map(([w]) => w);
   if (lost.length > 0) {
     throw new TranscriptError(
       "transcript.missing_field",
-      `в стенограмме ${path} ни разу не встретилось поле ${lost.join(", ")}; ` +
-        "молча записать по нему ноль значит занизить стоимость",
-      "формат стенограммы сменился; заполните расход флагами вручную",
+      `field ${lost.join(", ")} never appears in transcript ${path}; ` +
+        "silently recording zero for it would understate the cost",
+      "the transcript format changed; fill in usage with manual flags",
     );
   }
 
@@ -282,9 +282,9 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
   if (sum === 0) {
     throw new TranscriptError(
       "transcript.no_tokens",
-      `в ${path} разобрано ${groups.size} ответов модели, а суммарный расход 0; ` +
-        "у настоящей сессии так не бывает — читать нечего",
-      "формат стенограммы сменился; заполните расход флагами вручную",
+      `${path}: ${groups.size} model responses parsed, but total usage is 0; ` +
+        "a real session never looks like this — nothing to read",
+      "the transcript format changed; fill in usage with manual flags",
     );
   }
 
@@ -320,8 +320,8 @@ function requireDir(dir: string): void {
   if (!existsSync(dir)) {
     throw new TranscriptError(
       "transcript.dir_missing",
-      `каталога стенограмм нет: ${dir}`,
-      "укажите файл через --from-transcript или каталог через $MYC_TRANSCRIPT_DIR",
+      `no transcript directory: ${dir}`,
+      "give a file with --from-transcript or a directory with $MYC_TRANSCRIPT_DIR",
     );
   }
 }
@@ -334,8 +334,8 @@ export function findSessionTranscript(dir: string, sessionId: string): string {
   if (!existsSync(path)) {
     throw new TranscriptError(
       "notfound.session",
-      `сессии "${id}" нет в ${dir}`,
-      "myc attempt finish … --from-transcript <файл>",
+      `session "${id}" not found in ${dir}`,
+      "myc attempt finish … --from-transcript <file>",
     );
   }
   return path;
@@ -376,15 +376,15 @@ export function findTaskTranscripts(
     if (hits.length === 0) {
       throw new TranscriptError(
         "transcript.exclude_miss",
-        `исключать нечего: в ${dir} нет стенограммы, начинающейся с '${excludeRaw}'`,
-        "проверьте uuid сессии; без исключения в расход попадёт чужая сессия",
+        `nothing to exclude: no transcript in ${dir} starts with '${excludeRaw}'`,
+        "check the session uuid; without the exclusion another session's usage gets counted",
       );
     }
     if (hits.length > 1) {
       throw new TranscriptError(
         "transcript.exclude_ambiguous",
-        `'${excludeRaw}' подходит ${hits.length} стенограммам: ${hits.join(", ")}`,
-        "уточните uuid до однозначного",
+        `'${excludeRaw}' matches ${hits.length} transcripts: ${hits.join(", ")}`,
+        "extend the uuid until it is unambiguous",
       );
     }
     exclude = hits[0]!.slice(0, -".jsonl".length);

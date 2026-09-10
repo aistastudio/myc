@@ -19,7 +19,7 @@ function record(kind: string, target: string): never {
   if (LOG !== undefined && LOG.length > 0) {
     appendFileSync(LOG, `${JSON.stringify({ kind, target, argv: process.argv.slice(2) })}\n`);
   }
-  throw new Error(`сеть перекрыта тестом (${kind} → ${target})`);
+  throw new Error(`network blocked by the test (${kind} → ${target})`);
 }
 
 const trapped = (input: unknown): never =>

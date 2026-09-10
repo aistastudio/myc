@@ -53,7 +53,7 @@ export function checkFingerprint(
   if (rec === null) {
     return {
       compatible: false,
-      mismatch: `записанный отпечаток не разбирается: "${String(recorded)}"`,
+      mismatch: `recorded fingerprint does not parse: "${String(recorded)}"`,
     };
   }
   const recStr = formatEmbedFingerprint(rec);
@@ -68,7 +68,7 @@ export function checkFingerprint(
   if (rec.normalize !== expected.normalize) fields.push("normalize");
   return {
     compatible: false,
-    mismatch: `отпечаток в myc_meta "${recStr}" не совпадает с текущим "${expStr}" (поля: ${fields.join(", ")}). Смешивать векторные пространства нельзя; требуется reembed.`,
+    mismatch: `fingerprint in myc_meta "${recStr}" does not match the current "${expStr}" (fields: ${fields.join(", ")}). Vector spaces must not be mixed; reembed required.`,
   };
 }
 

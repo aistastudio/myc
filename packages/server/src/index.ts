@@ -73,14 +73,14 @@ const BUSY_TIMEOUT_MS = 2000;
 
 function openReadOnly(path: string): ReadDb {
   if (!existsSync(path)) {
-    throw new HttpDbError("db.missing", `нет файла базы: ${path}`);
+    throw new HttpDbError("db.missing", `no database file: ${path}`);
   }
   let db: Database;
   try {
     db = new Database(path, { readonly: true });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    throw new HttpDbError("db.open", `не удалось открыть базу только на чтение: ${msg}`);
+    throw new HttpDbError("db.open", `could not open the database read-only: ${msg}`);
   }
   try {
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
@@ -205,8 +205,8 @@ export function buildIndexHealth(db: ReadDb): IndexHealth {
   if (fingerprint === null) {
     warn.push({
       code: "embeddings.off",
-      msg: "модель эмбеддингов ни разу не записала вектор (myc_meta.embed_fingerprint пуст) — " +
-        "векторная ветка поиска и absorb-косинус недоступны, семантика урезана до FTS",
+      msg: "the embedding model has never written a vector (myc_meta.embed_fingerprint is empty) — " +
+        "the vector branch of search and the absorb cosine are unavailable, semantics cut down to FTS",
     });
   }
 
@@ -215,8 +215,8 @@ export function buildIndexHealth(db: ReadDb): IndexHealth {
   if (!vecApplied) {
     warn.push({
       code: "vector.unavailable",
-      msg: "расширение sqlite-vec (vec0) не загружалось: векторные миграции не накатаны — " +
-        "векторный поиск выключен, остальные поверхности работают",
+      msg: "the sqlite-vec extension (vec0) was never loaded: vector migrations are not applied — " +
+        "vector search is off, the other surfaces work",
     });
   }
 
@@ -238,7 +238,7 @@ export function buildIndexHealth(db: ReadDb): IndexHealth {
   if (failed > 0) {
     warn.push({
       code: "jobs.failed",
-      msg: `${failed} фоновых задач исчерпали попытки — часть узлов останется без обработки`,
+      msg: `${failed} background jobs ran out of attempts — some nodes will stay unprocessed`,
     });
   }
 
@@ -287,7 +287,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
   const fetch = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
     if (req.method !== "GET") {
-      return json({ ok: false, error: { code: "usage.method", msg: "только GET" } }, 405);
+      return json({ ok: false, error: { code: "usage.method", msg: "GET only" } }, 405);
     }
 
     // liveness: процесс жив, базу не трогаем — 200 всегда
@@ -357,7 +357,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
     }
 
     return json(
-      { ok: false, error: { code: "notfound.route", msg: `нет маршрута ${url.pathname}` } },
+      { ok: false, error: { code: "notfound.route", msg: `no route ${url.pathname}` } },
       404,
     );
   };

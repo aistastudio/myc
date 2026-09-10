@@ -57,7 +57,7 @@ describe("профиль agent: состав и бюджет описаний", 
     expect(by.get("myc_code_search")).toContain("myc_code_grep");
     expect(by.get("myc_code_search")).toContain("myc_code_symbol");
     expect(by.get("myc_code_map")).toContain("myc_code_search");
-    expect(by.get("myc_callers")).toContain("ДО переименования");
+    expect(by.get("myc_callers")).toContain("BEFORE renaming");
     expect(by.get("myc_callers")).toContain("WARN callers.ambiguous");
     expect(by.get("myc_skeleton")).toContain("WARN skeleton.stale");
     for (const t of CODE_TOOLS) expect(t.needsVector).toBeUndefined();

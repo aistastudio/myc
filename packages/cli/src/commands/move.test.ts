@@ -85,7 +85,7 @@ describe("myc move", () => {
 
     const moved = await myc(a, "move", id, "--to", b);
     expect(moved.code).toBe(ExitCode.OK);
-    expect(text(moved.stdout)).toContain("едет 1 узлов");
+    expect(text(moved.stdout)).toContain("moving 1 node");
 
     expect(text((await myc(b, "ready")).stdout)).toContain(id);
     expect(text((await myc(a, "ready")).stdout)).not.toContain(id);
@@ -99,11 +99,11 @@ describe("myc move", () => {
 
     const show = await myc(a, "show", id);
     expect(show.code).toBe(ExitCode.OK);
-    expect(text(show.stdout)).toContain("переехала в воркспейс");
+    expect(text(show.stdout)).toContain("moved to workspace");
 
     // В приёмнике это обычная задача, без всяких надгробий.
     const there = await myc(b, "show", id);
-    expect(text(there.stdout)).not.toContain("переехала в воркспейс");
+    expect(text(there.stdout)).not.toContain("moved to workspace");
   });
 
   test("без --to — ошибка употребления, а не догадка о приёмнике", async () => {
@@ -125,6 +125,6 @@ describe("myc move", () => {
     const b = await ws("rooti");
     const r = await myc(b, "move", "--pending");
     expect(r.code).toBe(ExitCode.OK);
-    expect(text(r.stdout)).toContain("недоигранных переездов нет");
+    expect(text(r.stdout)).toContain("no unfinished moves");
   });
 });

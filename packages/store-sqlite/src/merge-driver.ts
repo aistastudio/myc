@@ -61,7 +61,7 @@ export interface MergeDriverArgs {
 export function parseMergeDriverArgs(argv: readonly string[]): MergeDriverArgs | string {
   const [base, ours, theirs, ...rest] = argv;
   if (base === undefined || ours === undefined || theirs === undefined) {
-    return "нужны три пути: %O %A %B (затем необязательные %L %P)";
+    return "three paths required: %O %A %B (then optional %L %P)";
   }
   let path: string | undefined;
   for (const arg of rest) {
@@ -102,27 +102,29 @@ export function runMergeDriver(args: MergeDriverArgs): MergeDriverRun {
         reason: "collision",
         opId: error.opId,
         message:
-          `myc merge-driver: ${label} — КОЛЛИЗИЯ op_id ${error.opId}: ` +
-          "с двух сторон пришла одна и та же операция с разным содержимым. " +
-          "Объединение по op_id выбросило бы одну из них молча, поэтому файл " +
-          "не слит и конфликт оставлен человеку.\n" +
-          `  наша:  ${error.kept}\n` +
-          `  их:    ${error.dropped}\n` +
-          "  Причина почти всегда одна: копия каталога воркспейса (cp -R, rsync, " +
-          "распакованный бэкап) унесла site_id живой базы, и обе базы нумеруют " +
-          "операции с одного seq (S65). Честный `git clone` так не ломается. " +
-          "Разберите вручную: обе версии файла целы в индексе — " +
-          `\`git show :2:${label}\` (наша) и \`git show :3:${label}\` (их).`,
+          `myc merge-driver: ${label} — op_id COLLISION ${error.opId}: ` +
+          "the same operation arrived from both sides with different content. " +
+          "A union by op_id would silently drop one of them, so the file " +
+          "is not merged and the conflict is left to a human.\n" +
+          `  ours:   ${error.kept}\n` +
+          `  theirs: ${error.dropped}\n` +
+          "  The cause is almost always the same: a copy of the workspace directory (cp -R, rsync, " +
+          "an unpacked backup) carried off the live database's site_id, and both databases number " +
+          "operations from the same seq (S65). An honest `git clone` does not break this way. " +
+          "Resolve it by hand: both versions of the file are intact in the index — " +
+          `\`git show :2:${label}\` (ours) and \`git show :3:${label}\` (theirs).`,
       };
     }
     const msg = error instanceof Error ? error.message : String(error);
     return {
       code: 1,
       reason: "parse",
-      message: `myc merge-driver: файл оплога ${label} не разбирается, конфликт оставлен: ${msg}`,
+      message: `myc merge-driver: oplog file ${label} does not parse, conflict left in place: ${msg}`,
     };
   }
   if (outcome.text !== ours) writeFileSync(args.ours, outcome.text);
-  const message = `myc merge-driver: ${label} — объединение по op_id, +${outcome.added} строк, всего ${outcome.lines}`;
+  const message =
+    `myc merge-driver: ${label} — union by op_id, ` +
+    `+${outcome.added} ${outcome.added === 1 ? "line" : "lines"}, ${outcome.lines} total`;
   return { code: 0, outcome, message };
 }

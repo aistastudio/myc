@@ -64,10 +64,10 @@ describe("myc viz", () => {
     const res = await run(["--directory", dir, "viz"], { registry });
     expect(res.code).toBe(ExitCode.OK);
     const banner = written.join("");
-    expect(banner).toContain("только на чтение");
-    expect(banner).toContain("вшит в бинарь");
+    expect(banner).toContain("read-only");
+    expect(banner).toContain("embedded in the binary");
     expect(banner).toContain("http://127.0.0.1:");
-    expect(text(res.stdout)).toContain("viz остановлен (SIGINT)");
+    expect(text(res.stdout)).toContain("viz stopped (SIGINT)");
   });
 
   test("--json отдаёт конверт с итогом и read_only", async () => {

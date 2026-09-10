@@ -171,7 +171,7 @@ describe("readTranscriptUsage: отказ, а не ноль", () => {
     ]);
     const e = failure(() => readTranscriptUsage(path));
     expect(e.code).toBe("transcript.no_usage");
-    expect(e.message).toContain("не ноль");
+    expect(e.message).toContain("not zero");
   });
 
   test("usage есть, но без знакомых полей — отказ", () => {

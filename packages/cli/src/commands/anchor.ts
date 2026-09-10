@@ -129,7 +129,12 @@ export function anchorInlineMaxBytes(env: NodeJS.ProcessEnv = process.env): numb
 
 /** Размер файла для человеческой строки — одинаковый у всех трёх входов. */
 function kb(bytes: number): string {
-  return `${Math.round(bytes / 1024)} КБ`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+/** `1 anchor`, `3 anchors`. Своя копия: этот модуль стоит в горячем пути хука и code.ts не тянет. */
+function count(n: number, one: string): string {
+  return `${n} ${one}${n === 1 ? "" : "s"}`;
 }
 
 
@@ -291,12 +296,12 @@ function buildAnchorTouch(): Command {
         took_ms: Math.round((performance.now() - t0) * 1000) / 1000,
       });
       if (paths.length === 0) {
-        return { ok: true, data: done(0, "", "путь не назван") };
+        return { ok: true, data: done(0, "", "no path given") };
       }
       const ws = workspaceRoot(ctx);
       if (ws === undefined) {
         // Не отказ: хук обязан быть безвредным вне воркспейса (§6.4).
-        return { ok: true, data: done(0, "", "воркспейс не найден") };
+        return { ok: true, data: done(0, "", "no workspace found") };
       }
       const mycDir = join(ws.wsDir, ".myc");
       const log = join(mycDir, DIRTY_LOG);
@@ -325,15 +330,15 @@ function buildAnchorTouch(): Command {
         appendFileSync(log, line);
       } catch {
         markHookCall(mycDir, "post-edit", performance.now() - t0, "log-unwritable");
-        return { ok: true, data: done(0, log, "журнал недоступен") };
+        return { ok: true, data: done(0, log, "dirty log unwritable") };
       }
       markHookCall(mycDir, "post-edit", performance.now() - t0, "ok");
       return { ok: true, data: done(paths.length, log, "") };
     },
     renderHuman: (raw) => {
       const d = raw as TouchData;
-      if (d.marked === 0) return `помечено 0 (${d.skipped}) · ${d.took_ms} мс\n`;
-      return `помечено ${d.marked} · ${d.took_ms} мс\n`;
+      if (d.marked === 0) return `marked 0 (${d.skipped}) · ${d.took_ms} ms\n`;
+      return `marked ${d.marked} · ${d.took_ms} ms\n`;
     },
   };
 }
@@ -555,7 +560,7 @@ export async function bindAnchorAt(
     return {
       ok: false,
       code: "outside.repo",
-      msg: `файл вне корня ${repoRoot}: ${path} — якорь такому пути привязать нельзя`,
+      msg: `file outside the root ${repoRoot}: ${path} — an anchor cannot be bound to such a path`,
     };
   }
   const abs = localFile(h, join(repoRoot, path));
@@ -568,7 +573,7 @@ export async function bindAnchorAt(
     return {
       ok: false,
       code: "notfound.file",
-      msg: `файла нет: ${path} (корень репозитория ${repoRoot})`,
+      msg: `no such file: ${path} (repo root ${repoRoot})`,
     };
   }
 
@@ -684,7 +689,7 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
       if (idInput === undefined || targetInput === undefined) {
         return failure(
           "usage.invalid",
-          "нужно: myc anchor add <id> <file>[:<a>-<b>]",
+          "usage: myc anchor add <id> <file>[:<a>-<b>]",
           ExitCode.USAGE,
         );
       }
@@ -692,7 +697,7 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
       if (target === undefined) {
         return failure(
           "usage.invalid",
-          `неверный якорь '${targetInput}'; формат file[:<a>-<b>]`,
+          `invalid anchor '${targetInput}'; format file[:<a>-<b>]`,
           ExitCode.USAGE,
         );
       }
@@ -741,8 +746,8 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
         if (a.deferred) {
           ctx.warn(
             "anchor.deferred",
-            `crux отложен в фон: ${kb(a.sizeBytes)} больше порога ${kb(anchorInlineMaxBytes())} — ` +
-              `запись осталась в бюджете, точность догонит фоновая проверка (myc anchor check)`,
+            `crux deferred to the background: ${kb(a.sizeBytes)} is over the ${kb(anchorInlineMaxBytes())} threshold — ` +
+              `the write stayed within budget, the background check (myc anchor check) catches up on precision`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -754,13 +759,13 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
       const d = raw as AddData;
       const sym = d.symbol.length > 0 ? ` (${d.symbol})` : "";
       const crux = d.deferred
-        ? `crux      отложен в фон: ${kb(d.size_bytes)} > ${kb(anchorInlineMaxBytes())} · ${d.file_hash}`
-        : `crux      ${d.crux_lines} строк · ${d.file_hash}`;
+        ? `crux      deferred to the background: ${kb(d.size_bytes)} > ${kb(anchorInlineMaxBytes())} · ${d.file_hash}`
+        : `crux      ${count(d.crux_lines, "line")} · ${d.file_hash}`;
       return (
         `${d.anchor_id} anchor fresh · ${d.path}:${spanLabel(d.start, d.end)}${sym}\n` +
         `touches   ${d.node_id}\n` +
         `${crux}\n` +
-        `${d.took_ms} мс\n`
+        `${d.took_ms} ms\n`
       );
     },
   };
@@ -817,8 +822,8 @@ export async function attachAnchorFlag(
       // больше и промолчать. Цена названа числом, и названо, кто её доплатит.
       warn(
         "anchor.deferred",
-        `crux отложен в фон: ${kb(a.sizeBytes)} больше порога ${kb(anchorInlineMaxBytes())} — ` +
-          `запись осталась в бюджете, точность догонит фоновая проверка (myc anchor check)`,
+        `crux deferred to the background: ${kb(a.sizeBytes)} is over the ${kb(anchorInlineMaxBytes())} threshold — ` +
+          `the write stayed within budget, the background check (myc anchor check) catches up on precision`,
       );
     }
     return {
@@ -839,7 +844,7 @@ export async function attachAnchorFlag(
   }
   warn(
     "anchor.unbound",
-    `якорь не привязан: ${bound.msg}; узел записан, привязка осталась намерением — ` +
+    `anchor not bound: ${bound.msg}; the node is written, the binding stays an intent — ` +
       `myc anchor add ${nodeId} ${target.path}`,
   );
   return { path: target.path, start: target.start, end, state: "pending", reason: bound.msg };
@@ -851,11 +856,11 @@ export function anchorFlagLine(a: AnchorFlagResult): string {
   if (a.anchor_id !== undefined) {
     const later =
       a.deferred === true
-        ? ` · crux отложен в фон (${kb(a.size_bytes ?? 0)} > ${kb(anchorInlineMaxBytes())})`
+        ? ` · crux deferred to the background (${kb(a.size_bytes ?? 0)} > ${kb(anchorInlineMaxBytes())})`
         : "";
     return `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state}${later}`;
   }
-  return `anchor    ${a.path}:${span} @— не привязан: ${a.reason ?? "причина не названа"} (myc anchor add)`;
+  return `anchor    ${a.path}:${span} @— not bound: ${a.reason ?? "no reason given"} (myc anchor add)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -876,11 +881,11 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужно: myc anchor rm <id> [<file>]", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc anchor rm <id> [<file>]", ExitCode.USAGE);
       }
       const target = ctx.args[1] === undefined ? undefined : parseTarget(ctx.args[1]);
       if (ctx.args[1] !== undefined && target === undefined) {
-        return failure("usage.invalid", `неверный якорь '${ctx.args[1]}'`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid anchor '${ctx.args[1]}'`, ExitCode.USAGE);
       }
 
       const S = await heavy();
@@ -916,7 +921,7 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
           removed.push(`${r.path}:${spanLabel(r.s, r.e)}`);
         }
         if (removed.length === 0) {
-          return failure("notfound.anchor", `у ${node.id} нет такого якоря`, ExitCode.NOTFOUND);
+          return failure("notfound.anchor", `${node.id} has no such anchor`, ExitCode.NOTFOUND);
         }
         const data: RmData = {
           removed,
@@ -932,7 +937,7 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
     },
     renderHuman: (raw) => {
       const d = raw as RmData;
-      return `отвязано ${d.removed.length}: ${d.removed.join(", ")} · ${d.took_ms} мс\n`;
+      return `unbound ${d.removed.length}: ${d.removed.join(", ")} · ${d.took_ms} ms\n`;
     },
   };
 }
@@ -1033,11 +1038,11 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
       const t0 = performance.now();
       const input = ctx.args[0];
       if (input === undefined) {
-        return failure("usage.invalid", "нужно: myc anchor of <file>[:<line>]", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc anchor of <file>[:<line>]", ExitCode.USAGE);
       }
       const target = parseTarget(input);
       if (target === undefined) {
-        return failure("usage.invalid", `неверная позиция '${input}'`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid position '${input}'`, ExitCode.USAGE);
       }
 
       const S = await heavy();
@@ -1089,7 +1094,7 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
       const d = raw as OfData;
       if (d.spans.length === 0) {
         const where = d.line === null ? d.path : `${d.path}:${d.line}`;
-        return `якорей нет: ${where} · запрос ${d.query_ms} мс\n`;
+        return `no anchors: ${where} · query ${d.query_ms} ms\n`;
       }
       const lines: string[] = [];
       for (const s of d.spans) {
@@ -1100,9 +1105,9 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
           const kind = n.type ?? n.kind;
           lines.push(`  ${n.id}  ${kind} ${n.status}  ${n.title}`);
         }
-        if (s.nodes.length === 0) lines.push("  (нет входящих узлов)");
+        if (s.nodes.length === 0) lines.push("  (no incoming nodes)");
       }
-      lines.push(`${d.nodes} узл(ов) · запрос ${d.query_ms} мс · ${d.took_ms} мс`);
+      lines.push(`${count(d.nodes, "node")} · query ${d.query_ms} ms · ${d.took_ms} ms`);
       return `${lines.join("\n")}\n`;
     },
   };
@@ -1119,7 +1124,7 @@ const CHECK_FLAGS: readonly FlagSpec[] = [
   {
     name: "level",
     value: "number",
-    description: "МУТАЦИЯ приёмки: highest freshness level allowed (1|2|3, default 3)",
+    description: "acceptance MUTATION: highest freshness level allowed (1|2|3, default 3)",
   },
 ];
 
@@ -1206,7 +1211,7 @@ function finishBind(
       cruxNorm: "",
       mtimeMs: row.mtime_ms,
       sizeBytes: row.size_bytes,
-      reason: "привязку не довести: файл не найден",
+      reason: "cannot finish the binding: file not found",
     };
   }
   const b = bind(source, row.lang, row.span_start, row.span_end, st);
@@ -1223,7 +1228,7 @@ function finishBind(
     cruxNorm: b.cruxNorm,
     mtimeMs: b.mtimeMs,
     sizeBytes: b.sizeBytes,
-    reason: "привязка довязана: crux снят с файла",
+    reason: "binding finished: crux taken from the file",
   };
 }
 
@@ -1472,7 +1477,7 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
         if (data.stale > 0 || data.lost > 0) {
           ctx.warn(
             "anchor.stale",
-            `${data.stale + data.lost} якорей протухло — привязка больше не указывает на живой код`,
+            `${count(data.stale + data.lost, "anchor")} went stale — the binding no longer points at live code`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -1485,19 +1490,19 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
       const lines: string[] = [];
       const dry = d.dry_run ? " · dry-run" : "";
       lines.push(
-        `${d.checked} якорей · fresh ${d.fresh} · drifted ${d.drifted} · stale ${d.stale} · lost ${d.lost}${dry}`,
+        `${count(d.checked, "anchor")} · fresh ${d.fresh} · drifted ${d.drifted} · stale ${d.stale} · lost ${d.lost}${dry}`,
       );
       lines.push(
-        `уровни: 1 ${d.by_level["1"] ?? 0} · 2 ${d.by_level["2"] ?? 0} · 3 ${d.by_level["3"] ?? 0} · нет файла ${d.by_level["0"] ?? 0} · из журнала ${d.from_dirty}` +
-          (d.bound > 0 ? ` · довязано ${d.bound}` : "") +
-          (d.skipped_debounce > 0 ? ` · отложено дебаунсом ${d.skipped_debounce}` : "") +
-          (d.budget_hit ? " · упёрлось в бюджет" : ""),
+        `levels: 1 ${d.by_level["1"] ?? 0} · 2 ${d.by_level["2"] ?? 0} · 3 ${d.by_level["3"] ?? 0} · no file ${d.by_level["0"] ?? 0} · from dirty log ${d.from_dirty}` +
+          (d.bound > 0 ? ` · bound ${d.bound}` : "") +
+          (d.skipped_debounce > 0 ? ` · debounced ${d.skipped_debounce}` : "") +
+          (d.budget_hit ? " · hit the budget" : ""),
       );
       for (const c of d.changed) {
         const span = c.from === c.to ? c.from : `${c.from} → ${c.to}`;
         lines.push(`${c.anchor_id}  ${c.path}:${span}  ${c.was}→${c.state}  ${c.reason}`);
       }
-      lines.push(`${d.took_ms} мс`);
+      lines.push(`${d.took_ms} ms`);
       return `${lines.join("\n")}\n`;
     },
   };

@@ -203,7 +203,7 @@ export function trigramJaccard(a: string, b: string): number {
 /** Косинус; нулевые векторы дают 0; несовпадение размерностей — ошибка вызова. */
 export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number {
   if (a.length !== b.length || a.length === 0) {
-    throw new RangeError(`cosine: размерности не совпадают (${a.length} ≠ ${b.length})`);
+    throw new RangeError(`cosine: dimensions differ (${a.length} ≠ ${b.length})`);
   }
   let dot = 0;
   let na = 0;
@@ -540,19 +540,19 @@ export function verdictFromFeatures(
   const structural = s.coverage >= STRUCTURAL_MIN_COVERAGE;
   const changed = s.updateMarker || (structural && (s.polarityFlip || s.numberDrift));
 
-  if (hashEqual) return done("duplicate", "hash: нормализованный текст совпал");
+  if (hashEqual) return done("duplicate", "hash: normalized text matches");
 
   if (cos === null) {
     if (jac >= t.dup_jac_noembed && !changed) {
-      return done("duplicate", `lexical: jac ${f(jac)} ≥ ${f(t.dup_jac_noembed)} (без векторов)`);
+      return done("duplicate", `lexical: jac ${f(jac)} ≥ ${f(t.dup_jac_noembed)} (no vectors)`);
     }
     if (jac >= t.cand_jac_noembed) {
       return done(
         "related",
-        `lexical: jac ${f(jac)} в поясе похожести, без векторов класс не уточняется`,
+        `lexical: jac ${f(jac)} in the similarity band, class not refined without vectors`,
       );
     }
-    return done("new", `lexical: jac ${f(jac)} < ${f(t.cand_jac_noembed)} (без векторов)`);
+    return done("new", `lexical: jac ${f(jac)} < ${f(t.cand_jac_noembed)} (no vectors)`);
   }
 
   if (cos >= t.dup_cos && jac >= t.dup_jac && !changed) {
@@ -569,23 +569,23 @@ export function verdictFromFeatures(
   // соседней по теме, но другой задаче — не обновление, а совпадение слов.
   // Ложный update прячет старую голову из active, поэтому ворота здесь те же,
   // что у противоречия.
-  if (structural && s.updateMarker) return done("update", `${base}; новый текст объявляет замену`);
+  if (structural && s.updateMarker) return done("update", `${base}; new text declares a replacement`);
   if (structural && s.polarityFlip) {
     return done(
       "contradiction",
-      `${base}; переворот полярности: −[${s.onlyOld.slice(0, 4).join(" ")}] +[${s.onlyNew.slice(0, 4).join(" ")}]`,
+      `${base}; polarity flip: −[${s.onlyOld.slice(0, 4).join(" ")}] +[${s.onlyNew.slice(0, 4).join(" ")}]`,
     );
   }
   if (structural && s.numberDrift) {
-    return done("contradiction", `${base}; числа разошлись без маркера обновления`);
+    return done("contradiction", `${base}; numbers diverged without an update marker`);
   }
   if (s.coverage >= 0.9 && s.growth >= 1.2) {
     return done(
       "update",
-      `${base}; новый текст содержит старый (${f(s.coverage)}) и длиннее в ${s.growth.toFixed(2)}`,
+      `${base}; new text contains the old one (${f(s.coverage)}) and is ${s.growth.toFixed(2)}× longer`,
     );
   }
-  return done("related", `${base}; тот же предмет, утверждение другое`);
+  return done("related", `${base}; same subject, different claim`);
 }
 
 export function classifyPair(
@@ -686,8 +686,8 @@ export function classifyAbsorb(
       quality,
       reason:
         candidates.length === 0
-          ? "кандидатов нет"
-          : `ни один из ${candidates.length} кандидатов не в поясе похожести`,
+          ? "no candidates"
+          : `none of the ${candidates.length} candidates is in the similarity band`,
       related: [],
       considered: candidates.length,
     };

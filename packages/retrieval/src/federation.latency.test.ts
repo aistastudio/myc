@@ -210,7 +210,7 @@ test("под потолком выдача НЕПОЛНА и это назван
   expect(r.mode_used.queried).toBeGreaterThan(1);
   expect(r.mode_used.queried + r.mode_used.skipped).toBe(WORKSPACES);
   for (const rep of r.mode_used.sources.filter((x) => !x.queried)) {
-    expect(rep.skipped).toMatch(/потолка|дедлайн/);
+    expect(rep.skipped).toMatch(/cap of|deadline/);
   }
   // Опрошенные источники реально дали строки: замер относится к работе, а не
   // к восьми пустым запросам.

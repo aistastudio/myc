@@ -175,7 +175,7 @@ describe("шаг код-индекса в дренаже", () => {
 
     expect(r.codeIndex?.spawned).toBe(false);
     expect(r.codeIndex?.anchors).toBe(0);
-    expect(r.codeIndex?.reason).toContain("якор");
+    expect(r.codeIndex?.reason).toContain("anchor");
     expect(spawned).toEqual([]);
   });
 
@@ -208,7 +208,7 @@ describe("шаг код-индекса в дренаже", () => {
     const r = await drainQueueTail({ dbPath, env: {}, spawnCodeIndex: (p) => spawned.push(p) });
 
     expect(r.codeIndex?.spawned).toBe(false);
-    expect(r.codeIndex?.reason).toContain("аренд");
+    expect(r.codeIndex?.reason).toContain("lease");
     expect(spawned).toEqual([]);
   });
 

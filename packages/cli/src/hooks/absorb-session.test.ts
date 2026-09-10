@@ -160,7 +160,7 @@ describe("сжатие посреди сессии: ни одно решение
     await myc("task", "Гибридный поиск: RRF одним SQL-проходом", "-p", "P0");
     const data = await absorb("--reason", "manual");
     const packet = data["packet"] as string;
-    expect(packet).toContain("АКТИВНО");
+    expect(packet).toContain("ACTIVE");
     expect(packet).toContain("Гибридный поиск");
     expect(packet).toContain("бенч на 100k не прогнан");
     expect(packet).toContain("src/retrieval/fuse.ts");
@@ -264,7 +264,7 @@ describe("вывод для хоста", () => {
       hookSpecificOutput: { hookEventName: string; additionalContext: string };
     };
     expect(parsed.hookSpecificOutput.hookEventName).toBe("PreCompact");
-    expect(parsed.hookSpecificOutput.additionalContext).toContain("контекст сжимается");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("context is being compacted");
   });
 
   test("--reason manual даёт пакет больше, чем auto", async () => {

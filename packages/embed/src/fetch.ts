@@ -156,13 +156,13 @@ async function download(
   } catch (cause) {
     throw new FetchModelError(
       "network_error",
-      `не удалось скачать ${url}: ${String(cause)}`,
+      `failed to download ${url}: ${String(cause)}`,
     );
   }
   if (!response.ok || response.body === null) {
     throw new FetchModelError(
       "http_error",
-      `${url}: HTTP ${response.status} без тела`,
+      `${url}: HTTP ${response.status} without a body`,
     );
   }
   const total = Number(response.headers.get("content-length") ?? "0") || null;
@@ -184,7 +184,7 @@ async function download(
     await rm(destPart, { force: true });
     throw new FetchModelError(
       "checksum_mismatch",
-      `sha256 не сошёлся для ${url}: ожидалось ${spec.sha256}, получено ${digest}`,
+      `sha256 mismatch for ${url}: expected ${spec.sha256}, got ${digest}`,
     );
   }
   await writeFile(destPart, Buffer.concat(chunks.map((c) => Buffer.from(c))));
@@ -210,7 +210,7 @@ export async function fetchModel(
   try {
     await mkdir(target, { recursive: true });
   } catch (cause) {
-    throw new FetchModelError("fs_error", `не создать ${target}: ${String(cause)}`);
+    throw new FetchModelError("fs_error", `cannot create ${target}: ${String(cause)}`);
   }
 
   for (const f of expected) {
@@ -230,7 +230,7 @@ export async function fetchModel(
       await rm(part, { force: true });
       throw new FetchModelError(
         "checksum_mismatch",
-        `sha256 записанного ${f.name} не сошёлся: ${actual}`,
+        `sha256 of the written ${f.name} does not match: ${actual}`,
       );
     }
     await rename(part, dest);

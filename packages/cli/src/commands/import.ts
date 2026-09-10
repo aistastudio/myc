@@ -41,25 +41,26 @@ function renderImportHuman(raw: unknown): string {
   const lines: string[] = [];
   const head = d.dry_run ? "dry-run: " : "";
   lines.push(
-    `${head}${d.dir}: файлов ${d.files}, строк ${d.read}, новых ${d.fresh}` +
-      (d.dry_run ? "" : `, применено ${d.applied}, устаревших ${d.stale}, повторов ${d.duplicate}`),
+    `${head}${d.dir}: files ${d.files}, lines ${d.read}, new ${d.fresh}` +
+      (d.dry_run ? "" : `, applied ${d.applied}, stale ${d.stale}, duplicates ${d.duplicate}`),
   );
   if (d.initialized !== undefined) {
     lines.push(
-      `  · ${d.initialized.db} создана под slug=${d.initialized.slug} из .myc/workspace.toml ` +
+      `  · ${d.initialized.db} created with slug=${d.initialized.slug} from .myc/workspace.toml ` +
         `(site_id ${d.initialized.site_id})`,
     );
   }
   if (d.cache !== undefined) {
     lines.push(
-      `  кеш ${d.cache.dir}: ${d.cache.nodes} узлов, ${d.cache.edges} рёбер; ` +
-        `переписано ${d.cache.files.written.length}, без изменений ${d.cache.files.unchanged.length}` +
-        (d.cache.files.removed.length > 0 ? `, удалено пустых ${d.cache.files.removed.length}` : ""),
+      `  cache ${d.cache.dir}: ${d.cache.nodes} ${d.cache.nodes === 1 ? "node" : "nodes"}, ` +
+        `${d.cache.edges} ${d.cache.edges === 1 ? "edge" : "edges"}; ` +
+        `rewritten ${d.cache.files.written.length}, unchanged ${d.cache.files.unchanged.length}` +
+        (d.cache.files.removed.length > 0 ? `, empty removed ${d.cache.files.removed.length}` : ""),
     );
   }
-  if (d.deferred.length > 0) lines.push(`  ! не применено ${d.deferred.length}: узел без kind в логе`);
-  if (d.collided.length > 0) lines.push(`  ! коллизий часов ${d.collided.length}`);
-  lines.push(`готово за ${d.took_ms} мс`);
+  if (d.deferred.length > 0) lines.push(`  ! not applied ${d.deferred.length}: node without kind in the log`);
+  if (d.collided.length > 0) lines.push(`  ! clock collisions ${d.collided.length}`);
+  lines.push(`done in ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -114,9 +115,9 @@ export function createImportCommand(deps: StoreDeps = realStoreDeps): Command {
       if (!existsSync(dir)) {
         return failure(
           "notfound.graph_dir",
-          `каталог графа не найден: ${dir}`,
+          `graph directory not found: ${dir}`,
           ExitCode.NOTFOUND,
-          "myc export создаёт его",
+          "myc export creates it",
         );
       }
       const initialized = await autoInit(ctx, dir);
@@ -134,18 +135,20 @@ export function createImportCommand(deps: StoreDeps = realStoreDeps): Command {
           });
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
-          return failure("precond.graph_format", `файл оплога не разбирается: ${msg}`, ExitCode.PRECOND);
+          return failure("precond.graph_format", `oplog file does not parse: ${msg}`, ExitCode.PRECOND);
         }
         if (result.deferred.length > 0) {
           ctx.warn(
             "import.deferred",
-            `${result.deferred.length} операций не применены: узел без kind в логе (${result.deferred.slice(0, 3).join(", ")}…)`,
+            `${result.deferred.length} ${result.deferred.length === 1 ? "operation" : "operations"} not applied: ` +
+              `node without kind in the log (${result.deferred.slice(0, 3).join(", ")}…)`,
           );
         }
         if (result.collided.length > 0) {
           ctx.warn(
             "import.clock_collision",
-            `${result.collided.length} операций с неразрешимой ничьёй часов (${result.collided.slice(0, 3).join(", ")}…)`,
+            `${result.collided.length} ${result.collided.length === 1 ? "operation" : "operations"} ` +
+              `with an unresolvable clock tie (${result.collided.slice(0, 3).join(", ")}…)`,
           );
         }
         const data: ImportData = {

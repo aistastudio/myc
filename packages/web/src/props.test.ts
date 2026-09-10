@@ -140,7 +140,7 @@ describe("приёмка W2: недопустимое значение отве�
     for (const bad of ["abc", "1w", "-5m", "30"]) {
       const res = await post(url, `/api/nodes/${id}`, { estimate: bad });
       expect([bad, res.status]).toEqual([bad, 400]);
-      expect(res.body.error?.msg).toContain("оценк");
+      expect(res.body.error?.msg).toContain("invalid estimate");
     }
     expect(await fieldOf(url, id, "attrs.estimate_min")).toBeUndefined();
   }, 90_000);
@@ -206,7 +206,7 @@ describe("приёмка W2: статус зависит от вида и зар
     for (const id of [doc, message]) {
       const res = await post(url, `/api/nodes/${id}/op`, { op: "cancel", reason: "не то" });
       expect(res.status).toBe(400);
-      expect(res.body.error?.msg).toContain("недопустим");
+      expect(res.body.error?.msg).toContain("not allowed");
     }
     expect(await fieldOf(url, doc, "status")).toBe("active");
     expect(await fieldOf(url, message, "status")).toBe("active");

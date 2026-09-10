@@ -438,7 +438,7 @@ describe("hybridSearch — лексический режим", () => {
     });
     expect(embedCalls).toBe(1);
     expect(spy.calls.length).toBe(1);
-    expect(res.mode_used.why).toContain("безусловно");
+    expect(res.mode_used.why).toContain("unconditionally");
     raw.close();
   });
 
@@ -671,8 +671,8 @@ describe("hybridSearch — И2: деградация громкая", () => {
     expect(res.mode_used.trigger.fired).toBe(true);
     expect(res.mode_used.vector).toBe("unavailable");
     expect(res.mode_used.degraded.length).toBe(1);
-    expect(res.mode_used.degraded[0]).toContain("эмбеддинг запроса недоступен");
-    expect(res.mode_used.why).toContain("только по лексике");
+    expect(res.mode_used.degraded[0]).toContain("query embedding unavailable");
+    expect(res.mode_used.why).toContain("only from lexical");
     raw.close();
   });
 
@@ -720,7 +720,7 @@ describe("hybridSearch — И2: деградация громкая", () => {
     const raw = freshDb();
     const empty = search(raw, { text: "   " });
     expect(empty.hits).toEqual([]);
-    expect(empty.mode_used.why).toContain("пустой запрос");
+    expect(empty.mode_used.why).toContain("empty query");
     // Один round-trip — это счёт видимого корпуса ради объяснения пустоты
     // (S44): лексического запроса не было, но «искать нечего» и «не нашлось»
     // без этого числа неразличимы.
@@ -728,7 +728,7 @@ describe("hybridSearch — И2: деградация громкая", () => {
     expect(empty.mode_used.emptyReason?.code).toBe("empty_query");
 
     const noScope = search(raw, { text: "alpha", scopes: [] });
-    expect(noScope.mode_used.why).toContain("скоуп");
+    expect(noScope.mode_used.why).toContain("scope");
     expect(noScope.mode_used.emptyReason?.code).toBe("no_scopes");
     // Скоупов нет — считать корпус не по чему, лишнего запроса не делаем.
     expect(noScope.mode_used.roundTrips).toBe(0);

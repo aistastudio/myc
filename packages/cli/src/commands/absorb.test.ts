@@ -488,7 +488,7 @@ describe("remember — фаза 0 absorb", () => {
     expect(env.data["queue"]).toEqual([]);
     expect(jobs("absorb")).toEqual([a]);
     const r = await myc("remember", ALPHA_OLD);
-    expect(text(r.stdout)).toContain("duplicate · точный повтор, seen_count 3");
+    expect(text(r.stdout)).toContain("duplicate · exact repeat, seen_count 3");
     expect(node(a).seen_count).toBe(3);
   });
 });

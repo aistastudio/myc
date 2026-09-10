@@ -87,7 +87,7 @@ describe("federatedSearch: только свой воркспейс", () => {
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits.every((h) => h.source === "project" && h.tier === "project")).toBe(true);
     // Прежняя формулировка S41 обязана уцелеть: её читают поверхности.
-    expect(result.mode_used.why).toContain("не открыт");
+    expect(result.mode_used.why).toContain("not open");
   });
 });
 
@@ -359,15 +359,15 @@ describe("R3: пропуск НАЗВАН, а не умолчан (И2)", () => 
     const skipped = result.mode_used.sources.filter((r) => !r.queried);
     expect(skipped.map((r) => r.id)).toEqual(["repo02", "repo03", "repo04", "repo05"]);
     for (const r of skipped) {
-      expect(r.skipped).toContain("потолка 2");
+      expect(r.skipped).toContain("cap of 2");
       expect(r.mode).toBeUndefined();
       expect(r.hits).toBe(0);
     }
     // Отчёт видит ВСЕХ, а не только опрошенных: «опрошено 2 из 6» — это и есть
     // то, чем выдача признаётся неполной.
     expect(result.mode_used.sources.length).toBe(6);
-    expect(result.mode_used.why).toContain("опрошено 2 из 6");
-    expect(result.mode_used.why).toContain("пропущено 4");
+    expect(result.mode_used.why).toContain("queried 2 of 6");
+    expect(result.mode_used.why).toContain("skipped 4");
     for (const id of ["repo02", "repo03", "repo04", "repo05"]) {
       expect(result.mode_used.why).toContain(id);
     }
@@ -391,7 +391,7 @@ describe("R3: пропуск НАЗВАН, а не умолчан (И2)", () => 
     expect(result.mode_used.queried).toBeGreaterThan(0);
     const skipped = result.mode_used.sources.filter((r) => !r.queried);
     expect(skipped.length).toBeGreaterThan(0);
-    for (const r of skipped) expect(r.skipped).toContain("дедлайн 10 мс исчерпан");
+    for (const r of skipped) expect(r.skipped).toContain("deadline 10 ms exhausted");
     // Ленивость под дедлайном та же: открыто ровно опрошенное.
     expect(eco.opens.count).toBe(result.mode_used.queried);
     for (const db of eco.dbs) db.close();
@@ -441,7 +441,7 @@ describe("R3: сломанный сосед не роняет чтение св�
     expect(result.hits.length).toBeGreaterThan(0);
     const broken = result.mode_used.sources.find((r) => r.id === "broken")!;
     expect(broken.queried).toBe(false);
-    expect(broken.skipped).toContain("не открылся");
+    expect(broken.skipped).toContain("failed to open");
     expect(broken.skipped).toContain("база занята другим процессом");
     // Сосед ПОСЛЕ сломанного всё равно опрашивается: одна поломка не обрывает
     // список.
@@ -472,6 +472,6 @@ describe("R3: сломанный сосед не роняет чтение св�
   test("пустой список источников — ошибка, а не пустая выдача", async () => {
     await expect(
       federatedSearch({ text: "что угодно", caller: ANON, sources: [] }),
-    ).rejects.toThrow("хотя бы один источник");
+    ).rejects.toThrow("at least one source");
   });
 });

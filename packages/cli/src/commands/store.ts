@@ -608,7 +608,7 @@ async function openWorkspaceAt(
       failure: {
         ok: false,
         code: "conflict.busy",
-        msg: `база занята другим процессом: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+        msg: `the database is busy in another process: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
         exit: ExitCode.CONFLICT,
       },
     };
@@ -719,11 +719,11 @@ function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
       ok: false,
       code: "ws.worktree_main_missing",
       msg:
-        `git worktree ${link.worktreeDir}: воркспейс принадлежит репозиторию и живёт в ` +
-        `ОСНОВНОМ дереве, но его каталога ${link.mainRoot} нет — перенесли или удалили ` +
-        `(файл .git ведёт в ${link.gitDir})`,
+        `git worktree ${link.worktreeDir}: the workspace belongs to the repository and lives in the ` +
+        `MAIN tree, but its directory ${link.mainRoot} is gone — moved or deleted ` +
+        `(the .git file points to ${link.gitDir})`,
       exit: ExitCode.NOWS,
-      hint: "git worktree repair <путь к основному дереву>",
+      hint: "git worktree repair <path to the main tree>",
     };
   }
   if (link !== undefined) {
@@ -731,9 +731,9 @@ function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
       ok: false,
       code: "ws.not_initialized",
       msg:
-        `воркспейс не инициализирован: искали ${found.searched.join(", ")}; ` +
-        `${link.worktreeDir} — git worktree, и воркспейс ищется в основном дереве ` +
-        `${link.mainRoot}, а не по каталогам вверх`,
+        `workspace not initialized: searched ${found.searched.join(", ")}; ` +
+        `${link.worktreeDir} is a git worktree, so the workspace is looked up in the main tree ` +
+        `${link.mainRoot}, not in the parent directories`,
       exit: ExitCode.NOWS,
       hint: `myc -C ${link.mainRoot} init`,
     };
@@ -741,7 +741,7 @@ function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
   return {
     ok: false,
     code: "ws.not_initialized",
-    msg: `воркспейс не инициализирован: искали ${found.searched.join(", ")}`,
+    msg: `workspace not initialized: searched ${found.searched.join(", ")}`,
     exit: ExitCode.NOWS,
     hint: "myc init",
   };
@@ -871,7 +871,7 @@ export async function openStore(
         failure: {
           ok: false,
           code: "ws.not_initialized",
-          msg: `воркспейс не инициализирован: нет ${dbPath}`,
+          msg: `workspace not initialized: no ${dbPath}`,
           exit: ExitCode.NOWS,
           hint: "myc init",
         },
@@ -1401,7 +1401,7 @@ export function resolveId(handle: StoreHandle, input: string): ResolveResult {
       failure: {
         ok: false,
         code: "notfound.node",
-        msg: `узел ${input} не найден`,
+        msg: `node ${input} not found`,
         exit: ExitCode.NOTFOUND,
       },
     };
@@ -1412,9 +1412,9 @@ export function resolveId(handle: StoreHandle, input: string): ResolveResult {
       failure: {
         ok: false,
         code: "usage.ambiguous_id",
-        msg: `префикс '${input}' неоднозначен: ${candidates.join(", ")}`,
+        msg: `prefix '${input}' is ambiguous: ${candidates.join(", ")}`,
         exit: ExitCode.USAGE,
-        hint: "уточните префикс",
+        hint: "use a longer prefix",
       },
     };
   }
@@ -1425,7 +1425,7 @@ export function resolveId(handle: StoreHandle, input: string): ResolveResult {
       failure: {
         ok: false,
         code: "notfound.node",
-        msg: `узел ${input} не найден`,
+        msg: `node ${input} not found`,
         exit: ExitCode.NOTFOUND,
       },
     };
@@ -1520,7 +1520,7 @@ export function parsePriority(text: string): number | undefined {
 }
 
 export function ms(t0: number): string {
-  return `${Math.max(1, Math.round(performance.now() - t0))} мс`;
+  return `${Math.max(1, Math.round(performance.now() - t0))} ms`;
 }
 
 /** Колоночная строка: паддинг всех колонок, кроме последней. */

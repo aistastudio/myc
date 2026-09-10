@@ -130,7 +130,7 @@ type Args = Readonly<Record<string, unknown>>;
 function reqStr(args: Args, key: string): string {
   const v = args[key];
   if (typeof v !== "string" || v.trim().length === 0) {
-    throw new ToolError("usage.missing", `нужен параметр '${key}'`);
+    throw new ToolError("usage.missing", `missing parameter '${key}'`);
   }
   return v;
 }
@@ -138,7 +138,7 @@ function reqStr(args: Args, key: string): string {
 function optStr(args: Args, key: string): string | undefined {
   const v = args[key];
   if (v === undefined) return undefined;
-  if (typeof v !== "string") throw new ToolError("usage.invalid", `'${key}' должен быть строкой`);
+  if (typeof v !== "string") throw new ToolError("usage.invalid", `'${key}' must be a string`);
   return v;
 }
 
@@ -146,7 +146,7 @@ function strList(args: Args, key: string): string[] {
   const v = args[key];
   if (v === undefined) return [];
   if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
-    throw new ToolError("usage.invalid", `'${key}' должен быть массивом строк`);
+    throw new ToolError("usage.invalid", `'${key}' must be an array of strings`);
   }
   return v as string[];
 }
@@ -156,7 +156,7 @@ function singleFlag(list: readonly string[], key: string): string | undefined {
   if (list.length > 1) {
     throw new ToolError(
       "usage.invalid",
-      `'${key}': M0 принимает одно значение, получено ${list.length}`,
+      `'${key}': M0 takes a single value, got ${list.length}`,
     );
   }
   return list[0];
@@ -166,7 +166,7 @@ function optInt(args: Args, key: string, def: number, min: number, max: number):
   const v = args[key];
   if (v === undefined) return def;
   if (typeof v !== "number" || !Number.isFinite(v)) {
-    throw new ToolError("usage.invalid", `'${key}' должен быть числом`);
+    throw new ToolError("usage.invalid", `'${key}' must be a number`);
   }
   return Math.max(min, Math.min(max, Math.floor(v)));
 }
@@ -196,7 +196,7 @@ async function runEnvelope(runCli: RunCli, argv: readonly string[]): Promise<Env
   } catch {
     throw new ToolError(
       "internal.unexpected",
-      `движок вернул не-JSON (код ${out.code}): ${out.stderr ?? out.stdout.slice(0, 200)}`,
+      `engine returned non-JSON (code ${out.code}): ${out.stderr ?? out.stdout.slice(0, 200)}`,
     );
   }
 }
@@ -211,7 +211,7 @@ function envelopeFailure(
   env: Envelope,
   extra: { structured?: unknown } = {},
 ): CallToolResult {
-  const e = env.error ?? { code: "internal.unexpected", msg: "движок вернул ошибку без конверта", exit: 1 };
+  const e = env.error ?? { code: "internal.unexpected", msg: "engine returned an error without an envelope", exit: 1 };
   return errorResult(e.code, e.msg, e.hint, { warn: env.warn ?? [], structured: extra.structured });
 }
 
@@ -314,7 +314,7 @@ async function toolReady(deps: DispatchDeps, args: Args): Promise<CallToolResult
 
   if (!claim) {
     if (id !== undefined) {
-      throw new ToolError("usage.invalid", "'id' имеет смысл только с claim=true");
+      throw new ToolError("usage.invalid", "'id' only makes sense with claim=true");
     }
     const argv = ["ready", "--n", String(n), ...filters];
     const [text, env] = await Promise.all([runText(deps.runCli, argv), runJson(deps.runCli, argv)]);
@@ -387,11 +387,11 @@ const UPDATE_OPS = ["claim", "release", "close", "reopen", "assign", "priority",
  */
 const HUMAN_ONLY_OPS: Readonly<Record<string, string>> = {
   cancel:
-    "отмена решает, нужна ли работа ВООБЩЕ, — это человеческое суждение (S54), " +
-    "и она терминальна: отменённый блокер немедленно выпускает зависимые задачи " +
-    "в очередь. Если работа кажется ненужной, скажите об этом в отчёте и оставьте " +
-    "решение человеку; отменить можно из CLI (`myc update <id> --status cancelled`) " +
-    "или из интерфейса",
+    "cancelling decides whether the work is needed AT ALL — that is a human judgment (S54), " +
+    "and it is terminal: a cancelled blocker immediately releases dependent tasks " +
+    "into the ready queue. If the work looks unnecessary, say so in your report and leave " +
+    "the decision to a human; it can be cancelled from the CLI (`myc update <id> --status cancelled`) " +
+    "or from the web UI",
 };
 
 async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
@@ -399,10 +399,10 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
   const op = reqStr(args, "op");
   const humanOnly = HUMAN_ONLY_OPS[op];
   if (humanOnly !== undefined) {
-    throw new ToolError("precond.human_only", `операция '${op}' агенту не выдана: ${humanOnly}`);
+    throw new ToolError("precond.human_only", `op '${op}' is not available to agents: ${humanOnly}`);
   }
   if (!(UPDATE_OPS as readonly string[]).includes(op)) {
-    throw new ToolError("usage.invalid", `неверный op '${op}'; допустимы ${UPDATE_OPS.join(", ")}`);
+    throw new ToolError("usage.invalid", `invalid op '${op}'; allowed: ${UPDATE_OPS.join(", ")}`);
   }
   const lease = optInt(args, "lease_minutes", 30, 5, 480);
 
@@ -439,7 +439,7 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
       const cost = args["cost"];
       if (cost !== undefined) {
         if (typeof cost !== "object" || cost === null) {
-          throw new ToolError("usage.invalid", "'cost' должен быть объектом");
+          throw new ToolError("usage.invalid", "'cost' must be an object");
         }
         const c = cost as Record<string, unknown>;
         if (typeof c["tokens_in"] === "number") argv.push("--cost-in", String(c["tokens_in"]));
@@ -470,11 +470,11 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
       const degraded: string[] = [];
       try {
         const noted = await addNote(deps, id, `reopen: ${reason}`);
-        text += `reason записан заметкой ${noted.noteId}\n`;
+        text += `reason saved as note ${noted.noteId}\n`;
       } catch (e) {
         // статус уже переоткрыт; потерять причину молча нельзя — WARN
         degraded.push("note.unwritten");
-        text += `WARN note.unwritten: причина reopen не записана: ${e instanceof Error ? e.message : String(e)}\n`;
+        text += `WARN note.unwritten: reopen reason not saved: ${e instanceof Error ? e.message : String(e)}\n`;
       }
       return textResult(text, {
         id: d.id,
@@ -524,15 +524,15 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
         if (!node.ok) throw new ToolError(node.failure.code, node.failure.msg, node.failure.hint);
         const leaseInfo = h.store.leaseOf(node.node.id);
         if (leaseInfo === undefined || leaseInfo.holder.length === 0) {
-          throw new ToolError("precond.no_lease", `${node.node.id} не в аренде — отпускать нечего`);
+          throw new ToolError("precond.no_lease", `${node.node.id} has no lease — nothing to release`);
         }
         if (!h.store.releaseLease(node.node.id, leaseInfo.holder, leaseInfo.epoch)) {
-          throw new ToolError("conflict.release", `аренда ${node.node.id} изменилась — повторите`);
+          throw new ToolError("conflict.release", `lease on ${node.node.id} changed — retry`);
         }
         if (node.node.status === "in_progress") {
           h.store.updateNode(node.node.id, { status: "open" });
         }
-        const text = `released ${node.node.id} · аренда ${leaseInfo.holder} снята, статус open\n`;
+        const text = `released ${node.node.id} · lease of ${leaseInfo.holder} dropped, status open\n`;
         return textResult(text, {
           id: node.node.id,
           status: "open",
@@ -551,21 +551,21 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
         if (!node.ok) throw new ToolError(node.failure.code, node.failure.msg, node.failure.hint);
         const leaseInfo = h.store.leaseOf(node.node.id);
         if (leaseInfo === undefined || leaseInfo.holder.length === 0) {
-          throw new ToolError("precond.no_lease", `${node.node.id} не в аренде — продлевать нечего`);
+          throw new ToolError("precond.no_lease", `${node.node.id} has no lease — nothing to extend`);
         }
         if (leaseInfo.holder !== h.actor) {
           throw new ToolError(
             "conflict.claimed",
-            `${node.node.id} держит ${leaseInfo.holder} — продлить может только владелец`,
-            `myc_update {op:"claim", steal:true} после истечения аренды`,
+            `${node.node.id} is held by ${leaseInfo.holder} — only the holder can extend it`,
+            `myc_update {op:"claim", steal:true} once the lease expires`,
           );
         }
         const ttl = lease * 60_000;
         const expires = h.store.renewLease(node.node.id, leaseInfo.holder, leaseInfo.epoch, ttl);
         if (expires === undefined) {
-          throw new ToolError("conflict.release", `аренда ${node.node.id} изменилась — повторите`);
+          throw new ToolError("conflict.release", `lease on ${node.node.id} changed — retry`);
         }
-        const text = `renewed ${node.node.id} by ${leaseInfo.holder} · аренда ${fmtAge(ttl)} до ${fmtClock(expires)}\n`;
+        const text = `renewed ${node.node.id} by ${leaseInfo.holder} · lease ${fmtAge(ttl)} until ${fmtClock(expires)}\n`;
         return textResult(text, {
           id: node.node.id,
           status: node.node.status,
@@ -576,13 +576,13 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
       });
     }
   }
-  throw new ToolError("usage.invalid", `op '${op}' не поддержан`);
+  throw new ToolError("usage.invalid", `op '${op}' is not supported`);
 }
 
 async function toolRecall(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
   const query = reqStr(args, "query");
   if (query.trim().length < 2) {
-    throw new ToolError("usage.invalid", "запрос короче двух символов");
+    throw new ToolError("usage.invalid", "query is shorter than two characters");
   }
   const n = optInt(args, "n", 6, 1, 50);
   const budget = optInt(args, "budget", 2000, 200, 8000);
@@ -609,7 +609,7 @@ async function toolRecall(deps: DispatchDeps, args: Args): Promise<CallToolResul
 async function toolRemember(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
   const text = reqStr(args, "text");
   if (text.trim().length < 8) {
-    throw new ToolError("usage.invalid", "факт короче 8 символов — сформулируйте конкретнее");
+    throw new ToolError("usage.invalid", "fact is shorter than 8 characters — be more specific");
   }
   const argv = ["remember", text];
   const tags = strList(args, "tag");
@@ -632,7 +632,7 @@ async function toolRemember(deps: DispatchDeps, args: Args): Promise<CallToolRes
   if (d.absorb_heuristic) {
     // absorb без chat-LLM — эвристика; агент обязан это видеть (§5.6)
     degraded.push("llm.chat.off");
-    warns += "WARN llm.chat.off: absorb-классификация эвристическая — chat-LLM выключен\n";
+    warns += "WARN llm.chat.off: absorb classification is heuristic — chat LLM is off\n";
   }
   return textResult(`${warns}${rememberText(d)}`, {
     id: d.id,
@@ -647,12 +647,12 @@ async function toolRemember(deps: DispatchDeps, args: Args): Promise<CallToolRes
 
 async function toolShow(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
   const ids = strList(args, "ids");
-  if (ids.length === 0) throw new ToolError("usage.missing", "нужен параметр 'ids' (1..20)");
-  if (ids.length > 20) throw new ToolError("usage.invalid", `за один вызов — до 20 узлов, получено ${ids.length}`);
+  if (ids.length === 0) throw new ToolError("usage.missing", "missing parameter 'ids' (1..20)");
+  if (ids.length > 20) throw new ToolError("usage.invalid", `up to 20 nodes per call, got ${ids.length}`);
   const argv = ["show", ids.join(",")];
   const depthRaw = args["depth"];
   if (depthRaw !== undefined) {
-    if (depthRaw !== 0 && depthRaw !== 1) throw new ToolError("usage.invalid", "'depth' принимает 0 или 1");
+    if (depthRaw !== 0 && depthRaw !== 1) throw new ToolError("usage.invalid", "'depth' takes 0 or 1");
     argv.push("--depth", String(depthRaw));
   }
   if (optBool(args, "source")) argv.push("--source");
@@ -681,11 +681,11 @@ async function toolLink(deps: DispatchDeps, args: Args): Promise<CallToolResult>
   const to = reqStr(args, "to");
   const type = reqStr(args, "type");
   if (!(LINK_TYPES as readonly string[]).includes(type)) {
-    throw new ToolError("usage.invalid", `неверный type '${type}'; допустимы ${LINK_TYPES.join(", ")}`);
+    throw new ToolError("usage.invalid", `invalid type '${type}'; allowed: ${LINK_TYPES.join(", ")}`);
   }
   const reason = optStr(args, "reason");
   if ((type === "supersedes" || type === "duplicates") && reason === undefined) {
-    throw new ToolError("usage.missing", `для ${type} обязателен reason — история не переписывается`);
+    throw new ToolError("usage.missing", `${type} requires a reason — history is not rewritten`);
   }
   const remove = optBool(args, "remove");
 
@@ -699,7 +699,7 @@ async function toolLink(deps: DispatchDeps, args: Args): Promise<CallToolResult>
     return textResult(text, {
       ok: true,
       edge: { from: d.src, type, to: d.dst },
-      effects: d.left_ready === true ? [`${d.left_ready_id} вышла из ready`] : d.back_ready === true ? [`${d.back_ready_id} снова ready`] : [],
+      effects: d.left_ready === true ? [`${d.left_ready_id} left ready`] : d.back_ready === true ? [`${d.back_ready_id} is ready again`] : [],
       meta: metaOf(env),
     });
   }
@@ -717,13 +717,13 @@ async function toolLink(deps: DispatchDeps, args: Args): Promise<CallToolResult>
     const effects: string[] = [];
     if (remove) {
       if (!h.store.removeEdge(src, kind, dst)) {
-        throw new ToolError("notfound.edge", `ребра ${src} ${type} ${dst} нет`);
+        throw new ToolError("notfound.edge", `no edge ${src} ${type} ${dst}`);
       }
     } else {
       const existing = h.store.getEdge(src, kind, dst);
       // удалённое ребро остаётся надгробием OR-Set — это не «уже есть»
       if (existing !== undefined && existing.deleted_at === null) {
-        throw new ToolError("conflict.edge_exists", `ребро ${src} ${type} ${dst} уже есть`);
+        throw new ToolError("conflict.edge_exists", `edge ${src} ${type} ${dst} already exists`);
       }
       try {
         h.store.addEdge(src, kind, dst, {
@@ -734,7 +734,7 @@ async function toolLink(deps: DispatchDeps, args: Args): Promise<CallToolResult>
       }
       if (type === "supersedes") {
         h.store.updateNode(dst, { attrs: { superseded_by: src } });
-        effects.push(`${dst} помечен superseded_by ${src}; старый узел сохранён`);
+        effects.push(`${dst} marked superseded_by ${src}; the old node is kept`);
       }
       if (reason !== undefined) effects.push(`reason: ${reason}`);
     }
@@ -788,7 +788,7 @@ async function codeRead(
 function reqRaw(args: Args, key: string): string {
   const v = args[key];
   if (typeof v !== "string" || v.length === 0) {
-    throw new ToolError("usage.missing", `нужен параметр '${key}'`);
+    throw new ToolError("usage.missing", `missing parameter '${key}'`);
   }
   return v;
 }
@@ -801,7 +801,7 @@ function optCount(args: Args, key: string): string | undefined {
   const v = args[key];
   if (v === undefined) return undefined;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
-    throw new ToolError("usage.invalid", `'${key}' — целое от 1`);
+    throw new ToolError("usage.invalid", `'${key}' must be an integer >= 1`);
   }
   return String(v);
 }
@@ -844,7 +844,7 @@ async function toolCallers(deps: DispatchDeps, args: Args): Promise<CallToolResu
   const depth = args["depth"];
   if (depth !== undefined) {
     if (typeof depth !== "number" && typeof depth !== "string") {
-      throw new ToolError("usage.invalid", "'depth' — целое от 1 или \"all\"");
+      throw new ToolError("usage.invalid", "'depth' must be an integer >= 1 or \"all\"");
     }
     head.push("--depth", String(depth));
   }

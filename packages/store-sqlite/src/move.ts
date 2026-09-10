@@ -228,13 +228,13 @@ export function planMove(
     return {
       ok: false,
       code: "same_workspace",
-      msg: `источник и приёмник — один воркспейс (scope '${from}'): переезжать некуда`,
+      msg: `source and target are the same workspace (scope '${from}'): nowhere to move`,
       crossing: [],
     };
   }
   const node = source.store.getNode(id, true);
   if (node === undefined) {
-    return { ok: false, code: "notfound", msg: `узел ${id} не найден в источнике`, crossing: [] };
+    return { ok: false, code: "notfound", msg: `node ${id} not found in the source`, crossing: [] };
   }
 
   const now = opts.now ?? Date.now();
@@ -249,8 +249,8 @@ export function planMove(
       ok: false,
       code: "chain_truncated",
       msg:
-        `цепочка версий ${truncated[0]} длиннее бюджета чтения ${opts.chainLimit ?? MOVE_CHAIN_LIMIT}: ` +
-        `переезд увёз бы её половину и разрезал историю`,
+        `version chain of ${truncated[0]} is longer than the read budget ${opts.chainLimit ?? MOVE_CHAIN_LIMIT}: ` +
+        `the move would take only part of it and cut the history`,
       crossing: [],
     };
   }
@@ -272,8 +272,8 @@ export function planMove(
         ok: false,
         code: "leased",
         msg:
-          `${member} под живой арендой ${lease.lease_holder} до ` +
-          `${new Date(lease.lease_expires).toISOString()}: аренда не реплицируется и переезд её потеряет`,
+          `${member} is under a live lease by ${lease.lease_holder} until ` +
+          `${new Date(lease.lease_expires).toISOString()}: leases do not replicate, and the move would lose it`,
         crossing: [],
       };
     }
@@ -284,8 +284,10 @@ export function planMove(
       ok: false,
       code: "cross_boundary",
       msg:
-        `${set.crossing.length} живых blocks пересекли бы границу воркспейсов; ` +
-        `open_blockers ведут триггеры внутри одной базы, и в приёмнике задача попала бы в ready как готовая`,
+        `${set.crossing.length} live blocks ${set.crossing.length === 1 ? "edge" : "edges"} ` +
+        `would cross the workspace boundary; ` +
+        `open_blockers is maintained by triggers inside one database, and in the target the task ` +
+        `would show up in ready as unblocked`,
       crossing: set.crossing,
     };
   }
@@ -309,9 +311,9 @@ export function planMove(
         ok: false,
         code: "cross_boundary_parent",
         msg:
-          `${member} уезжает из-под заблокированного предка ${a.ancestor} ` +
-          `(${a.open_blockers} открытых блокеров): наследование ведут триггеры внутри одной ` +
-          `базы, и в приёмнике задача попала бы в ready как готовая`,
+          `${member} would leave its blocked ancestor ${a.ancestor} behind ` +
+          `(${a.open_blockers} open ${a.open_blockers === 1 ? "blocker" : "blockers"}): inheritance is maintained ` +
+          `by triggers inside one database, and in the target the task would show up in ready as unblocked`,
         crossing: [],
       };
     }
@@ -404,8 +406,8 @@ function ingest(
   if (mutant !== "ignore-deferred" && (r.deferred.length > 0 || r.collided.length > 0)) {
     throw new GraphError(
       "graph.clock_collision",
-      `приёмник не взял историю целиком: отложено ${r.deferred.length}, коллизий ${r.collided.length}` +
-        ` (${[...r.deferred, ...r.collided].slice(0, 3).join(", ")}) — переезд остановлен до фиксации`,
+      `the target did not take the whole history: deferred ${r.deferred.length}, collided ${r.collided.length}` +
+        ` (${[...r.deferred, ...r.collided].slice(0, 3).join(", ")}) — move stopped before the commit point`,
     );
   }
   return { applied: r.applied, duplicate: r.duplicate };

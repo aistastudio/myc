@@ -40,7 +40,7 @@ function parseArgs(argv: readonly string[]): Args {
   const target = get("target");
   const id = get("id");
   if (source === undefined || target === undefined || id === undefined) {
-    throw new Error("нужны --source, --target и --id");
+    throw new Error("--source, --target and --id required");
   }
   return {
     source,
@@ -59,7 +59,7 @@ async function waitForBarrier(path: string | undefined): Promise<void> {
     if (await Bun.file(path).exists()) return;
     await Bun.sleep(10);
   }
-  throw new Error(`барьер ${path} так и не появился`);
+  throw new Error(`barrier ${path} never appeared`);
 }
 
 async function main(): Promise<void> {
@@ -88,9 +88,9 @@ async function main(): Promise<void> {
   }
 
   const source = await openWorkspaceByDir(args.source, "worker");
-  if (!source.ok) throw new Error(`источник: ${source.failure.msg}`);
+  if (!source.ok) throw new Error(`source: ${source.failure.msg}`);
   const target = await openWorkspaceByDir(args.target, "worker");
-  if (!target.ok) throw new Error(`приёмник: ${target.failure.msg}`);
+  if (!target.ok) throw new Error(`target: ${target.failure.msg}`);
 
   const plan = planMove(source.handle, args.id, source.handle.scope, target.handle.scope, {
     withBlockers: args.withBlockers,

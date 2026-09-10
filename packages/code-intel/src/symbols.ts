@@ -85,7 +85,7 @@ export interface DefsOptions {
 export class GrammarNotLoadedError extends Error {
   constructor(readonly lang: LangId) {
     super(
-      `грамматика tree-sitter для "${lang}" не загружена: вызовите await loadLang("${lang}") до listDefs`,
+      `tree-sitter grammar for "${lang}" is not loaded: call await loadLang("${lang}") before listDefs`,
     );
     this.name = "GrammarNotLoadedError";
   }
@@ -189,10 +189,10 @@ export class MissingResourceError extends Error {
 export class RuntimeMissingError extends MissingResourceError {
   constructor(readonly searched: readonly string[]) {
     super(
-      `рантайм tree-sitter не найден: ${RUNTIME_WASM} нет ни в одном из каталогов ` +
-        `[${searched.join(", ")}]. Он поставляется вместе с myc, и его отсутствие ` +
-        "означает повреждённую установку: переустановите пакет либо укажите каталог " +
-        "с файлом в MYC_TREE_SITTER_DIR",
+      `tree-sitter runtime not found: ${RUNTIME_WASM} is in none of the directories ` +
+        `[${searched.join(", ")}]. It ships with myc, so its absence ` +
+        "means a broken install: reinstall the package or set MYC_TREE_SITTER_DIR " +
+        "to the directory that has the file",
       "bun add -g @aistastudio/myc",
     );
     this.name = "RuntimeMissingError";
@@ -210,8 +210,8 @@ export class GrammarMissingError extends MissingResourceError {
   ) {
     const spec = grammarSpecFor(lang);
     super(
-      `грамматика tree-sitter для "${lang}" не скачана: ${spec.file} ` +
-        `(${formatBytes(spec.bytes)}) нет ни в одном из каталогов [${searched.join(", ")}]`,
+      `tree-sitter grammar for "${lang}" is not downloaded: ${spec.file} ` +
+        `(${formatBytes(spec.bytes)}) is in none of the directories [${searched.join(", ")}]`,
       `myc code fetch ${lang}`,
     );
     this.name = "GrammarMissingError";

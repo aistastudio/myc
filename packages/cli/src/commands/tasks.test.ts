@@ -184,7 +184,7 @@ describe("dep", () => {
     await myc("dep", "add", a, "blocks", b);
     const r = await myc("dep", "add", b, "blocks", a);
     expect(r.code).toBe(ExitCode.CONFLICT);
-    expect(r.stderr).toContain("цикл зависимостей");
+    expect(r.stderr).toContain("dependency cycle");
     expect(r.stderr).toContain(`${a} → ${b} → ${a}`);
   });
 
@@ -194,10 +194,10 @@ describe("dep", () => {
     const c = await createTask("лист", "--dep", b);
     const tree = await myc("dep", "tree", a);
     expect(tree.stdout as string).toContain("└── blocks");
-    expect(tree.stdout as string).toContain("2 узла заблокировано");
+    expect(tree.stdout as string).toContain("2 nodes blocked");
     const why = await myc("dep", "why", c);
-    expect(why.stdout as string).toContain("заблокирована 1 открытой зависимостью");
-    expect(why.stdout as string).toContain("критический путь");
+    expect(why.stdout as string).toContain("blocked by 1 open dependency");
+    expect(why.stdout as string).toContain("critical path");
   });
 });
 
@@ -222,7 +222,7 @@ describe("ready", () => {
     const a = await createTask("блокер");
     await createTask("зависимая", "--dep", a);
     const r = await myc("ready");
-    expect(r.stdout as string).toMatch(/1 ready · 1 blocked · 0 in_progress · \d+ мс/);
+    expect(r.stdout as string).toMatch(/1 ready · 1 blocked · 0 in_progress · \d+ ms/);
   });
 
   test("пустая очередь с блокерами — осмысленный ответ, exit 0", async () => {
@@ -261,7 +261,7 @@ describe("claim/close", () => {
     const c1 = await myc("claim", id);
     expect(c1.code).toBe(ExitCode.OK);
     expect(c1.stdout as string).toContain(`claimed ${id} by tester`);
-    expect(c1.stdout as string).toContain("аренда 30m");
+    expect(c1.stdout as string).toContain("lease 30m");
 
     const c2 = await run(["-C", dir, "claim", id, "--as", "other"], { registry, env: {} });
     expect(c2.code).toBe(ExitCode.CONFLICT);
@@ -306,7 +306,7 @@ describe("claim/close", () => {
     expect(r1.code).toBe(ExitCode.OK);
     const r2 = await myc("close", id);
     expect(r2.code).toBe(ExitCode.OK);
-    expect(r2.stdout as string).toContain("уже closed");
+    expect(r2.stdout as string).toContain("already closed");
   });
 
   test("ready --claim берёт верхнюю и прячет её из очереди", async () => {
@@ -350,11 +350,11 @@ describe("show/list/update", () => {
     await createTask("t1", "-p", "P0");
     await createTask("t2", "-p", "P1");
     const r = await myc("list", "--kind", "task", "--status", "open", "--sort", "priority");
-    expect(r.stdout as string).toMatch(/2 из 2 · \d+ мс/);
+    expect(r.stdout as string).toMatch(/2 of 2 · \d+ ms/);
     const c = await myc("list", "--kind", "task", "--count");
     expect((c.stdout as string).trim()).toBe("2");
     const p0 = await myc("list", "--priority", "P0");
-    expect(p0.stdout as string).toMatch(/1 из 1/);
+    expect(p0.stdout as string).toMatch(/1 of 1/);
   });
 
   test("update: поля меняются, пустой update — usage", async () => {
@@ -558,7 +558,7 @@ describe("show: состав эпика и принадлежность зада
     const view = (r.env as { data: { children?: { id: string; status: string }[] } }).data;
     expect((view.children ?? []).map((c) => c.id).sort()).toEqual([a, b].sort());
     const human = await myc("show", epic);
-    expect(human.stdout as string).toContain("состав    1 из 2 закрыто");
+    expect(human.stdout as string).toContain("children  1 of 2 closed");
   });
 
   test("отменённое не считается сделанным", async () => {
@@ -568,7 +568,7 @@ describe("show: состав эпика и принадлежность зада
     const a = idOf((await myc("task", "первая", "--parent", epic)).stdout);
     await myc("update", a, "--status", "cancelled");
     const human = await myc("show", epic);
-    expect(human.stdout as string).toContain("состав    0 из 1 закрыто, отменено 1");
+    expect(human.stdout as string).toContain("children  0 of 1 closed, cancelled 1");
   });
 
   test("задача показывает, в какой эпик входит", async () => {
@@ -602,7 +602,7 @@ describe("update --parent: перенос задачи между эпиками
 
     const moved = await myc("update", t, "--parent", b);
     expect(moved.code).toBe(0);
-    expect(moved.stdout as string).toContain(`эпик: ${a} → ${b}`);
+    expect(moved.stdout as string).toContain(`epic: ${a} → ${b}`);
 
     // Оба конца обязаны сойтись: старый эпик опустел, новый принял.
     expect((await myc("show", a)).stdout as string).not.toContain(t);
@@ -617,7 +617,7 @@ describe("update --parent: перенос задачи между эпиками
 
     const off = await myc("update", t, "--no-parent");
     expect(off.code).toBe(0);
-    expect(off.stdout as string).toContain("без эпика");
+    expect(off.stdout as string).toContain("no epic");
 
     // Второй раз отцеплять нечего, и молчаливое «ок» здесь врало бы о том,
     // что действие произошло.
@@ -678,7 +678,7 @@ describe("msg --reply-to: комментарий как обычная опер�
     await myc("msg", "ответ на комментарий", "--reply-to", c1);
 
     const human = (await myc("show", task)).stdout as string;
-    expect(human).toContain("нить      1");
+    expect(human).toContain("thread    1");
     expect(human).toContain("(+1)");
   });
 
@@ -907,7 +907,7 @@ describe("create --anchor", () => {
     const r = await myc("task", "Починить пропажу", "--anchor", "src/нет.ts:1-2");
     expect(r.code).toBe(ExitCode.OK);
     const text = r.stdout as string;
-    expect(text).toContain("@— не привязан:");
+    expect(text).toContain("@— not bound:");
     expect(text).toContain("(myc anchor add)");
     const id = idOf(r.stdout);
 
@@ -946,7 +946,7 @@ describe("--anchor вне корня репозитория", () => {
     try {
       const r = await myc("task", "Чужой файл", "--anchor", join(outside, "x.ts"));
       expect(r.code).toBe(ExitCode.OK);
-      expect(r.stdout as string).toContain("файл вне корня");
+      expect(r.stdout as string).toContain("file outside the root");
 
       const raw = new Database(db, { readonly: true });
       const n = raw.query("SELECT count(*) AS n FROM anchors").get() as { n: number };

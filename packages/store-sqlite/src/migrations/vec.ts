@@ -24,8 +24,8 @@ export const vectorMigrations: readonly Migration[] = [
 
 /** Машинный код деградации для meta.degraded[] всех поверхностей (инвариант И2). */
 export const VEC_DEGRADED_UNAVAILABLE =
-  "vector.unavailable: расширение sqlite-vec (vec0) не загружено — векторный поиск выключен, " +
-  "остальные поверхности работают";
+  "vector.unavailable: the sqlite-vec extension (vec0) is not loaded — vector search is off, " +
+  "the other surfaces work";
 
 export interface VectorMigrateOptions {
   /** Загружен ли vec0. Факт от рантайма, а не догадка этого модуля. */
@@ -78,8 +78,8 @@ function assertObjectsPresent(db: Database, migration: Migration): void {
   const missing = migration.objects.filter((name) => !present.has(name));
   if (missing.length > 0) {
     throw new Error(
-      `vec migration ${migration.version} '${migration.name}': объекты не созданы после наката: ${missing.join(", ")} ` +
-        "(bun:sqlite молча пропускает CREATE VIRTUAL TABLE с неизвестным модулем — см. docs/design/01a-ddl-validation.md §7)",
+      `vec migration ${migration.version} '${migration.name}': objects not created after applying: ${missing.join(", ")} ` +
+        "(bun:sqlite silently skips CREATE VIRTUAL TABLE with an unknown module — see docs/design/01a-ddl-validation.md §7)",
     );
   }
 }
@@ -135,7 +135,7 @@ export async function migrateVectors(
   if (maxApplied > maxKnown) {
     throw new SchemaError(
       "schema.newer",
-      `векторная схема БД (${maxApplied}) новее известной бинарю (${maxKnown}). ` +
+      `the database vector schema (${maxApplied}) is newer than this binary knows (${maxKnown}). ` +
         SCHEMA_UPGRADE_HINT,
     );
   }
@@ -146,8 +146,8 @@ export async function migrateVectors(
     if ((await sha256Hex(migration.sql)) !== record.checksum) {
       throw new SchemaError(
         "schema.checksum",
-        `векторная миграция ${record.version} изменилась после применения — база и бинарь разошлись. ` +
-          "`myc doctor --schema` покажет расхождение.",
+        `vector migration ${record.version} changed after it was applied — the database and the binary diverged. ` +
+          "`myc doctor --schema` shows the difference.",
       );
     }
   }

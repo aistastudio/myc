@@ -245,20 +245,20 @@ process.exit(0);
  *    (проверено: тот же файл до доверия не сработал ни разу, после — сработал).
  */
 export const CODEX_NEEDS_REVIEW =
-  "Codex запускает хук только после двух согласий человека: проект должен быть " +
-  "доверенным (codex спрашивает это при первом запуске в каталоге; в " +
-  "~/.codex/config.toml это `[projects.\"<путь>\"] trust_level = \"trusted\"`), " +
-  "а новый или изменённый хук — просмотренным (codex встретит сессию экраном " +
-  "«hooks are new or changed»; до этого хук молча не запускается). Проверить: " +
-  "`myc doctor --hooks` после первой сессии";
+  "Codex runs a hook only after two human approvals: the project must be " +
+  "trusted (codex asks about it on the first run in the directory; in " +
+  "~/.codex/config.toml it is `[projects.\"<path>\"] trust_level = \"trusted\"`), " +
+  "and a new or changed hook must be reviewed (codex greets the session with a " +
+  "\"hooks are new or changed\" screen; until then the hook silently does not run). Check: " +
+  "`myc doctor --hooks` after the first session";
 
 export const CODEX_NO_EPISODE =
-  "хук эпизода у Codex больше не идёт через `notify`: единственное событие " +
-  "`notify` — `agent-turn-complete`, и в его payload (thread-id, turn-id, cwd, " +
-  "client, input-messages, last-assistant-message) нет ни стенограммы, ни " +
-  "события сжатия — absorb-session там всегда возвращал `empty`. Теперь хуки " +
-  "стоят в `.codex/hooks.json` (события SessionStart и PreCompact, стенограмма " +
-  "приходит полем `transcript_path`)";
+  "the Codex episode hook no longer goes through `notify`: the only `notify` event " +
+  "is `agent-turn-complete`, and its payload (thread-id, turn-id, cwd, " +
+  "client, input-messages, last-assistant-message) has neither a transcript nor a " +
+  "compaction event — absorb-session always returned `empty` there. The hooks now " +
+  "live in `.codex/hooks.json` (SessionStart and PreCompact events, the transcript " +
+  "comes in the `transcript_path` field)";
 
 /**
  * Что Codex проверяет у записи хука: `timeout` в СЕКУНДАХ (см. пункт 3 выше).
@@ -745,36 +745,37 @@ export function kimiHooksToml(events: readonly HookEvent[]): string {
 export function skillMd(): string {
   return `---
 name: myc
-description: Память, задачи и связи проекта. Используй, когда нужно узнать
-  состояние проекта, взять следующую задачу, вспомнить прошлое решение, записать
-  вывод или понять, какие задачи связаны с файлом, который ты правишь.
+description: Project memory, tasks and links. Use it when you need to learn
+  the state of the project, take the next task, recall a past decision, record
+  a finding, or see which tasks relate to the file you are editing.
 ---
 
 # myc
 
-Один граф: задачи с зависимостями, память проекта, привязки к коду.
+One graph: tasks with dependencies, project memory, links to code.
 
-## Порядок работы
+## Workflow
 
-1. \`myc prime\` — что происходит (хук делает это сам в начале сессии).
-2. \`myc ready --claim\` — взять работу атомарно.
-3. \`myc recall "<вопрос>"\` — прежде чем изобретать: возможно, это уже решали.
-4. \`myc remember "<вывод>"\` — после каждого нетривиального вывода.
-5. \`myc close <id> --reason "<что и почему>"\` — закрывая, объясни.
+1. \`myc prime\` — what is going on (the hook does this itself at session start).
+2. \`myc ready --claim\` — take work atomically.
+3. \`myc recall "<question>"\` — before inventing: maybe this was already solved.
+4. \`myc remember "<finding>"\` — after every non-trivial finding.
+5. \`myc close <id> --reason "<what and why>"\` — when closing, explain.
 
-## Правила
+## Rules
 
-- Один факт = один \`remember\`. Не пиши абзацы.
-- Не записывай код и секреты — записывай выводы.
-- Противоречие не затирает старое: \`myc link A supersedes B --reason "..."\`.
-- Строка \`WARN degraded.*\` в ответе означает, что часть индекса не работает
-  и поиск неполон — не считай пустой ответ доказательством отсутствия.
+- One fact = one \`remember\`. Don't write paragraphs.
+- Don't record code or secrets — record findings.
+- A contradiction does not overwrite the old note: \`myc link A supersedes B --reason "..."\`.
+- A \`WARN degraded.*\` line in a response means part of the index is not working
+  and the search is incomplete — don't treat an empty answer as proof of absence.
 
-## Сжатие контекста
+## Context compaction
 
-Перед компактом хук \`pre-compact\` сам пишет эпизод и возвращает спасательный
-пакет. Если ты видишь блок «myc: контекст сжимается» — это и есть то, что
-нельзя потерять; всё остальное восстанавливается из \`myc show <эпизод>\`.
+Before compaction the \`pre-compact\` hook writes an episode itself and returns a rescue
+packet. If you see a block starting with "# myc:" that says the context is being
+compacted — that is exactly what must not be lost; everything else can be restored
+with \`myc show <episode>\`.
 `;
 }
 
@@ -783,10 +784,10 @@ export const AGENTS_END = "<!-- myc:end -->";
 
 export function agentsBlock(): string {
   return `${AGENTS_START}
-## myc — память и задачи проекта
+## myc — project memory and tasks
 
-Инструменты \`myc_*\` (MCP) или CLI \`myc\`. Порядок: \`myc prime\` → \`myc ready --claim\`
-→ \`myc recall\` перед решением → \`myc remember\` после вывода → \`myc close --reason\`.
-Полная инструкция: \`myc --help\`, \`.claude/skills/myc/SKILL.md\`.
+\`myc_*\` tools (MCP) or the \`myc\` CLI. Order: \`myc prime\` → \`myc ready --claim\`
+→ \`myc recall\` before a decision → \`myc remember\` after a finding → \`myc close --reason\`.
+Full instructions: \`myc --help\`, \`.claude/skills/myc/SKILL.md\`.
 ${AGENTS_END}`;
 }

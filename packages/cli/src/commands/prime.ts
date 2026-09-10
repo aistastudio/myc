@@ -574,7 +574,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
       if (!Number.isFinite(budgetRaw) || budgetRaw < MIN_BUDGET) {
         return failure(
           "usage.invalid",
-          `--budget слишком мал (${budgetRaw}); минимум ${MIN_BUDGET}`,
+          `--budget too small (${budgetRaw}); minimum ${MIN_BUDGET}`,
           ExitCode.USAGE,
         );
       }
@@ -582,11 +582,11 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
 
       const role = parseRole(flagStr(ctx, "role"));
       if (role === undefined) {
-        return failure("usage.invalid", `неверная --role; допустимы ${ROLES.join("|")}`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid --role; allowed: ${ROLES.join("|")}`, ExitCode.USAGE);
       }
       const format = parseFormat(flagStr(ctx, "format"));
       if (format === undefined) {
-        return failure("usage.invalid", "неверный --format; допустимы agent|md|json", ExitCode.USAGE);
+        return failure("usage.invalid", "invalid --format; allowed: agent|md|json", ExitCode.USAGE);
       }
       const focus = flagStr(ctx, "focus");
       // S58: чья это сессия. Пусто — сессия неизвестна, и тогда сессионное
@@ -633,7 +633,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
           try {
             const openedPersonal = await deps.openPersonal(ctx);
             if (!openedPersonal.ok) {
-              ctx.warn("degraded.personal_tier", `личный ярус не открылся: ${openedPersonal.failure.msg}`);
+              ctx.warn("degraded.personal_tier", `personal tier failed to open: ${openedPersonal.failure.msg}`);
               degraded.push(`personal_tier: ${openedPersonal.failure.msg}`);
             } else if (openedPersonal.handle !== undefined) {
               const personal = openedPersonal.handle;
@@ -651,7 +651,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
             }
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            ctx.warn("degraded.personal_tier", `личный ярус не открылся: ${msg}`);
+            ctx.warn("degraded.personal_tier", `personal tier failed to open: ${msg}`);
             degraded.push(`personal_tier: ${msg}`);
           }
         }
@@ -760,8 +760,8 @@ const MIN_CLIP = 40;
 function marks(it: DigestItem): string {
   const out: string[] = [];
   if (it.tier === "personal") out.push("@personal");
-  if (it.reach === "session") out.push("@сессия");
-  else if (it.reach === "unknown") out.push("@без охвата");
+  if (it.reach === "session") out.push("@session");
+  else if (it.reach === "unknown") out.push("@no-reach");
   return out.length > 0 ? ` [${out.join(" ")}]` : "";
 }
 
@@ -782,11 +782,11 @@ function decisionLine(it: DigestItem): string {
 function reachFooter(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string {
   const parts = [
     d.session.length > 0
-      ? `сессия ${d.session.slice(0, SESSION_SHORT)}`
-      : "сессия не указана",
+      ? `session ${d.session.slice(0, SESSION_SHORT)}`
+      : "session not specified",
   ];
-  if (d.reach_hidden > 0) parts.push(`чужого скрыто ${d.reach_hidden}`);
-  if (d.reach_unknown > 0) parts.push(`без охвата ${d.reach_unknown}`);
+  if (d.reach_hidden > 0) parts.push(`${d.reach_hidden} from other sessions hidden`);
+  if (d.reach_unknown > 0) parts.push(`${d.reach_unknown} without reach`);
   parts.push(...repoFooterParts(d));
   return parts.join(" · ");
 }
@@ -804,11 +804,15 @@ function reachFooter(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string 
 function repoFooterParts(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string[] {
   const out: string[] = [];
   if (d.repo.length > 0) out.push(`repo ${d.repo}`);
-  if (d.repo_undetermined) out.push(`охват репозитория не определён: ${d.repo_reason}`);
-  if (d.repo_foreign > 0) out.push(`${d.repo_foreign} из других репозиториев скрыто`);
-  if (d.repo_unknown > 0) out.push(`${d.repo_unknown} без охвата репозитория`);
-  if (d.mem_repo_foreign > 0) out.push(`${d.mem_repo_foreign} заметок из других репозиториев скрыто`);
-  if (d.mem_repo_unknown > 0) out.push(`${d.mem_repo_unknown} заметок без охвата репозитория`);
+  if (d.repo_undetermined) out.push(`repo reach undetermined: ${d.repo_reason}`);
+  if (d.repo_foreign > 0) out.push(`${d.repo_foreign} from other repos hidden`);
+  if (d.repo_unknown > 0) out.push(`${d.repo_unknown} without repo reach`);
+  if (d.mem_repo_foreign > 0) {
+    out.push(`${d.mem_repo_foreign} ${d.mem_repo_foreign === 1 ? "note" : "notes"} from other repos hidden`);
+  }
+  if (d.mem_repo_unknown > 0) {
+    out.push(`${d.mem_repo_unknown} ${d.mem_repo_unknown === 1 ? "note" : "notes"} without repo reach`);
+  }
   return out;
 }
 
@@ -817,14 +821,14 @@ function buildSections(d: Omit<PrimeData, "chars" | "truncated" | "cut">, md: bo
   const sections: Section[] = [];
 
   if (d.empty) {
-    sections.push({ key: "empty", text: "Воркспейс пуст. Ничего не помню про этот проект." });
+    sections.push({ key: "empty", text: "Workspace is empty. Nothing is remembered about this project yet." });
     sections.push({
       key: "next",
       text: [
         `${h1}NEXT`,
-        ...(d.beads ? ["myc import --from beads       рядом .beads/ — задачи можно перенести"] : []),
-        'myc create "<первая задача>" -p P1',
-        'myc remember "<что важно знать о проекте>"',
+        ...(d.beads ? ["myc import --from beads       .beads/ is right here — its tasks can be imported"] : []),
+        'myc create "<first task>" -p P1',
+        'myc remember "<what matters about this project>"',
       ].join("\n"),
     });
     return sections;
@@ -836,14 +840,14 @@ function buildSections(d: Omit<PrimeData, "chars" | "truncated" | "cut">, md: bo
   });
   sections.push({
     key: "ready",
-    text: [`${h1}READY ${d.ready.length} из ${d.ready_total}`, ...readyLines].join("\n"),
+    text: [`${h1}READY ${d.ready.length} of ${d.ready_total}`, ...readyLines].join("\n"),
   });
 
   if (d.in_progress.length > 0) {
     const lines = d.in_progress.map((it) => {
       const age = fmtAge(Math.max(0, d.now - it.lease_expires));
       const who = it.assignee.length > 0 ? `@${it.assignee}` : "free";
-      return `${it.id}  ${fmtPriority(it.priority)}  ${it.title}  ${who}  до ${fmtClock(it.lease_expires)} (${age})`;
+      return `${it.id}  ${fmtPriority(it.priority)}  ${it.title}  ${who}  until ${fmtClock(it.lease_expires)} (${age})`;
     });
     sections.push({
       key: "in_progress",
@@ -863,12 +867,12 @@ function buildSections(d: Omit<PrimeData, "chars" | "truncated" | "cut">, md: bo
 
   const nextLines = [
     `${h1}NEXT`,
-    "myc ready --claim        взять верхнюю задачу атомарно",
+    "myc ready --claim        claim the top task atomically",
   ];
-  if (d.role === "human") nextLines.push("myc --help                список команд");
+  if (d.role === "human") nextLines.push("myc --help                list commands");
   else {
-    nextLines.push('myc recall "<тема>"      факты и решения по теме');
-    nextLines.push('myc remember "<факт>"    записать вывод');
+    nextLines.push('myc recall "<topic>"     facts and decisions on the topic');
+    nextLines.push('myc remember "<fact>"    record a conclusion');
   }
   sections.push({ key: "next", text: nextLines.join("\n") });
 
@@ -914,7 +918,7 @@ function fillSections(sections: readonly Section[], limit: number): { body: stri
 
 function header(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string {
   const idx = d.idx_ok ? "idx ok" : "idx stale";
-  return `myc ${CLI_VERSION} · ws=${d.ws} sqlite · ${d.node_count} узлов · ${idx} · ${new Date(d.now).toISOString()}`;
+  return `myc ${CLI_VERSION} · ws=${d.ws} sqlite · ${d.node_count} ${d.node_count === 1 ? "node" : "nodes"} · ${idx} · ${new Date(d.now).toISOString()}`;
 }
 
 function renderAgent(
@@ -927,7 +931,7 @@ function renderAgent(
   const { body, cut } = fillSections(sections, room);
   const truncated = cut.length > 0;
   const parts = [head, body].filter((p) => p.length > 0);
-  let footer = `${parts.join("\n\n").length} симв · ${d.took_ms} мс · cache ${d.cache}`;
+  let footer = `${parts.join("\n\n").length} chars · ${d.took_ms} ms · cache ${d.cache}`;
   if (truncated) footer += ` · cut ${cut.join(",")}`;
   if (footer.length > FOOTER_MAX) footer = footer.slice(0, FOOTER_MAX);
   // Строка охвата дописывается ПОСЛЕ обрезки подвала: она про то, чего в

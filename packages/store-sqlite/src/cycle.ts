@@ -175,7 +175,7 @@ export function checkEdgeAcyclic(
   if (src === dst) {
     throw new ClosureError(
       "closure.cycle",
-      `ребро ${type}(${src} → ${dst}) создало бы цикл: ${src} → ${src}`,
+      `edge ${type}(${src} → ${dst}) would create a cycle: ${src} → ${src}`,
       [src, src],
     );
   }
@@ -188,20 +188,20 @@ export function checkEdgeAcyclic(
     const cycle = [...res.path, dst];
     throw new ClosureError(
       "closure.cycle",
-      `ребро ${type}(${src} → ${dst}) создало бы цикл: ${cycle.join(" → ")}`,
+      `edge ${type}(${src} → ${dst}) would create a cycle: ${cycle.join(" → ")}`,
       cycle,
     );
   }
   if (res.kind === "depth") {
     throw new ClosureError(
       "closure.depth",
-      `цепочка ${type} от ${dst} длиннее предела глубины ${maxDepth}: ацикличность ` +
-        `ребра ${type}(${src} → ${dst}) не проверена, вставка отклонена`,
+      `the ${type} chain from ${dst} is longer than the depth limit ${maxDepth}: acyclicity ` +
+        `of edge ${type}(${src} → ${dst}) not verified, insert rejected`,
     );
   }
   throw new ClosureError(
     "closure.depth",
-    `из ${dst} по ${type} достижимо больше ${maxReach} узлов (предел обхода): ` +
-      `ацикличность ребра ${type}(${src} → ${dst}) не проверена, вставка отклонена`,
+    `more than ${maxReach} nodes are reachable from ${dst} via ${type} (traversal limit): ` +
+      `acyclicity of edge ${type}(${src} → ${dst}) not verified, insert rejected`,
   );
 }

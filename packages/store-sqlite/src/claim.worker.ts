@@ -33,7 +33,7 @@ function parseArgs(argv: readonly string[]): Args {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const db = get("db");
-  if (db === undefined) throw new Error("нужен --db PATH");
+  if (db === undefined) throw new Error("--db PATH is required");
   return {
     db,
     site: get("site") ?? "siteA",
@@ -53,7 +53,7 @@ const store = new GraphStore(driver, {
   siteId: args.site,
   actor: args.holder,
   newId: () => {
-    throw new Error("воркер не создаёт узлы");
+    throw new Error("the worker does not create nodes");
   },
 });
 
@@ -62,7 +62,7 @@ const store = new GraphStore(driver, {
 const startDeadline = Date.now() + 60_000;
 while (driver.one(Q.meta_get, ["race_start"]) === undefined) {
   if (Date.now() > startDeadline) {
-    console.error("барьер старта race_start не установлен за 60 с");
+    console.error("start barrier race_start not set within 60 s");
     process.exit(1);
   }
   await Bun.sleep(5);

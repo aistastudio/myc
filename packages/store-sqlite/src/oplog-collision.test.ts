@@ -364,10 +364,10 @@ describe("S65: cp -R каталога воркспейса и git merge", () => 
 
   test("git merge завершается ненулевым кодом, а не «+0 строк»", () => {
     expect(merge.code).not.toBe(0);
-    expect(merge.out).not.toContain("+0 строк");
-    expect(merge.out).toContain("КОЛЛИЗИЯ op_id");
+    expect(merge.out).not.toContain("+0 lines");
+    expect(merge.out).toContain("op_id COLLISION");
     // Сообщение называет и op_id, и файл — человеку должно быть понятно, что случилось.
-    expect(merge.out).toMatch(new RegExp(`КОЛЛИЗИЯ op_id ${SHARED_SITE}:\\d+`));
+    expect(merge.out).toMatch(new RegExp(`op_id COLLISION ${SHARED_SITE}:\\d+`));
     expect(merge.out).toContain(oplogRel);
     expect(merge.out).toContain("S65");
   });
@@ -473,7 +473,7 @@ describe("S65: копия с перевыпущенным site_id сливает
     gitOk(copyA, "fetch", "-q", "b");
     const merged = git(copyA, "-c", "commit.gpgsign=false", "merge", "--no-edit", "b/main");
     expect(merged.code).toBe(0);
-    expect(merged.out).not.toContain("КОЛЛИЗИЯ");
+    expect(merged.out).not.toContain("COLLISION");
     expect(gitOk(copyA, "diff", "--name-only", "--diff-filter=U").trim()).toBe("");
 
     // Общий префикс истории лежит под ПРЕЖНИМ site_id и побайтово одинаков в
@@ -541,7 +541,7 @@ describe("честные клоны сливаются как раньше", () 
     const merged = git(ca, "-c", "commit.gpgsign=false", "merge", "--no-edit", "peer/main");
     expect(merged.code).toBe(0);
     expect(merged.out).not.toContain("CONFLICT");
-    expect(merged.out).not.toContain("КОЛЛИЗИЯ");
+    expect(merged.out).not.toContain("COLLISION");
     expect(gitOk(ca, "diff", "--name-only", "--diff-filter=U").trim()).toBe("");
 
     // 5 + 20 + 20: ни одного узла не потеряно и ни одного лишнего.

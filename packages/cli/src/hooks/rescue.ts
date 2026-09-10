@@ -16,7 +16,6 @@
 import { defineQueries } from "@myc/core";
 import type { StoreHandle } from "../commands/store.ts";
 import type { FileTouch } from "./transcript.ts";
-import { plural } from "../render.ts";
 
 const QR = defineQueries({
   rescue_active: {
@@ -64,7 +63,7 @@ export interface RescueInput {
 }
 
 function kb(bytes: number): string {
-  return bytes >= 1024 ? `${Math.round(bytes / 1024)} КБ` : `${bytes} Б`;
+  return bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${bytes} B`;
 }
 
 function fmtPriority(priority: number): string {
@@ -93,7 +92,7 @@ const LABEL_WIDTH = 9;
 /** Рендер секции с уже урезанным списком; пустая секция не печатается. */
 function renderSection(section: Section, kept: readonly string[], dropped: number): string {
   if (kept.length === 0) return "";
-  const tail = dropped > 0 ? [`…ещё ${dropped}`] : [];
+  const tail = dropped > 0 ? [`…${dropped} more`] : [];
   const all = [...kept, ...tail];
   const pad = " ".repeat(LABEL_WIDTH);
   const body =
@@ -113,11 +112,11 @@ export interface RescuePacket {
 export function buildRescuePacket(input: RescueInput, tookMs?: number): RescuePacket {
   const secrets =
     input.secretsMasked > 0
-      ? `, ${input.secretsMasked} ${plural(input.secretsMasked, "секрет замаскирован", "секрета замаскировано", "секретов замаскировано")}`
+      ? `, ${input.secretsMasked} secret${input.secretsMasked === 1 ? "" : "s"} masked`
       : "";
   const head = [
-    "# myc: контекст сжимается — вот что нельзя потерять",
-    `эпизод ${input.episodeId} сохранён (${kb(input.rawBytes)}${secrets})`,
+    "# myc: context is being compacted — here is what must not be lost",
+    `episode ${input.episodeId} saved (${kb(input.rawBytes)}${secrets})`,
     ...(input.degraded ?? []).map((d) => `WARN ${d}`),
     "",
   ].join("\n");
@@ -130,13 +129,13 @@ export function buildRescuePacket(input: RescueInput, tookMs?: number): RescuePa
 
   // Порядок печати — §6.2; порядок раздачи бюджета — по невосполнимости.
   const sections: readonly Section[] = [
-    { label: "АКТИВНО", items: input.tasks.map(taskLine), join: "\n" },
-    { label: "ФАЙЛЫ", items: input.files.map(fileLine), join: " · " },
-    { label: "РЕШЕНО", items: [...input.mycCalls, ...input.decisions], join: "\n" },
-    { label: "ОТКРЫТО", items: input.open, join: "\n" },
-    { label: "ДАЛЬШЕ", items: next, join: " · " },
+    { label: "ACTIVE", items: input.tasks.map(taskLine), join: "\n" },
+    { label: "FILES", items: input.files.map(fileLine), join: " · " },
+    { label: "DECIDED", items: [...input.mycCalls, ...input.decisions], join: "\n" },
+    { label: "OPEN", items: input.open, join: "\n" },
+    { label: "NEXT", items: next, join: " · " },
   ];
-  const fillOrder = ["РЕШЕНО", "АКТИВНО", "ОТКРЫТО", "ДАЛЬШЕ", "ФАЙЛЫ"];
+  const fillOrder = ["DECIDED", "ACTIVE", "OPEN", "NEXT", "FILES"];
 
   const kept = new Map<string, string[]>(sections.map((s) => [s.label, []]));
   const dropped: Record<string, number> = {};
@@ -166,6 +165,6 @@ export function buildRescuePacket(input: RescueInput, tookMs?: number): RescuePa
 
   const bodyText = `${head}${blocks.join("\n")}`;
   const chars = bodyText.length;
-  const footer = tookMs === undefined ? "" : `\n${chars} симв · ${Math.round(tookMs)} мс`;
+  const footer = tookMs === undefined ? "" : `\n${chars} chars · ${Math.round(tookMs)} ms`;
   return { text: `${bodyText}${footer}\n`, chars, dropped };
 }

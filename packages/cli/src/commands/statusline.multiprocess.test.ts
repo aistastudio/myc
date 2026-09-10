@@ -522,7 +522,7 @@ describe("wire --status-line / unwire на конфиге заказчика", (
     };
     expect(isOurStatusLineCommand(settings.statusLine.command)).toBe(true);
     expect(settings.statusLine.command).not.toContain("--then");
-    expect(wired.out).toContain("получает тот же stdin");
+    expect(wired.out).toContain("gets the same stdin");
 
     const out = fakeOut();
     const input = payload({ cwd: project, workspace: { current_dir: project, project_dir: project } });
@@ -533,7 +533,7 @@ describe("wire --status-line / unwire на конфиге заказчика", (
 
     const again = await cli(project, ["wire", "--agents", "claude", "--status-line", "--hook-mode", "append"]);
     expect(again.code).toBe(0);
-    expect(again.out).toContain("всё уже на месте");
+    expect(again.out).toContain("everything already in place");
 
     const un = await cli(project, ["unwire"]);
     expect(un.code).toBe(0);

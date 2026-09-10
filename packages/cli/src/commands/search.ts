@@ -151,7 +151,7 @@ function renderSearchHuman(raw: unknown, ctx: CommandContext): string {
       lines.push(`  ${meta.join(" · ")}`);
       // И2: тело, срезанное бюджетом сборки (§2.7), помечено прямо у строки —
       // напечатан crux, и агент/человек видит, что это не весь узел.
-      if (r.content_kind === "crux") lines.push("  (обрезано по бюджету)");
+      if (r.content_kind === "crux") lines.push("  (truncated by budget)");
       // Тело заметки начинается той же строкой, что и заголовок (splitFact в
       // remember.ts кладёт в body весь факт целиком) — печатать её второй раз
       // сразу под заголовком незачем.
@@ -167,18 +167,18 @@ function renderSearchHuman(raw: unknown, ctx: CommandContext): string {
     if (rows.length > 0) lines.push(renderTable(header, rows, ctx.globals.color).trimEnd());
   }
 
-  const footer: string[] = [`${d.shown} из ${d.total}`, d.mode, `${d.took_ms} мс`];
+  const footer: string[] = [`${d.shown} of ${d.total}`, d.mode, `${d.took_ms} ms`];
   if (d.offset > 0) footer.push(`offset ${d.offset}`);
-  if (d.tiers.personal) footer.push("2 яруса");
-  if (d.deduped > 0) footer.push(`${d.deduped} дублей свёрнуто`);
+  if (d.tiers.personal) footer.push("2 tiers");
+  if (d.deduped > 0) footer.push(`${d.deduped} ${d.deduped === 1 ? "duplicate" : "duplicates"} collapsed`);
   if (d.partial) {
     const why: string[] = [];
-    if (d.omitted > 0) why.push(`${d.omitted} сверх бюджета`);
-    if (d.budget_timed_out) why.push("таймаут сборки");
-    footer.push(`partial: ${why.length > 0 ? why.join(", ") : "выдано не всё"}`);
+    if (d.omitted > 0) why.push(`${d.omitted} over budget`);
+    if (d.budget_timed_out) why.push("assembly timeout");
+    footer.push(`partial: ${why.length > 0 ? why.join(", ") : "not everything returned"}`);
   }
-  if (d.cursor !== undefined) footer.push(`дальше --offset ${d.cursor}`);
-  if (d.pool_exhausted) footer.push("пул исчерпан, total — нижняя оценка");
+  if (d.cursor !== undefined) footer.push(`next: --offset ${d.cursor}`);
+  if (d.pool_exhausted) footer.push("pool exhausted, total is a lower bound");
   lines.push(footer.join(" · "));
   if (d.why !== undefined) lines.push(...d.why);
   return `${lines.join("\n")}\n`;
@@ -201,14 +201,14 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
     handler: async (ctx) => {
       const text = ctx.args.join(" ").trim();
       if (text.length === 0) {
-        return failure("usage.invalid", "нужен запрос: myc search <текст>", ExitCode.USAGE);
+        return failure("usage.invalid", "query required: myc search <text>", ExitCode.USAGE);
       }
 
       const mode = parseMode(flagStr(ctx, "mode"));
       if (mode === undefined) {
         return failure(
           "usage.invalid",
-          `неверный --mode '${flagStr(ctx, "mode")}'; допустимы hybrid, vec, bm25`,
+          `invalid --mode '${flagStr(ctx, "mode")}'; allowed: hybrid, vec, bm25`,
           ExitCode.USAGE,
         );
       }
@@ -217,7 +217,7 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
       if (sort === undefined) {
         return failure(
           "usage.invalid",
-          `неверный --sort '${flagStr(ctx, "sort")}'; допустимы score, updated, created`,
+          `invalid --sort '${flagStr(ctx, "sort")}'; allowed: score, updated, created`,
           ExitCode.USAGE,
         );
       }
@@ -226,7 +226,7 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
       if (!kinds.ok) {
         return failure(
           "usage.invalid",
-          `неизвестный --kind '${kinds.bad}'; допустимы ${KIND_NAMES.join(", ")}`,
+          `unknown --kind '${kinds.bad}'; allowed: ${KIND_NAMES.join(", ")}`,
           ExitCode.USAGE,
         );
       }
@@ -235,7 +235,7 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
       if (!layers.ok) {
         return failure(
           "usage.invalid",
-          `неверный --layer '${flagStr(ctx, "layer")}'; формат L1 или L1..L3`,
+          `invalid --layer '${flagStr(ctx, "layer")}'; format: L1 or L1..L3`,
           ExitCode.USAGE,
         );
       }
@@ -246,7 +246,7 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
         if (FIELDS[f] === undefined) {
           return failure(
             "usage.invalid",
-            `неизвестное поле '${f}'; допустимы ${Object.keys(FIELDS).join(", ")}`,
+            `unknown field '${f}'; allowed: ${Object.keys(FIELDS).join(", ")}`,
             ExitCode.USAGE,
           );
         }
@@ -257,7 +257,7 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
       if (sinceRaw !== undefined) {
         const dur = parseDuration(sinceRaw);
         if (dur === undefined) {
-          return failure("usage.invalid", `неверный --since '${sinceRaw}'`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid --since '${sinceRaw}'`, ExitCode.USAGE);
         }
         since = Date.now() - dur;
       }
@@ -266,7 +266,7 @@ export function createSearchCommand(deps: RetrieveDeps = realSearchDeps): Comman
       if (untilRaw !== undefined) {
         const dur = parseDuration(untilRaw);
         if (dur === undefined) {
-          return failure("usage.invalid", `неверный --until '${untilRaw}'`, ExitCode.USAGE);
+          return failure("usage.invalid", `invalid --until '${untilRaw}'`, ExitCode.USAGE);
         }
         until = Date.now() - dur;
       }

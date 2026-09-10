@@ -154,7 +154,7 @@ describe("оговорки меняют ответ (мутация 1)", () => {
     expect(cls.cheapest).toBe("p/cheap|high");
     expect(cls.qualityLeader).toBe("p/pricey|high");
     expect(cls.separationPending).toBe(true);
-    expect(cls.why).toContain("наблюдений не хватает");
+    expect(cls.why).toContain("not enough observations");
   });
 
   test("если оговорки свести к успеху, ответ переворачивается на дешёвую руку", () => {

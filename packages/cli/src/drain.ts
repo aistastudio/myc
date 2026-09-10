@@ -380,8 +380,8 @@ function drainAbsorbSession(h: StoreHandle, now: number): Session {
     now,
     embedder: null,
     degradedReason: h.vec0
-      ? "инлайн-дренаж без эмбеддера: вектор только из nodes_vec, иначе lexical"
-      : (h.vec0Reason ?? "vec0 не загружен — nodes_vec недоступна"),
+      ? "inline drain without an embedder: vector only from nodes_vec, otherwise lexical"
+      : (h.vec0Reason ?? "vec0 is not loaded — nodes_vec is unavailable"),
     fingerprintMismatch: null,
     resolveEmbedder: () => Promise.resolve(null),
   };
@@ -619,10 +619,10 @@ function runCodeIndexStep(
     } catch {
       // не записалась — следующий вызов просто спросит снова
     }
-    return { triggered, spawned: false, reason: "в базе нет якорей (§4.3)", anchors: 0 };
+    return { triggered, spawned: false, reason: "no anchors in the database (§4.3)", anchors: 0 };
   }
   if (db.query(SQL_CODE_JOB_LEASED).get(opts.now) !== null) {
-    return { triggered, spawned: false, reason: "работы под чужой арендой: сосед разгребает", anchors };
+    return { triggered, spawned: false, reason: "jobs are under someone else's lease: a neighbor is draining them", anchors };
   }
 
   try {
@@ -768,7 +768,7 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
           // недоделанный checkpoint обязан остаться в очереди — это fail,
           // а не complete (контракт checkpoint.ts).
           const r = runWalCheckpointJob(db);
-          if (!r.complete) throw new Error("WAL не перенесён целиком (busy)");
+          if (!r.complete) throw new Error("WAL not fully checkpointed (busy)");
         }
         jobs.complete(db, job.id, holder);
         report.completed++;

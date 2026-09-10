@@ -227,7 +227,7 @@ describe("деградация громкая, а не молчаливый фо
     expect(s.id).not.toBe("builtin");
     expect(s.state).toBe("missing");
     expect(s.degraded).toContain(CODE_INTEL_DEGRADED.missing);
-    expect(s.reason).toContain("не найден");
+    expect(s.reason).toContain("not found");
   });
 
   test("code_intel=graft со старым graft: incompatible, тоже не builtin", () => {

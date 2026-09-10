@@ -185,7 +185,7 @@ describe("close --verdict: один флаг на закрытие", () => {
     expect(r.code).toBe(ExitCode.OK);
     const parsed = await json("attempt", "list");
     expect(parsed.envelope.data).toHaveLength(0);
-    expect(r.stdout as string).toContain("атрибуция НЕ записана");
+    expect(r.stdout as string).toContain("attribution NOT recorded");
   });
 
   test("модель мимо ростера на закрытии: задача НЕ закрывается (мутация 2)", async () => {
@@ -299,7 +299,7 @@ describe("человеческий вывод", () => {
 
   test("пустой список говорит словами, а не пустой таблицей", async () => {
     const r = await myc("attempt", "list");
-    expect((r.stdout as string).trim()).toBe("попыток нет");
+    expect((r.stdout as string).trim()).toBe("no attempts");
   });
 });
 
@@ -346,14 +346,14 @@ describe("report models", () => {
     expect(cls.cheapest).toBe("p/pricey|high");
     expect(cls.equalGroup).toEqual(["p/pricey|high"]);
     const human = await myc("report", "models", "--class", "fix:unknown");
-    expect(human.stdout as string).toContain("не имеет равных");
+    expect(human.stdout as string).toContain("has no equal");
   });
 
   test("пустой воркспейс: отчёт признаёт отсутствие данных, а не выдумывает", async () => {
     const r = await myc("report", "models");
     expect(r.code).toBe(ExitCode.OK);
-    expect(r.stdout as string).toContain("атрибуции нет");
-    expect(r.stdout as string).toContain("с атрибуцией 0");
+    expect(r.stdout as string).toContain("no attribution");
+    expect(r.stdout as string).toContain("attributed 0");
   });
 
   test("--class мимо таксономии — ошибка", async () => {
@@ -474,7 +474,7 @@ describe("attempt finish --from-transcript: расход из стенограм
       "--from-transcript", path);
     expect(r.code).toBe(ExitCode.PRECOND);
     expect(r.envelope.error.code).toBe("transcript.no_usage");
-    expect(r.envelope.error.msg).toContain("не ноль");
+    expect(r.envelope.error.msg).toContain("not zero");
     const open = await json("attempt", "list", "--task", id, "--open");
     expect(open.envelope.data).toHaveLength(1);
     expect(open.envelope.data[0].costBasis).toBeNull();

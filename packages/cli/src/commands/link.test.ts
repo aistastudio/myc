@@ -218,9 +218,9 @@ describe("myc link: зависимости идут через движок dep,
     const a = await task("A");
     const b = await task("B");
     const added = await mycJson("link", a, "blocks", b);
-    expect(added.data["effects"]).toEqual([`${b} вышла из ready`]);
+    expect(added.data["effects"]).toEqual([`${b} left ready`]);
     const removed = await mycJson("link", a, "blocks", b, "--remove");
-    expect(removed.data["effects"]).toEqual([`${b} снова ready`]);
+    expect(removed.data["effects"]).toEqual([`${b} is ready again`]);
     expect(removed.data["removed"]).toBe(true);
   });
 });

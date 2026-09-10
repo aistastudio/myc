@@ -30,7 +30,7 @@ function arg(name: string): string | undefined {
 
 function need(name: string): string {
   const v = arg(name);
-  if (v === undefined) throw new Error(`нужен --${name}`);
+  if (v === undefined) throw new Error(`--${name} required`);
   return v;
 }
 
@@ -75,7 +75,7 @@ try {
     }
     process.stdout.write(`${JSON.stringify({ mode, id: node.id, ancestor })}\n`);
   } else {
-    throw new Error(`неизвестный --mode ${mode}`);
+    throw new Error(`unknown --mode ${mode}`);
   }
 } finally {
   driver.close();

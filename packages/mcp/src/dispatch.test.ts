@@ -136,14 +136,14 @@ describe("dispatch: грамматика и формат ответа", () => {
   test("гонка claim: isError conflict.claimed + следующая свободная задача в ready", async () => {
     const { d } = dispatchWith((argv) => {
       if (argv[0] === "claim") {
-        return { code: 4, stdout: errEnvelope("conflict.claimed", "myc-9 уже взята bob", "дождаться") };
+        return { code: 4, stdout: errEnvelope("conflict.claimed", "myc-9 is already taken by bob", "wait") };
       }
       return { code: 0, stdout: okEnvelope({ items: [{ id: "myc-10" }], ready: 1, blocked: 0, in_progress: 1, took_ms: 1 }) };
     });
     const r = await d("myc_update", { id: "myc-9", op: "claim" });
     expect(r.isError).toBe(true);
-    expect(text(r)).toContain("myc: conflict.claimed: myc-9 уже взята bob");
-    expect(text(r)).toContain("hint: дождаться");
+    expect(text(r)).toContain("myc: conflict.claimed: myc-9 is already taken by bob");
+    expect(text(r)).toContain("hint: wait");
     const sc = r.structuredContent as { ready: { id: string }[] };
     expect(sc.ready[0]!.id).toBe("myc-10");
   });
@@ -232,7 +232,7 @@ describe("dispatch: грамматика и формат ответа", () => {
     expect(fake.calls[0]).toEqual(["dep", "add", "myc-1", "blocks", "myc-2", "--json"]);
     expect(text(r)).toContain("myc-1 blocks myc-2");
     const sc = r.structuredContent as { effects: string[] };
-    expect(sc.effects[0]).toContain("вышла из ready");
+    expect(sc.effects[0]).toContain("left ready");
 
     await d("myc_link", { from: "myc-1", type: "blocks", to: "myc-2", remove: true });
     expect(fake.calls[1]).toEqual(["dep", "rm", "myc-1", "blocks", "myc-2", "--json"]);
@@ -270,7 +270,7 @@ describe("myc_update: операции, не выданные агенту", () 
     const t = text(r);
     expect(t).toContain("precond.human_only");
     // Отказ обязан назвать ПРИЧИНУ и дать выход, иначе он ничем не лучше молчания.
-    expect(t).toContain("человеческое суждение");
+    expect(t).toContain("human judgment");
     expect(t).toContain("myc update");
     // И ни одной команды CLI выполнено не было.
     expect(fake.calls.length).toBe(0);
@@ -290,7 +290,7 @@ describe("myc_update: операции, не выданные агенту", () 
     const update = AGENT_TOOLS.find((t) => t.name === "myc_update");
     const schema = JSON.stringify(update?.inputSchema ?? {});
     expect(schema).toContain("cancel");
-    expect(schema).toContain("человеческое суждение");
+    expect(schema).toContain("human judgment");
   });
 });
 
@@ -387,7 +387,7 @@ describe("инструменты кода: argv — та же команда, ч
   test("индекса нет — отказ команды доезжает кодом и командой, а не пустой выдачей", async () => {
     const { d } = dispatchWith(() => ({
       code: 5,
-      stdout: errEnvelope("precond.no_index", "код-индекс этого репозитория не построен", "myc code index"),
+      stdout: errEnvelope("precond.no_index", "the code index of this repo is not built", "myc code index"),
     }));
     for (const [tool, args] of [
       ["myc_code_search", { query: "q" }],
@@ -399,7 +399,7 @@ describe("инструменты кода: argv — та же команда, ч
     ] as const) {
       const r = await d(tool, args as Record<string, unknown>);
       expect(r.isError).toBe(true);
-      expect(text(r)).toBe("myc: precond.no_index: код-индекс этого репозитория не построен\nhint: myc code index");
+      expect(text(r)).toBe("myc: precond.no_index: the code index of this repo is not built\nhint: myc code index");
     }
   });
 });

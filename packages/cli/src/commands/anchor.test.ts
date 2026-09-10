@@ -230,7 +230,7 @@ describe("touch: пометить и выйти", () => {
       expect(r.code).toBe(ExitCode.OK);
       const env = JSON.parse(r.stdout as string) as { data: { marked: number; skipped: string } };
       expect(env.data.marked).toBe(0);
-      expect(env.data.skipped).toContain("воркспейс");
+      expect(env.data.skipped).toContain("workspace");
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }

@@ -145,7 +145,7 @@ export class Registry {
     const command = await load();
     if (command.name !== name) {
       throw new Error(
-        `реестр: команда '${name}' загрузилась под именем '${command.name}' — таблица в register.ts разошлась с модулем`,
+        `registry: command '${name}' loaded under the name '${command.name}' — the table in register.ts diverged from the module`,
       );
     }
     this.#top.set(name, command);

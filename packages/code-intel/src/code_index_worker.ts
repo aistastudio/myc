@@ -34,9 +34,9 @@ if (
   grammarDir === ""
 ) {
   throw new Error(
-    "воркер разбора запущен без каталогов tree-sitter: MYC_TREE_SITTER_DIR и " +
-      "MYC_TREE_SITTER_GRAMMAR_DIR выставляет главный поток (ParsePool). Искать их " +
-      "здесь нечем — за границей потока node_modules нет",
+    "parse worker started without tree-sitter directories: MYC_TREE_SITTER_DIR and " +
+      "MYC_TREE_SITTER_GRAMMAR_DIR are set by the main thread (ParsePool). There is nothing " +
+      "to look them up with here — node_modules does not exist across the thread boundary",
   );
 }
 

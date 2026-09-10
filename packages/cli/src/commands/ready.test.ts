@@ -293,12 +293,12 @@ describe("ready: интеграция через живой CLI", () => {
 
     // И2: число обязано быть НАЗВАНО, иначе две задачи исчезают молча.
     const human = (await myc("agent", "ready")).stdout as string;
-    expect(human).toContain("3 blocked (2 через предка)");
+    expect(human).toContain("3 blocked (2 via ancestor)");
 
     // А `myc show` обязан назвать виновника: в собственных deps подзадачи
     // блокера нет вовсе, и без этой строки искать его негде.
     const shown = (await myc("agent", "show", kid1)).stdout as string;
-    expect(shown).toContain("блокер на предке");
+    expect(shown).toContain("blocker on ancestor");
     expect(shown).toContain(epic);
 
     // Снятие блокера возвращает поддерево целиком.
@@ -338,7 +338,7 @@ describe("ready: интеграция через живой CLI", () => {
 
     const listedHuman = await myc("rescuer", "ready");
     expect(listedHuman.stdout as string).toContain("EXPIRED @dead-agent");
-    expect(listedHuman.stdout as string).toContain("назад");
+    expect(listedHuman.stdout as string).toContain("ago");
 
     const claimBack = await myc("rescuer", "ready", "--claim", "--json");
     expect(claimBack.code).toBe(ExitCode.OK);

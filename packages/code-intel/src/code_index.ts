@@ -339,8 +339,8 @@ class ParsePool {
       w.onerror = (e: unknown) => {
         // Сообщение воркера — единственное, что объясняет причину: без него
         // «воркер разбора 7 упал» не отличает сломанный резолвинг от OOM.
-        const why = (e as { message?: string } | null)?.message ?? "без сообщения";
-        this.crash ??= `воркер разбора ${i} упал: ${why}`;
+        const why = (e as { message?: string } | null)?.message ?? "no message";
+        this.crash ??= `parse worker ${i} crashed: ${why}`;
         const reason = new Error(this.crash);
         this.broken = true;
         // Гасим ВЕСЬ пул: окружение у восьми воркеров одно, и остальные
@@ -359,7 +359,7 @@ class ParsePool {
     // Пул уже погас: посылать некому. Раньше здесь считался остаток по длине
     // пустого массива, и `#workers[NaN]!` падал TypeError прямо в разборе.
     if (this.broken || this.#workers.length === 0) {
-      return Promise.reject(new Error(this.crash ?? "пул разбора погашен"));
+      return Promise.reject(new Error(this.crash ?? "parse pool is shut down"));
     }
     const id = ++this.#nextId;
     return new Promise<ParsedFile>((resolve, reject) => {
@@ -367,7 +367,7 @@ class ParsePool {
         this.#pending.delete(id);
         this.broken = true;
         this.close();
-        reject(new Error(`пул разбора не ответил за ${ParsePool.WATCHDOG_MS} мс`));
+        reject(new Error(`parse pool did not answer within ${ParsePool.WATCHDOG_MS} ms`));
       }, ParsePool.WATCHDOG_MS);
       this.#pending.set(id, {
         resolve: (parsed) => {
@@ -730,9 +730,9 @@ export async function drainCodeIndex(
   // уводит работу в fail очереди и не притворяется.
   if (poolCrash !== null) {
     throw new Error(
-      `${poolCrash}. Очередь разобрана в один поток, индекс на месте — но пул разбора ` +
-        "в этой сборке нерабочий: воркер обязан находить и модуль, и грамматики " +
-        "внутри бинаря (см. packages/code-intel/src/parse_worker_entry.ts)",
+      `${poolCrash}. The queue was parsed in one thread and the index is in place — but the parse pool ` +
+        "is broken in this build: the worker must find both the module and the grammars " +
+        "inside the binary (see packages/code-intel/src/parse_worker_entry.ts)",
     );
   }
 
@@ -981,7 +981,7 @@ async function drainBatch(
       plans.push({ job: e.job, plan: { kind: "write", path: e.path, lang: e.lang, defs: parsed.defs, refs: parsed.refs, mtimeMs: e.mtimeMs, size: e.size, hash: e.hash } });
     } catch (err) {
       st.failed++;
-      jobs.fail(db, e.job.id, `разбор ${e.path}: ${err instanceof Error ? err.message : String(err)}`, {
+      jobs.fail(db, e.job.id, `parse ${e.path}: ${err instanceof Error ? err.message : String(err)}`, {
         holder,
         now,
       });

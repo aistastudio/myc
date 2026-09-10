@@ -26,7 +26,7 @@ const get = (name: string): string | undefined => {
 const dbPath = get("db");
 const progressPath = get("progress");
 if (dbPath === undefined || progressPath === undefined) {
-  throw new Error("нужны --db PATH и --progress PATH");
+  throw new Error("--db PATH and --progress PATH are required");
 }
 const hard = Number(get("hard") ?? 512 * 1024);
 const site = get("site") ?? "killer";
@@ -49,8 +49,8 @@ for (;;) {
   const node = store.createNode({
     kind: "note",
     scope: "crash",
-    title: `узел ${site} ${n}`,
-    body: `тело ${n} — достаточно текста, чтобы запись задевала FTS и производные`,
+    title: `node ${site} ${n}`,
+    body: `body ${n} — enough text for the write to touch FTS and the derived columns`,
     attrs: { topic: `t${n % 16}` },
   });
   n++;

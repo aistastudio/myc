@@ -133,10 +133,10 @@ export function diffColumns(
   for (const t of tables) {
     const inExpected = tableColumns(expected, t);
     const inActual = tableColumns(actual, t);
-    for (const c of inExpected) if (!inActual.includes(c)) unexplained.push(`${t}.${c} нет`);
+    for (const c of inExpected) if (!inActual.includes(c)) unexplained.push(`${t}.${c} missing`);
     for (const c of inActual) {
       if (inExpected.includes(c)) continue;
-      if (!allowedOnlyInActual.has(`${t}.${c}`)) unexplained.push(`${t}.${c} лишняя`);
+      if (!allowedOnlyInActual.has(`${t}.${c}`)) unexplained.push(`${t}.${c} extra`);
     }
   }
   return { unexplained };

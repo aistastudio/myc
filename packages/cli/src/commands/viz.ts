@@ -119,10 +119,10 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
     name: "viz",
     summary: "read-only web viewer: graph, ready queue, oplog, health",
     help:
-      "Поднимает локальный сервер и открывает базу ТОЛЬКО НА ЧТЕНИЕ: CLI может писать, " +
-      "пока просмотрщик открыт. Четыре экрана — граф (Canvas2D, лэйаут в Web Worker), " +
-      "очередь ready со слагаемыми S21, таймлайн оплога, здоровье и деградации. " +
-      "Интерфейс вшит в бинарь: ни одного внешнего запроса.",
+      "Starts a local server and opens the database READ-ONLY: the CLI can keep writing " +
+      "while the viewer is open. Four screens — graph (Canvas2D, layout in a Web Worker), " +
+      "ready queue with the S21 score terms, oplog timeline, health and degradations. " +
+      "The UI is embedded in the binary: zero external requests.",
     flags: [
       { name: "port", short: "p", value: "number", description: "port (default 7788)" },
       { name: "host", value: "string", description: "bind address (default 127.0.0.1)" },
@@ -135,7 +135,7 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
       if (!existsSync(dbPath)) {
         return failure(
           "ws.not_initialized",
-          `воркспейс не инициализирован: нет ${dbPath}`,
+          `workspace not initialized: no ${dbPath}`,
           ExitCode.NOWS,
           "myc init",
         );
@@ -143,18 +143,18 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
 
       const port = flagNum(ctx, "port") ?? 7788;
       if (!Number.isInteger(port) || port < 0 || port > 65535) {
-        return failure("usage.invalid", `неверный порт '${port}'`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid port '${port}'`, ExitCode.USAGE);
       }
       const limit = flagNum(ctx, "limit") ?? 25_000;
       if (!Number.isInteger(limit) || limit < 1) {
-        return failure("usage.invalid", `неверный --limit '${limit}'`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid --limit '${limit}'`, ExitCode.USAGE);
       }
       if (limit > 25_000) {
         // Решение S18: выше 25k лэйаут в браузере не считается — честнее
         // сказать вслух, чем молча выдать неработающую страницу.
         ctx.warn(
           "viz.limit_capped",
-          `--limit ${limit} выше потолка локального лэйаута 25000 (S18) — взято 25000`,
+          `--limit ${limit} is above the local layout cap of 25000 (S18) — using 25000`,
         );
       }
       const hostname = flagStr(ctx, "host") ?? "127.0.0.1";
@@ -177,7 +177,7 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
         if (/EADDRINUSE|address already in use/i.test(msg)) {
           return failure(
             "conflict.port",
-            `порт ${port} уже занят: ${msg}`,
+            `port ${port} is already in use: ${msg}`,
             ExitCode.CONFLICT,
             "myc viz --port 7789",
           );
@@ -193,18 +193,18 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
       if (!boot.schema_ready) {
         ctx.warn(
           "schema.missing",
-          "в базе нет таблиц myc — экраны покажут «пусто»; проверьте myc init / myc doctor --schema",
+          "the database has no myc tables — screens will show 'empty'; check myc init / myc doctor --schema",
         );
       }
 
       if (!ctx.globals.json && !ctx.globals.ndjson && !ctx.globals.quiet) {
         const kb = (server.assetBytes / 1024).toFixed(0);
         deps.write(
-          `myc viz · ws=${server.workspace.slug} · ${boot.nodes} узлов / ${boot.edges} рёбер\n` +
-            `база ${dbPath} · открыта только на чтение (CLI может писать)\n` +
-            `интерфейс ${kb} КБ вшит в бинарь · ноль внешних запросов\n` +
-            `${server.url}${ctx.flags["open"] === true ? "  (открыт в браузере)" : ""}\n` +
-            `Ctrl-C — остановить\n`,
+          `myc viz · ws=${server.workspace.slug} · ${boot.nodes} nodes / ${boot.edges} edges\n` +
+            `db ${dbPath} · opened read-only (the CLI can still write)\n` +
+            `UI ${kb} KB embedded in the binary · zero external requests\n` +
+            `${server.url}${ctx.flags["open"] === true ? "  (opened in the browser)" : ""}\n` +
+            `Ctrl-C to stop\n`,
         );
       }
       if (ctx.flags["open"] === true) deps.open(server.url);
@@ -229,7 +229,7 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
     },
     renderHuman: (raw) => {
       const d = raw as VizStopped;
-      return `viz остановлен (${d.signal}) · ${d.requests} запросов, ${d.errors} ошибок · ${Math.round(d.uptime_ms / 1000)}s\n`;
+      return `viz stopped (${d.signal}) · ${d.requests} ${d.requests === 1 ? "request" : "requests"}, ${d.errors} ${d.errors === 1 ? "error" : "errors"} · ${Math.round(d.uptime_ms / 1000)}s\n`;
     },
   };
 }

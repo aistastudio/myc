@@ -218,21 +218,21 @@ describe("R3: пропущенный источник назван в выдач
     expect(fed.cap).toBe(3);
     expect(fed.queried).toEqual(["project", "r01", "r02"]);
     expect(fed.skipped.map((s) => s.id)).toEqual(["r03", "r04", "r05"]);
-    for (const s of fed.skipped) expect(s.why).toContain("потолка 3");
+    for (const s of fed.skipped) expect(s.why).toContain("cap of 3");
 
     // Пропуск обязан дойти до WARN-строк, а не только до подвала: выдача НЕ
     // полна, и под --strict это деградация, а не успех.
     const warned = env.warn.map((w) => w.msg).join(" ");
-    expect(warned).toContain("источник r03 не опрошен");
-    expect(warned).toContain("источник r05 не опрошен");
+    expect(warned).toContain("source r03 not queried");
+    expect(warned).toContain("source r05 not queried");
     expect(env.meta.degraded).toContain("degraded.retrieval");
 
     const human = text(
       (await mycAt(root, "recall", "инвалидация кеша", "--sources", "3", "--repo", "all")).stdout,
     );
-    expect(human).toContain("3 из 6 источников");
+    expect(human).toContain("3 of 6 sources");
     expect(human).toContain("r03, r04, r05");
-    expect(human).toContain("потолка 3");
+    expect(human).toContain("cap of 3");
   });
 
   test("--why даёт строку на КАЖДЫЙ источник, включая пропущенные", async () => {
@@ -249,7 +249,7 @@ describe("R3: пропущенный источник назван в выдач
     );
     expect(human).toContain("project   vector=");
     expect(human).toContain("r01       vector=");
-    expect(human).toMatch(/r02\s+пропущен · сверх потолка 2/);
+    expect(human).toMatch(/r02\s+skipped · over the cap of 2/);
   });
 
   test("непрошенный источник попадает в WARN — а значит и в exit 6 под --strict", async () => {
@@ -262,10 +262,10 @@ describe("R3: пропущенный источник назван в выдач
     // эмбеддера, и --strict даёт 6 уже из-за него. Доказывает СОСТАВ WARN:
     // без потолка про источники не сказано ничего, с потолком — сказано.
     const full = await jsonAt(root, "recall", "дренаж оплога", "--repo", "all");
-    expect(full.warn.some((w) => w.msg.includes("не опрошен"))).toBe(false);
+    expect(full.warn.some((w) => w.msg.includes("not queried"))).toBe(false);
 
     const capped = await jsonAt(root, "recall", "дренаж оплога", "--sources", "1", "--repo", "all");
-    expect(capped.warn.some((w) => w.msg.includes("источник r01 не опрошен"))).toBe(true);
+    expect(capped.warn.some((w) => w.msg.includes("source r01 not queried"))).toBe(true);
     const stricted = await mycAt(
       root,
       "--strict",

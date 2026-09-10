@@ -200,15 +200,15 @@ export type LiveState = (typeof LIVE_STATES)[number];
 
 export const LIVE_STATE_MEANING: Readonly<Record<LiveState, string>> = {
   /** Работа не закрыта, процесс жив — нормальный ход. */
-  working: "работает",
+  working: "in progress",
   /** Работа закрыта, а процесс ЖИВ — то, что съедало память. */
-  orphan: "завершено, но живо",
+  orphan: "finished, but still alive",
   /** Работа не закрыта, а процесса нет — упал или снят на полпути. */
-  lost: "процесса нет, работа не закрыта",
+  lost: "no process, work not closed",
   /** Работа закрыта, процесса нет — так и должно быть. */
-  done: "завершено",
+  done: "finished",
   /** Pid не записан: сказать нечего, и это видно. */
-  unknown: "процесс неизвестен",
+  unknown: "process unknown",
 };
 
 /**

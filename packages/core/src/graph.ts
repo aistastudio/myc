@@ -153,7 +153,7 @@ export function assertNodeKind(value: string): NodeKind {
   if (!isNodeKind(value)) {
     throw new GraphError(
       "graph.kind",
-      `неизвестный kind узла: ${JSON.stringify(value)}; допустимы ${Object.keys(NODE_STATUSES).join(", ")}`,
+      `unknown node kind: ${JSON.stringify(value)}; allowed: ${Object.keys(NODE_STATUSES).join(", ")}`,
     );
   }
   return value;
@@ -163,7 +163,7 @@ export function assertStatus(kind: NodeKind, status: string): string {
   if (!NODE_STATUSES[kind].includes(status)) {
     throw new GraphError(
       "graph.status",
-      `status '${status}' недопустим для kind '${kind}'; допустимы ${NODE_STATUSES[kind].join(", ")}`,
+      `status '${status}' not allowed for kind '${kind}'; allowed: ${NODE_STATUSES[kind].join(", ")}`,
     );
   }
   return status;
@@ -216,7 +216,7 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
   Object.freeze({
     blocks: {
       type: "blocks",
-      reads: "src блокирует dst",
+      reads: "src blocks dst",
       inverse: "blocked_by",
       symmetric: false,
       transitive: true,
@@ -224,11 +224,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 64,
       materializes: "open_blockers",
       expandsRetrieval: false,
-      writtenBy: "человек/агент",
+      writtenBy: "human/agent",
     },
     parent: {
       type: "parent",
-      reads: "src — ребёнок dst",
+      reads: "src is a child of dst",
       inverse: "children",
       symmetric: false,
       transitive: true,
@@ -236,11 +236,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 32,
       materializes: "parent_closure",
       expandsRetrieval: false,
-      writtenBy: "человек/агент/парсер doc",
+      writtenBy: "human/agent/doc parser",
     },
     relates: {
       type: "relates",
-      reads: "src связано с dst",
+      reads: "src relates to dst",
       inverse: "relates",
       symmetric: true,
       transitive: false,
@@ -248,11 +248,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 1,
       materializes: null,
       expandsRetrieval: true,
-      writtenBy: "absorb, человек",
+      writtenBy: "absorb, human",
     },
     duplicates: {
       type: "duplicates",
-      reads: "src — дубликат канонического dst",
+      reads: "src is a duplicate of canonical dst",
       inverse: "duplicated_by",
       symmetric: false,
       // Транзитивно по смыслу, но при вставке путь сжимается до корня,
@@ -266,7 +266,7 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
     },
     supersedes: {
       type: "supersedes",
-      reads: "src заменяет dst",
+      reads: "src supersedes dst",
       inverse: "superseded_by",
       symmetric: false,
       transitive: true,
@@ -274,11 +274,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 64,
       materializes: "head_id",
       expandsRetrieval: false,
-      writtenBy: "absorb, человек",
+      writtenBy: "absorb, human",
     },
     replies_to: {
       type: "replies_to",
-      reads: "src — ответ на dst",
+      reads: "src is a reply to dst",
       inverse: "replies",
       symmetric: false,
       transitive: true,
@@ -286,11 +286,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 64,
       materializes: "thread_root",
       expandsRetrieval: false,
-      writtenBy: "слой сообщений",
+      writtenBy: "message layer",
     },
     derived_from: {
       type: "derived_from",
-      reads: "src выведен из dst",
+      reads: "src is derived from dst",
       inverse: "derives",
       symmetric: false,
       transitive: true,
@@ -299,11 +299,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 8,
       materializes: null,
       expandsRetrieval: false,
-      writtenBy: "дистиллятор, absorb",
+      writtenBy: "distiller, absorb",
     },
     mentions: {
       type: "mentions",
-      reads: "src упоминает сущность dst",
+      reads: "src mentions entity dst",
       inverse: "mentioned_by",
       symmetric: false,
       transitive: false,
@@ -311,11 +311,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 1,
       materializes: null,
       expandsRetrieval: true,
-      writtenBy: "извлекатель сущностей",
+      writtenBy: "entity extractor",
     },
     touches: {
       type: "touches",
-      reads: "src привязан к якорю dst",
+      reads: "src is bound to anchor dst",
       inverse: "touched_by",
       symmetric: false,
       transitive: false,
@@ -323,11 +323,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 1,
       materializes: null,
       expandsRetrieval: true,
-      writtenBy: "myc anchor add, myc remember|task --anchor, агент",
+      writtenBy: "myc anchor add, myc remember|task --anchor, agent",
     },
     evidence: {
       type: "evidence",
-      reads: "src обоснован dst",
+      reads: "src is backed by dst",
       inverse: "evidence_for",
       symmetric: false,
       transitive: false,
@@ -335,11 +335,11 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 1,
       materializes: null,
       expandsRetrieval: true,
-      writtenBy: "absorb, агент",
+      writtenBy: "absorb, agent",
     },
     contradicts: {
       type: "contradicts",
-      reads: "src противоречит dst",
+      reads: "src contradicts dst",
       inverse: "contradicts",
       symmetric: true,
       transitive: false,
@@ -347,7 +347,7 @@ export const EDGE_SEMANTICS: Readonly<Record<EdgeKind, EdgeSemantics>> =
       maxDepth: 1,
       materializes: null,
       expandsRetrieval: true,
-      writtenBy: "absorb (класс contradiction)",
+      writtenBy: "absorb (contradiction class)",
     },
   });
 
@@ -359,7 +359,7 @@ export function assertEdgeKind(value: string): EdgeKind {
   if (!isEdgeKind(value)) {
     throw new GraphError(
       "graph.edge_type",
-      `неизвестный тип ребра: ${JSON.stringify(value)}; допустимы ${Object.keys(EDGE_SEMANTICS).join(", ")}`,
+      `unknown edge type: ${JSON.stringify(value)}; allowed: ${Object.keys(EDGE_SEMANTICS).join(", ")}`,
     );
   }
   return value;
@@ -522,7 +522,7 @@ export function assertAttrKey(key: string): string {
   if (!ATTR_KEY_RE.test(key)) {
     throw new GraphError(
       "graph.attr_key",
-      `ключ attrs ${JSON.stringify(key)} не соответствует ${String(ATTR_KEY_RE)}`,
+      `attrs key ${JSON.stringify(key)} does not match ${String(ATTR_KEY_RE)}`,
     );
   }
   return key;
@@ -542,7 +542,7 @@ export function assertNodeField(field: string): NodeFieldSpec | "attr" {
   if (spec === undefined) {
     throw new GraphError(
       "graph.unknown_field",
-      `поле ${JSON.stringify(field)} не реплицируется: ни колонка из NODE_FIELDS, ни attrs.<key>`,
+      `field ${JSON.stringify(field)} is not replicated: neither a NODE_FIELDS column nor attrs.<key>`,
     );
   }
   return spec;
@@ -564,7 +564,7 @@ export function coerceNodeFieldValue(
     if (!spec.nullable) {
       throw new GraphError(
         "graph.field_type",
-        `поле '${spec.field}' не допускает NULL`,
+        `field '${spec.field}' does not accept NULL`,
       );
     }
     return null;
@@ -574,7 +574,7 @@ export function coerceNodeFieldValue(
       if (typeof value !== "string") {
         throw new GraphError(
           "graph.field_type",
-          `поле '${spec.field}' ожидает строку, получено ${typeof value}`,
+          `field '${spec.field}' expects a string, got ${typeof value}`,
         );
       }
       return value;
@@ -582,7 +582,7 @@ export function coerceNodeFieldValue(
       if (typeof value !== "number" || !Number.isInteger(value)) {
         throw new GraphError(
           "graph.field_type",
-          `поле '${spec.field}' ожидает целое, получено ${JSON.stringify(value)}`,
+          `field '${spec.field}' expects an integer, got ${JSON.stringify(value)}`,
         );
       }
       return value;
@@ -590,7 +590,7 @@ export function coerceNodeFieldValue(
       if (typeof value !== "number" || !Number.isFinite(value)) {
         throw new GraphError(
           "graph.field_type",
-          `поле '${spec.field}' ожидает число, получено ${JSON.stringify(value)}`,
+          `field '${spec.field}' expects a number, got ${JSON.stringify(value)}`,
         );
       }
       return value;
@@ -621,7 +621,7 @@ export function validateNodeField(field: string, value: JsonValue): void {
       if (typeof value !== "string" || !ACL_MODES.includes(value)) {
         throw new GraphError(
           "graph.range",
-          `acl '${String(value)}' недопустим; допустимы ${ACL_MODES.join(", ")}`,
+          `invalid acl '${String(value)}'; allowed: ${ACL_MODES.join(", ")}`,
         );
       }
       return;
@@ -646,7 +646,7 @@ function assertRange(
   ) {
     throw new GraphError(
       "graph.range",
-      `поле '${field}' вне диапазона ${min}..${max}: ${JSON.stringify(value)}`,
+      `field '${field}' out of range ${min}..${max}: ${JSON.stringify(value)}`,
     );
   }
 }
@@ -909,7 +909,7 @@ export class OpFactory {
     if (!Number.isInteger(accumulated) || accumulated < 0) {
       throw new GraphError(
         "graph.field_type",
-        `G-counter '${field}': накопленное значение должно быть неотрицательным целым, получено ${accumulated}`,
+        `G-counter '${field}': accumulated value must be a non-negative integer, got ${accumulated}`,
       );
     }
     return {
@@ -966,7 +966,7 @@ export function assertEdgeEndpoints(src: string, dst: string): void {
   if (src === dst) {
     throw new GraphError(
       "graph.self_edge",
-      `ребро из узла в себя же запрещено: ${src}`,
+      `edge from a node to itself is not allowed: ${src}`,
     );
   }
 }

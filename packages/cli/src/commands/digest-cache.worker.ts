@@ -47,11 +47,11 @@ function parseArgs(argv: readonly string[]): Args {
   };
   const dir = get("dir");
   const mode = get("mode") as Mode | undefined;
-  if (dir === undefined || mode === undefined) throw new Error("нужны --dir и --mode");
+  if (dir === undefined || mode === undefined) throw new Error("--dir and --mode are required");
   return {
     dir,
     mode,
-    text: get("text") ?? "текст",
+    text: get("text") ?? "text",
     session: get("session"),
     go: get("go"),
   };
@@ -63,7 +63,7 @@ async function waitForBarrier(path: string | undefined): Promise<void> {
     if (await Bun.file(path).exists()) return;
     await Bun.sleep(5);
   }
-  throw new Error(`барьер ${path} не появился`);
+  throw new Error(`barrier ${path} did not appear`);
 }
 
 function makeRegistry(): Registry {
@@ -204,8 +204,8 @@ async function main(): Promise<void> {
 
   // block: задача + блокер. Двигает именно `blocked` в подвале — число,
   // которое кешируется профилем 'ready' и потому обязано протухнуть.
-  const a = await myc("task", `${args.text} (цель)`);
-  const b = await myc("task", `${args.text} (блокер)`);
+  const a = await myc("task", `${args.text} (target)`);
+  const b = await myc("task", `${args.text} (blocker)`);
   const idA = text(a.stdout).trim().split(/\s+/)[0] ?? "";
   const idB = text(b.stdout).trim().split(/\s+/)[0] ?? "";
   const dep = await myc("dep", "add", idA, "blocked-by", idB);

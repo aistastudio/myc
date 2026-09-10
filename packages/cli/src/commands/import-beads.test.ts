@@ -566,7 +566,7 @@ describe("синхронизация: повторный импорт сходи
 
     const first = await mycJson("import-beads", p2);
     const conflicts1 = (first.data as Record<string, unknown>)["conflicts"] as string[];
-    expect(conflicts1.some((s) => s.startsWith("myc-a2.title: конфликт"))).toBe(true);
+    expect(conflicts1.some((s) => s.startsWith("myc-a2.title: conflict"))).toBe(true);
 
     await withStore((h) => {
       const a2 = h.store.listNodes(h.scope, "task", 10000).find((n) => n.attrs["external_ref"] === "myc-a2")!;
@@ -576,7 +576,7 @@ describe("синхронизация: повторный импорт сходи
     // слепок при конфликте не двигается — расхождение называется снова
     const second = await mycJson("import-beads", p2);
     const conflicts2 = (second.data as Record<string, unknown>)["conflicts"] as string[];
-    expect(conflicts2.some((s) => s.startsWith("myc-a2.title: конфликт"))).toBe(true);
+    expect(conflicts2.some((s) => s.startsWith("myc-a2.title: conflict"))).toBe(true);
   });
 
   test("прогон без изменений в источнике не порождает ни одной мутации в оплоге", async () => {
@@ -639,7 +639,7 @@ describe("формы вывода bd: три ловушки на фактиче�
       snap = collectBeadsSnapshot(repoRoot);
     } catch (e) {
       // bd недоступен в этом окружении — проверять нечего
-      if (String(e).includes("bd не запустился")) return;
+      if (String(e).includes("bd failed to start")) return;
       throw e;
     }
     expect(snap.issues.length).toBeGreaterThan(0);
@@ -674,7 +674,7 @@ describe("ошибки ввода", () => {
       parseBeadsSnapshot(
         JSON.stringify({ issues: [{ id: "x", title: "t", status: "open", priority: "P1", issue_type: "task" }] }),
       ),
-    ).toThrow(/приоритет/);
+    ).toThrow(/priority/);
     const clamped = parseBeadsSnapshot(
       JSON.stringify({ issues: [{ id: "x", title: "t", status: "open", priority: 9, issue_type: "task" }] }),
     );
@@ -689,7 +689,7 @@ describe("ошибки ввода", () => {
           ],
         }),
       ),
-    ).toThrow(/дубль/);
+    ).toThrow(/duplicate/);
   });
 });
 
@@ -830,7 +830,7 @@ describe("столкновение по содержимому", () => {
     // сообщение называет ОБЕ стороны: чья запись и с каким узлом myc
     expect(skipped.find((l) => l.startsWith("myc-c1:"))).toContain(localId);
     // заметка пропущенной задачи названа своей причиной, а не той же
-    expect(skipped.find((l) => l.startsWith("myc-c1#notes:"))).toContain("сама задача myc-c1 не ввезена");
+    expect(skipped.find((l) => l.startsWith("myc-c1#notes:"))).toContain("task myc-c1 itself was not imported");
 
     // и ровно это: третья задача, вторая память — на месте
     expect(d["tasks_created"]).toBe(1);
@@ -873,7 +873,7 @@ describe("столкновение по содержимому", () => {
       expect(data.tasks_created).toBe(2);
       expect(data.skipped).toHaveLength(2);
       expect(data.skipped[0]).toContain("myc-c2");
-      expect(data.skipped[0]).toContain("нарушение уникальности");
+      expect(data.skipped[0]).toContain("uniqueness violation");
     } finally {
       h.close();
     }
@@ -940,7 +940,7 @@ describe("зависимости сверх blocks/parent-child", () => {
     const env = await mycJson("import-beads", p);
     const d = env.data as Record<string, unknown>;
     expect(d["missing_refs"]).toEqual([]);
-    expect(d["unknown_dep_types"]).toEqual(["myc-d5 → myc-d1: тип 'smells-like' не переносится"]);
+    expect(d["unknown_dep_types"]).toEqual(["myc-d5 → myc-d1: type 'smells-like' is not imported"]);
     expect(env.warn?.some((w) => w.code === "import.unknown_dep_types")).toBe(true);
   });
 });

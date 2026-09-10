@@ -203,7 +203,7 @@ describe("myc merge-driver: коллизия op_id", () => {
       ".myc/graph/oplog/local-x-ncross/00000.jsonl",
     );
     expect(r.code).toBe(ExitCode.OK);
-    expect(text(r.stdout)).toContain("+1 строк");
+    expect(text(r.stdout)).toContain("+1 line");
     expect(readFileSync(join(dir, "ours"), "utf8")).toBe(`${one}\n${two}\n`);
   });
 
@@ -259,7 +259,7 @@ describe("myc export: та же коллизия, обнаруженная до 
     const env = JSON.parse(text(r.stdout)) as { error?: { code: string; msg: string } };
     expect(env.error?.code).toBe("conflict.op_id");
     expect(env.error?.msg).toContain(opId);
-    expect(env.error?.msg).toContain("коллизия op_id");
+    expect(env.error?.msg).toContain("op_id collision");
     // Каталог не тронут: подменённый файл остался ровно таким, каким был.
     expect(readFileSync(file, "utf8")).toBe(poisoned);
   });
@@ -327,8 +327,8 @@ describe("git merge зовёт настоящую команду myc merge-drive
     const merged = git(copyA, "-c", "commit.gpgsign=false", "merge", "--no-edit", "b/main");
 
     expect(merged.code).not.toBe(0);
-    expect(merged.out).not.toContain("+0 строк");
-    expect(merged.out).toContain("КОЛЛИЗИЯ op_id");
+    expect(merged.out).not.toContain("+0 lines");
+    expect(merged.out).toContain("op_id COLLISION");
     const unmerged = gitOk(copyA, "diff", "--name-only", "--diff-filter=U").trim();
     expect(unmerged).toContain("oplog/");
     // Обе стороны целы в индексе — ни одна операция не пропала.
@@ -396,7 +396,7 @@ describe("git merge зовёт настоящую команду myc merge-drive
     gitOk(copyA, "remote", "add", "b", copyB);
     gitOk(copyA, "fetch", "-q", "b");
     const merged = git(copyA, "-c", "commit.gpgsign=false", "merge", "--no-edit", "b/main");
-    expect(merged.out).not.toContain("КОЛЛИЗИЯ op_id");
+    expect(merged.out).not.toContain("op_id COLLISION");
     expect(merged.code).toBe(0);
     expect(gitOk(copyA, "diff", "--name-only", "--diff-filter=U").trim()).toBe("");
 

@@ -79,11 +79,11 @@ export interface VecSelfCheckReport {
 async function run(): Promise<VecSelfCheckReport> {
   const lib = await findSqliteLib();
   if (lib === null) {
-    return { available: false, reason: "нет libsqlite3 с поддержкой расширений" };
+    return { available: false, reason: "no libsqlite3 with extension support" };
   }
   const vecPath = await findVec0();
   if (vecPath === null) {
-    return { available: false, reason: "не найдено расширение sqlite-vec (vec0)" };
+    return { available: false, reason: "sqlite-vec extension (vec0) not found" };
   }
 
   try {

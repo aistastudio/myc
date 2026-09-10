@@ -43,7 +43,7 @@ const MAX_DEPTH = MAX_BLOCKS_DEPTH;
  */
 function edgeFailure(e: unknown): CommandFailure {
   if (e instanceof ClosureError && e.code === "closure.cycle") {
-    return failure("conflict.dep_cycle", `цикл зависимостей: ${e.message}`, ExitCode.CONFLICT);
+    return failure("conflict.dep_cycle", `dependency cycle: ${e.message}`, ExitCode.CONFLICT);
   }
   return graphFailure(e);
 }
@@ -79,11 +79,11 @@ interface DepEdgeData {
 function renderDepEdgeHuman(raw: unknown): string {
   const d = raw as DepEdgeData;
   if (d.removed === true) {
-    const tail = d.back_ready === true ? `  (${d.back_ready_id} снова ready)` : "";
-    return `${d.type} ${d.src} → ${d.dst} removed${tail}\n${d.took_ms} мс\n`;
+    const tail = d.back_ready === true ? `  (${d.back_ready_id} ready again)` : "";
+    return `${d.type} ${d.src} → ${d.dst} removed${tail}\n${d.took_ms} ms\n`;
   }
-  const tail = d.left_ready === true ? `  (${d.left_ready_id} ушла из ready)` : "";
-  return `${d.from_label} ${d.type === "blocks" ? "blocks" : "blocked-by"} ${d.type === "blocks" ? d.dst : d.src}${tail}\n${d.took_ms} мс\n`;
+  const tail = d.left_ready === true ? `  (${d.left_ready_id} left ready)` : "";
+  return `${d.from_label} ${d.type === "blocks" ? "blocks" : "blocked-by"} ${d.type === "blocks" ? d.dst : d.src}${tail}\n${d.took_ms} ms\n`;
 }
 
 function buildDepAdd(deps: StoreDeps): Command {
@@ -94,11 +94,11 @@ function buildDepAdd(deps: StoreDeps): Command {
       const t0 = performance.now();
       const [fromInput, type, toInput] = ctx.args;
       if (fromInput === undefined || type === undefined || toInput === undefined) {
-        return failure("usage.invalid", "нужно: myc dep add <from> <blocks|blocked-by> <to>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc dep add <from> <blocks|blocked-by> <to>", ExitCode.USAGE);
       }
       const ends = edgeEnds(type, fromInput, toInput);
       if (ends === undefined) {
-        return failure("usage.invalid", `неверный тип '${type}'; допустимы blocks, blocked-by`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid type '${type}'; allowed: blocks, blocked-by`, ExitCode.USAGE);
       }
 
       const opened = await deps.openStore(ctx);
@@ -113,12 +113,12 @@ function buildDepAdd(deps: StoreDeps): Command {
         const dst = type === "blocks" ? to.node : from.node;
 
         if (src.id === dst.id) {
-          return failure("conflict.dep_cycle", `цикл зависимостей: ${src.id} → ${src.id}`, ExitCode.CONFLICT);
+          return failure("conflict.dep_cycle", `dependency cycle: ${src.id} → ${src.id}`, ExitCode.CONFLICT);
         }
         if (h.store.getEdge(src.id, "blocks", dst.id) !== undefined) {
           return failure(
             "conflict.dep_exists",
-            `ребро ${src.id} blocks ${dst.id} уже есть`,
+            `edge ${src.id} blocks ${dst.id} already exists`,
             ExitCode.CONFLICT,
           );
         }
@@ -155,11 +155,11 @@ function buildDepRm(deps: StoreDeps): Command {
       const t0 = performance.now();
       const [fromInput, type, toInput] = ctx.args;
       if (fromInput === undefined || type === undefined || toInput === undefined) {
-        return failure("usage.invalid", "нужно: myc dep rm <from> <blocks|blocked-by> <to>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc dep rm <from> <blocks|blocked-by> <to>", ExitCode.USAGE);
       }
       const ends = edgeEnds(type, fromInput, toInput);
       if (ends === undefined) {
-        return failure("usage.invalid", `неверный тип '${type}'; допустимы blocks, blocked-by`, ExitCode.USAGE);
+        return failure("usage.invalid", `invalid type '${type}'; allowed: blocks, blocked-by`, ExitCode.USAGE);
       }
 
       const opened = await deps.openStore(ctx);
@@ -175,7 +175,7 @@ function buildDepRm(deps: StoreDeps): Command {
 
         try {
           if (!h.store.removeEdge(src.id, "blocks", dst.id)) {
-            return failure("notfound.edge", `ребра ${src.id} blocks ${dst.id} нет`, ExitCode.NOTFOUND);
+            return failure("notfound.edge", `no edge ${src.id} blocks ${dst.id}`, ExitCode.NOTFOUND);
           }
         } catch (e) {
           return graphFailure(e);
@@ -276,9 +276,9 @@ function renderDepTreeHuman(raw: unknown): string {
   const lines: string[] = [];
   renderTreeLines(d.root, "", true, lines);
   if (d.blocked_count > 0) {
-    lines.push(`${d.blocked_count} узла заблокировано этой задачей`);
+    lines.push(`${plural(d.blocked_count, "node", "nodes")} blocked by this task`);
   } else {
-    lines.push("никого не блокирует");
+    lines.push("blocks nothing");
   }
   return `${lines.join("\n")}\n`;
 }
@@ -295,11 +295,11 @@ function buildDepTree(deps: StoreDeps): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужно: myc dep tree <id>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc dep tree <id>", ExitCode.USAGE);
       }
       const depth = flagNum(ctx, "depth") ?? 4;
       if (depth < 1 || depth > MAX_DEPTH) {
-        return failure("usage.invalid", `--depth вне диапазона 1..${MAX_DEPTH}`, ExitCode.USAGE);
+        return failure("usage.invalid", `--depth out of range 1..${MAX_DEPTH}`, ExitCode.USAGE);
       }
       const withClosed = ctx.flags["closed"] === true;
 
@@ -311,7 +311,7 @@ function buildDepTree(deps: StoreDeps): Command {
         if (!resolved.ok) return resolved.failure;
         const root = buildTree(h, resolved.node.id, depth, withClosed, new Set());
         if (root === undefined) {
-          return failure("precond.closed", `${resolved.node.id} закрыта; показать: --closed`, ExitCode.PRECOND);
+          return failure("precond.closed", `${resolved.node.id} is closed; to show it: --closed`, ExitCode.PRECOND);
         }
         const data: DepTreeData = {
           root,
@@ -425,14 +425,9 @@ function nodeTypeWord(n: WhyChainNode): string {
   return n.kind;
 }
 
-/** Русское согласование числительного: 1 предок, 2 предка, 5 предков. */
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod100 = n % 100;
-  const mod10 = n % 10;
-  if (mod100 >= 11 && mod100 <= 14) return `${n} ${many}`;
-  if (mod10 === 1) return `${n} ${one}`;
-  if (mod10 >= 2 && mod10 <= 4) return `${n} ${few}`;
-  return `${n} ${many}`;
+/** Число с существительным в нужной форме: 1 ancestor, 2 ancestors. */
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 function renderDepWhyHuman(raw: unknown): string {
@@ -440,23 +435,23 @@ function renderDepWhyHuman(raw: unknown): string {
   const lines: string[] = [];
   const head = [`${d.id} ${fmtPriority(d.priority)} ${d.type} ${d.status}`];
   if (d.open_blockers > 0) {
-    head.push(`— заблокирована ${d.open_blockers} открытой зависимостью`);
+    head.push(`— blocked by ${plural(d.open_blockers, "open dependency", "open dependencies")}`);
   } else if (d.blocked_via.length > 0) {
-    head.push(`— своих блокеров нет, ${plural(d.blocked_via.length, "предок держит", "предка держат", "предков держат")} открытый`);
+    head.push(`— no blockers of its own, ${plural(d.blocked_via.length, "ancestor holds", "ancestors hold")} an open one`);
   } else {
-    head.push("— не заблокирована");
+    head.push("— not blocked");
   }
   lines.push(head.join(" "));
   renderChain(d.chain, "", lines);
   for (const a of d.blocked_via) {
     const n = a.open_blockers;
     lines.push(
-      `предок    ${a.id} (${plural(n, "открытый блокер", "открытых блокера", "открытых блокеров")}) — ${a.title}`,
+      `ancestor  ${a.id} (${plural(n, "open blocker", "open blockers")}) — ${a.title}`,
     );
   }
   if (d.critical_path.open > 0) {
-    const est = d.critical_path.estimate_min > 0 ? `, оценка ${fmtEstimate(d.critical_path.estimate_min)}` : "";
-    lines.push(`критический путь: ${d.critical_path.open} узел${est}`);
+    const est = d.critical_path.estimate_min > 0 ? `, estimate ${fmtEstimate(d.critical_path.estimate_min)}` : "";
+    lines.push(`critical path: ${plural(d.critical_path.open, "node", "nodes")}${est}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -469,7 +464,7 @@ function buildDepWhy(deps: StoreDeps): Command {
       const t0 = performance.now();
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return failure("usage.invalid", "нужно: myc dep why <id>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc dep why <id>", ExitCode.USAGE);
       }
 
       const opened = await deps.openStore(ctx);

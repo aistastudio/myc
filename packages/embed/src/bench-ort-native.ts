@@ -26,7 +26,7 @@ function percentile(sorted: readonly number[], p: number): number {
 
 async function main(): Promise<number> {
   if (dir === undefined) {
-    console.error("задай MYC_EMBED_TEST_MODELS_DIR (см. bench.ts)");
+    console.error("set MYC_EMBED_TEST_MODELS_DIR (see bench.ts)");
     return 1;
   }
   const spec = getModelSpec(DEFAULT_MODEL_ID);
@@ -72,7 +72,7 @@ async function main(): Promise<number> {
   for (let i = 0; i < 100; i++) single.push(await embedOne(query));
   single.sort((a, b) => a - b);
   console.log(
-    `одиночный запрос (n=${single.length}): p50 = ${percentile(single, 50).toFixed(1)} мс, p95 = ${percentile(single, 95).toFixed(1)} мс (цель 4–7 мс)`,
+    `single query (n=${single.length}): p50 = ${percentile(single, 50).toFixed(1)} ms, p95 = ${percentile(single, 95).toFixed(1)} ms (target 4–7 ms)`,
   );
 
   // 2. Батч: те же 256 текстов, один прогон с паддингом до максимума батча.
@@ -101,7 +101,7 @@ async function main(): Promise<number> {
   const ms = performance.now() - started;
   void output;
   console.log(
-    `батч: ${texts.length}/${texts.length} ок за ${ms.toFixed(0)} мс → ${((texts.length / ms) * 1000).toFixed(1)} текстов/с`,
+    `batch: ${texts.length}/${texts.length} ok in ${ms.toFixed(0)} ms → ${((texts.length / ms) * 1000).toFixed(1)} texts/s`,
   );
 
   return 0;

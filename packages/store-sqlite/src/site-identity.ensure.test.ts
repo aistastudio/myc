@@ -191,7 +191,7 @@ describe("ensureSiteId: что записывается при каждом ис
       (process.stderr as unknown as { write: unknown }).write = real;
       driver.close();
     }
-    expect(written.join("")).toContain("site_id перевыпущен");
+    expect(written.join("")).toContain("site_id reissued");
   });
 });
 

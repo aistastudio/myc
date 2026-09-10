@@ -138,7 +138,7 @@ function unknownModel(deps: EmbedDeps, modelId: string): CommandResult {
   return {
     ok: false,
     code: "notfound.model",
-    msg: `неизвестная модель "${modelId}"; известно: ${Object.keys(deps.MODELS).join(", ")}`,
+    msg: `unknown model "${modelId}"; known: ${Object.keys(deps.MODELS).join(", ")}`,
     exit: ExitCode.NOTFOUND,
   };
 }
@@ -201,7 +201,7 @@ function buildFetchCommand(deps: EmbedDeps): Command {
   return {
     name: "fetch",
     summary: "download a model with sha256 verification (idempotent)",
-    help: "Повторный вызов на уже уложенной модели ничего не качает.",
+    help: "Calling it again for a model that is already installed downloads nothing.",
     handler: async (ctx): Promise<CommandResult> => {
       const modelId = resolveModelId(ctx, deps);
       if (!(modelId in deps.MODELS)) return unknownModel(deps, modelId);
@@ -217,7 +217,7 @@ function buildFetchCommand(deps: EmbedDeps): Command {
             skipped: spec.files.map((f) => f.name),
             alreadyPresent: true,
           },
-          meta: { note: "модель уже уложена, сеть не использовалась" },
+          meta: { note: "model already installed, the network was not used" },
         };
       }
 

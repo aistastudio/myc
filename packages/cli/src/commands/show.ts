@@ -216,7 +216,7 @@ function depStatus(ref: DepRef): string {
 
 function oneLine(h: StoreHandle, id: string): string {
   const n = h.store.getNode(id);
-  if (n === undefined) return `${id} (удалён)`;
+  if (n === undefined) return `${id} (deleted)`;
   const parts = [n.id];
   if (n.kind === "task") parts.push(fmtPriority(n.priority));
   parts.push(nodeType(n), n.status);
@@ -457,18 +457,18 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   }
   if (v.moved !== undefined) {
     lines.push(
-      `переехала в воркспейс '${v.moved.to === "" ? "(без слага)" : v.moved.to}' — ` +
-        `здесь осталось надгробие, держащее неуехавшие рёбра`,
+      `moved to workspace '${v.moved.to === "" ? "(no slug)" : v.moved.to}' — ` +
+        `a tombstone stays here, holding the edges that did not move`,
     );
   }
   if (deps.length > 0) lines.push(`deps      ${deps.join(" · ")}`);
   if (v.blocked_via !== undefined && v.blocked_via.length > 0) {
     const via = v.blocked_via.map((a) => `${a.id} (${a.open_blockers})`).join(", ");
-    lines.push(`ждёт      блокер на предке: ${via} — поэтому не в ready`);
+    lines.push(`waiting   blocker on ancestor: ${via} — so not in ready`);
   }
 
   if (v.parent !== undefined) {
-    lines.push(`входит в  ${v.parent.id}  ${v.parent.title}`);
+    lines.push(`part of   ${v.parent.id}  ${v.parent.title}`);
   }
   if (v.children !== undefined && v.children.length > 0) {
     // Прогресс считается по ЗАКРЫТЫМ, а не по «не открытым»: отменённая задача
@@ -476,8 +476,8 @@ function renderNodeFull(v: NodeView, now: number): string[] {
     // показывать эпик более готовым, чем он есть.
     const done = v.children.filter((c) => c.status === "closed").length;
     const dropped = v.children.filter((c) => c.status === "cancelled").length;
-    const tail = dropped > 0 ? `, отменено ${dropped}` : "";
-    lines.push(`состав    ${done} из ${v.children.length} закрыто${tail}`);
+    const tail = dropped > 0 ? `, cancelled ${dropped}` : "";
+    lines.push(`children  ${done} of ${v.children.length} closed${tail}`);
     for (const c of v.children) {
       const mark = c.status === "closed" ? "×" : c.status === "cancelled" ? "—" : "·";
       lines.push(`  ${mark} ${c.id}  ${fmtPriority(c.priority)}  ${c.status.padEnd(11)} ${c.title}`);
@@ -485,7 +485,7 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   }
 
   if (v.thread !== undefined && v.thread.length > 0) {
-    lines.push(`нить      ${v.thread.length}`);
+    lines.push(`thread    ${v.thread.length}`);
     for (const c of v.thread) {
       const more = c.replies > 0 ? `  (+${c.replies})` : "";
       lines.push(`  · ${c.id}  ${c.actor}  ${c.title}${more}`);
@@ -499,23 +499,23 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   // Актуальная версия — по умолчанию (§6.3). Знание не затёрто: старая версия
   // цела, но читателю сразу сказано, где текущая.
   if (v.head !== undefined) {
-    lines.push(`актуальна ${v.head.id}  ${v.head.title}`);
+    lines.push(`current   ${v.head.id}  ${v.head.title}`);
   }
   if (v.forked !== undefined) {
     lines.push(
-      `развилка  ${v.forked.join(", ")} — две ветки слились; актуальной выбрана ${v.forked[0]!}`,
+      `fork      ${v.forked.join(", ")} — two branches merged; chosen as current: ${v.forked[0]!}`,
     );
   }
   if (v.stale !== undefined) {
     lines.push(
-      `ВНИМАНИЕ  head_id не проставлен у ${v.stale.join(", ")}: ретривал вернёт устаревшую версию как актуальную`,
+      `WARNING   head_id not set on ${v.stale.join(", ")}: retrieval will return a stale version as current`,
     );
   }
   if (v.contradicts.length > 0) {
-    lines.push(`противоречит ${v.contradicts.map((c) => c.id).join(", ")}`);
+    lines.push(`contradicts ${v.contradicts.map((c) => c.id).join(", ")}`);
   }
   if (v.chain !== undefined) {
-    lines.push(`история   ${v.chain.length} верс.${v.chain_truncated === true ? " (усечена бюджетом чтения)" : ""}`);
+    lines.push(`history   ${v.chain.length} ${v.chain.length === 1 ? "version" : "versions"}${v.chain_truncated === true ? " (truncated by the read budget)" : ""}`);
     for (const c of v.chain) {
       const mark = c.current ? "→" : "·";
       const why = c.reason !== undefined ? `  ${c.absorb_class ?? ""} ${c.reason}`.trimEnd() : "";
@@ -542,8 +542,8 @@ function renderNodeFull(v: NodeView, now: number): string[] {
 
   if (v.lease !== undefined) {
     const left = v.lease.expires - now;
-    const tail = left > 0 ? `осталось ${fmtAge(left)}` : `истекла ${fmtAge(-left)} назад`;
-    lines.push(`lease     ${v.lease.holder} до ${fmtClock(v.lease.expires)} (${tail})`);
+    const tail = left > 0 ? `${fmtAge(left)} left` : `expired ${fmtAge(-left)} ago`;
+    lines.push(`lease     ${v.lease.holder} until ${fmtClock(v.lease.expires)} (${tail})`);
   }
 
   if (v.related !== undefined) {
@@ -614,12 +614,12 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
       const t0 = performance.now();
       const idArg = ctx.args[0];
       if (idArg === undefined) {
-        return failure("usage.invalid", "нужен id: myc show <id>[,<id>…]", ExitCode.USAGE);
+        return failure("usage.invalid", "id required: myc show <id>[,<id>…]", ExitCode.USAGE);
       }
       const depthRaw = ctx.flags["depth"];
       const depth = typeof depthRaw === "number" ? depthRaw : 0;
       if (depth !== 0 && depth !== 1) {
-        return failure("usage.invalid", "--depth принимает 0 или 1", ExitCode.USAGE);
+        return failure("usage.invalid", "--depth takes 0 or 1", ExitCode.USAGE);
       }
       const fieldsRaw = flagStr(ctx, "field");
       let fields = fieldsRaw !== undefined
@@ -634,7 +634,7 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
         if (unknown.length > 0) {
           return failure(
             "usage.invalid",
-            `неизвестные поля: ${unknown.join(", ")}; допустимы ${Object.keys(FIELD_VALUE).join(", ")}`,
+            `unknown fields: ${unknown.join(", ")}; allowed: ${Object.keys(FIELD_VALUE).join(", ")}`,
             ExitCode.USAGE,
           );
         }

@@ -65,7 +65,7 @@ export class EmbedBatchPool {
       try {
         worker = new PristineWorker(workerUrl, { type: "module" }) as Worker;
       } catch (cause) {
-        this.spawnFailure = `воркер пула не стартовал: ${String(cause)}`;
+        this.spawnFailure = `pool worker failed to start: ${String(cause)}`;
         return Promise.reject(new Error(this.spawnFailure));
       }
       const slot: WorkerSlot = { worker, ready: null as never, busy: false, pending: new Map() };
@@ -102,7 +102,7 @@ export class EmbedBatchPool {
       slot.ready.catch(() => {
         // Неудачный воркер больше не участвует; пул деградирует целиком:
         // частичный пул дал бы непредсказуемую пропускную способность.
-        this.spawnFailure ??= "воркер пула не инициализировался";
+        this.spawnFailure ??= "pool worker failed to initialize";
       });
       slot.worker.postMessage({ type: "init", core: this.options.core });
       this.slots.push(slot);
@@ -111,7 +111,7 @@ export class EmbedBatchPool {
   }
 
   private failSlot(slot: WorkerSlot, message: string): void {
-    this.spawnFailure ??= `воркер пула упал: ${message}`;
+    this.spawnFailure ??= `pool worker crashed: ${message}`;
     for (const [, pending] of slot.pending) {
       pending.reject(new Error(this.spawnFailure));
     }

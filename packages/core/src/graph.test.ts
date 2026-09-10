@@ -76,7 +76,7 @@ describe("виды узлов и статусы (§2.3, §2.4)", () => {
   });
 
   test("неизвестный kind отвергается", () => {
-    expect(() => assertNodeKind("epic")).toThrow(/неизвестный kind/);
+    expect(() => assertNodeKind("epic")).toThrow(/unknown node kind/);
     expect(assertNodeKind("fragment")).toBe("fragment");
   });
 
@@ -189,7 +189,7 @@ describe("семантика рёбер (§4.1)", () => {
   });
 
   test("неизвестный тип и ребро в себя отвергаются", () => {
-    expect(() => assertEdgeKind("blocked_by")).toThrow(/неизвестный тип ребра/);
+    expect(() => assertEdgeKind("blocked_by")).toThrow(/unknown edge type/);
     expect(assertEdgeKind("contradicts")).toBe("contradicts");
     expect(() => assertEdgeEndpoints("a", "a")).toThrow(GraphError);
     expect(() => assertEdgeEndpoints("a", "b")).not.toThrow();
@@ -295,19 +295,19 @@ describe("поля: горячие колонками, холодные в attrs
   test("тип значения сверяется с типом колонки", () => {
     const title = nodeFieldSpec("title")!;
     expect(coerceNodeFieldValue(title, "ok")).toBe("ok");
-    expect(() => coerceNodeFieldValue(title, 1)).toThrow(/ожидает строку/);
-    expect(() => coerceNodeFieldValue(title, null)).toThrow(/не допускает NULL/);
+    expect(() => coerceNodeFieldValue(title, 1)).toThrow(/expects a string/);
+    expect(() => coerceNodeFieldValue(title, null)).toThrow(/does not accept NULL/);
 
     const body = nodeFieldSpec("body")!;
     expect(coerceNodeFieldValue(body, null)).toBeNull();
 
     const layer = nodeFieldSpec("layer")!;
-    expect(() => coerceNodeFieldValue(layer, 1.5)).toThrow(/ожидает целое/);
+    expect(() => coerceNodeFieldValue(layer, 1.5)).toThrow(/expects an integer/);
   });
 
   test("неизвестное поле не пролезает в оплог", () => {
     expect(() => assertNodeField("open_blockers")).toThrow(
-      /не реплицируется/,
+      /is not replicated/,
     );
     expect(assertNodeField("attrs.tags")).toBe("attr");
     expect(assertNodeField("status")).toMatchObject({ field: "status" });
@@ -315,16 +315,16 @@ describe("поля: горячие колонками, холодные в attrs
 
   test("диапазоны layer, priority, confidence, acl", () => {
     expect(() => nodeInputFields({ kind: "task", layer: 7 as never })).toThrow(
-      /вне диапазона/,
+      /out of range/,
     );
     expect(() => nodeInputFields({ kind: "task", priority: 9 })).toThrow(
-      /вне диапазона/,
+      /out of range/,
     );
     expect(() => nodeInputFields({ kind: "note", confidence: 1.5 })).toThrow(
-      /вне диапазона/,
+      /out of range/,
     );
     expect(() => nodeInputFields({ kind: "note", acl: "world" })).toThrow(
-      /недопустим/,
+      /invalid acl/,
     );
     expect(ACL_MODES).toContain("restricted");
   });
@@ -364,7 +364,7 @@ describe("разложение входа на поля", () => {
 
   test("патч валидирует статус по kind узла, а не по kind из патча", () => {
     expect(() => nodePatchFields("message", { status: "closed" })).toThrow(
-      /недопустим для kind 'message'/,
+      /not allowed for kind 'message'/,
     );
     expect(() => nodePatchFields("task", { status: "closed" })).not.toThrow();
   });
@@ -417,7 +417,7 @@ describe("OpFactory", () => {
   test("G-counter принимает накопленное значение, а не дельту", () => {
     const f = new OpFactory("siteA", { clock: clock() });
     expect(f.inc("n1", "seen_count", 5).value).toBe(5);
-    expect(() => f.inc("n1", "seen_count", -1)).toThrow(/неотрицательным/);
+    expect(() => f.inc("n1", "seen_count", -1)).toThrow(/non-negative/);
     expect(() => f.inc("n1", "seen_count", 1.5)).toThrow(GraphError);
   });
 

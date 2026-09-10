@@ -242,5 +242,5 @@ test("без uuid в имени остаётся вывод из эпизода 
   const data = (JSON.parse(r.stdout) as Record<string, unknown>)["data"] as Record<string, unknown>;
   expect(data["session_source"]).toBe("episode");
   expect(data["session"]).toBe(`episode:${data["episode"] as string}`);
-  expect(data["packet"] as string).toContain("охват выведен из эпизода");
+  expect(data["packet"] as string).toContain("reach derived from the episode");
 });

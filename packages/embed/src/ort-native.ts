@@ -32,9 +32,9 @@ export function getOrtNative(): Promise<OrtNodeModule> {
     ortPromise = import("onnxruntime-node").catch((cause: unknown) => {
       ortPromise = null;
       throw new Error(
-        "нативный бэкенд недоступен: onnxruntime-node не загрузился " +
-          `(${String(cause)}). Установи его (optionalDependency @myc/embed) ` +
-          "или используй WASM-бэкенд по умолчанию",
+        "native backend unavailable: onnxruntime-node failed to load " +
+          `(${String(cause)}). Install it (optionalDependency of @myc/embed) ` +
+          "or use the default WASM backend",
       );
     });
   }

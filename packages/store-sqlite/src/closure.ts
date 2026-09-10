@@ -249,7 +249,7 @@ export function checkParentInsert(db: DbDriver, child: string, parent: string): 
   if (child === parent) {
     throw new ClosureError(
       "closure.cycle",
-      `узел ${child} не может быть родителем самому себе: ${child} → ${child}`,
+      `node ${child} cannot be its own parent: ${child} → ${child}`,
       [child, child],
     );
   }
@@ -263,7 +263,7 @@ export function checkParentInsert(db: DbDriver, child: string, parent: string): 
     const cycle = up === undefined ? [parent, child, parent] : [...up, parent];
     throw new ClosureError(
       "closure.cycle",
-      `ребро parent(${child} → ${parent}) создало бы цикл: ${cycle.join(" → ")}`,
+      `edge parent(${child} → ${parent}) would create a cycle: ${cycle.join(" → ")}`,
       cycle,
     );
   }
@@ -271,7 +271,7 @@ export function checkParentInsert(db: DbDriver, child: string, parent: string): 
   if (depth > MAX_PARENT_DEPTH) {
     throw new ClosureError(
       "closure.depth",
-      `ребро parent(${child} → ${parent}) превышает предел глубины ${MAX_PARENT_DEPTH}: получилось бы ${depth}`,
+      `edge parent(${child} → ${parent}) exceeds the depth limit ${MAX_PARENT_DEPTH}: it would be ${depth}`,
     );
   }
 }
@@ -285,7 +285,7 @@ export function applyParentInsert(tx: DbDriver, child: string, parent: string): 
   if (directParent(tx, child) !== undefined) {
     throw new ClosureError(
       "closure.multiple_parents",
-      `у узла ${child} уже есть родитель в parent_closure — сперва applyParentRemove/applyParentMove`,
+      `node ${child} already has a parent in parent_closure — call applyParentRemove/applyParentMove first`,
     );
   }
   checkParentInsert(tx, child, parent);
@@ -298,7 +298,7 @@ export function applyParentRemove(tx: DbDriver, child: string, parent: string): 
   if (current !== parent) {
     throw new ClosureError(
       "closure.no_edge",
-      `ребро parent(${child} → ${parent}) не найдено в parent_closure (текущий родитель: ${current ?? "нет"})`,
+      `edge parent(${child} → ${parent}) not found in parent_closure (current parent: ${current ?? "none"})`,
     );
   }
   tx.run(Q.pc_delete_rows!, [parent, child]);

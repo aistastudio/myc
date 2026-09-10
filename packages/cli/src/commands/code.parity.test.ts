@@ -252,7 +252,7 @@ function stripVolatile(value: unknown): unknown {
 }
 
 function stripVolatileText(text: string): string {
-  return text.replace(/\d+ мс/g, "N мс").replace(/из кеша/g, "N мс");
+  return text.replace(/\d+ ms/g, "N ms").replace(/from cache/g, "N ms");
 }
 
 /** `--json` встаёт ДО `--`: после разделителя он был бы литералом. */
@@ -440,7 +440,7 @@ describe("команды кода и инструменты кода: один �
     expect(got("grep в каталоге")["searched"]).toBe(2);
     expect(paths("grep в каталоге").length).toBeGreaterThan(0);
     expect(paths("grep в каталоге").every((p) => p.startsWith("src/core/"))).toBe(true);
-    expect(text("grep в каталоге")).toContain(`"leaf(" в src/core/ — `);
+    expect(text("grep в каталоге")).toContain(`"leaf(" in src/core/ — `);
     expect(got("grep в файле и каталоге")["scope"]).toEqual(["src/app/use.ts", "src/many/d00/"]);
     expect([...new Set(paths("grep в файле и каталоге"))].sort()).toEqual([
       "src/app/use.ts",
@@ -453,7 +453,7 @@ describe("команды кода и инструменты кода: один �
       searched: 2,
       scope: ["src/core/"],
     });
-    expect(text("grep в области без вхождений")).toContain(`"useChain" в src/core/ — 0 вхождений`);
+    expect(text("grep в области без вхождений")).toContain(`"useChain" in src/core/ — 0 occurrences`);
     // Отказы — кодом и кодом выхода, а не пустым успехом.
     const refused = ["grep нет пути", "grep за корнем", "grep область вне реестра", "grep пустая область"];
     expect(refused.map((w) => [w, cli.find((o) => o.what === w)!.code, exits.get(w)])).toEqual([
@@ -466,9 +466,9 @@ describe("команды кода и инструменты кода: один �
     // Бинарный файл пропущен и НАЗВАН числом — в конверте и в тексте.
     expect(got("grep")["binary"]).toBe(1);
     expect(paths("grep")).not.toContain("assets/blob.bin");
-    expect(text("grep")).toContain("бинарных пропущено 1)");
+    expect(text("grep")).toContain("binary skipped 1)");
     expect(got("grep в каталоге")["binary"]).toBe(0);
-    expect(text("grep в каталоге")).not.toContain("бинарных");
+    expect(text("grep в каталоге")).not.toContain("binary");
     // WARN доезжают в обе стороны — и в конверт, и в текст.
     const warned = new Set(cli.flatMap((o) => o.warn ?? []));
     for (const code of ["callers.ambiguous", "callers.external", "code_grep.truncated", "code_search.empty"]) {

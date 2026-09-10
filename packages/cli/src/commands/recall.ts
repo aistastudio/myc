@@ -200,7 +200,7 @@ function headLine(row: RetrieveRow, session: string): string {
   return `${headPrefix(row, session)}${row.title}`;
 }
 
-const COLLAPSED_SUFFIX = " (свёрнуто)";
+const COLLAPSED_SUFFIX = " (collapsed)";
 /**
  * Ниже этого заголовок обрезать бессмысленно — строка перестаёт что-либо
  * говорить, и честнее не показать её вовсе, объявив в футере.
@@ -326,16 +326,16 @@ function renderRecallHuman(raw: unknown): string {
   const d = raw as RecallData;
   const { lines, used, collapsed, dropped } = layout(d);
   const footer: string[] = [
-    `${d.shown} из ${d.total}`,
+    `${d.shown} of ${d.total}`,
     d.mode,
-    `${d.took_ms} мс`,
-    `${used} симв из ${d.budget}`,
+    `${d.took_ms} ms`,
+    `${used} chars of ${d.budget}`,
   ];
-  if (d.tiers.personal) footer.push("2 яруса");
+  if (d.tiers.personal) footer.push("2 tiers");
   // И2: сколько воркспейсов реально опрошено и сколько пропущено — числом и с
   // причиной. Один источник — говорить не о чем, федерации не было.
   if (d.federation.total > 1) {
-    footer.push(`${d.federation.queried.length} из ${d.federation.total} источников`);
+    footer.push(`${d.federation.queried.length} of ${d.federation.total} sources`);
   }
   if (d.federation.skipped.length > 0) {
     // Причины схлопываются по тексту: «потолок 8» одинаков у всех отсечённых,
@@ -347,26 +347,26 @@ function renderRecallHuman(raw: unknown): string {
       else list.push(s.id);
     }
     for (const [why, ids] of byWhy) {
-      footer.push(`${ids.length} источник(ов) пропущено (${ids.join(", ")}): ${why}`);
+      footer.push(`${ids.length} ${ids.length === 1 ? "source" : "sources"} skipped (${ids.join(", ")}): ${why}`);
     }
   }
   // И2: чужое сессионное и неопределённое обязаны быть названы числом —
   // иначе метки в строках можно и не заметить в длинной выдаче.
-  if (d.foreign > 0) footer.push(`${d.foreign} из чужих сессий`);
-  if (d.unknown_reach > 0) footer.push(`${d.unknown_reach} без охвата`);
+  if (d.foreign > 0) footer.push(`${d.foreign} from other sessions`);
+  if (d.unknown_reach > 0) footer.push(`${d.unknown_reach} without reach`);
   if (d.repo.length > 0) footer.push(`repo ${d.repo}`);
-  if (d.unknown_repo > 0) footer.push(`${d.unknown_repo} без охвата репозитория`);
-  if (d.deduped > 0) footer.push(`${d.deduped} дублей свёрнуто`);
-  if (collapsed.length > 0) footer.push(`${collapsed.length} свёрнуто по бюджету`);
-  if (dropped.length > 0) footer.push(`${dropped.length} не показано (бюджет)`);
+  if (d.unknown_repo > 0) footer.push(`${d.unknown_repo} without repo reach`);
+  if (d.deduped > 0) footer.push(`${d.deduped} ${d.deduped === 1 ? "duplicate" : "duplicates"} collapsed`);
+  if (collapsed.length > 0) footer.push(`${collapsed.length} collapsed by budget`);
+  if (dropped.length > 0) footer.push(`${dropped.length} not shown (budget)`);
   if (d.partial) {
     const why: string[] = [];
-    if (d.omitted > 0) why.push(`${d.omitted} сверх бюджета`);
-    if (d.budget_timed_out) why.push("таймаут сборки");
-    footer.push(`partial: ${why.length > 0 ? why.join(", ") : "выдано не всё"}`);
+    if (d.omitted > 0) why.push(`${d.omitted} over budget`);
+    if (d.budget_timed_out) why.push("assembly timeout");
+    footer.push(`partial: ${why.length > 0 ? why.join(", ") : "not everything returned"}`);
   }
-  if (d.cursor !== undefined) footer.push(`дальше --offset ${d.cursor}`);
-  if (d.pool_exhausted) footer.push("пул исчерпан, total — нижняя оценка");
+  if (d.cursor !== undefined) footer.push(`next: --offset ${d.cursor}`);
+  if (d.pool_exhausted) footer.push("pool exhausted, total is a lower bound");
   lines.push(footer.join(" · "));
   if (d.why !== undefined) lines.push(...d.why);
   return `${lines.join("\n")}\n`;
@@ -394,14 +394,14 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
     handler: async (ctx) => {
       const text = ctx.args.join(" ").trim();
       if (text.length === 0) {
-        return failure("usage.invalid", "нужен запрос: myc recall <текст>", ExitCode.USAGE);
+        return failure("usage.invalid", "query required: myc recall <text>", ExitCode.USAGE);
       }
 
       const mode = parseMode(flagStr(ctx, "mode"));
       if (mode === undefined) {
         return failure(
           "usage.invalid",
-          `неверный --mode '${flagStr(ctx, "mode")}'; допустимы hybrid, vec, bm25`,
+          `invalid --mode '${flagStr(ctx, "mode")}'; allowed: hybrid, vec, bm25`,
           ExitCode.USAGE,
         );
       }
@@ -410,7 +410,7 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
       if (!kinds.ok) {
         return failure(
           "usage.invalid",
-          `неизвестный --kind '${kinds.bad}'; допустимы ${KIND_NAMES.join(", ")}`,
+          `unknown --kind '${kinds.bad}'; allowed: ${KIND_NAMES.join(", ")}`,
           ExitCode.USAGE,
         );
       }
@@ -419,7 +419,7 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
       if (!layers.ok) {
         return failure(
           "usage.invalid",
-          `неверный --layer '${flagStr(ctx, "layer")}'; формат L1 или L1..L3`,
+          `invalid --layer '${flagStr(ctx, "layer")}'; format: L1 or L1..L3`,
           ExitCode.USAGE,
         );
       }
@@ -431,7 +431,7 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
         if (dur === undefined) {
           return failure(
             "usage.invalid",
-            `неверный --since '${sinceRaw}'; формат 30d, 12h, 90m`,
+            `invalid --since '${sinceRaw}'; format: 30d, 12h, 90m`,
             ExitCode.USAGE,
           );
         }
@@ -466,7 +466,7 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
       if (badReach !== undefined) {
         return failure(
           "usage.invalid",
-          `неверный --reach '${badReach}'; допустимы ${allowedReach.join(", ")}`,
+          `invalid --reach '${badReach}'; allowed: ${allowedReach.join(", ")}`,
           ExitCode.USAGE,
         );
       }

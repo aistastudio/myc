@@ -470,7 +470,7 @@ export async function measureAsync(
 // --------------------------------------------------------------------------
 
 function ms(n: number): string {
-  return n >= 1 ? `${n.toFixed(3)}ms` : `${(n * 1000).toFixed(1)}мкс`;
+  return n >= 1 ? `${n.toFixed(3)}ms` : `${(n * 1000).toFixed(1)}µs`;
 }
 
 /**
@@ -483,20 +483,20 @@ export function report(m: Measured, extra?: string): void {
     `[bench] ${m.label}:`,
     `p50=${ms(m.stats.p50)} p95=${ms(m.stats.p95)} p99=${ms(m.stats.p99)} n=${m.stats.n}`,
   ];
-  if (m.budgetMs !== null) parts.push(`· бюджет p99<${m.budgetMs}мс → ${verdictWord(m)}`);
+  if (m.budgetMs !== null) parts.push(`· budget p99<${m.budgetMs}ms → ${verdictWord(m)}`);
   if (m.rival !== null) {
     const k = m.slowdown ?? 0;
     // Направление отношения печатается словами: у мутанта смысл «здоровый
     // быстрее во столько-то раз», у эталонной соседней операции — «дороже».
-    const rel = k >= 1 ? `быстрее ×${k.toFixed(2)}` : `ДОРОЖЕ ×${(1 / k).toFixed(2)}`;
+    const rel = k >= 1 ? `faster ×${k.toFixed(2)}` : `COSTLIER ×${(1 / k).toFixed(2)}`;
     parts.push(
-      `· против${m.rivalLabel ? ` «${m.rivalLabel}»` : " соперника"} p50=${ms(m.rival.p50)} p99=${ms(m.rival.p99)}` +
+      `· vs${m.rivalLabel ? ` "${m.rivalLabel}"` : " rival"} p50=${ms(m.rival.p50)} p99=${ms(m.rival.p99)}` +
         ` → ${rel}`,
     );
   }
   parts.push(
-    `· условия: ${m.machine.cpus} ядер, load1 ${m.machine.load1}, дрожание эталона ×${m.jitter.toFixed(2)}` +
-      ` (порог ${JITTER_MAX})${m.strict ? ", строгий режим" : ""}`,
+    `· conditions: ${m.machine.cpus} cores, load1 ${m.machine.load1}, reference jitter ×${m.jitter.toFixed(2)}` +
+      ` (threshold ${JITTER_MAX})${m.strict ? ", strict mode" : ""}`,
   );
   if (extra) parts.push(`· ${extra}`);
   console.log(parts.join(" "));
@@ -530,13 +530,13 @@ export function report(m: Measured, extra?: string): void {
 function verdictWord(m: Measured): string {
   switch (m.verdict) {
     case "ok":
-      return "в бюджете";
+      return "within budget";
     case "over":
-      return "НАРУШЕН";
+      return "EXCEEDED";
     case "uncalibrated":
       return (
-        "НЕ ПРОВЕРЯЕТСЯ (MYC_BENCH_ABSOLUTE=0: бюджет откалиброван под другое " +
-        "железо; относительные утверждения ниже проверены и обязательны)"
+        "NOT CHECKED (MYC_BENCH_ABSOLUTE=0: the budget is calibrated for other " +
+        "hardware; the relative assertions below are checked and binding)"
       );
     case "unreliable": {
       // Причин недостоверности две, и человеку нужна именно та, что сработала:
@@ -545,11 +545,11 @@ function verdictWord(m: Measured): string {
       // читателей не туда.
       const tail = m.stats.p50 > 0 ? m.stats.p99 / m.stats.p50 : 1;
       return m.jitter > JITTER_MAX
-        ? "НЕДОСТОВЕРНО (машина занята, абсолют не проверяется)"
-        : `НЕДОСТОВЕРНО (шумит хвост замера: p99/p50 ×${tail.toFixed(2)} > ${TAIL_MAX}, абсолют не проверяется; p50 и отношение к сопернику ниже — достоверны)`;
+        ? "UNRELIABLE (machine busy, absolute not checked)"
+        : `UNRELIABLE (noisy measurement tail: p99/p50 ×${tail.toFixed(2)} > ${TAIL_MAX}, absolute not checked; p50 and the ratio to the rival below are reliable)`;
     }
     default:
-      return "нет бюджета";
+      return "no budget";
   }
 }
 
@@ -578,28 +578,28 @@ function verdictWord(m: Measured): string {
  */
 export function expectMsWithinBudget(actualMs: number, budgetMs: number, label: string): void {
   const m = machine();
-  const where = `${label}: ${actualMs.toFixed(2)}мс при бюджете ${budgetMs}мс ` +
-    `(load1 ${m.load1} на ${m.cpus} ядрах)`;
+  const where = `${label}: ${actualMs.toFixed(2)}ms with budget ${budgetMs}ms ` +
+    `(load1 ${m.load1} on ${m.cpus} cores)`;
   if (actualMs < budgetMs) {
-    console.log(`[bench] ${where} → в бюджете`);
+    console.log(`[bench] ${where} → within budget`);
     return;
   }
   if (!absoluteEnabled() && !isStrict()) {
     console.log(
-      `[bench] ${where} → НЕ ПРОВЕРЯЕТСЯ (MYC_BENCH_ABSOLUTE=0: бюджет откалиброван под другое железо)`,
+      `[bench] ${where} → NOT CHECKED (MYC_BENCH_ABSOLUTE=0: the budget is calibrated for other hardware)`,
     );
     return;
   }
-  throw new Error(`бюджет нарушен: ${where}`);
+  throw new Error(`budget exceeded: ${where}`);
 }
 
 export function expectWithinBudget(m: Measured): void {
   if (m.verdict !== "over") return;
   throw new Error(
-    `бюджет нарушен: ${m.label} p99=${ms(m.stats.p99)} > ${m.budgetMs}мс ` +
-      `(p50=${ms(m.stats.p50)}, n=${m.stats.n}); условия годны: дрожание эталона ` +
-      `×${m.jitter.toFixed(2)} <= ${JITTER_MAX}, load1 ${m.machine.load1} на ${m.machine.cpus} ядрах` +
-      `${m.strict ? " (строгий режим)" : ""} — это регрессия, а не загрузка машины`,
+    `budget exceeded: ${m.label} p99=${ms(m.stats.p99)} > ${m.budgetMs}ms ` +
+      `(p50=${ms(m.stats.p50)}, n=${m.stats.n}); conditions are valid: reference jitter ` +
+      `×${m.jitter.toFixed(2)} <= ${JITTER_MAX}, load1 ${m.machine.load1} on ${m.machine.cpus} cores` +
+      `${m.strict ? " (strict mode)" : ""} — this is a regression, not machine load`,
   );
 }
 
@@ -615,15 +615,15 @@ export function expectWithinBudget(m: Measured): void {
  */
 export function expectCostAtMost(m: Measured, maxRatio: number): void {
   if (m.rival === null || m.rival.p50 <= 0) {
-    throw new Error(`${m.label}: эталонная операция не измерена, отношение невозможно`);
+    throw new Error(`${m.label}: reference operation not measured, no ratio possible`);
   }
   const ratio = m.stats.p50 / m.rival.p50;
   if (ratio <= maxRatio) return;
   throw new Error(
-    `относительная регрессия: ${m.label} p50=${ms(m.stats.p50)} против эталона` +
-      `${m.rivalLabel ? ` «${m.rivalLabel}»` : ""} p50=${ms(m.rival.p50)} — ` +
-      `дороже в ×${ratio.toFixed(2)} при допустимых ×${maxRatio}. ` +
-      `Отношение не зависит от загрузки машины (дрожание эталона ×${m.jitter.toFixed(2)})`,
+    `relative regression: ${m.label} p50=${ms(m.stats.p50)} vs reference` +
+      `${m.rivalLabel ? ` "${m.rivalLabel}"` : ""} p50=${ms(m.rival.p50)} — ` +
+      `costlier by ×${ratio.toFixed(2)} with ×${maxRatio} allowed. ` +
+      `The ratio does not depend on machine load (reference jitter ×${m.jitter.toFixed(2)})`,
   );
 }
 
@@ -635,14 +635,14 @@ export function expectCostAtMost(m: Measured, maxRatio: number): void {
  */
 export function expectAheadOfRival(m: Measured, minRatio: number): void {
   if (m.rival === null || m.slowdown === null) {
-    throw new Error(`${m.label}: соперник не измерен, относительное утверждение невозможно`);
+    throw new Error(`${m.label}: rival not measured, no relative assertion possible`);
   }
   if (m.slowdown >= minRatio) return;
   throw new Error(
-    `относительная регрессия: ${m.label} p50=${ms(m.stats.p50)} против соперника` +
-      `${m.rivalLabel ? ` «${m.rivalLabel}»` : ""} p50=${ms(m.rival.p50)} — ` +
-      `быстрее лишь ×${m.slowdown.toFixed(2)} при требуемых ×${minRatio}. ` +
-      `Отношение не зависит от загрузки машины (дрожание эталона ×${m.jitter.toFixed(2)}): ` +
-      `здоровый путь потерял преимущество над заведомо деградировавшим`,
+    `relative regression: ${m.label} p50=${ms(m.stats.p50)} vs rival` +
+      `${m.rivalLabel ? ` "${m.rivalLabel}"` : ""} p50=${ms(m.rival.p50)} — ` +
+      `only ×${m.slowdown.toFixed(2)} faster with ×${minRatio} required. ` +
+      `The ratio does not depend on machine load (reference jitter ×${m.jitter.toFixed(2)}): ` +
+      `the healthy path lost its lead over the known-degraded one`,
   );
 }

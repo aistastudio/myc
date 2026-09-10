@@ -147,8 +147,8 @@ describe("myc export", () => {
     await myc(a, "task", "x");
     const r = await myc(a, "export");
     expect(r.code).toBe(ExitCode.OK);
-    expect(text(r.stdout)).toMatch(/операций \(1 сайт, по \d+ в файле\)/);
-    expect(text(r.stdout)).not.toMatch(/узлов/);
+    expect(text(r.stdout)).toMatch(/operations \(1 site, \d+ per file\)/);
+    expect(text(r.stdout)).not.toMatch(/nodes/);
   });
 
   test("проекции первой редакции S42 в каталоге графа удаляются", async () => {
@@ -286,7 +286,7 @@ describe("myc merge-driver", () => {
       ".myc/graph/oplog/siteA/00000.jsonl",
     );
     expect(r.code).toBe(ExitCode.OK);
-    expect(text(r.stdout)).toContain("объединение по op_id");
+    expect(text(r.stdout)).toContain("union by op_id");
     expect(readFileSync(join(dir, "ours"), "utf8")).toBe(full);
 
     // Симметрично: ours=full, theirs=base — тот же результат.

@@ -317,7 +317,7 @@ function answerFor(arms: readonly ArmStat[]): Decision {
       cheapest: null,
       separationPending: false,
       answer: "insufficient_attempts",
-      why: `ни у одной руки нет нужного числа закрытых попыток (максимум ${Math.max(
+      why: `no arm has the required number of closed attempts (max ${Math.max(
         0,
         ...arms.map((a) => a.attempts),
       )})`,
@@ -330,7 +330,7 @@ function answerFor(arms: readonly ArmStat[]): Decision {
       cheapest: null,
       separationPending: false,
       answer: "single_arm",
-      why: `наблюдения есть только у ${eligible[0]!.arm}; сравнивать не с чем`,
+      why: `only ${eligible[0]!.arm} has observations; nothing to compare with`,
     };
   }
 
@@ -349,25 +349,25 @@ function answerFor(arms: readonly ArmStat[]): Decision {
       cheapest: null,
       separationPending: false,
       answer: "no_cost_data",
-      why: "результат сравним, но стоимость не посчитана ни у одной руки: нет токенов или нет цены на момент попытки",
+      why: "results are comparable, but no arm has a computed cost: no tokens or no price at the time of the attempt",
     };
   }
   const cheapest = priced.reduce((best, a) => (a.costUsdMean! < best.costUsdMean! ? a : best));
   const separationPending = cheapest.qualityMean < leader.qualityMean - 1e-9;
   let why: string;
   if (equal.length === 1) {
-    why = `по результату ${leader.arm} не имеет равных (интервалы остальных не пересекаются), брать его`;
+    why = `${leader.arm} has no equal on result (the other intervals do not overlap); take it`;
   } else {
     why =
-      `${equal.length} рук неотличимы по результату, из них дешевле ${cheapest.arm} ` +
-      `($${cheapest.costUsdMean!.toFixed(4)} против $${Math.max(
+      `${equal.length} arms are indistinguishable on result; the cheapest is ${cheapest.arm} ` +
+      `($${cheapest.costUsdMean!.toFixed(4)} vs $${Math.max(
         ...priced.map((a) => a.costUsdMean!),
-      ).toFixed(4)} за попытку)`;
+      ).toFixed(4)} per attempt)`;
     if (separationPending) {
       why +=
-        `; ВНИМАНИЕ: среднее качество ${cheapest.arm} ниже (${cheapest.qualityMean.toFixed(2)} ` +
-        `против ${leader.qualityMean.toFixed(2)}), интервалы ещё пересекаются — ` +
-        "наблюдений не хватает, чтобы отличить";
+        `; WARNING: mean quality of ${cheapest.arm} is lower (${cheapest.qualityMean.toFixed(2)} ` +
+        `vs ${leader.qualityMean.toFixed(2)}), the intervals still overlap — ` +
+        "not enough observations to tell them apart";
     }
   }
   return {
@@ -388,7 +388,7 @@ function answerFor(arms: readonly ArmStat[]): Decision {
 export function compareModels(db: Database, options: CompareOptions = {}): CompareReport {
   const minAttempts = options.minAttempts ?? DEFAULT_MIN_ATTEMPTS;
   if (options.taskClass !== undefined && !isTaskClass(options.taskClass)) {
-    throw new Error(`класс задачи "${options.taskClass}" не из таксономии intent:scope`);
+    throw new Error(`task class "${options.taskClass}" is not in the intent:scope taxonomy`);
   }
 
   const where = ["a.finished_at IS NOT NULL", "a.verdict IS NOT NULL"];

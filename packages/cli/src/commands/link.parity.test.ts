@@ -250,6 +250,6 @@ describe("myc link и myc_link: одна связь на две поверхно
     // Обязательность reason названа в описании инструмента и проверяется
     // командой — расхождение здесь означало бы разный контракт при одинаковых
     // именах типов.
-    expect(tool!.description).toContain("supersedes и duplicates обязателен reason");
+    expect(tool!.description).toContain("supersedes and duplicates require a reason");
   });
 });

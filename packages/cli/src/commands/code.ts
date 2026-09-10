@@ -58,10 +58,10 @@ function failure(code: string, msg: string, exit: ExitCode, hint?: string): Comm
   return { ok: false, code, msg, exit, hint };
 }
 
-/** «2.3 МБ» — тот же формат, что у самого код-интеллекта; одна реализация. */
+/** «2.3 MB» — тот же формат, что у самого код-интеллекта; одна реализация. */
 function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} Б`;
-  const units = ["КБ", "МБ", "ГБ"];
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB"];
   let v = n / 1024;
   let i = 0;
   while (v >= 1024 && i < units.length - 1) {
@@ -69,6 +69,11 @@ function fmtBytes(n: number): string {
     i++;
   }
   return `${v.toFixed(1)} ${units[i]}`;
+}
+
+/** `1 file`, `2 files` — число и существительное в человеческой строке. */
+export function count(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 /**
@@ -176,7 +181,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
       "code_files/code_defs. Incremental on two levels — (mtime,size), then content hash — so a " +
       "repeat run over an unchanged tree reads nothing. Costs seconds on a large tree: this is a " +
       "background job class, and the drain step spawns this very command detached rather than " +
-      `running it inline (И1). Symbols are parsed for ${L1_LANGS_LABEL} (L1); every other file is ` +
+      `running it inline (I1). Symbols are parsed for ${L1_LANGS_LABEL} (L1); every other file is ` +
       "registered by path, language and hash (L0) and gets no symbols. A L1 language whose " +
       "tree-sitter grammar is not staged is SKIPPED and NAMED — indexing never goes to the " +
       "network, not even in the background; `myc code fetch` does, and only when a human asks.",
@@ -277,34 +282,34 @@ function buildCodeIndex(deps: StoreDeps): Command {
           }
         }
         if (drain.failed > 0) {
-          ctx.warn("code_index.failed", `файлов не разобрано: ${drain.failed} (см. jobs.last_error)`);
+          ctx.warn("code_index.failed", `files not parsed: ${drain.failed} (see jobs.last_error)`);
         }
         if (data.missing_grammars.length > 0) {
           const total = data.missing_grammars.reduce((n, m) => n + m.files, 0);
           const named = data.missing_grammars
-            .map((m) => `${m.langs.join("/")} (${m.files} файлов, ${fmtBytes(m.bytes)})`)
+            .map((m) => `${m.langs.join("/")} (${count(m.files, "file")}, ${fmtBytes(m.bytes)})`)
             .join("; ");
           // Ни одного символа И были пропуски — команда не выполнила того, о
           // чём её просили, и говорить «готово» здесь нельзя.
           if (scope.defs === 0) {
             return failure(
               "precond.grammar_missing",
-              `грамматик tree-sitter нет: ${named}. Пропущено файлов: ${total}, ` +
-                `символов в индексе: 0. Реестр файлов построен (${scope.files})`,
+              `no tree-sitter grammars: ${named}. Files skipped: ${total}, ` +
+                `symbols in the index: 0. The file registry is built (${scope.files})`,
               ExitCode.PRECOND,
               data.missing_grammars.map((m) => m.fetch).join(" && "),
             );
           }
           ctx.warn(
             "code_index.grammar_missing",
-            `пропущено файлов ${total} — нет грамматик: ${named}. Добыть: ` +
+            `skipped ${count(total, "file")} — missing grammars: ${named}. Get them: ` +
               data.missing_grammars.map((m) => m.fetch).join(", "),
           );
         }
         if (scope.l1Files === 0 && data.missing_grammars.length === 0) {
           ctx.warn(
             "code_index.no_l1",
-            `файлов ${L1_LANGS_LABEL} нет — символов не будет, реестр файлов построен (${scope.files})`,
+            `no ${L1_LANGS_LABEL} files — no symbols; the file registry is built (${scope.files})`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -316,22 +321,22 @@ function buildCodeIndex(deps: StoreDeps): Command {
       const d = data as CodeIndexData;
       const langs = d.langs.map((l) => `${l.lang} ${l.files}`).join(", ");
       const lines = [
-        `репозиторий ${d.repo.length > 0 ? d.repo : "(корень воркспейса)"}  ${d.root}`,
-        `скан      файлов ${d.scan.files}, без изменений ${d.scan.unchanged}, тач ${d.scan.touched}, ` +
-          `в работу ${d.scan.enqueued}, убрано ${d.scan.removed}  ${d.scan.scan_ms} мс`,
-        `разбор    взято ${d.drain.claimed}, разобрано ${d.drain.parsed} (пулом ${d.drain.pooled}), ` +
-          `записано ${d.drain.written}, пропущено ${d.drain.skipped}, отказов ${d.drain.failed}  ` +
-          `${d.drain.drain_ms} мс`,
+        `repo      ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}`,
+        `scan      files ${d.scan.files}, unchanged ${d.scan.unchanged}, touched ${d.scan.touched}, ` +
+          `queued ${d.scan.enqueued}, removed ${d.scan.removed}  ${d.scan.scan_ms} ms`,
+        `parse     claimed ${d.drain.claimed}, parsed ${d.drain.parsed} (pool ${d.drain.pooled}), ` +
+          `written ${d.drain.written}, skipped ${d.drain.skipped}, failed ${d.drain.failed}  ` +
+          `${d.drain.drain_ms} ms`,
         ...d.missing_grammars.map(
           (m) =>
-            `без грамматики  ${m.langs.join("/")}: ${m.files} файлов не разобрано ` +
+            `no grammar  ${m.langs.join("/")}: ${count(m.files, "file")} not parsed ` +
             `(${fmtBytes(m.bytes)}) — \`${m.fetch}\``,
         ),
-        `корпус    единиц ${d.search.units}, перестроено файлов ${d.search.rebuilt}, ` +
-          `без изменений ${d.search.reused}, убрано ${d.search.removed}, текста ` +
-          `${fmtBytes(d.search.bytes)}  ${d.search.took_ms} мс`,
-        `индекс    ${d.files} файлов, ${d.defs} символов${langs.length > 0 ? `  [${langs}]` : ""}`,
-        `${d.dry_run ? "dry-run: ничего не записано  " : ""}${d.took_ms} мс`,
+        `corpus    units ${d.search.units}, files rebuilt ${d.search.rebuilt}, ` +
+          `unchanged ${d.search.reused}, removed ${d.search.removed}, text ` +
+          `${fmtBytes(d.search.bytes)}  ${d.search.took_ms} ms`,
+        `index     ${count(d.files, "file")}, ${count(d.defs, "symbol")}${langs.length > 0 ? `  [${langs}]` : ""}`,
+        `${d.dry_run ? "dry-run: nothing written  " : ""}${d.took_ms} ms`,
       ];
       return `${lines.join("\n")}\n`;
     },
@@ -395,7 +400,7 @@ function buildCodeSymbol(deps: StoreDeps): Command {
       const t0 = performance.now();
       const name = ctx.args[0];
       if (name === undefined || name.trim().length === 0) {
-        return failure("usage.invalid", "нужно: myc code symbol <name>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc code symbol <name>", ExitCode.USAGE);
       }
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
@@ -408,8 +413,8 @@ function buildCodeSymbol(deps: StoreDeps): Command {
         if (scope.files === 0) {
           return failure(
             "precond.no_index",
-            `код-индекс этого репозитория (${repoId.length > 0 ? repoId : "корень воркспейса"}) не построен: ` +
-              `в code_files ноль строк — символ искать негде`,
+            `the code index of this repo (${repoId.length > 0 ? repoId : "workspace root"}) is not built: ` +
+              `code_files has zero rows — nowhere to look for a symbol`,
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -478,12 +483,12 @@ function buildCodeSymbol(deps: StoreDeps): Command {
         if (defs.length === 0) {
           return failure(
             "notfound.symbol",
-            `символа ${name.trim()} нет в индексе: просмотрено ${scope.files} файлов ` +
-              `(${scope.l1Files} с определениями, ${scope.defs} символов), языки ${data.searched.langs.join(", ")}`,
+            `symbol ${name.trim()} is not in the index: scanned ${count(scope.files, "file")} ` +
+              `(${scope.l1Files} with definitions, ${count(scope.defs, "symbol")}), languages ${data.searched.langs.join(", ")}`,
             ExitCode.NOTFOUND,
             scope.l1Files === 0
-              ? `в репозитории нет файлов ${L1_LANGS_LABEL} — символов не будет`
-              : "индекс мог отстать: myc code index",
+              ? `the repo has no ${L1_LANGS_LABEL} files — no symbols`
+              : "the index may be behind: myc code index",
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -500,16 +505,16 @@ function buildCodeSymbol(deps: StoreDeps): Command {
         for (const k of def.knowledge) {
           out.push(`    ${k.id}  ${k.kind}  ${k.status}  ${k.title}  [${k.anchor} ${k.state}]`);
         }
-        if (def.knowledge.length === 0) out.push("    знания на этом участке нет");
+        if (def.knowledge.length === 0) out.push("    no knowledge anchored here");
       }
       if (d.fan_in !== undefined) {
         out.push(
-          `fan_in ${d.fan_in.n} (${d.fan_in.source}, ${d.fan_in.files} файлов` +
-            `${d.fan_in.cached ? ", из кеша" : `, ${d.fan_in.took_ms} мс`})`,
+          `fan_in ${d.fan_in.n} (${d.fan_in.source}, ${count(d.fan_in.files, "file")}` +
+            `${d.fan_in.cached ? ", from cache" : `, ${d.fan_in.took_ms} ms`})`,
         );
       }
       out.push(
-        `просмотрено ${d.searched.files} файлов, ${d.searched.defs} символов  ${d.took_ms} мс`,
+        `scanned ${count(d.searched.files, "file")}, ${count(d.searched.defs, "symbol")}  ${d.took_ms} ms`,
       );
       return `${out.join("\n")}\n`;
     },
@@ -600,10 +605,10 @@ function buildCodeFetch(deps: StoreDeps): Command {
         }
         return failure(
           "usage.invalid",
-          `не знаю языка или грамматики "${raw}"; языки: ${Object.keys(GRAMMAR_BY_LANG).join(", ")}; ` +
-            `грамматики: ${Object.keys(GRAMMARS).join(", ")}`,
+          `unknown language or grammar "${raw}"; languages: ${Object.keys(GRAMMAR_BY_LANG).join(", ")}; ` +
+            `grammars: ${Object.keys(GRAMMARS).join(", ")}`,
           ExitCode.USAGE,
-          "myc code fetch      # без аргументов — по языкам этого репозитория",
+          "myc code fetch      # no arguments: the languages of this repo",
         );
       }
 
@@ -630,9 +635,9 @@ function buildCodeFetch(deps: StoreDeps): Command {
         if (wanted.size === 0) {
           return failure(
             "notfound.lang",
-            `в этом репозитории нет файлов ${L1_LANGS_LABEL} — грамматики не нужны ни одной`,
+            `this repo has no ${L1_LANGS_LABEL} files — it needs no grammar`,
             ExitCode.NOTFOUND,
-            "myc code fetch ts   # если нужна конкретная",
+            "myc code fetch ts   # for a specific one",
           );
         }
       }
@@ -676,7 +681,7 @@ function buildCodeFetch(deps: StoreDeps): Command {
               e.message,
               e.code === "unknown_grammar" ? ExitCode.NOTFOUND : ExitCode.ERR,
               e.code === "network_error"
-                ? "нужен доступ к cdn.jsdelivr.net; в закрытом контуре положите .wasm в MYC_GRAMMARS_DIR"
+                ? "needs access to cdn.jsdelivr.net; on an air-gapped network put the .wasm files in MYC_GRAMMARS_DIR"
                 : undefined,
             );
           }
@@ -690,12 +695,12 @@ function buildCodeFetch(deps: StoreDeps): Command {
       const d = data as FetchData;
       const lines = d.fetched.map(
         (f) =>
-          `${f.already ? "уже есть " : "скачано  "}${f.grammar} (${f.langs.join("/")})  ` +
-          `${fmtBytes(f.bytes)}  ${f.ms} мс`,
+          `${f.already ? "present " : "fetched "}${f.grammar} (${f.langs.join("/")})  ` +
+          `${fmtBytes(f.bytes)}  ${f.ms} ms`,
       );
       lines.push(
-        `каталог  ${d.dir}`,
-        `${d.downloaded_bytes > 0 ? `из сети ${fmtBytes(d.downloaded_bytes)}  ` : "сеть не использовалась  "}${d.took_ms} мс`,
+        `dir     ${d.dir}`,
+        `${d.downloaded_bytes > 0 ? `downloaded ${fmtBytes(d.downloaded_bytes)}  ` : "no network used  "}${d.took_ms} ms`,
       );
       return `${lines.join("\n")}\n`;
     },
@@ -752,16 +757,16 @@ function buildCodeGrammars(): Command {
     },
     renderHuman: (data) => {
       const d = data as GrammarsData;
-      const out = [`рантайм   ${d.runtime.file}  ${d.runtime.status}  ${d.runtime.path ?? "-"}`];
+      const out = [`runtime   ${d.runtime.file}  ${d.runtime.status}  ${d.runtime.path ?? "-"}`];
       for (const g of d.grammars) {
         out.push(
           `${g.status.padEnd(8)}  ${g.grammar.padEnd(11)} ${g.langs.join("/").padEnd(7)} ${g.size.padStart(9)}  ${g.path ?? "-"}`,
         );
       }
-      out.push(`кеш       ${d.cache_dir}`);
+      out.push(`cache     ${d.cache_dir}`);
       const absent = d.grammars.filter((g) => g.status !== "present");
       if (absent.length > 0) {
-        out.push(`добыть    myc code fetch ${absent.map((g) => g.langs[0]).join(" ")}`);
+        out.push(`get       myc code fetch ${absent.map((g) => g.langs[0]).join(" ")}`);
       }
       return `${out.join("\n")}\n`;
     },
@@ -813,7 +818,7 @@ function buildCodeSearch(deps: StoreDeps): Command {
     handler: async (ctx) => {
       const query = ctx.args.join(" ").trim();
       if (query.length === 0) {
-        return failure("usage.invalid", "нужно: myc code search <вопрос>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc code search <question>", ExitCode.USAGE);
       }
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
@@ -830,8 +835,8 @@ function buildCodeSearch(deps: StoreDeps): Command {
         if (res.searched.units === 0) {
           return failure(
             "precond.no_index",
-            `корпуса поиска по коду нет: в code_units ноль единиц для репозитория ` +
-              `${repoId.length > 0 ? repoId : "(корень воркспейса)"}`,
+            `the code search corpus is empty: code_units has zero units for repo ` +
+              `${repoId.length > 0 ? repoId : "(workspace root)"}`,
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -861,8 +866,8 @@ function buildCodeSearch(deps: StoreDeps): Command {
           // обязано приехать вместе с пустотой, иначе она неотличима от сбоя.
           ctx.warn(
             "code_search.empty",
-            `ни одна ступень не нашла ничего: просмотрено единиц ${data.searched.units} ` +
-              `в ${data.searched.files} файлах. Исчерпывающий откат: myc code grep <литерал>`,
+            `no stage found anything: scanned ${count(data.searched.units, "unit")} ` +
+              `in ${count(data.searched.files, "file")}. Exhaustive fallback: myc code grep <literal>`,
           );
         }
         return { ok: true, data, meta: { count: data.hits.length, took_ms: data.took_ms } };
@@ -874,15 +879,15 @@ function buildCodeSearch(deps: StoreDeps): Command {
       const d = data as SearchData;
       const out: string[] = [];
       for (const hit of d.hits) {
-        const head = hit.header ? "  [шапка файла]" : "";
+        const head = hit.header ? "  [file header]" : "";
         out.push(`${hit.score.toFixed(4)}  ${hit.path}${head}`);
         for (const u of hit.units) {
           out.push(`          ${hit.path}:${u.line}-${u.end}  ${u.kind} ${u.name}`);
         }
       }
       out.push(
-        `${d.hits.length} файлов · ступени ${d.stages.length > 0 ? d.stages.join(">") : "—"} · ` +
-          `просмотрено ${d.searched.units} единиц в ${d.searched.files} файлах · ${d.took_ms} мс`,
+        `${count(d.hits.length, "file")} · stages ${d.stages.length > 0 ? d.stages.join(">") : "—"} · ` +
+          `scanned ${count(d.searched.units, "unit")} in ${count(d.searched.files, "file")} · ${d.took_ms} ms`,
       );
       return `${out.join("\n")}\n`;
     },
@@ -956,7 +961,7 @@ function buildCodeGrep(deps: StoreDeps): Command {
     handler: async (ctx) => {
       const literal = ctx.args.join(" ");
       if (literal.length === 0) {
-        return failure("usage.invalid", "нужно: myc code grep <литерал>", ExitCode.USAGE);
+        return failure("usage.invalid", "usage: myc code grep <literal>", ExitCode.USAGE);
       }
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
@@ -970,7 +975,7 @@ function buildCodeGrep(deps: StoreDeps): Command {
         if (scope.files === 0) {
           return failure(
             "precond.no_index",
-            `реестра файлов этого репозитория нет: в code_files ноль строк — искать негде`,
+            `this repo has no file registry: code_files has zero rows — nothing to grep`,
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -1020,7 +1025,7 @@ function buildCodeGrep(deps: StoreDeps): Command {
         if (data.skipped.length > 0) {
           ctx.warn(
             "code_grep.skipped",
-            `пропущено файлов по потолку размера: ${data.skipped.length} — ` +
+            `files skipped by the size cap: ${data.skipped.length} — ` +
               data.skipped
                 .slice(0, 4)
                 .map((x) => `${x.path} (${fmtBytes(x.bytes)})`)
@@ -1030,13 +1035,13 @@ function buildCodeGrep(deps: StoreDeps): Command {
         if (data.missing > 0) {
           ctx.warn(
             "code_grep.missing",
-            `файлов из индекса нет на диске: ${data.missing} — индекс отстал, myc code index`,
+            `indexed files missing on disk: ${data.missing} — the index is behind, myc code index`,
           );
         }
         if (data.truncated) {
           ctx.warn(
             "code_grep.truncated",
-            `групп больше потолка: показано ${data.groups.length}, вхождений всего ${data.hits} — --limit`,
+            `more groups than the cap: shown ${data.groups.length}, occurrences in total ${data.hits} — --limit`,
           );
         }
         return { ok: true, data, meta: { count: data.hits, took_ms: data.took_ms } };
@@ -1046,23 +1051,23 @@ function buildCodeGrep(deps: StoreDeps): Command {
     },
     renderHuman: (data) => {
       const d = data as GrepData;
-      const where = d.scope === null ? "" : ` в ${d.scope.join(", ")}`;
-      const binary = d.binary > 0 ? `, бинарных пропущено ${d.binary}` : "";
+      const where = d.scope === null ? "" : ` in ${d.scope.join(", ")}`;
+      const binary = d.binary > 0 ? `, binary skipped ${d.binary}` : "";
       const out = [
-        `"${d.literal}"${where} — ${d.hits} вхождений в ${d.groups.length} символах, ` +
-          `файлов ${d.files} (просмотрено ${d.searched}${binary})`,
+        `"${d.literal}"${where} — ${count(d.hits, "occurrence")} in ${count(d.groups.length, "symbol")}, ` +
+          `files ${d.files} (scanned ${d.searched}${binary})`,
       ];
       for (const g of d.groups) {
         out.push("");
         out.push(
           g.symbol.length > 0
             ? `${g.symbol} · ${g.kind} · ${g.path}:${g.span_start}-${g.span_end}`
-            : `${g.path} (верхний уровень файла)`,
+            : `${g.path} (file top level)`,
         );
         for (const hit of g.hits) out.push(`  ${hit.line}: ${hit.text}`);
       }
       out.push("");
-      out.push(`${d.took_ms} мс`);
+      out.push(`${d.took_ms} ms`);
       return `${out.join("\n")}\n`;
     },
   };
@@ -1108,24 +1113,24 @@ function renderMap(d: MapData): string {
     .map((l) => `${l.lang} ${l.files}`)
     .join(", ");
   const out = [
-    `${d.repo.length > 0 ? d.repo : "(корень воркспейса)"}  ${d.files} файлов · ${d.defs} символов · ` +
-      `${d.refs} ссылок, из них ${d.imports} импортов · ${d.dirs} каталогов`,
-    `языки     ${langs}`,
+    `${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${count(d.files, "file")} · ${count(d.defs, "symbol")} · ` +
+      `${count(d.refs, "reference")} (${count(d.imports, "import")}) · ${count(d.dirs, "directory", "directories")}`,
+    `languages ${langs}`,
     "",
   ];
   for (const c of d.clusters) {
-    out.push(`${c.dir}  ${c.files} файлов, ${c.defs} символов`);
+    out.push(`${c.dir}  ${count(c.files, "file")}, ${count(c.defs, "symbol")}`);
     if (c.hubs.length > 0) {
-      out.push(`  хабы    ${c.hubs.map((x) => `${x.name} (${x.refs})`).join(", ")}`);
+      out.push(`  hubs    ${c.hubs.map((x) => `${x.name} (${x.refs})`).join(", ")}`);
     }
     if (c.used_by.length > 0) {
-      out.push(`  зовут   ${c.used_by.map((x) => `${x.dir} (${x.refs})`).join(", ")}`);
+      out.push(`  used by ${c.used_by.map((x) => `${x.dir} (${x.refs})`).join(", ")}`);
     }
   }
   out.push("");
   out.push(
-    `рёбра     ${d.cross_edges} межкаталожных по import; ${d.ambiguous_edges} отброшено — ` +
-      `имя определено в репозитории не один раз`,
+    `edges     ${d.cross_edges} cross-directory via import; ${d.ambiguous_edges} dropped — ` +
+      `the name is defined more than once in the repo`,
   );
   return `${out.join("\n")}\n`;
 }
@@ -1169,7 +1174,7 @@ function buildCodeMap(deps: StoreDeps): Command {
         if (m.files === 0) {
           return failure(
             "precond.no_index",
-            `реестра файлов этого репозитория нет: в code_files ноль строк — карту строить не из чего`,
+            `this repo has no file registry: code_files has zero rows — nothing to build the map from`,
             ExitCode.PRECOND,
             "myc code index",
           );
@@ -1198,7 +1203,7 @@ function buildCodeMap(deps: StoreDeps): Command {
         if (m.defs === 0) {
           ctx.warn(
             "code_map.no_defs",
-            `символов в индексе нет — карта из одних файлов: хабов и рёбер не будет`,
+            `the index has no symbols — the map shows files only: no hubs or edges`,
           );
         }
         return { ok: true, data, meta: { count: data.clusters.length, took_ms: data.took_ms } };
@@ -1208,7 +1213,7 @@ function buildCodeMap(deps: StoreDeps): Command {
     },
     renderHuman: (data) => {
       const d = data as MapData;
-      return `${renderMap(d)}карта     ${d.render_bytes} знаков · ${d.took_ms} мс\n`;
+      return `${renderMap(d)}map       ${count(d.render_bytes, "char")} · ${d.took_ms} ms\n`;
     },
   };
 }

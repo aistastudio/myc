@@ -100,7 +100,7 @@ export function writeEpisode(input: EpisodeWriteInput): EpisodeWriteResult {
     // Эпизоды приватны (D22) и лежат рядом с git. Правило игнора ставит тот,
     // кто создаёт каталог: без него первый же `git add .` унесёт в историю
     // сырые транскрипты — то самое, ради чего эпизод и помечен private.
-    writeFileSync(join(dir, ".gitignore"), "# сырые эпизоды L0 приватны (D22) и в git не идут\n*\n");
+    writeFileSync(join(dir, ".gitignore"), "# raw L0 episodes are private (D22) and stay out of git\n*\n");
   }
 
   const id = generateId(input.handle.slug);
@@ -124,7 +124,7 @@ export function writeEpisode(input: EpisodeWriteInput): EpisodeWriteResult {
     layer: 0,
     acl: "private",
     scope: input.handle.scope,
-    title: `эпизод ${id} · ${input.header.reason} · ${input.header.agent}`,
+    title: `episode ${id} · ${input.header.reason} · ${input.header.agent}`,
     actor: input.handle.actor,
     attrs: {
       ...input.attrs,
@@ -241,7 +241,7 @@ export function reconcileEpisodes(mycDir: string, handle: StoreHandle): Reconcil
         layer: 0,
         acl: "private",
         scope: handle.scope,
-        title: `эпизод ${id} · ${header.reason} · ${header.agent}`,
+        title: `episode ${id} · ${header.reason} · ${header.agent}`,
         actor: handle.actor,
         attrs: {
           reason: header.reason,

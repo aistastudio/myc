@@ -316,7 +316,7 @@ async function main() {
     console.log(
       JSON.stringify({
         available: false,
-        reason: lib === null ? "нет libsqlite3 с поддержкой расширений" : "нет sqlite-vec (vec0)",
+        reason: lib === null ? "no libsqlite3 with extension support" : "no sqlite-vec (vec0)",
       }),
     );
     return;

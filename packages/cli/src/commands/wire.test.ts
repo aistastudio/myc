@@ -431,7 +431,7 @@ describe("чужие файлы", () => {
     expect(out).toContain("PostToolUse[Bash]: graft tool-savings");
 
     // И цена названа целиком: сколько, куда сохранено, как вернуть.
-    expect(out).toContain("4 чужих обработчика");
+    expect(out).toContain("4 foreign handlers");
     expect(out).toContain("cp .claude/settings.json.myc.bak .claude/settings.json");
   });
 
@@ -490,7 +490,7 @@ describe("чужие файлы", () => {
     const out = r.stdout as string;
     expect(out).toContain("SessionStart: bd prime --hook-json");
     expect(out).toContain("SessionStart: graft session-start");
-    expect(out).toContain("2 чужих обработчика");
+    expect(out).toContain("2 foreign handlers");
   });
 
   test("без replace вытеснять нечего: список пуст", async () => {
@@ -498,7 +498,7 @@ describe("чужие файлы", () => {
     const r = await myc("wire", "--agents", "claude", "--hook-mode", "append", "--json");
     const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
     expect((env["data"] as Record<string, unknown>)["evicted"]).toEqual([]);
-    expect(r.stdout as string).not.toContain("вытеснено");
+    expect(r.stdout as string).not.toContain("evicted by --hook-mode");
   });
 
   test("append переставляет наш хук в конец — и говорит об этом", async () => {
@@ -529,7 +529,7 @@ describe("чужие файлы", () => {
     );
     const r = await myc("wire", "--agents", "claude", "--hook-mode", "append");
     const out = r.stdout as string;
-    expect(out).toContain("myc-хук переставлен в конец массива");
+    expect(out).toContain("myc's hook moved to the end of the array");
     expect(out).toContain("graft session-start");
 
     const after = JSON.parse(read(".claude/settings.json"));
@@ -542,7 +542,7 @@ describe("чужие файлы", () => {
     // Чужой хук один и уже первый — append ничего не двигает, и заметки нет.
     write(".claude/settings.json", FOREIGN_SETTINGS);
     const r = await myc("wire", "--agents", "claude", "--hook-mode", "append");
-    expect(r.stdout as string).not.toContain("переставлен в конец");
+    expect(r.stdout as string).not.toContain("moved to the end");
   });
 
   test("нечитаемый JSON — конфликт, а не перезапись", async () => {
@@ -801,7 +801,7 @@ describe("строка статуса: --status-line", () => {
     const r = await sl(slRegistry(), "wire", "--agents", "claude", "--json");
     expect(statusLine().command).toBe("my-own-statusline --x 'y'");
     const data = JSON.parse(r.stdout as string).data as { untouched: string[] };
-    expect(data.untouched).toContain(".claude/settings.json:statusLine (нужен --status-line)");
+    expect(data.untouched).toContain(".claude/settings.json:statusLine (needs --status-line)");
   });
 
   test("проектная чужая: дословно в журнал, её команда — в --then; unwire побайтно (S1, S5)", async () => {
@@ -831,7 +831,7 @@ describe("строка статуса: --status-line", () => {
     const wired = await sl(r, "wire", "--agents", "claude", "--status-line");
     expect(wired.code).toBe(0);
     expect(statusLine().command).not.toContain("--then");
-    expect(String(wired.stdout)).toContain("пользовательская");
+    expect(String(wired.stdout)).toContain("the user line");
     expect(readWireJournal(join(dir, ".myc", "wire.json"))?.status_line).toEqual({
       path: ".claude/settings.json",
       previous: null,
@@ -887,16 +887,16 @@ describe("строка статуса: --status-line", () => {
     const r = await sl(slRegistry(), "wire", "--agents", "codex,opencode,kimi", "--status-line", "--json");
     expect(r.code).toBe(0);
     const notes = (JSON.parse(r.stdout as string).data as { notes: string[] }).notes.join("\n");
-    expect(notes).toContain("Codex: строка статуса не ставится");
-    expect(notes).toContain("opencode: строка статуса не ставится");
-    expect(notes).toContain("Kimi: строка статуса этой версией wire не ставится");
-    expect(notes).toContain("только для Claude Code");
+    expect(notes).toContain("Codex: status line not installed");
+    expect(notes).toContain("opencode: status line not installed");
+    expect(notes).toContain("Kimi: this version of wire does not install the status line");
+    expect(notes).toContain("only for Claude Code");
     expect(has(".claude/settings.json")).toBe(false);
   });
 
   test("бинарь без команды statusline — отказ, не записано ничего", async () => {
     userLine(ORCA_CMD);
-    const r = await sl(slRegistry({ probeStatusLine: () => ({ ok: false, why: "./dist/myc statusline --help: код 2" }) }), "wire", "--agents", "claude", "--status-line");
+    const r = await sl(slRegistry({ probeStatusLine: () => ({ ok: false, why: "./dist/myc statusline --help: exit 2" }) }), "wire", "--agents", "claude", "--status-line");
     expect(r.code).toBe(5); // PRECOND
     expect(String(r.stderr)).toContain("statusline --help");
     expect(has(".claude/settings.json")).toBe(false);
@@ -914,7 +914,7 @@ describe("строка статуса: --status-line", () => {
   test("своя строка в settings.local.json — сказано, что проектную Claude Code не покажет", async () => {
     write(".claude/settings.local.json", `${JSON.stringify({ statusLine: { type: "command", command: "local-line" } })}\n`);
     const r = await sl(slRegistry(), "wire", "--agents", "claude", "--status-line");
-    expect(String(r.stdout)).toContain("settings.local.json: там своя statusLine");
+    expect(String(r.stdout)).toContain("settings.local.json: has its own statusLine");
     expect(JSON.parse(read(".claude/settings.local.json")).statusLine.command).toBe("local-line");
   });
 });
@@ -1050,7 +1050,7 @@ describe("unwire удаляет файлы, которые создал wire", (
     const un = await sl("unwire", "--json");
     expect(un.code).toBe(0);
     for (const p of CREATED) expect([p, has(p)]).toEqual([p, false]);
-    expect(String((JSON.parse(un.stdout as string).data as { removed: string[] }).removed)).toContain("файл создан wire — удалён");
+    expect(String((JSON.parse(un.stdout as string).data as { removed: string[] }).removed)).toContain("file created by wire — deleted");
   });
 
   test("файл, бывший до wire, остаётся — даже пустым", async () => {

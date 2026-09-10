@@ -118,7 +118,7 @@ describe("reachAttrs — что кладётся в узел", () => {
   });
 
   test("session без ключа сессии не записывается вовсе (И2: пустая строка — не сессия)", () => {
-    expect(() => reachAttrs("session", "")).toThrow(/ключ сессии/);
+    expect(() => reachAttrs("session", "")).toThrow(/session key/);
   });
 
   test("записанное читается обратно тем же", () => {

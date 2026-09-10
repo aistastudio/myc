@@ -149,7 +149,7 @@ describe("myc mcp: stdio end-to-end", () => {
         expect(info["name"]).toBe("myc");
         expect(info["version"]).toBe(CLI_VERSION);
         const instructions = String(init.result!["instructions"] ?? "");
-        expect(instructions).toContain("myc — память и задачи");
+        expect(instructions).toContain("myc — this project's memory and tasks");
         expect(instructions).toContain("MYC BOOTSTRAP");
         await mcp.notify("notifications/initialized");
 
@@ -296,7 +296,7 @@ describe("myc mcp: stdio end-to-end", () => {
         // 2. Индекс построен отдельным процессом — сервер видит его без рестарта.
         expect((await cli(dir, "code", "index")).code).toBe(0);
 
-        const norm = (s: string): string => s.replace(/\d+ мс/g, "N мс").replace(/из кеша/g, "N мс");
+        const norm = (s: string): string => s.replace(/\d+ (?:мс|ms)\b/g, "N ms").replace(/из кеша|from cache|\bcached\b/g, "N ms");
         for (const q of questions) {
           const r = await mcp.call(q.tool, q.args);
           expect({ tool: q.tool, isError: r.result!.isError }).toEqual({ tool: q.tool, isError: undefined });

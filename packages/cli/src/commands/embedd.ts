@@ -252,7 +252,7 @@ export async function requestVector(
   timeoutMs: number,
 ): Promise<DaemonVector> {
   if (!existsSync(socketPath)) {
-    return { ok: false, daemon: "absent", reason: "прогретого эмбеддера нет" };
+    return { ok: false, daemon: "absent", reason: "no warm embedder" };
   }
   const out = await ask(socketPath, { op: "embed", text }, timeoutMs);
   if (!out.ok) {
@@ -260,13 +260,13 @@ export async function requestVector(
     // Это ровно «демона нет»: нового поднять можно и нужно, он сам уберёт
     // мусор. Дедлайн же означает «демон жив, но занят»: второго не плодим.
     if (out.why === "refused") {
-      return { ok: false, daemon: "absent", reason: "сокет от умершего демона" };
+      return { ok: false, daemon: "absent", reason: "socket left by a dead daemon" };
     }
-    return { ok: false, daemon: "error", reason: `нет ответа за ${timeoutMs} мс` };
+    return { ok: false, daemon: "error", reason: `no reply within ${timeoutMs} ms` };
   }
   const r = out.reply;
   if (r["ok"] !== true) {
-    const reason = String(r["reason"] ?? "без причины");
+    const reason = String(r["reason"] ?? "no reason given");
     return {
       ok: false,
       daemon: reason.includes("warming") ? "warming" : "error",
@@ -275,13 +275,13 @@ export async function requestVector(
   }
   const vec = r["vec"];
   if (!Array.isArray(vec) || vec.length === 0) {
-    return { ok: false, daemon: "error", reason: "демон вернул пустой вектор" };
+    return { ok: false, daemon: "error", reason: "the daemon returned an empty vector" };
   }
   const parsed = new Float32Array(vec.length);
   for (let i = 0; i < vec.length; i++) {
     const v = Number(vec[i]);
     if (!Number.isFinite(v)) {
-      return { ok: false, daemon: "error", reason: `компонент ${i} не конечен` };
+      return { ok: false, daemon: "error", reason: `component ${i} is not finite` };
     }
     parsed[i] = v;
   }
@@ -476,7 +476,7 @@ export async function runEmbedDaemon(opts: DaemonOptions): Promise<DaemonRun> {
             try {
               req = JSON.parse(line) as Record<string, unknown>;
             } catch {
-              sock.write(`${JSON.stringify({ ok: false, reason: "плохой JSON" })}\n`);
+              sock.write(`${JSON.stringify({ ok: false, reason: "bad JSON" })}\n`);
               continue;
             }
             const op = String(req["op"] ?? "");
@@ -513,7 +513,7 @@ export async function runEmbedDaemon(opts: DaemonOptions): Promise<DaemonRun> {
                 });
             } else {
               sock.write(
-                `${JSON.stringify({ ok: false, reason: `неизвестная операция '${op}'` })}\n`,
+                `${JSON.stringify({ ok: false, reason: `unknown operation '${op}'` })}\n`,
               );
             }
           }
@@ -597,7 +597,7 @@ export async function runEmbedDaemon(opts: DaemonOptions): Promise<DaemonRun> {
             };
           })();
   } catch (e) {
-    const reason = `эмбеддер не загрузился: ${e instanceof Error ? e.message : String(e)}`;
+    const reason = `embedder failed to load: ${e instanceof Error ? e.message : String(e)}`;
     state = "failed";
     if (queue !== null && leased) {
       try {
@@ -614,7 +614,7 @@ export async function runEmbedDaemon(opts: DaemonOptions): Promise<DaemonRun> {
   warmMs = Math.round((performance.now() - t0) * 10) / 10;
 
   if (state !== "ok") {
-    const reason = `прогрев не завершился: state=${state}`;
+    const reason = `warmup did not finish: state=${state}`;
     if (queue !== null && leased) {
       try {
         queue.db.run(embedJobQueries.warm_fail, [reason, WARM_JOB_KIND, WARM_JOB_ENTITY]);
@@ -723,7 +723,7 @@ export function createEmbeddCommand(
         return {
           ok: false,
           code: "embed.warmup_failed",
-          msg: run.reason ?? "прогрев эмбеддера не удался",
+          msg: run.reason ?? "embedder warmup failed",
           exit: ExitCode.DEGRADED,
           hint: "myc models fetch",
         };

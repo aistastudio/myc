@@ -196,8 +196,8 @@ describe("И2: охват, который не удалось вывести, В
       expect(storedRepo(env.data["id"] as string)).toBeUndefined();
 
       const human = text((await myc(outside, "--db", db, "task", "и ещё одна")).stdout);
-      expect(human).toContain("repo      не определён");
-      expect(human).toContain("путь вне воркспейса");
+      expect(human).toContain("repo      undetermined");
+      expect(human).toContain("path outside the workspace");
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -228,7 +228,7 @@ describe("И2: охват, который не удалось вывести, В
     raw.close();
 
     const out = text((await myc(root, "ready")).stdout);
-    expect(out).toContain("1 без охвата репозитория");
+    expect(out).toContain("1 without repo reach");
     const env = await mycJson(root, "ready");
     expect(env.meta["repo_unknown"]).toBe(1);
   });
@@ -237,8 +237,8 @@ describe("И2: охват, который не удалось вывести, В
     const outside = mkdtempSync(join(tmpdir(), "myc-outside3-"));
     try {
       const out = text((await myc(outside, "--db", db, "ready")).stdout);
-      expect(out).toContain("охват репозитория не определён");
-      expect(out).toContain("путь вне воркспейса");
+      expect(out).toContain("repo reach undetermined");
+      expect(out).toContain("path outside the workspace");
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -267,7 +267,7 @@ describe("ready фильтрует по репозиторию", () => {
 
     const out = text((await myc(join(root, "collector"), "ready")).stdout);
     expect(out).toContain("repo collector");
-    expect(out).toContain("1 из других репозиториев скрыто");
+    expect(out).toContain("1 from other repos hidden");
   });
 
   test("из корня видно всё: экосистемный корень — не репозиторий", async () => {
@@ -359,7 +359,7 @@ describe("recall фильтрует по репозиторию", () => {
   test("охват репозитория — своя колонка строки и своё число в подвале", async () => {
     const out = text((await myc(root, "recall", "очередь ретривала")).stdout);
     expect(out).toContain("collector");
-    expect(out).toContain("все");
+    expect(out).toContain("all");
 
     const raw = new Database(db);
     raw.exec(
@@ -370,7 +370,7 @@ describe("recall фильтрует по репозиторию", () => {
     );
     raw.close();
     const withOld = text((await myc(root, "recall", "очередь ретривала")).stdout);
-    expect(withOld).toContain("1 без охвата репозитория");
+    expect(withOld).toContain("1 without repo reach");
   });
 });
 
@@ -426,7 +426,7 @@ describe("prime знает про охват репозитория (R5)", () =>
     expect(out).toContain("задача коллектора");
     expect(out).not.toContain("задача мессенджера");
     expect(out).toContain("repo collector");
-    expect(out).toContain("1 из других репозиториев скрыто");
+    expect(out).toContain("1 from other repos hidden");
   });
 
   test("из корня воркспейса prime видит всё — общий охват, фильтра нет", async () => {

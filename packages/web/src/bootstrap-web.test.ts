@@ -74,7 +74,7 @@ async function directBootstrap(
 /** Стирает то единственное, что не может совпасть между двумя вызовами процесса. */
 function normalizeFooter(text: string): string {
   return text
-    .replace(/· \d+ мс/g, "· N мс")
+    .replace(/· \d+ ms/g, "· N ms")
     .replace(/cache (hit|miss|off)/g, "cache X");
 }
 

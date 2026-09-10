@@ -263,7 +263,7 @@ export async function openMcpStore(
       ok: false,
       failure: {
         code: "ws.not_initialized",
-        msg: `воркспейс не инициализирован: нет ${dbPath}`,
+        msg: `workspace not initialized: ${dbPath} is missing`,
         hint: "myc init",
       },
     };
@@ -300,7 +300,7 @@ export async function openMcpStore(
       ok: false,
       failure: {
         code: "conflict.busy",
-        msg: `база недоступна: ${e instanceof Error ? e.message : String(e)}`,
+        msg: `database unavailable: ${e instanceof Error ? e.message : String(e)}`,
       },
     };
   }
@@ -370,21 +370,21 @@ export function resolveNode(h: McpStoreHandle, input: string): ResolveNodeResult
       .map((r) => r.id);
   }
   if (candidates.length === 0) {
-    return { ok: false, failure: { code: "notfound.node", msg: `узел ${input} не найден` } };
+    return { ok: false, failure: { code: "notfound.node", msg: `node ${input} not found` } };
   }
   if (candidates.length > 1) {
     return {
       ok: false,
       failure: {
         code: "usage.ambiguous_id",
-        msg: `префикс '${input}' неоднозначен: ${candidates.join(", ")}`,
-        hint: "уточните префикс",
+        msg: `prefix '${input}' is ambiguous: ${candidates.join(", ")}`,
+        hint: "use a longer prefix",
       },
     };
   }
   const node = h.store.getNode(candidates[0]!);
   if (node === undefined) {
-    return { ok: false, failure: { code: "notfound.node", msg: `узел ${input} не найден` } };
+    return { ok: false, failure: { code: "notfound.node", msg: `node ${input} not found` } };
   }
   return { ok: true, node };
 }

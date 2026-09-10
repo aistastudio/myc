@@ -32,7 +32,7 @@ const dbPath = get("db");
 const logPath = get("log");
 const goPath = get("go");
 if (dbPath === undefined || logPath === undefined || goPath === undefined) {
-  throw new Error("нужны --db PATH --log PATH --go PATH");
+  throw new Error("--db PATH --log PATH --go PATH are required");
 }
 const holder = get("holder") ?? "w";
 const leaseMs = Number(get("lease-ms") ?? 10_000);
@@ -57,7 +57,7 @@ const log = (event: string, row: { id: number; attempts: number; lease_expires: 
 const startDeadline = Date.now() + 30_000;
 while (!existsSync(goPath)) {
   if (Date.now() > startDeadline) {
-    console.error("барьер старта не открыт за 30 с");
+    console.error("start barrier not opened within 30 s");
     process.exit(1);
   }
   await Bun.sleep(2);

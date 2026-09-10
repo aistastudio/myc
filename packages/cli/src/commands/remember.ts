@@ -264,18 +264,18 @@ export interface RememberData {
 
 /** Охват одной строкой: он обязан быть виден в каждой записи (И2). */
 function reachBit(d: RememberData): string {
-  if (d.reach === "project") return "охват project";
-  if (d.reach === "session") return `охват session ${d.session}`;
-  return "охват НЕИЗВЕСТЕН (сессия не определена)";
+  if (d.reach === "project") return "reach project";
+  if (d.reach === "session") return `reach session ${d.session}`;
+  return "reach UNKNOWN (session not determined)";
 }
 
 function renderRememberHuman(raw: unknown): string {
   const d = raw as RememberData;
   if (d.duplicate_of !== undefined) {
-    const promoted = d.reach_promoted === true ? ", поднят до project" : "";
+    const promoted = d.reach_promoted === true ? ", promoted to project" : "";
     return (
-      `${d.id} duplicate · точный повтор, seen_count ${d.seen_count ?? "?"}${promoted} · ` +
-      `${reachBit(d)} · ${d.took_ms} мс\n`
+      `${d.id} duplicate · exact repeat, seen_count ${d.seen_count ?? "?"}${promoted} · ` +
+      `${reachBit(d)} · ${d.took_ms} ms\n`
     );
   }
   const head = [d.id, d.kind === "note" ? "memory" : d.kind, `L${d.layer}`];
@@ -287,10 +287,10 @@ function renderRememberHuman(raw: unknown): string {
   const lines = [`${head.join(" ")} · ${bits.join(" · ")}`];
   for (const a of d.anchors) lines.push(anchorFlagLine(a));
   const queue = d.queue.map((k) =>
-    k === "absorb" && d.absorb_heuristic ? "absorb(эвристика — chat-LLM выключен)" : k,
+    k === "absorb" && d.absorb_heuristic ? "absorb(heuristic — chat-LLM off)" : k,
   );
   lines.push(`queue     ${queue.length > 0 ? queue.join(", ") : "—"}`);
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -332,7 +332,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
       if (text.length === 0) {
         return failure(
           "usage.invalid",
-          "нужен текст факта: myc remember <текст> (или - для stdin)",
+          "fact text required: myc remember <text> (or - for stdin)",
           ExitCode.USAGE,
         );
       }
@@ -344,7 +344,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
         if (layer === undefined) {
           return failure(
             "usage.invalid",
-            `неверный слой '${layerRaw}'; допустимы L0..L3`,
+            `invalid layer '${layerRaw}'; allowed: L0..L3`,
             ExitCode.USAGE,
           );
         }
@@ -358,7 +358,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
       if (reachRaw !== undefined && !(REACH_VALUES as readonly string[]).includes(reachRaw)) {
         return failure(
           "usage.invalid",
-          `неверный --reach '${reachRaw}'; допустимы ${REACH_VALUES.join("|")}`,
+          `invalid --reach '${reachRaw}'; allowed: ${REACH_VALUES.join("|")}`,
           ExitCode.USAGE,
         );
       }
@@ -373,7 +373,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
         if (anchor === undefined || anchor.path.length === 0) {
           return failure(
             "usage.invalid",
-            `неверный якорь '${anchorRaw}'; формат file[:a-b]`,
+            `invalid anchor '${anchorRaw}'; format: file[:a-b]`,
             ExitCode.USAGE,
           );
         }
@@ -389,7 +389,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
         if (openedPersonal.handle === undefined) {
           return failure(
             "ws.not_initialized",
-            `личный ярус не инициализирован: нет ${status.dbPath}`,
+            `personal tier not initialized: no ${status.dbPath}`,
             ExitCode.NOWS,
             "myc init --global",
           );
@@ -421,8 +421,8 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           // без охвата, «неизвестно» видно в выдаче и считается в prime.
           ctx.warn(
             "degraded.reach",
-            "охват не записан: личность сессии неизвестна — задайте --session, " +
-              "MYC_SESSION_ID или пишите с --reach project",
+            "reach not recorded: session identity unknown — pass --session, " +
+              "set MYC_SESSION_ID, or write with --reach project",
           );
         }
         if (source !== undefined) attrs["provenance"] = source;
@@ -472,8 +472,8 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           ) {
             ctx.warn(
               "degraded.reach",
-              `факт уже записан в другой сессии (${before.session}) и остаётся там; ` +
-                "поднять до проектного — myc remember … --reach project",
+              `fact already recorded in another session (${before.session}) and stays there; ` +
+                "to promote it to project — myc remember … --reach project",
             );
           }
           const dup: RememberData = {
@@ -534,7 +534,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           // Узел уже записан: потеря очереди — деградация, а не отказ записи.
           ctx.warn(
             "degraded.queue",
-            `фоновая очередь недоступна: ${e instanceof Error ? e.message : String(e)}`,
+            `background queue unavailable: ${e instanceof Error ? e.message : String(e)}`,
           );
         }
 

@@ -23,7 +23,7 @@ function main(): void {
   const dbPath = process.argv[2];
   const worker = process.argv[3];
   if (dbPath === undefined || worker === undefined) {
-    throw new Error("нужны аргументы: <db-path> <worker-name>");
+    throw new Error("arguments required: <db-path> <worker-name>");
   }
   try {
     const db = new Database(dbPath, { create: true });

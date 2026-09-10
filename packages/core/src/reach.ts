@@ -158,7 +158,7 @@ export function readReach(attrs: Readonly<Record<string, JsonValue>> | undefined
 export function reachAttrs(reach: Reach, session: string): Record<string, JsonValue> {
   if (reach === "project") return { [REACH_KEY]: "project" };
   if (session.length === 0) {
-    throw new Error("reachAttrs: у сессионного охвата обязан быть ключ сессии");
+    throw new Error("reachAttrs: session reach requires a session key");
   }
   return { [REACH_KEY]: "session", [SESSION_KEY]: session };
 }

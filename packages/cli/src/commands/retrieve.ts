@@ -539,12 +539,12 @@ export async function resolveQueryEmbedder(timeoutMs: number): Promise<EmbedderR
     return {
       ok: false,
       reason:
-        "прогрев эмбеддера выключен (--embed-timeout 0): холодный ONNX стоит ~184 мс " +
-        "при бюджете recall 25 мс — векторная ветка не звалась",
+        "embedder warmup is off (--embed-timeout 0): a cold ONNX start costs ~184 ms " +
+        "against the 25 ms recall budget — the vector branch was not called",
     };
   }
   if (!modelLikelyPresent()) {
-    return { ok: false, reason: "модель эмбеддингов не скачана → myc models fetch" };
+    return { ok: false, reason: "embedding model not downloaded → myc models fetch" };
   }
   try {
     const embed = await import("@myc/embed");
@@ -562,8 +562,8 @@ export async function resolveQueryEmbedder(timeoutMs: number): Promise<EmbedderR
         ok: false,
         reason:
           warmed === "timeout"
-            ? `эмбеддер не прогрелся за ${timeoutMs} мс — векторная ветка пропущена`
-            : `эмбеддер в состоянии ${warmed} — векторная ветка пропущена`,
+            ? `embedder did not warm up within ${timeoutMs} ms — vector branch skipped`
+            : `embedder is in state ${warmed} — vector branch skipped`,
       };
     }
     return {
@@ -578,7 +578,7 @@ export async function resolveQueryEmbedder(timeoutMs: number): Promise<EmbedderR
       },
     };
   } catch (e) {
-    return { ok: false, reason: `эмбеддер не поднялся: ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, reason: `embedder failed to start: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
@@ -745,7 +745,7 @@ export function realWarmEmbedder(
       if (!modelLikelyPresent()) return undefined;
       try {
         if (!enqueueWarmJob(handle.driver, handle.scope)) {
-          return "прогрев эмбеддера уже исчерпал попытки — смотри jobs.last_error";
+          return "embedder warmup has used up its attempts — see jobs.last_error";
         }
       } catch {
         // Очередь недоступна — демона всё равно поднимаем: она учёт, а не
@@ -753,8 +753,8 @@ export function realWarmEmbedder(
       }
       spawnEmbedDaemon(dbPath);
       return (
-        "прогрев эмбеддера запущен в фоне (работа embed_warm в очереди jobs) — " +
-        "эта выдача без вектора, следующая будет с ним"
+        "embedder warmup started in the background (embed_warm job in the jobs queue) — " +
+        "this result has no vector, the next one will"
       );
     },
   };
@@ -819,12 +819,12 @@ export function modeLabelOf(
   // myc-ye3.9) — сам ярлык уже врёт спокойствием "vec rrf(...)", если это не
   // сказать явно рядом с ним.
   const vectorOnly = queriedModes(mode).some((r) => r.vectorOnly);
-  const base = vectorOnly && bareBase.length > 0 ? `${bareBase} · только вектор, слабо` : bareBase;
+  const base = vectorOnly && bareBase.length > 0 ? `${bareBase} · vector only, weak` : bareBase;
 
   if (emptyReason !== undefined) {
-    return base.length === 0 ? `пусто · ${emptyReason}` : `${base} · пусто · ${emptyReason}`;
+    return base.length === 0 ? `empty · ${emptyReason}` : `${base} · empty · ${emptyReason}`;
   }
-  return base.length === 0 ? "пусто" : base;
+  return base.length === 0 ? "empty" : base;
 }
 
 /**
@@ -833,11 +833,11 @@ export function modeLabelOf(
  * первой пользователь сразу понимает, что дело было в форме слова.
  */
 const STAGE_LABEL: Readonly<Record<string, string>> = {
-  prefix_and: "И→префиксы",
-  prefix_relaxed: "И→без одного слова",
-  prefix_relaxed2: "И→без двух слов",
-  prefix_or: "И→ИЛИ префиксов",
-  or: "И→ИЛИ",
+  prefix_and: "AND→prefixes",
+  prefix_relaxed: "AND→minus one word",
+  prefix_relaxed2: "AND→minus two words",
+  prefix_or: "AND→OR of prefixes",
+  or: "AND→OR",
 };
 
 export function lexicalLabelOf(mode: FederatedModeUsed): string | undefined {
@@ -845,10 +845,10 @@ export function lexicalLabelOf(mode: FederatedModeUsed): string | undefined {
   const fallback = tiers.find((t) => t.lexical.fallbackUsed);
   if (fallback === undefined) {
     const or = tiers.find((t) => t.lexical.operator !== "and");
-    return or === undefined ? undefined : (STAGE_LABEL[or.lexical.operator] ?? "ИЛИ");
+    return or === undefined ? undefined : (STAGE_LABEL[or.lexical.operator] ?? "OR");
   }
-  const label = STAGE_LABEL[fallback.lexical.operator] ?? "откат";
-  return fallback.lexical.coverageApplied ? `${label}+покрытие` : label;
+  const label = STAGE_LABEL[fallback.lexical.operator] ?? "fallback";
+  return fallback.lexical.coverageApplied ? `${label}+coverage` : label;
 }
 
 /**
@@ -877,7 +877,7 @@ export function emptyReasonOf(
 ): string | undefined {
   if (kept > 0) return undefined;
   if (pool > 0) {
-    return `${pool} найдено, но всё отсеяно · ${dropAdviceOf(drops, knobs)}`;
+    return `${pool} found, but all filtered out · ${dropAdviceOf(drops, knobs)}`;
   }
   // Источники объясняются ПО ОТДЕЛЬНОСТИ: «в проекте пусто, а в личном не
   // нашлось» — это две разные причины, и склеивать их в одну было бы враньём.
@@ -887,12 +887,12 @@ export function emptyReasonOf(
     if (!r.queried || r.mode?.emptyReason === undefined) continue;
     parts.push(`${r.id}: ${r.mode.emptyReason.text}`);
   }
-  const why = parts.length === 0 ? "ретривал не дал ни одной строки" : parts.join("; ");
+  const why = parts.length === 0 ? "retrieval returned no rows" : parts.join("; ");
   // --layer сужает САМ ЗАПРОС (layerMin/layerMax уходят в SQL гибрида), а не
   // выдачу после него: до постфильтров такие узлы просто не доезжают и в
   // DropCounts их нет. Молчать об этом нельзя — «не совпал» под неснятым
   // ярусом читается как «этого нет в памяти», хотя оно есть слоем ниже.
-  return knobs.layer.length === 0 ? why : `${why} · поиск шёл под ${knobs.layer}`;
+  return knobs.layer.length === 0 ? why : `${why} · searched under ${knobs.layer}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,31 +1045,31 @@ export function layerLabelOf(min: Layer | undefined, max: Layer | undefined): st
 
 /** Человеческое имя причины — то, что человек ищет глазами в подвале. */
 const DROP_LABEL: Readonly<Record<DropReason, string>> = {
-  kind: "тип",
-  since: "давность",
-  until: "верхняя граница даты",
-  tag: "теги",
+  kind: "kind",
+  since: "age",
+  until: "date upper bound",
+  tag: "tags",
   acl: "acl",
-  author: "автор",
-  anchor: "якорь",
-  reach: "охват памяти",
-  session: "охват сессии",
-  repo: "охват репозитория",
-  several: "несколько фильтров сразу",
-  dedup: "дедуп",
+  author: "author",
+  anchor: "anchor",
+  reach: "memory reach",
+  session: "session reach",
+  repo: "repo reach",
+  several: "several filters at once",
+  dedup: "dedup",
 };
 
 /** Флаг, которым причина снимается, и значение, которое её снимает. */
 const DROP_FIX: Readonly<Record<DropReason, { readonly flag: string; readonly fix: string }>> = {
-  kind: { flag: "kind", fix: "убери --kind" },
-  since: { flag: "since", fix: "убери --since" },
-  until: { flag: "until", fix: "убери --until" },
-  tag: { flag: "tag", fix: "убери --tag" },
-  acl: { flag: "acl", fix: "убери --acl" },
-  author: { flag: "author", fix: "убери --author" },
-  anchor: { flag: "anchor", fix: "убери --anchor" },
-  reach: { flag: "reach", fix: "убери --reach" },
-  session: { flag: "session", fix: "убери --reach session" },
+  kind: { flag: "kind", fix: "drop --kind" },
+  since: { flag: "since", fix: "drop --since" },
+  until: { flag: "until", fix: "drop --until" },
+  tag: { flag: "tag", fix: "drop --tag" },
+  acl: { flag: "acl", fix: "drop --acl" },
+  author: { flag: "author", fix: "drop --author" },
+  anchor: { flag: "anchor", fix: "drop --anchor" },
+  reach: { flag: "reach", fix: "drop --reach" },
+  session: { flag: "session", fix: "drop --reach session" },
   repo: { flag: "repo", fix: "--repo all" },
   several: { flag: "", fix: "" },
   dedup: { flag: "", fix: "" },
@@ -1092,14 +1092,14 @@ export function dropAdviceOf(drops: DropCounts, knobs: DropKnobs): string {
       bestN = n;
     }
   }
-  if (best === undefined) return "фильтры и дедуп ни при чём — строки потерялись между ними";
+  if (best === undefined) return "filters and dedup are not the cause — rows were lost between them";
 
   const label = DROP_LABEL[best];
   if (best === "dedup") {
-    return `${label} — ${bestN}: одинаковые факты из разных ярусов, снять нечем`;
+    return `${label} — ${bestN}: identical facts from different tiers, nothing to lift`;
   }
   if (best === "several") {
-    return `${label} — ${bestN}: ослабляй по одному, начиная с самого узкого`;
+    return `${label} — ${bestN}: relax them one at a time, narrowest first`;
   }
   const named =
     best === "repo" && knobs.repo.length > 0 ? `${label} ${knobs.repo}` : label;
@@ -1108,10 +1108,10 @@ export function dropAdviceOf(drops: DropCounts, knobs: DropKnobs): string {
     // Флага у этой поверхности нет — значит фильтр пришёл умолчанием, и
     // единственный честный совет тот, который здесь работает.
     return best === "repo"
-      ? `${named} — ${bestN}; сними: позови из корня экосистемы`
+      ? `${named} — ${bestN}; fix: run from the ecosystem root`
       : `${named} — ${bestN}`;
   }
-  return `${named} — ${bestN}; сними: ${fix}`;
+  return `${named} — ${bestN}; fix: ${fix}`;
 }
 
 /** Одной строкой: почему режим именно такой — для --why. */
@@ -1124,7 +1124,7 @@ export function whyLines(mode: FederatedModeUsed): string[] {
     } else {
       // Пропущенный источник получает СВОЮ строку в --why, а не отсутствие
       // строки: невидимый пропуск — ровно то, что запрещает И2.
-      lines.push(`${name} пропущен · ${r.skipped ?? "без причины"}`);
+      lines.push(`${name} skipped · ${r.skipped ?? "no reason given"}`);
     }
   }
   lines.push(`tiers     ${mode.why}`);
@@ -1227,7 +1227,7 @@ export async function retrieve(
       failure: {
         ok: false,
         code: "usage.invalid",
-        msg: "нужен запрос: myc recall <текст> / myc search <текст>",
+        msg: "query required: myc recall <text> / myc search <text>",
         exit: ExitCode.USAGE,
       },
     };
@@ -1256,7 +1256,7 @@ export async function retrieve(
   if (project.vec0Reason !== undefined) {
     ctx.warn(
       "degraded.vector_runtime",
-      `рантайм расширений не поднялся — векторная ветка недоступна в этом процессе: ${project.vec0Reason}`,
+      `extension runtime failed to start — the vector branch is unavailable in this process: ${project.vec0Reason}`,
     );
   }
 
@@ -1288,7 +1288,7 @@ export async function retrieve(
       open: async () => {
         const openedPersonal = await deps.openPersonal(ctx, VECTOR_OPEN);
         if (!openedPersonal.ok) throw new Error(openedPersonal.failure.msg);
-        if (openedPersonal.handle === undefined) throw new Error("личного яруса нет на диске");
+        if (openedPersonal.handle === undefined) throw new Error("no personal tier on disk");
         openedById.set(PERSONAL_SLUG, openedPersonal.handle);
         return openedPersonal.handle.driver;
       },
@@ -1308,7 +1308,7 @@ export async function retrieve(
       // это выражается в RRF, и он виден в mode_used.sources[].weight.
       weight: REPO_SOURCE_WEIGHT,
       open: async () => {
-        if (deps.openRepo === undefined) throw new Error("openRepo не подключён");
+        if (deps.openRepo === undefined) throw new Error("openRepo is not wired");
         const openedRepo = await deps.openRepo(ctx, ws, VECTOR_OPEN);
         if (!openedRepo.ok) throw new Error(openedRepo.failure.msg);
         openedById.set(ws.id, openedRepo.handle);
@@ -1373,8 +1373,8 @@ export async function retrieve(
           // второго: пока он греется, каждый запрос плодил бы ещё одного.
           ctx.warn(
             "degraded.embeddings",
-            `прогретый эмбеддер не дал вектор (${fromDaemon.daemon}: ${fromDaemon.reason}) — ` +
-              "эта выдача без вектора",
+            `warm embedder gave no vector (${fromDaemon.daemon}: ${fromDaemon.reason}) — ` +
+              "this result has no vector",
           );
         }
 
@@ -1382,7 +1382,7 @@ export async function retrieve(
         if (resolved.ok) {
           const own = await resolved.embed(req.text);
           if (own !== null) vec = own;
-          else ctx.warn("degraded.embeddings", "эмбеддер не вернул вектор запроса");
+          else ctx.warn("degraded.embeddings", "embedder returned no query vector");
         } else {
           ctx.warn("degraded.embeddings", resolved.reason);
           // Прогрев поднимается ровно тогда, когда вектор был НУЖЕН, демона
@@ -1417,7 +1417,7 @@ export async function retrieve(
     // выдача НЕ полна, и это обязано дойти до WARN, meta.degraded[] и exit 6
     // под --strict, а не только до подвала (И2).
     for (const r of result.mode_used.sources) {
-      if (!r.queried) degraded.push(`источник ${r.id} не опрошен: ${r.skipped ?? "без причины"}`);
+      if (!r.queried) degraded.push(`source ${r.id} not queried: ${r.skipped ?? "no reason given"}`);
     }
     for (const d of degraded) ctx.warn("degraded.retrieval", d);
 
@@ -1621,7 +1621,7 @@ export async function retrieve(
           queried: result.mode_used.sources.filter((r) => r.queried).map((r) => r.id),
           skipped: result.mode_used.sources
             .filter((r) => !r.queried)
-            .map((r) => ({ id: r.id, why: r.skipped ?? "без причины" })),
+            .map((r) => ({ id: r.id, why: r.skipped ?? "no reason given" })),
           total: result.mode_used.sources.length,
           cap: result.mode_used.cap,
           took_ms: result.mode_used.took_ms,

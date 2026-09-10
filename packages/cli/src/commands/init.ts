@@ -55,7 +55,6 @@ import {
 } from "@myc/code-intel";
 import { ExitCode } from "../exit.ts";
 import { CLI_VERSION } from "../index.ts";
-import { plural } from "../render.ts";
 import { maybeSpawnUpdateCheck, updateCheckMode, updateNoticeFor } from "../update-check.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import {
@@ -127,8 +126,8 @@ const MYC_GITIGNORE_LINES = [
 
 function mycGitignoreContent(): string {
   return [
-    "# myc (S42): локальные файлы — не идут в git",
-    "# оплог, meta.json, .gitattributes и workspace.toml коммитятся как есть",
+    "# myc (S42): local files — kept out of git",
+    "# the oplog, meta.json, .gitattributes and workspace.toml are committed as is",
     ...MYC_GITIGNORE_LINES,
     "",
   ].join("\n");
@@ -153,7 +152,7 @@ function ensureMycGitignore(mycDir: string): void {
   const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
   writeFileSync(
     path,
-    `${existing}${sep}# myc: добавлено автоматически при init\n${missing.join("\n")}\n`,
+    `${existing}${sep}# myc: added automatically by init\n${missing.join("\n")}\n`,
     "utf8",
   );
 }
@@ -275,7 +274,7 @@ function workspaceTomlContent(slug: string): string {
   return (
     `# myc workspace config — commit this file (per-machine settings go in local.toml)\n` +
     `slug = "${slug}"\n` +
-    `# код-интеллект: builtin (умолчание) | auto | graft | off\n` +
+    `# code intel: builtin (default) | auto | graft | off\n` +
     `code_intel = "${DEFAULT_CODE_INTEL_MODE}"\n`
   );
 }
@@ -417,10 +416,10 @@ function readPersonalSummary(): PersonalSummary {
 
 function personalLine(p: PersonalSummary): string {
   if (!p.exists) {
-    return `  · личный ~/.myc        не создан — создать: myc init --global`;
+    return `  · personal ~/.myc      not created — create it: myc init --global`;
   }
-  const n = p.nodeCount !== undefined ? `${p.nodeCount} узлов` : "узлов ?";
-  return `  ✓ личный ~/.myc        schema v${p.schemaVersion ?? "?"}, ${n}`;
+  const n = p.nodeCount !== undefined ? countNodes(p.nodeCount) : "? nodes";
+  return `  ✓ personal ~/.myc      schema v${p.schemaVersion ?? "?"}, ${n}`;
 }
 
 interface InitData {
@@ -462,7 +461,7 @@ function codeIntelLine(c: InitData["code_intel"]): string {
   // `!` вместо `·` — единственный маркер, который в этом выводе значит «тут
   // не всё в порядке» (так же помечена строка «не git-репозиторий»).
   const mark = c.state === "ok" ? "·" : "!";
-  return `  ${mark} код-интеллект        ${c.reason}`;
+  return `  ${mark} code intel           ${c.reason}`;
 }
 
 /**
@@ -476,11 +475,11 @@ function worktreeData(link: WorktreeLink | undefined): { worktree?: { dir: strin
 }
 
 function worktreeLine(w: NonNullable<InitData["worktree"]>, idempotent: boolean): string {
-  const what = idempotent ? "воркспейс уже есть" : "воркспейс создан";
+  const what = idempotent ? "the workspace already exists" : "the workspace was created";
   return (
-    `  ! git worktree         ${w.dir} — ветка, а не проект: ${what} в основном дереве ` +
-    `${w.main}. Воркспейс один на репозиторий: второй расколол бы очередь и память, ` +
-    `и claim перестал бы что-либо значить`
+    `  ! git worktree         ${w.dir} is a branch, not a project: ${what} in the main tree ` +
+    `${w.main}. One workspace per repository: a second one would split the queue and memory, ` +
+    `and claim would stop meaning anything`
   );
 }
 
@@ -493,8 +492,8 @@ function worktreeLine(w: NonNullable<InitData["worktree"]>, idempotent: boolean)
  */
 function networkClaim(env: NodeJS.ProcessEnv = process.env): string {
   return updateCheckMode(env) === "auto"
-    ? "сама команда сеть не трогала (проверка обновлений — в отдельном процессе)"
-    : "сеть не использовалась";
+    ? "this command made no network calls (the update check runs in a separate process)"
+    : "no network used";
 }
 
 function renderInitHuman(raw: unknown): string {
@@ -503,38 +502,38 @@ function renderInitHuman(raw: unknown): string {
   const version = CLI_VERSION;
 
   if (d.idempotent) {
-    const n = d.db.nodeCount !== undefined ? `${d.db.nodeCount} узлов` : "узлов ?";
+    const n = d.db.nodeCount !== undefined ? countNodes(d.db.nodeCount) : "? nodes";
     lines.push(
-      `myc ${version} · .myc уже существует (slug=${d.slug}, schema v${d.db.schemaVersion ?? "?"}, ${n})`,
+      `myc ${version} · .myc already exists (slug=${d.slug}, schema v${d.db.schemaVersion ?? "?"}, ${n})`,
     );
-    lines.push("ничего не изменено. пересоздать: myc init --force (удалит локальную базу)");
+    lines.push("nothing changed. to recreate: myc init --force (deletes the local database)");
     if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, true));
     lines.push(codeIntelLine(d.code_intel));
     lines.push(personalLine(d.personal));
-    lines.push(`дальше: ${d.next}`);
+    lines.push(`next: ${d.next}`);
     return `${lines.join("\n")}\n`;
   }
 
   if (d.adopted) {
     lines.push(
-      `myc ${version} · клон ${d.dir} · slug=${d.slug} из .myc/workspace.toml (не тронут)`,
+      `myc ${version} · clone ${d.dir} · slug=${d.slug} from .myc/workspace.toml (untouched)`,
     );
     lines.push("");
     if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, false));
-    lines.push(`  ✓ .myc/myc.db          создана, sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
-    lines.push(`  · .myc/workspace.toml  приехал из git — общая личность воркспейса`);
-    lines.push(`  · graft                ${d.graft ? "найден" : "не найден"}`);
+    lines.push(`  ✓ .myc/myc.db          created, sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
+    lines.push(`  · .myc/workspace.toml  came from git — the shared identity of the workspace`);
+    lines.push(`  · graft                ${d.graft ? "found" : "not found"}`);
     lines.push(codeIntelLine(d.code_intel));
     lines.push(personalLine(d.personal));
     lines.push("");
-    lines.push("дальше:");
+    lines.push("next:");
     lines.push(`  ${d.next}`);
     lines.push("");
-    lines.push(`готово за ${d.took_ms} мс · ${networkClaim()}`);
+    lines.push(`done in ${d.took_ms} ms · ${networkClaim()}`);
     return `${lines.join("\n")}\n`;
   }
 
-  const gitLabel = d.git.isGit ? "git" : "НЕ git-репозиторий";
+  const gitLabel = d.git.isGit ? "git" : "NOT a git repository";
   lines.push(`myc ${version} · repo ${d.dir} (${gitLabel}) · slug=${d.slug}`);
   lines.push("");
   lines.push(`  ✓ .myc/myc.db          sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
@@ -543,26 +542,26 @@ function renderInitHuman(raw: unknown): string {
   if (d.slug_changed !== undefined) {
     const n = d.slug_changed.nodes;
     lines.push(
-      `  ! слаг сменён          ${d.slug_changed.from} → ${d.slug_changed.to}: ` +
-        `${n !== undefined ? `${n} узлов` : "существующие узлы"} остаются со scope=${d.slug_changed.from} ` +
-        `и больше не видны; вернуть: myc init --slug ${d.slug_changed.from}`,
+      `  ! slug changed         ${d.slug_changed.from} → ${d.slug_changed.to}: ` +
+        `${n !== undefined ? countNodes(n) : "existing nodes"} keep scope=${d.slug_changed.from} ` +
+        `and are no longer visible; to revert: myc init --slug ${d.slug_changed.from}`,
     );
   }
-  lines.push(`  · graft                ${d.graft ? "найден" : "не найден"}`);
+  lines.push(`  · graft                ${d.graft ? "found" : "not found"}`);
   lines.push(codeIntelLine(d.code_intel));
   lines.push(
-    "  · эмбеддинги           не скачаны — модель отдельной командой `myc models fetch`; " +
-      "задачи работают и без неё (BM25)",
+    "  · embeddings           not downloaded — the model is a separate command, `myc models fetch`; " +
+      "tasks work without it (BM25)",
   );
   lines.push(personalLine(d.personal));
   if (!d.git.isGit) {
-    lines.push("  ! не git-репозиторий   якоря к коду будут без blob_hash");
+    lines.push("  ! not a git repo       code anchors will have no blob_hash");
   }
   lines.push("");
-  lines.push("дальше:");
+  lines.push("next:");
   lines.push(`  ${d.next}`);
   lines.push("");
-  lines.push(`готово за ${d.took_ms} мс · ${networkClaim()}`);
+  lines.push(`done in ${d.took_ms} ms · ${networkClaim()}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -589,11 +588,11 @@ interface GlobalInitData {
 }
 
 function countNodes(n: number): string {
-  return `${n} ${plural(n, "узел", "узла", "узлов")}`;
+  return `${n} ${n === 1 ? "node" : "nodes"}`;
 }
 
 function countOps(n: number): string {
-  return `${n} ${plural(n, "операция", "операции", "операций")}`;
+  return `${n} oplog ${n === 1 ? "operation" : "operations"}`;
 }
 
 /**
@@ -606,19 +605,19 @@ function countOps(n: number): string {
 function refusePersonalWipe(plan: PersonalWipePlan): CommandFailure {
   const what =
     plan.ops === undefined || plan.nodes === undefined
-      ? "база не читается — что в ней, неизвестно"
-      : `${countNodes(plan.nodes)}, ${countOps(plan.ops)} оплога`;
+      ? "the database can't be read — its contents are unknown"
+      : `${countNodes(plan.nodes)}, ${countOps(plan.ops)}`;
   return {
     ok: false,
     code: "precond.personal_memory",
     msg:
-      `${plan.dir}: ${what}. Личный ярус не коммитится в git — восстановить его будет ` +
-      `неоткуда, поэтому --force стирает здесь только восстановимое и на память ` +
-      `не распространяется`,
+      `${plan.dir}: ${what}. The personal tier is not committed to git — there would be nothing ` +
+      `to restore it from, so --force here erases only what can be rebuilt and does not ` +
+      `touch the memory`,
     exit: ExitCode.PRECOND,
     hint:
-      `сначала копия: cp -R ${plan.dir} ${plan.dir}.bak · ` +
-      `стереть насовсем: myc init --global --force --wipe-memory`,
+      `copy it first: cp -R ${plan.dir} ${plan.dir}.bak · ` +
+      `erase it for good: myc init --global --force --wipe-memory`,
   };
 }
 
@@ -626,14 +625,14 @@ function renderGlobalInitHuman(raw: unknown): string {
   const d = raw as GlobalInitData;
   const lines: string[] = [];
   if (d.idempotent) {
-    const n = d.db.nodeCount !== undefined ? countNodes(d.db.nodeCount) : "узлов ?";
-    lines.push(`личный воркспейс уже существует: ${d.dir} (schema v${d.db.schemaVersion ?? "?"}, ${n})`);
+    const n = d.db.nodeCount !== undefined ? countNodes(d.db.nodeCount) : "? nodes";
+    lines.push(`personal workspace already exists: ${d.dir} (schema v${d.db.schemaVersion ?? "?"}, ${n})`);
     // Строка, из которой человек узнаёт про --wipe-memory раньше, чем
     // упрётся в отказ: «удалит данные» тут больше не правда — --force их
     // не трогает.
     lines.push(
-      "ничего не изменено. пересоздать: myc init --global --force " +
-        "(память переживёт; стереть и её — добавить --wipe-memory)",
+      "nothing changed. to recreate: myc init --global --force " +
+        "(the memory survives; to erase it too, add --wipe-memory)",
     );
   } else {
     // База пережила `--force` — значит воркспейс не создан заново, а оставлен
@@ -642,31 +641,31 @@ function renderGlobalInitHuman(raw: unknown): string {
     const keptMemory = d.wiped !== undefined && !d.wiped.memory && d.wiped.memoryKept.length > 0;
     lines.push(
       keptMemory
-        ? `личный воркспейс на месте, стёрто только восстановимое: ${d.dir}`
-        : `личный воркспейс создан: ${d.dir}`,
+        ? `personal workspace kept in place, only rebuildable files erased: ${d.dir}`
+        : `personal workspace created: ${d.dir}`,
     );
     if (d.wiped !== undefined && d.wiped.memory) {
-      const n = d.wiped.nodes !== undefined ? countNodes(d.wiped.nodes) : "узлы";
-      const ops = d.wiped.ops !== undefined ? `, ${countOps(d.wiped.ops)} оплога` : "";
-      lines.push(`  ! память стёрта  ${n}${ops} — восстановить неоткуда, копии не осталось`);
+      const n = d.wiped.nodes !== undefined ? countNodes(d.wiped.nodes) : "nodes";
+      const ops = d.wiped.ops !== undefined ? `, ${countOps(d.wiped.ops)}` : "";
+      lines.push(`  ! memory erased  ${n}${ops} — nothing to restore it from, no copy left`);
     }
     if (keptMemory && d.wiped !== undefined) {
-      const n = d.wiped.nodes !== undefined ? countNodes(d.wiped.nodes) : "узлы";
-      const ops = d.wiped.ops !== undefined ? `, ${countOps(d.wiped.ops)} оплога` : "";
-      lines.push(`  · память не тронута  ${n}${ops} · ${d.wiped.memoryKept.join(", ")}`);
-      if (d.wiped.entries.length > 0) lines.push(`  ✓ стёрто восстановимое  ${d.wiped.entries.join(", ")}`);
+      const n = d.wiped.nodes !== undefined ? countNodes(d.wiped.nodes) : "nodes";
+      const ops = d.wiped.ops !== undefined ? `, ${countOps(d.wiped.ops)}` : "";
+      lines.push(`  · memory untouched  ${n}${ops} · ${d.wiped.memoryKept.join(", ")}`);
+      if (d.wiped.entries.length > 0) lines.push(`  ✓ erased (rebuildable)  ${d.wiped.entries.join(", ")}`);
     }
     lines.push(`  ✓ myc.db  sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
     if (d.kept !== undefined && d.kept.length > 0) {
-      lines.push(`  · не тронуто  ${d.kept.join(", ")} — это не myc создавал`);
+      lines.push(`  · left alone  ${d.kept.join(", ")} — not created by myc`);
     }
     lines.push(
-      "  · память сюда попадает только явным --global у recall/remember; " +
-        "по умолчанию запись идёт в проектный .myc/ (S41)",
+      "  · memory lands here only with an explicit --global on recall/remember; " +
+        "by default writes go to the project .myc/ (S41)",
     );
   }
-  lines.push(`дальше: ${d.next}`);
-  lines.push(`готово за ${d.took_ms} мс`);
+  lines.push(`next: ${d.next}`);
+  lines.push(`done in ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -725,8 +724,8 @@ export function createInitCommand(): Command {
             ok: false,
             code: "usage.wipe_memory_without_force",
             msg:
-              "--wipe-memory — это разрешение на разрушительный шаг, а не сам шаг: " +
-              "оно действует только вместе с --force",
+              "--wipe-memory is permission for a destructive step, not the step itself: " +
+              "it only works together with --force",
             exit: ExitCode.USAGE,
             hint: "myc init --global --force --wipe-memory",
           };
@@ -739,7 +738,7 @@ export function createInitCommand(): Command {
             slug: PERSONAL_SLUG,
             idempotent: true,
             db: { path: status.dbPath, schemaVersion: summary.schemaVersion, nodeCount: summary.nodeCount },
-            next: "myc recall <запрос>",
+            next: "myc recall <query>",
             took_ms: Math.max(1, Math.round(performance.now() - t0)),
           };
           return { ok: true, data, meta: { took_ms: data.took_ms, idempotent: true } };
@@ -776,7 +775,7 @@ export function createInitCommand(): Command {
                 kept: [...plan.kept],
               }
             : {}),
-          next: "myc recall <запрос>",
+          next: "myc recall <query>",
           took_ms: Math.max(1, Math.round(performance.now() - t0)),
         };
         return { ok: true, data, meta: { took_ms: data.took_ms, idempotent: false } };
@@ -807,11 +806,11 @@ export function createInitCommand(): Command {
           ok: false,
           code: "precond.worktree_main_missing",
           msg:
-            `${link.worktreeDir} — git worktree, воркспейс принадлежит основному дереву, ` +
-            `но каталога ${link.mainRoot} нет: перенесли или удалили ` +
-            `(файл .git ведёт в ${link.gitDir})`,
+            `${link.worktreeDir} is a git worktree and the workspace belongs to the main tree, ` +
+            `but ${link.mainRoot} does not exist: it was moved or deleted ` +
+            `(the .git file points to ${link.gitDir})`,
           exit: ExitCode.PRECOND,
-          hint: "git worktree repair <путь к основному дереву>",
+          hint: "git worktree repair <path to the main tree>",
         };
       }
       const workspaceDir = link?.mainRoot ?? gitRoot ?? target;
@@ -906,10 +905,10 @@ export function createInitCommand(): Command {
       if (slugChanged) {
         ctx.warn(
           "slug.changed",
-          `слаг воркспейса ${priorSlug} → ${slug}: ` +
-            `${nodesBefore !== undefined ? `${nodesBefore} существующих узлов` : "существующие узлы"} ` +
-            `остаются со scope=${priorSlug} и перестают быть видимыми; ` +
-            `вернуть: myc init --slug ${priorSlug}`,
+          `workspace slug ${priorSlug} → ${slug}: ` +
+            `${nodesBefore !== undefined ? `${nodesBefore} existing ${nodesBefore === 1 ? "node" : "nodes"}` : "existing nodes"} ` +
+            `keep scope=${priorSlug} and are no longer visible; ` +
+            `to revert: myc init --slug ${priorSlug}`,
         );
       }
 
@@ -923,10 +922,10 @@ export function createInitCommand(): Command {
       warnCodeIntel(ctx, ci);
       ctx.warn(
         "degraded.embeddings",
-        "модель эмбеддингов не скачана — поиск работает на BM25 до `myc models fetch`",
+        "embedding model not downloaded — recall falls back to BM25 until `myc models fetch`",
       );
       if (gitRoot === undefined) {
-        ctx.warn("degraded.git", "не git-репозиторий — якоря к коду будут без blob_hash");
+        ctx.warn("degraded.git", "not a git repository — code anchors will have no blob_hash");
       }
 
       const data: InitData = {
@@ -942,7 +941,7 @@ export function createInitCommand(): Command {
         ...worktreeData(link),
         personal: readPersonalSummary(),
         ...(siteId !== undefined ? { siteId } : {}),
-        next: adopted ? "myc import" : 'myc task "<первая задача>" -p P1',
+        next: adopted ? "myc import" : 'myc task "<first task>" -p P1',
         took_ms: Math.max(1, Math.round(performance.now() - t0)),
       };
       return { ok: true, data, meta: { took_ms: data.took_ms, idempotent: false } };

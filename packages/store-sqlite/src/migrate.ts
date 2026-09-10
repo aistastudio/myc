@@ -36,8 +36,8 @@ const EXIT_PRECOND = 5;
  * обновляться некуда, а сборка собрана из исходников и уже новее published.
  */
 export const SCHEMA_UPGRADE_HINT =
-  "Обновите бинарь: `bun install -g @aistastudio/myc` " +
-  "(что именно опубликовано — покажет `myc version --check`).";
+  "Update the binary: `bun install -g @aistastudio/myc` " +
+  "(`myc version --check` shows what exactly is published).";
 
 export interface Migration {
   readonly version: number;
@@ -230,8 +230,8 @@ function applyMigrationStatementByStatement(db: Database, migration: Migration):
   const missing = migration.objects.filter((name) => !present.has(name));
   if (missing.length > 0) {
     throw new Error(
-      `migration ${migration.version} '${migration.name}': объекты не созданы после наката: ${missing.join(", ")} ` +
-        `(bun:sqlite молча пропускает CREATE VIRTUAL TABLE с неизвестным модулем — см. docs/design/01a-ddl-validation.md §7)`,
+      `migration ${migration.version} '${migration.name}': objects not created after applying: ${missing.join(", ")} ` +
+        `(bun:sqlite silently skips CREATE VIRTUAL TABLE with an unknown module — see docs/design/01a-ddl-validation.md §7)`,
     );
   }
 }
@@ -262,13 +262,13 @@ export async function migrate(
     if (!skewIgnored) {
       throw new SchemaError(
         "schema.newer",
-        `база записана более новой версией myc (схема ${maxApplied}, бинарь знает ${maxKnown}). ` +
-          `${SCHEMA_UPGRADE_HINT} Даунгрейд схемы не поддерживается.`,
+        `the database was written by a newer myc (schema ${maxApplied}, this binary knows ${maxKnown}). ` +
+          `${SCHEMA_UPGRADE_HINT} Schema downgrade is not supported.`,
       );
     }
     degraded.push(
-      `schema.newer: схема БД (${maxApplied}) новее известной бинарю (${maxKnown}) — ` +
-        "проверка пропущена через MYC_IGNORE_SCHEMA_SKEW=1",
+      `schema.newer: the database schema (${maxApplied}) is newer than this binary knows (${maxKnown}) — ` +
+        "check skipped via MYC_IGNORE_SCHEMA_SKEW=1",
     );
   }
 
@@ -281,8 +281,8 @@ export async function migrate(
     if (checksum !== record.checksum) {
       throw new SchemaError(
         "schema.checksum",
-        `миграция ${record.version} изменилась после применения — база и бинарь разошлись. ` +
-          "`myc doctor --schema` покажет расхождение.",
+        `migration ${record.version} changed after it was applied — the database and the binary diverged. ` +
+          "`myc doctor --schema` shows the difference.",
       );
     }
   }

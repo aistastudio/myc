@@ -252,7 +252,7 @@ function requireVerdict(value: string): Verdict {
   if ((VERDICTS as readonly string[]).includes(value)) return value as Verdict;
   throw new AttributionError(
     "usage.verdict",
-    `неизвестный вердикт "${value}"; известно: ${VERDICTS.join(", ")}`,
+    `unknown verdict "${value}"; allowed: ${VERDICTS.join(", ")}`,
   );
 }
 
@@ -262,7 +262,7 @@ function requireCaveats(values: readonly string[]): Caveat[] {
     if (!(CAVEATS as readonly string[]).includes(value)) {
       throw new AttributionError(
         "usage.caveat",
-        `неизвестная оговорка "${value}"; известно: ${CAVEATS.join(", ")}`,
+        `unknown caveat "${value}"; allowed: ${CAVEATS.join(", ")}`,
       );
     }
     if (!out.includes(value as Caveat)) out.push(value as Caveat);
@@ -281,7 +281,7 @@ function count(value: number | undefined, name: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new AttributionError(
       "usage.input",
-      `${name} обязан быть целым ≥ 0 и не больше ${Number.MAX_SAFE_INTEGER}`,
+      `${name} must be an integer ≥ 0 and at most ${Number.MAX_SAFE_INTEGER}`,
     );
   }
   return value;
@@ -418,12 +418,12 @@ export class Attribution {
    */
   startAttempt(input: StartAttemptInput): AttemptRecord {
     if (input.taskId.trim() === "") {
-      throw new AttributionError("usage.input", "taskId обязан быть непустым");
+      throw new AttributionError("usage.input", "taskId must be non-empty");
     }
     if (!isTaskClass(input.taskClass)) {
       throw new AttributionError(
         "usage.class",
-        `класс задачи "${input.taskClass}" не из таксономии intent:scope`,
+        `task class "${input.taskClass}" is not in the intent:scope taxonomy`,
       );
     }
     const model = this.#db
@@ -434,7 +434,7 @@ export class Attribution {
     if (model === null) {
       throw new RosterError(
         "notfound.model",
-        `модель "${input.modelId}" не найдена в ростере; заведите её: myc model add`,
+        `model "${input.modelId}" not found in the roster; add it: myc model add`,
       );
     }
 
@@ -529,7 +529,7 @@ export class Attribution {
       if (exists === null) {
         throw new AttributionError(
           "notfound.attempt",
-          `попытка "${attemptId}" не найдена`,
+          `attempt "${attemptId}" not found`,
         );
       }
       const had = this.#db
@@ -623,7 +623,7 @@ export class Attribution {
       if (row === null) {
         throw new AttributionError(
           "notfound.attempt",
-          `попытка "${attemptId}" не найдена`,
+          `attempt "${attemptId}" not found`,
         );
       }
       const tokensIn = count(input.tokensIn ?? row.tokens_in, "tokensIn");
@@ -670,7 +670,7 @@ export class Attribution {
     if (changed === 0) {
       throw new AttributionError(
         "conflict.finished",
-        `попытка "${attemptId}" уже закрыта; исход переписать нельзя`,
+        `attempt "${attemptId}" already finished; its outcome cannot be rewritten`,
       );
     }
     return this.getAttempt(attemptId)!;

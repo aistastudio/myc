@@ -23,14 +23,14 @@ function percentile(sorted: readonly number[], p: number): number {
 async function main(): Promise<number> {
   if (dir === undefined || !(await isModelPresent(DEFAULT_MODEL_ID, dir))) {
     console.error(
-      "модель не уложена: задай MYC_EMBED_TEST_MODELS_DIR и выполни bun run packages/embed/src/stage-model.ts",
+      "model not staged: set MYC_EMBED_TEST_MODELS_DIR and run bun run packages/embed/src/stage-model.ts",
     );
     return 1;
   }
   const embedder = createLocalEmbedder({ modelsDir: dir });
   const state = await embedder.warmup();
   if (state !== "ok") {
-    console.error(`эмбеддер не готов: state=${state}`);
+    console.error(`embedder not ready: state=${state}`);
     await embedder.destroy();
     return 1;
   }
@@ -45,7 +45,7 @@ async function main(): Promise<number> {
   }
   single.sort((a, b) => a - b);
   console.log(
-    `одиночный запрос (n=${single.length}): p50 = ${percentile(single, 50).toFixed(1)} мс, p95 = ${percentile(single, 95).toFixed(1)} мс (цель 4–7 мс)`,
+    `single query (n=${single.length}): p50 = ${percentile(single, 50).toFixed(1)} ms, p95 = ${percentile(single, 95).toFixed(1)} ms (target 4–7 ms)`,
   );
 
   // 2. Пропускная способность батчей: 256 текстов ~ по 24 токена.
@@ -58,7 +58,7 @@ async function main(): Promise<number> {
   const batch = await embedder.embedBatch(texts);
   const rps = batch.ok / (batch.ms / 1000);
   console.log(
-    `батч: ${batch.ok}/${texts.length} ок за ${batch.ms.toFixed(0)} мс → ${rps.toFixed(1)} текстов/с`,
+    `batch: ${batch.ok}/${texts.length} ok in ${batch.ms.toFixed(0)} ms → ${rps.toFixed(1)} texts/s`,
   );
 
   // 3. Квантизация: среднее |Δcos| float32 → int8 на реальных векторах.
@@ -78,7 +78,7 @@ async function main(): Promise<number> {
     }
   }
   console.log(
-    `int8-квантизация: среднее |Δcos| = ${(total / count).toExponential(3)}, max |Δcos| = ${maxAbsDev.toExponential(3)} (${count} пар)`,
+    `int8 quantization: mean |Δcos| = ${(total / count).toExponential(3)}, max |Δcos| = ${maxAbsDev.toExponential(3)} (${count} pairs)`,
   );
 
   await embedder.destroy();

@@ -237,8 +237,8 @@ test("recall на 100k из чужого репозитория укладыва
 
 test("подвал этого же прогона называет охват, а не дежурный список флагов", async () => {
   const out = text((await myc(join(dir, "messaging-server"), "recall", "батч")).stdout);
-  expect(out).toContain("охват репозитория messaging-server");
-  expect(out).toContain("сними: --repo all");
+  expect(out).toContain("repo reach messaging-server");
+  expect(out).toContain("fix: --repo all");
   for (const knob of ["--kind", "--tag", "--layer", "--since"]) {
     expect(out).not.toContain(knob);
   }

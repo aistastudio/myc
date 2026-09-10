@@ -153,7 +153,7 @@ export function openSwarmAt(
     return {
       ok: false,
       code: "ws.not_initialized",
-      msg: `воркспейс не инициализирован: нет ${dbPath}`,
+      msg: `workspace not initialized: no ${dbPath}`,
       exit: ExitCode.NOWS,
       hint: "myc init",
     };
@@ -305,7 +305,7 @@ export function resolveModelId(roster: Roster, input: string): ModelResolution {
       failure: {
         ok: false,
         code: "notfound.model",
-        msg: `модель "${input}" не найдена в ростере; исход без ростерной модели записать нельзя`,
+        msg: `model "${input}" not found in the roster; an outcome cannot be recorded without a roster model`,
         exit: ExitCode.NOTFOUND,
         hint: "myc model list --all | myc model add <id> …",
       },
@@ -316,9 +316,9 @@ export function resolveModelId(roster: Roster, input: string): ModelResolution {
     failure: {
       ok: false,
       code: "conflict.model",
-      msg: `"${input}" подходит нескольким моделям: ${hits.join(", ")}`,
+      msg: `"${input}" matches several models: ${hits.join(", ")}`,
       exit: ExitCode.CONFLICT,
-      hint: "уточните id модели",
+      hint: "narrow down the model id",
     },
   };
 }
@@ -331,8 +331,8 @@ export function modelArg(ctx: CommandContext, roster: Roster): ModelResolution {
       ok: false,
       failure: usage(
         "usage.model",
-        "не сказано, какой моделью выполнялась задача",
-        "--model <id> или переменная окружения MYC_MODEL",
+        "no model given: which model ran the task?",
+        "--model <id> or the MYC_MODEL environment variable",
       ),
     };
   }
@@ -431,7 +431,7 @@ export function tokenSource(ctx: CommandContext): TokenSource | CommandFailure {
   if (file !== undefined && session !== undefined) {
     return usage(
       "usage.token_source",
-      "--from-transcript и --from-session вместе: источник расхода один",
+      "--from-transcript and --from-session together: usage has exactly one source",
     );
   }
   if (file === undefined && session === undefined) return { tokens: tokenArgs(ctx) };
@@ -440,8 +440,8 @@ export function tokenSource(ctx: CommandContext): TokenSource | CommandFailure {
   if (manual.length > 0) {
     return usage(
       "usage.token_source",
-      `расход задан и стенограммой, и флагами (${manual.map((f) => `--${f}`).join(", ")}); ` +
-        "источник обязан быть один",
+      `usage given both by a transcript and by flags (${manual.map((f) => `--${f}`).join(", ")}); ` +
+        "there must be exactly one source",
     );
   }
 
@@ -480,7 +480,7 @@ export function caveatArgs(ctx: CommandContext): Caveat[] | CommandFailure {
   if (bad.length > 0) {
     return usage(
       "usage.caveat",
-      `неизвестная оговорка: ${bad.join(", ")}; известно: ${CAVEATS.join(", ")}`,
+      `unknown caveat: ${bad.join(", ")}; allowed: ${CAVEATS.join(", ")}`,
     );
   }
   return parts as Caveat[];
@@ -682,7 +682,7 @@ function fmtAge(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h}ч ${String(m).padStart(2, "0")}м` : `${m}м ${String(s % 60).padStart(2, "0")}с`;
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
 /**
@@ -691,7 +691,7 @@ function fmtAge(ms: number): string {
  */
 export function renderLiveHuman(raw: unknown): string {
   const rows = raw as LiveRow[];
-  if (rows.length === 0) return "живых процессов по записи нет\n";
+  if (rows.length === 0) return "no live processes on record\n";
   const lines = rows.map((r) => {
     const run = r.run as Record<string, unknown> | null;
     const pid = run?.["agentPid"];
@@ -703,8 +703,8 @@ export function renderLiveHuman(raw: unknown): string {
       `${r.liveState}`.padEnd(8),
       `pid ${pid ?? "—"}`.padEnd(11),
       fmtAge(r.ageMs).padEnd(9),
-      r.afterFinishMs === null ? "".padEnd(16) : `висит ${fmtAge(r.afterFinishMs)}`.padEnd(16),
-      `сессия ${sess === null || sess === undefined ? "—" : String(sess).slice(0, 8)}`.padEnd(16),
+      r.afterFinishMs === null ? "".padEnd(16) : `hanging ${fmtAge(r.afterFinishMs)}`.padEnd(16),
+      `session ${sess === null || sess === undefined ? "—" : String(sess).slice(0, 8)}`.padEnd(16),
       `${disp ?? "—"}`,
     ].join(" ").trimEnd();
   });
@@ -712,10 +712,10 @@ export function renderLiveHuman(raw: unknown): string {
   if (orphans.length > 0) {
     lines.push(
       "",
-      `ОСИРОТЕЛО ${orphans.length}: работа принята, процесс жив. ` +
-        "worker-release снимает учётную запись терминала, но не процесс.",
+      `ORPHANED ${orphans.length}: work accepted, process still alive. ` +
+        "worker-release drops the terminal's registration, not the process.",
       `  kill ${orphans.map((r) => (r.run as Record<string, unknown>)["agentPid"]).join(" ")}`,
-      "  (снимает тот, кто запускал: myc ведёт запись, а не процессы)",
+      "  (whoever launched it kills it: myc keeps records, not processes)",
     );
   }
   return `${lines.join("\n")}\n`;
@@ -732,7 +732,7 @@ function fmtUsd(v: number | null): string {
  */
 function renderAttemptListHuman(raw: unknown): string {
   const rows = raw as Array<ReturnType<typeof attemptView>>;
-  if (rows.length === 0) return "попыток нет\n";
+  if (rows.length === 0) return "no attempts\n";
   const lines = rows.map((a) => {
     const caveats = a["caveats"] as string[];
     const q = a["quality"] as number | null;
@@ -784,7 +784,7 @@ function renderAttemptHuman(raw: unknown): string {
     return `${[head, cls, `open     started ${a["startedAt"]}`, ...runLines(a)].join("\n")}\n`;
   }
   const caveats = a["caveats"] as string[];
-  const verdict = `verdict  ${a["verdict"]}${caveats.length > 0 ? ` · оговорки: ${caveats.join(", ")}` : ""}`;
+  const verdict = `verdict  ${a["verdict"]}${caveats.length > 0 ? ` · caveats: ${caveats.join(", ")}` : ""}`;
   const quality = `quality  ${(a["quality"] as number).toFixed(2)}   cost ${fmtUsd(
     a["costUsd"] as number | null,
   )} (${a["costBasis"]})`;
@@ -794,8 +794,8 @@ function renderAttemptHuman(raw: unknown): string {
     | undefined;
   if (t !== undefined) {
     lines.push(
-      `расход   in ${a["tokensIn"]} out ${a["tokensOut"]} · ` +
-        `сессия ${t.sessionId ?? "?"}, ответов ${t.responses} из ${t.usageRecords} записей`,
+      `usage    in ${a["tokensIn"]} out ${a["tokensOut"]} · ` +
+        `session ${t.sessionId ?? "?"}, responses ${t.responses} of ${t.usageRecords} records`,
     );
   }
   lines.push(...runLines(a));
@@ -807,14 +807,14 @@ function runLines(a: Record<string, unknown>): string[] {
   const r = a["run"] as Record<string, unknown> | null | undefined;
   if (r === null || r === undefined) return [];
   const out = [
-    `запуск   сессия ${r["sessionId"] ?? "—"} (${r["sessionSource"]}) · ` +
-      `диспетчер ${r["dispatchId"] ?? "—"} (${r["dispatchSource"]})`,
-    `процесс  pid ${r["agentPid"] ?? "—"} (${r["pidSource"]}) · ${r["procState"]}` +
+    `launch   session ${r["sessionId"] ?? "—"} (${r["sessionSource"]}) · ` +
+      `dispatch ${r["dispatchId"] ?? "—"} (${r["dispatchSource"]})`,
+    `process  pid ${r["agentPid"] ?? "—"} (${r["pidSource"]}) · ${r["procState"]}` +
       (a["liveState"] === undefined ? "" : ` · ${a["liveState"]}: ${a["meaning"]}`),
   ];
   const files = r["filesTouched"] as string[] | null;
   if (files !== null && files !== undefined) {
-    out.push(`тронуто  ${files.length} файлов${files.length > 0 ? `: ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`);
+    out.push(`touched  ${files.length} ${files.length === 1 ? "file" : "files"}${files.length > 0 ? `: ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`);
   }
   return out;
 }
@@ -850,8 +850,8 @@ function buildStartCommand(deps: AttemptDeps): Command {
     name: "start",
     summary: "open an attempt: who takes the task and with what model",
     help:
-      "Модель — из --model или $MYC_MODEL и обязана быть в ростере. Харнесс и уровень " +
-      "рассуждений наследуются из ростера, класс задачи считается из самой задачи.",
+      "The model comes from --model or $MYC_MODEL and must be in the roster. Harness and " +
+      "reasoning effort are inherited from the roster; the task class is derived from the task itself.",
     flags: [
       { name: "model", value: "string", description: "roster model id or unambiguous part" },
       { name: "effort", value: "string", description: `override roster effort: ${EFFORTS.join("|")}` },
@@ -865,11 +865,11 @@ function buildStartCommand(deps: AttemptDeps): Command {
     handler: async (ctx): Promise<CommandResult> => {
       const idInput = ctx.args[0];
       if (idInput === undefined) {
-        return usage("usage.invalid", "нужен id задачи: myc attempt start <id>");
+        return usage("usage.invalid", "task id required: myc attempt start <id>");
       }
       const declaredClass = flagStr(ctx, "class");
       if (declaredClass !== undefined && !isTaskClass(declaredClass)) {
-        return usage("usage.class", `--class обязан быть intent:scope, получено "${declaredClass}"`);
+        return usage("usage.class", `--class must be intent:scope, got "${declaredClass}"`);
       }
 
       const opened = await deps.store.openStore(ctx);
@@ -905,15 +905,15 @@ function buildStartCommand(deps: AttemptDeps): Command {
         if (launch.sessionId === null) {
           ctx.warn(
             "launch.no_session",
-            `${record.attemptId}: сессия не записана — расход придётся искать перебором ` +
-              "(myc attempt start … --session <uuid> или $MYC_SESSION_ID)",
+            `${record.attemptId}: session not recorded — usage will have to be found by scanning ` +
+              "(myc attempt start … --session <uuid> or $MYC_SESSION_ID)",
           );
         }
         if (lookupFailed) {
           ctx.warn(
             "launch.no_dispatch",
-            `${record.attemptId}: терминал ${launch.terminal} известен, а диспетчер нет — ` +
-              "оркестратор не ответил (myc attempt start … --dispatch ctx_…)",
+            `${record.attemptId}: terminal ${launch.terminal} is known but the dispatch is not — ` +
+              "the orchestrator did not answer (myc attempt start … --dispatch ctx_…)",
           );
         }
         return {
@@ -978,7 +978,7 @@ export function recordedSpend(
     const code = e instanceof TranscriptError ? e.code : "transcript.unreadable";
     ctx.warn(
       code,
-      `расход по записанной сессии ${run.sessionId} не прочитан: ${(e as Error).message}`,
+      `usage of recorded session ${run.sessionId} not read: ${(e as Error).message}`,
     );
     return { ...spend, via: "none" };
   }
@@ -989,9 +989,9 @@ function buildFinishCommand(deps: AttemptDeps): Command {
     name: "finish",
     summary: "record the outcome of an attempt",
     help:
-      "Расход берётся из стенограммы сессии (--from-transcript/--from-session) либо " +
-      "флагами вручную — одно из двух, не оба. Стенограмма — чужой формат: любое " +
-      "расхождение с ожидаемым — отказ, а не нулевой расход.",
+      "Usage comes from the session transcript (--from-transcript/--from-session) or " +
+      "from manual flags — one or the other, not both. The transcript is a foreign format: " +
+      "any mismatch with the expected shape is a refusal, not zero usage.",
     flags: [
       { name: "task", value: "string", description: "finish the open attempt of this task" },
       { name: "verdict", value: "string", description: VERDICTS.join("|") },
@@ -1008,7 +1008,7 @@ function buildFinishCommand(deps: AttemptDeps): Command {
     handler: (ctx): CommandResult => {
       const verdict = flagStr(ctx, "verdict");
       if (verdict === undefined) {
-        return usage("usage.verdict", `нужен --verdict: ${VERDICTS.join("|")}`);
+        return usage("usage.verdict", `--verdict required: ${VERDICTS.join("|")}`);
       }
       const caveats = caveatArgs(ctx);
       if (!Array.isArray(caveats)) return caveats;
@@ -1024,7 +1024,7 @@ function buildFinishCommand(deps: AttemptDeps): Command {
           if (taskId === undefined) {
             return usage(
               "usage.invalid",
-              "нужен id попытки или --task <id>: myc attempt finish <attempt-id> --verdict …",
+              "attempt id or --task <id> required: myc attempt finish <attempt-id> --verdict …",
             );
           }
           const open = opened.attribution.openAttemptForTask(taskId);
@@ -1032,7 +1032,7 @@ function buildFinishCommand(deps: AttemptDeps): Command {
             return {
               ok: false,
               code: "notfound.attempt",
-              msg: `у задачи "${taskId}" нет открытой попытки`,
+              msg: `task "${taskId}" has no open attempt`,
               exit: ExitCode.NOTFOUND,
               hint: `myc attempt start ${taskId} --model <id>`,
             };
@@ -1090,8 +1090,8 @@ function buildLinkCommand(deps: AttemptDeps): Command {
     name: "link",
     summary: "attach session / dispatch / pid to an existing attempt",
     help:
-      "Запасной путь: в норме связь пишется при `attempt start`. --found помечает " +
-      "источник как 'search' — находку перебором стенограмм, а не запись процесса о себе.",
+      "Fallback path: normally the link is written at `attempt start`. --found marks " +
+      "the source as 'search' — found by scanning transcripts, not recorded by the process itself.",
     flags: [
       { name: "task", value: "string", description: "link the open attempt of this task" },
       { name: "found", description: "mark the session as found by search, not recorded" },
@@ -1108,7 +1108,7 @@ function buildLinkCommand(deps: AttemptDeps): Command {
           if (taskId === undefined) {
             return usage(
               "usage.invalid",
-              "нужен id попытки или --task <id>: myc attempt link <attempt-id> --session <uuid>",
+              "attempt id or --task <id> required: myc attempt link <attempt-id> --session <uuid>",
             );
           }
           const open = opened.attribution.openAttemptForTask(taskId);
@@ -1116,7 +1116,7 @@ function buildLinkCommand(deps: AttemptDeps): Command {
             return {
               ok: false,
               code: "notfound.attempt",
-              msg: `у задачи "${taskId}" нет открытой попытки`,
+              msg: `task "${taskId}" has no open attempt`,
               exit: ExitCode.NOTFOUND,
             };
           }
@@ -1159,8 +1159,8 @@ function buildLinkCommand(deps: AttemptDeps): Command {
       const d = raw as { attemptId: string; run: Record<string, unknown> | null };
       const r = d.run;
       return (
-        `${d.attemptId}  сессия ${r?.["sessionId"] ?? "—"} (${r?.["sessionSource"] ?? "—"}) · ` +
-        `диспетчер ${r?.["dispatchId"] ?? "—"} · pid ${r?.["agentPid"] ?? "—"}\n`
+        `${d.attemptId}  session ${r?.["sessionId"] ?? "—"} (${r?.["sessionSource"] ?? "—"}) · ` +
+        `dispatch ${r?.["dispatchId"] ?? "—"} · pid ${r?.["agentPid"] ?? "—"}\n`
       );
     },
   };
@@ -1171,9 +1171,9 @@ function buildListCommand(deps: AttemptDeps): Command {
     name: "list",
     summary: "recorded attempts, newest first",
     help:
-      "--live отвечает на вопрос «что сейчас работает и сколько висит»: смотрит на " +
-      "записанные pid сигналом 0 и показывает ЖИВЫЕ процессы, отличая работающие от " +
-      "тех, чья работа уже принята. Снятие — не его дело: myc ведёт запись.",
+      "--live answers 'what is running now and for how long': it probes the " +
+      "recorded pids with signal 0 and shows LIVE processes, telling working ones from " +
+      "those whose work is already accepted. Killing them is not its job: myc keeps records.",
     flags: [
       { name: "task", value: "string", description: "filter by task id" },
       { name: "model", value: "string", description: "filter by model id" },
@@ -1190,7 +1190,9 @@ function buildListCommand(deps: AttemptDeps): Command {
         const sinceRaw = flagStr(ctx, "since");
         if (sinceRaw !== undefined) {
           const span = parseDuration(sinceRaw);
-          if (span === undefined) return usage("usage.invalid", `--since: не длительность "${sinceRaw}"`);
+          if (span === undefined) {
+            return usage("usage.invalid", `invalid --since "${sinceRaw}"; format: 30m, 2h, 1d`);
+          }
           since = Date.now() - span;
         }
         const filter = {
@@ -1249,7 +1251,7 @@ function buildShowCommand(deps: AttemptDeps): Command {
     handler: (ctx): CommandResult => {
       const attemptId = ctx.args[0];
       if (attemptId === undefined) {
-        return usage("usage.invalid", "нужен id попытки: myc attempt show <attempt-id>");
+        return usage("usage.invalid", "attempt id required: myc attempt show <attempt-id>");
       }
       const opened = deps.openSwarm(ctx, deps.probe.now);
       if (!("db" in opened)) return opened;
@@ -1259,7 +1261,7 @@ function buildShowCommand(deps: AttemptDeps): Command {
           return {
             ok: false,
             code: "notfound.attempt",
-            msg: `попытка "${attemptId}" не найдена`,
+            msg: `attempt "${attemptId}" not found`,
             exit: ExitCode.NOTFOUND,
           };
         }
@@ -1314,11 +1316,11 @@ function renderClass(cls: ClassAnswer): string[] {
     lines.push(
       `  ${mark} ${arm.arm.padEnd(34)} n=${String(arm.attempts).padStart(3)}  ` +
         `q=${arm.qualityMean.toFixed(2)} [${arm.quality.lo.toFixed(2)}–${arm.quality.hi.toFixed(2)}]  ` +
-        `cost=${fmtUsd(arm.costUsdMean)}/попытка (${arm.costedAttempts}/${arm.attempts})  ` +
-        `чисто ${Math.round(arm.cleanRate * 100)}%`,
+        `cost=${fmtUsd(arm.costUsdMean)}/attempt (${arm.costedAttempts}/${arm.attempts})  ` +
+        `clean ${Math.round(arm.cleanRate * 100)}%`,
     );
   }
-  lines.push(`    ${cls.answer}${cls.separationPending ? " (не различили)" : ""}: ${cls.why}`);
+  lines.push(`    ${cls.answer}${cls.separationPending ? " (not separated yet)" : ""}: ${cls.why}`);
   return lines;
 }
 
@@ -1326,32 +1328,32 @@ function renderReportHuman(raw: unknown): string {
   const d = raw as ReportData;
   const lines: string[] = [];
   if (d.classes.length === 0) {
-    lines.push("атрибуции нет: ни одной закрытой попытки");
+    lines.push("no attribution: not a single closed attempt");
   }
   for (const cls of d.classes) lines.push(...renderClass(cls));
   lines.push(
-    `покрытие  задач закрыто ${d.tasksClosed}, с атрибуцией ${d.tasksAttributed}; ` +
-      `попыток ${d.coverage.attempts} (закрыто ${d.coverage.finished}, со стоимостью ${d.coverage.withCost})`,
+    `coverage  tasks closed ${d.tasksClosed}, attributed ${d.tasksAttributed}; ` +
+      `attempts ${d.coverage.attempts} (closed ${d.coverage.finished}, with cost ${d.coverage.withCost})`,
   );
   if (d.coverage.costStale > 0) {
     lines.push(
-      `ВНИМАНИЕ  ${d.coverage.costStale} из ${d.coverage.withCost} попыток заморожены по числу, ` +
-        "которого их же строка цены больше не даёт (цену исправили после заморозки): " +
-        "пересчёт — bun run scripts/recost-attempts.ts --apply",
+      `WARNING   ${d.coverage.costStale} of ${d.coverage.withCost} attempts are frozen at a figure ` +
+        "their own price row no longer gives (the price was corrected after freezing): " +
+        "recompute — bun run scripts/recost-attempts.ts --apply",
     );
   }
   if (d.coverage.costCacheUnpriced > 0) {
     // Занижение неравномерное: сильнее у той руки, что больше читала и
     // меньше писала. Такой отчёт способен переставить модели местами.
     lines.push(
-      `ВНИМАНИЕ  ${d.coverage.costCacheUnpriced} из ${d.coverage.withCost} попыток посчитаны ` +
-        "по НУЛЕВОЙ цене кеша при ненулевых кеш-токенах: стоимость занижена и занижена " +
-        "неравномерно. Заведите ставки: myc model update <id> --price-cache-read/--price-cache-write",
+      `WARNING   ${d.coverage.costCacheUnpriced} of ${d.coverage.withCost} attempts were costed ` +
+        "at a ZERO cache price despite nonzero cache tokens: the cost is understated, and " +
+        "unevenly. Set the rates: myc model update <id> --price-cache-read/--price-cache-write",
     );
   }
   lines.push(
-    `формула   outcome v${d.outcomeVersion}, интервал ${Math.round(d.credibleMass * 100)}%, ` +
-      `порог наблюдений ${d.minAttempts}`,
+    `formula   outcome v${d.outcomeVersion}, interval ${Math.round(d.credibleMass * 100)}%, ` +
+      `observation threshold ${d.minAttempts}`,
   );
   return `${lines.join("\n")}\n`;
 }
@@ -1361,8 +1363,8 @@ export function createReportCommand(deps: AttemptDeps = realAttemptDeps): Comman
     name: "models",
     summary: "which model is cheaper at equal result, per task class",
     help:
-      "«Равный результат» — пересечение интервалов доверия по качеству, а не равенство " +
-      "средних. Стоимость берётся замороженной на момент попытки.",
+      "'Equal result' means overlapping quality credible intervals, not equal " +
+      "means. Cost is taken as frozen at the time of the attempt.",
     flags: [
       { name: "class", value: "string", description: "one task class, e.g. fix:module" },
       { name: "since", value: "string", description: "window, e.g. 30d" },
@@ -1371,7 +1373,7 @@ export function createReportCommand(deps: AttemptDeps = realAttemptDeps): Comman
     handler: (ctx): CommandResult => {
       const taskClass = flagStr(ctx, "class");
       if (taskClass !== undefined && !isTaskClass(taskClass)) {
-        return usage("usage.class", `--class обязан быть intent:scope, получено "${taskClass}"`);
+        return usage("usage.class", `--class must be intent:scope, got "${taskClass}"`);
       }
       const opened = deps.openSwarm(ctx, deps.probe.now);
       if (!("db" in opened)) return opened;
@@ -1380,7 +1382,9 @@ export function createReportCommand(deps: AttemptDeps = realAttemptDeps): Comman
         const sinceRaw = flagStr(ctx, "since");
         if (sinceRaw !== undefined) {
           const span = parseDuration(sinceRaw);
-          if (span === undefined) return usage("usage.invalid", `--since: не длительность "${sinceRaw}"`);
+          if (span === undefined) {
+            return usage("usage.invalid", `invalid --since "${sinceRaw}"; format: 30m, 2h, 1d`);
+          }
           since = Date.now() - span;
         }
         const report = compareModels(opened.db, {

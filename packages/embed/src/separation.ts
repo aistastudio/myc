@@ -109,10 +109,10 @@ export async function measureSeparation(
 
 export function formatSeparation(r: SeparationReport): string {
   return (
-    `${r.lang}: разделение ${r.separation >= 0 ? "+" : ""}${r.separation.toFixed(4)} ` +
-    `(близкие ${r.close.toFixed(3)}, посторонние ${r.unrelated.toFixed(3)}, ` +
-    `чужие документы ${r.otherDocs.toFixed(3)}) | ` +
+    `${r.lang}: separation ${r.separation >= 0 ? "+" : ""}${r.separation.toFixed(4)} ` +
+    `(close ${r.close.toFixed(3)}, unrelated ${r.unrelated.toFixed(3)}, ` +
+    `other docs ${r.otherDocs.toFixed(3)}) | ` +
     `top1 ${(r.top1 * 100).toFixed(0)}% top3 ${(r.top3 * 100).toFixed(0)}% MRR ${r.mrr.toFixed(3)} ` +
-    `на ${r.pairs} парах`
+    `on ${r.pairs} pairs`
   );
 }

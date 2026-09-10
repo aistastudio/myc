@@ -50,7 +50,7 @@ const DIRTY = Number(arg("--dirty", "10"));
 const RUN_MUTATIONS = !argv.includes("--no-mutations");
 
 if (!statSync(ROOT, { throwIfNoEntry: false })?.isDirectory()) {
-  console.error(`нет каталога: ${ROOT}`);
+  console.error(`no such directory: ${ROOT}`);
   process.exit(1);
 }
 
@@ -64,7 +64,7 @@ function section(title: string): void {
 // Копия репозитория (только читаем оригинал)
 // ---------------------------------------------------------------------------
 
-section("подготовка");
+section("setup");
 const t0 = performance.now();
 const work = mkdtempSync(join(tmpdir(), "code-index-bench-"));
 const tree = join(work, "tree");
@@ -74,9 +74,9 @@ const ls = spawnSync("git", ["ls-files", "-z"], { cwd: ROOT });
 let rels: string[];
 if (ls.status === 0) {
   rels = ls.stdout.toString().split("\0").filter((s) => s.length > 0);
-  console.log(`источник списка файлов: git ls-files (${rels.length} файлов)`);
+  console.log(`file list source: git ls-files (${rels.length} files)`);
 } else {
-  throw new Error("каталог без git не поддерживается замером: нужен список файлов");
+  throw new Error("the bench does not support a directory without git: it needs a file list");
 }
 
 let copied = 0;
@@ -95,7 +95,7 @@ for (const rel of rels) {
   utimesSync(dst, st.atime, st.mtime);
   copied++;
 }
-console.log(`скопировано: ${copied} файлов за ${(performance.now() - t0).toFixed(0)} мс → ${work}`);
+console.log(`copied: ${copied} files in ${(performance.now() - t0).toFixed(0)} ms → ${work}`);
 
 // ---------------------------------------------------------------------------
 // База: production-пути открытия (STORE_PRAGMAS + набор миграций)
@@ -122,9 +122,9 @@ async function index(label: string, over: Partial<CodeIndexOptions> = {}): Promi
   const r = await runCodeIndex(db, opts(over), { holder: `bench-${label}` });
   const total = performance.now() - t;
   console.log(
-    `${label}: ${ms(total)} мс  (скан ${ms(r.scan.scanMs)}, разбор ${ms(r.drain.parseMs)}, ` +
-      `запись ${ms(r.drain.applyMs)})  файлы ${r.scan.files}, без изменений ${r.scan.unchanged}, ` +
-      `тач ${r.scan.touched}, изменены ${r.scan.dirty}, разобрано ${r.drain.parsed}`,
+    `${label}: ${ms(total)} ms  (scan ${ms(r.scan.scanMs)}, parse ${ms(r.drain.parseMs)}, ` +
+      `write ${ms(r.drain.applyMs)})  files ${r.scan.files}, unchanged ${r.scan.unchanged}, ` +
+      `touched ${r.scan.touched}, changed ${r.scan.dirty}, parsed ${r.drain.parsed}`,
   );
   return total;
 }
@@ -143,31 +143,31 @@ const counts = (): { files: number; defs: number; jobsLeft: number } => {
 // Прогон 1: полный индекс
 // ---------------------------------------------------------------------------
 
-section("прогон 1 — полный индекс (холодный)");
-const full1 = await index("полный №1");
+section("run 1 — full index (cold)");
+const full1 = await index("full #1");
 console.log(
-  `  в базе: ${JSON.stringify(counts())} — планка 400 мс, ${full1 <= 400 ? "УЛОЖИЛИСЬ" : "НЕ УЛОЖИЛИСЬ"}`,
+  `  in db: ${JSON.stringify(counts())} — bar 400 ms, ${full1 <= 400 ? "WITHIN" : "OVER"}`,
 );
 
 // Полный индекс на прогретом коде: та же работа без стоимости первого
 // касания модулей. Честная пара к холодному числу.
-section("прогон 1б — полный индекс ещё раз (прогретый)");
-const full2 = await index("полный №2", { incremental: false });
+section("run 1b — full index again (warm)");
+const full2 = await index("full #2", { incremental: false });
 
 // ---------------------------------------------------------------------------
 // Прогон 2: повторный без изменений
 // ---------------------------------------------------------------------------
 
-section("прогон 2 — повторный, ничего не менялось");
+section("run 2 — repeat, nothing changed");
 const unchangedTimes: number[] = [];
-for (let i = 0; i < 3; i++) unchangedTimes.push(await index(`повтор №${i + 1}`));
+for (let i = 0; i < 3; i++) unchangedTimes.push(await index(`repeat #${i + 1}`));
 const unchanged = Math.min(...unchangedTimes);
 
 // ---------------------------------------------------------------------------
 // Прогон 3: повторный при N изменённых
 // ---------------------------------------------------------------------------
 
-section(`прогон 3 — повторный при ${DIRTY} изменённых`);
+section(`run 3 — repeat with ${DIRTY} changed`);
 
 // Детерминированный выбор файлов: сортированный список, LCG seed 42.
 const codeFiles = rels
@@ -192,7 +192,7 @@ for (const rel of chosen) {
   const now = new Date();
   utimesSync(join(tree, rel), now, now);
 }
-console.log(`изменены: ${[...chosen].slice(0, 3).join(", ")}${chosen.size > 3 ? `, +${chosen.size - 3}` : ""}`);
+console.log(`changed: ${[...chosen].slice(0, 3).join(", ")}${chosen.size > 3 ? `, +${chosen.size - 3}` : ""}`);
 
 const dirtyTimes: number[] = [];
 for (let i = 0; i < 3; i++) {
@@ -205,7 +205,7 @@ for (let i = 0; i < 3; i++) {
       utimesSync(join(tree, rel), now, now);
     }
   }
-  dirtyTimes.push(await index(`при ${DIRTY} изменённых №${i + 1}`));
+  dirtyTimes.push(await index(`${DIRTY} changed #${i + 1}`));
 }
 const dirtyBest = Math.min(...dirtyTimes);
 
@@ -216,37 +216,37 @@ for (const [rel, orig] of originals) {
 }
 
 const c = counts();
-console.log(`  в базе: ${JSON.stringify(c)}; планка 20 мс, ${dirtyBest <= 20 ? "УЛОЖИЛИСЬ" : "НЕ УЛОЖИЛИСЬ"}`);
+console.log(`  in db: ${JSON.stringify(c)}; bar 20 ms, ${dirtyBest <= 20 ? "WITHIN" : "OVER"}`);
 
 // ---------------------------------------------------------------------------
 // Итог
 // ---------------------------------------------------------------------------
 
-section("итог");
-console.log(`полный индекс (${c.files} файлов):     холодный ${ms(full1)} мс, прогретый ${ms(full2)} мс   (планка ≤ 400)`);
-console.log(`повторный без изменений:            ${ms(unchanged)} мс   (минимум из 3)`);
-console.log(`повторный при ${String(DIRTY).padStart(2)} изменённых:        ${ms(dirtyBest)} мс   (планка ≤ 20)`);
+section("summary");
+console.log(`full index (${c.files} files):     cold ${ms(full1)} ms, warm ${ms(full2)} ms   (bar ≤ 400)`);
+console.log(`repeat, nothing changed:            ${ms(unchanged)} ms   (best of 3)`);
+console.log(`repeat with ${String(DIRTY).padStart(2)} changed:          ${ms(dirtyBest)} ms   (bar ≤ 20)`);
 
 // ---------------------------------------------------------------------------
 // Мутации приёмки
 // ---------------------------------------------------------------------------
 
 if (RUN_MUTATIONS) {
-  section("МУТАЦИЯ 1 — инкрементальность убрана (разбирать все файлы)");
-  await index("повтор с инкрементальностью", {});
-  const degraded = await index("повтор БЕЗ инкрементальности", { incremental: false });
+  section("MUTATION 1 — incrementality removed (parse every file)");
+  await index("repeat with incrementality", {});
+  const degraded = await index("repeat WITHOUT incrementality", { incremental: false });
   console.log(
-    `  итог: повторный ${ms(unchanged)} мс → без инкрементальности ${ms(degraded)} мс ` +
-      `(просадка ×${(degraded / Math.max(unchanged, 0.01)).toFixed(0)}), разбор всех файлов обязателен`,
+    `  result: repeat ${ms(unchanged)} ms → without incrementality ${ms(degraded)} ms ` +
+      `(×${(degraded / Math.max(unchanged, 0.01)).toFixed(0)} slower), every file must be parsed`,
   );
 
-  section("МУТАЦИЯ 2 — свежесть только по mtime, без хеша");
+  section("MUTATION 2 — freshness by mtime only, no hash");
   // Жертва — вне набора изменённых в прогоне 3: её состояние в базе и на
   // диске совпадает без оговорок.
   const victim = codeFiles.find((p) => !chosen.has(p))!;
   const defCount = (path: string): number =>
     (db.query("SELECT count(*) AS n FROM code_defs WHERE path = ?1").get(path) as { n: number }).n;
-  console.log(`  жертва: ${victim}, дефсов в базе: ${defCount(victim)}`);
+  console.log(`  victim: ${victim}, defs in db: ${defCount(victim)}`);
   // Правка содержимого с восстановленным mtime; правка настоящая — новая
   // функция, а не комментарий, чтобы по дефсам было видно, долетела ли она.
   const st = statSync(join(tree, victim));
@@ -254,17 +254,17 @@ if (RUN_MUTATIONS) {
   const defsBefore = defCount(victim);
   writeFileSync(join(tree, victim), body + "\nexport function zz_mutation_canary() { return 1; }\n");
   utimesSync(join(tree, victim), st.atime, st.mtime);
-  const missed = await index("повтор (mtime-only)", { freshness: "mtime" });
+  const missed = await index("repeat (mtime-only)", { freshness: "mtime" });
   console.log(
-    `  правка с восстановленным mtime: прогон ${ms(missed)} мс, канарейка ` +
-      `${defCount(victim) === defsBefore ? "НЕ ДОЛЕТЕЛА (правка незамечена)" : "долетела"}`,
+    `  edit with restored mtime: run ${ms(missed)} ms, canary ` +
+      `${defCount(victim) === defsBefore ? "DID NOT ARRIVE (edit missed)" : "arrived"}`,
   );
   // Тот же файл в рабочем режиме ловится.
   const now = new Date();
   utimesSync(join(tree, victim), now, now);
-  const caught = await index("повтор (mtime+hash, контроль)", {});
+  const caught = await index("repeat (mtime+hash, control)", {});
   console.log(
-    `  контроль (рабочий режим): прогон ${ms(caught)} мс, дефсов в базе: ${defCount(victim)} — правка поймана`,
+    `  control (normal mode): run ${ms(caught)} ms, defs in db: ${defCount(victim)} — edit caught`,
   );
   // Восстановление.
   writeFileSync(join(tree, victim), body);
@@ -273,4 +273,4 @@ if (RUN_MUTATIONS) {
 
 db.close();
 rmSync(work, { recursive: true, force: true });
-console.log("\nкопия убрана, оригинал не изменялся");
+console.log("\ncopy removed, original untouched");

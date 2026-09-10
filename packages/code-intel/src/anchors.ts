@@ -416,14 +416,14 @@ export function checkAnchor(
   // Уровень 0: файла нет. Отличается от «изменился» — и `stale` здесь честнее
   // `lost`: без graft мы не знаем, удалён файл или переехал (§7.3).
   const st = io.stat(absPath);
-  if (st === undefined) return keep("stale", 0, "файл не найден");
+  if (st === undefined) return keep("stale", 0, "file not found");
 
   // Уровень 1: метаданные. Один stat, файл не читается.
   if (Math.floor(st.mtimeMs) === a.mtimeMs && st.size === a.sizeBytes) {
-    return keep("fresh", 1, "mtime и размер совпали");
+    return keep("fresh", 1, "mtime and size match");
   }
   if (maxLevel < 2) {
-    return keep("stale", 1, "МУТАЦИЯ: уровни 2 и 3 сняты");
+    return keep("stale", 1, "MUTATION: levels 2 and 3 removed");
   }
 
   // Уровень 2: хеш содержимого. touch без правки не идёт дальше.
@@ -431,17 +431,17 @@ export function checkAnchor(
   try {
     source = io.read(absPath);
   } catch {
-    return keep("stale", 0, "файл не читается");
+    return keep("stale", 0, "file unreadable");
   }
   const fileHash = hashText(source);
   if (fileHash === a.fileHash) {
-    return keep("fresh", 2, "содержимое не изменилось (mtime-тач)", {
+    return keep("fresh", 2, "content unchanged (mtime touch)", {
       mtimeMs: Math.floor(st.mtimeMs),
       sizeBytes: st.size,
     });
   }
   if (maxLevel < 3) {
-    return keep("stale", 2, "МУТАЦИЯ: уровень 3 снят", {
+    return keep("stale", 2, "MUTATION: level 3 removed", {
       mtimeMs: Math.floor(st.mtimeMs),
       sizeBytes: st.size,
     });
@@ -471,13 +471,13 @@ export function checkAnchor(
   };
 
   if (hashText(spanNormText(stream, a.spanStart, a.spanEnd)) === a.spanHash) {
-    return rebound(a.spanStart, a.spanEnd, false, "спан на месте, изменился другой участок файла");
+    return rebound(a.spanStart, a.spanEnd, false, "span in place, another part of the file changed");
   }
 
   // Спан не совпал — ищем его текст по файлу. Пустой crux искать нельзя:
   // пустая игла нашлась бы где угодно и утащила бы якорь в случайное место.
   if (a.cruxNorm.length === 0) {
-    return keep("stale", 3, "спан изменился, crux пуст — искать нечего", {
+    return keep("stale", 3, "span changed, crux is empty — nothing to search for", {
       mtimeMs: Math.floor(st.mtimeMs),
       sizeBytes: st.size,
       fileHash,
@@ -485,7 +485,7 @@ export function checkAnchor(
   }
   const hit = findNormalized(stream, a.cruxNorm, a.spanStart);
   if (hit === 0) {
-    return keep("stale", 3, "спан изменился, crux в файле не найден", {
+    return keep("stale", 3, "span changed, crux not found in the file", {
       mtimeMs: Math.floor(st.mtimeMs),
       sizeBytes: st.size,
       fileHash,
@@ -498,6 +498,6 @@ export function checkAnchor(
     hit,
     end,
     moved,
-    moved ? `crux найден на :${hit}` : "спан переформатирован, текст тот же",
+    moved ? `crux found at :${hit}` : "span reformatted, same text",
   );
 }

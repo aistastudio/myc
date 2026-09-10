@@ -254,7 +254,7 @@ describe("R4 обрыв процесса посреди переезда", () =>
         expect(r.signal).toBeNull();
         if (r.code !== 0) {
           // Допустим только честный отказ занятой базы, не молчаливая потеря.
-          expect(r.stdout + r.stderr).toMatch(/busy|locked|занята/i);
+          expect(r.stdout + r.stderr).toMatch(/busy|locked/i);
         }
       }
       const A = inspect(a);

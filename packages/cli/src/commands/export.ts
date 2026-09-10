@@ -51,14 +51,18 @@ interface ExportData extends ExportResult {
 function renderExportHuman(raw: unknown): string {
   const d = raw as ExportData;
   const lines = [
-    `${d.dir}: ${d.ops} операций (${d.sites} сайт${d.sites === 1 ? "" : "ов"}, по ${OPLOG_FILE_OPS} в файле)`,
-    `  записано ${d.files.written.length}, без изменений ${d.files.unchanged.length}` +
-      (d.files.removed.length > 0 ? `, удалено проекций ${d.files.removed.length}` : ""),
+    `${d.dir}: ${d.ops} operation${d.ops === 1 ? "" : "s"} ` +
+      `(${d.sites} site${d.sites === 1 ? "" : "s"}, ${OPLOG_FILE_OPS} per file)`,
+    `  written ${d.files.written.length}, unchanged ${d.files.unchanged.length}` +
+      (d.files.removed.length > 0 ? `, projections removed ${d.files.removed.length}` : ""),
   ];
   if (d.pendingImport > 0) {
-    lines.push(`  ! в файлах ${d.pendingImport} операций, которых нет в базе — myc import`);
+    lines.push(
+      `  ! the files hold ${d.pendingImport} operation${d.pendingImport === 1 ? "" : "s"} ` +
+        `missing from the database — myc import`,
+    );
   }
-  lines.push(`готово за ${d.took_ms} мс`);
+  lines.push(`done in ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -97,7 +101,7 @@ export function createExportCommand(deps: StoreDeps = realStoreDeps): Command {
               code: "conflict.op_id",
               msg: e.message,
               exit: ExitCode.CONFLICT,
-              hint: "две живые базы под одним site_id — обычно копия каталога воркспейса (cp -R/rsync), а не клон; см. S65 в docs/design/ARCHITECTURE.md",
+              hint: "two live databases under one site_id — usually a copy of the workspace directory (cp -R/rsync), not a clone; see S65 in docs/design/ARCHITECTURE.md",
             };
           }
           throw e;
@@ -105,7 +109,8 @@ export function createExportCommand(deps: StoreDeps = realStoreDeps): Command {
         if (result.pendingImport > 0) {
           ctx.warn(
             "export.pending_import",
-            `${result.pendingImport} операций из ${result.dir} ещё не в базе — выполните myc import`,
+            `${result.pendingImport} ${result.pendingImport === 1 ? "operation" : "operations"} from ${result.dir} ` +
+              `not in the database yet — run myc import`,
           );
         }
         const data: ExportData = { ...result, took_ms: Math.round(performance.now() - t0) };

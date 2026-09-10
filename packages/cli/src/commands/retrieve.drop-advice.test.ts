@@ -105,11 +105,11 @@ describe("отсев охватом репозитория назван свои
   test("из чужого репозитория подсказка называет охват, репозиторий и команду снятия", async () => {
     const out = text((await myc(join(root, "messaging-server"), "recall", "батч")).stdout);
     // Пусто — и это по-прежнему сказано.
-    expect(out).toContain("пусто");
+    expect(out).toContain("empty");
     // Названа ПРИЧИНА, её вклад и репозиторий, по которому фильтровали.
-    expect(out).toContain("охват репозитория messaging-server — 1");
+    expect(out).toContain("repo reach messaging-server — 1");
     // Названа ГОТОВАЯ команда снятия — та, что здесь действительно работает.
-    expect(out).toContain("сними: --repo all");
+    expect(out).toContain("fix: --repo all");
     // МУТАЦИЯ: вернуть дежурный список — и эта проверка покраснеет.
     for (const knob of STOCK_LIST) expect(out).not.toContain(knob);
   });
@@ -120,13 +120,13 @@ describe("отсев охватом репозитория назван свои
     );
     expect(out).toContain("батч собирается по 500 событий");
     // Выдача непуста — причины пустоты нет вовсе.
-    expect(out).not.toContain("пусто");
+    expect(out).not.toContain("empty");
   });
 
   test("из корня экосистемы фильтра нет, и подсказка не выдумывается", async () => {
     const out = text((await myc(root, "recall", "батч")).stdout);
     expect(out).toContain("батч собирается по 500 событий");
-    expect(out).not.toContain("охват репозитория");
+    expect(out).not.toContain("repo reach");
   });
 
   test("отсев виден числами в --json, а не только в подвале", async () => {
@@ -143,8 +143,8 @@ describe("отсев охватом репозитория назван свои
 
   test("у `search` флага --repo нет — совет зовёт в корень, а не в usage-ошибку", async () => {
     const out = text((await myc(join(root, "messaging-server"), "search", "батч")).stdout);
-    expect(out).toContain("охват репозитория messaging-server — 1");
-    expect(out).toContain("позови из корня экосистемы");
+    expect(out).toContain("repo reach messaging-server — 1");
+    expect(out).toContain("run from the ecosystem root");
     // МУТАЦИЯ: напечатать здесь `--repo all` — совет, который не исполнится.
     expect(out).not.toContain("--repo all");
   });
@@ -163,17 +163,17 @@ describe("каждая причина называет себя, а не сос�
     const out = text(
       (await myc(join(root, "collector"), "recall", "батч", "--kind", "task")).stdout,
     );
-    expect(out).toContain("тип — 1");
-    expect(out).toContain("убери --kind");
-    expect(out).not.toContain("охват репозитория");
+    expect(out).toContain("kind — 1");
+    expect(out).toContain("drop --kind");
+    expect(out).not.toContain("repo reach");
   });
 
   test("--tag: назван тег", async () => {
     const out = text(
       (await myc(join(root, "collector"), "recall", "батч", "--tag", "которого-нет")).stdout,
     );
-    expect(out).toContain("теги — 1");
-    expect(out).toContain("убери --tag");
+    expect(out).toContain("tags — 1");
+    expect(out).toContain("drop --tag");
     expect(out).not.toContain("--kind");
   });
 
@@ -200,8 +200,8 @@ describe("каждая причина называет себя, а не сос�
     );
     // Строку отсекли и --kind, и охват репозитория: снятие любого ОДНОГО её
     // не вернёт, и подсказка не имеет права обещать обратное.
-    expect(out).toContain("несколько фильтров сразу — 1");
-    expect(out).not.toContain("сними:");
+    expect(out).toContain("several filters at once — 1");
+    expect(out).not.toContain("fix:");
   });
 
   test("дедуп считается своим счётчиком, а не приписывается фильтру", async () => {
@@ -233,7 +233,7 @@ describe("каждая причина называет себя, а не сос�
     const out = text(
       (await myc(join(root, "collector"), "recall", "батч", "--layer", "L0")).stdout,
     );
-    expect(out).toContain("поиск шёл под --layer L0");
+    expect(out).toContain("searched under --layer L0");
   });
 });
 
@@ -253,7 +253,7 @@ describe("dropAdviceOf — правило выбора причины", () => {
       counts({ kind: 1, repo: 9 }),
       knobs(["kind", "repo"], "messaging-server"),
     );
-    expect(advice).toContain("охват репозитория messaging-server — 9");
+    expect(advice).toContain("repo reach messaging-server — 9");
     expect(advice).not.toContain("--kind");
   });
 
@@ -261,27 +261,27 @@ describe("dropAdviceOf — правило выбора причины", () => {
     // Строка, дошедшая до repo, прошла все проверки до него — её снятие
     // repo вернёт наверняка, а снятие kind — только может быть.
     const advice = dropAdviceOf(counts({ kind: 3, repo: 3 }), knobs(["kind", "repo"], "collector"));
-    expect(advice).toContain("охват репозитория collector — 3");
+    expect(advice).toContain("repo reach collector — 3");
   });
 
   test("дедуп называется дедупом и не притворяется снимаемым фильтром", () => {
     const advice = dropAdviceOf(counts({ dedup: 4 }), knobs(["kind", "repo"]));
-    expect(advice).toContain("дедуп — 4");
-    expect(advice).not.toContain("сними:");
+    expect(advice).toContain("dedup — 4");
+    expect(advice).not.toContain("fix:");
     for (const knob of STOCK_LIST) expect(advice).not.toContain(knob);
   });
 
   test("флага у поверхности нет — совет не выдумывает его", () => {
     const advice = dropAdviceOf(counts({ repo: 2 }), knobs(["kind", "tag"], "collector"));
-    expect(advice).toContain("охват репозитория collector — 2");
-    expect(advice).toContain("позови из корня экосистемы");
+    expect(advice).toContain("repo reach collector — 2");
+    expect(advice).toContain("run from the ecosystem root");
     expect(advice).not.toContain("--repo");
   });
 
   test("охват сессии — своя причина, не «охват репозитория»", () => {
     const advice = dropAdviceOf(counts({ session: 5 }), knobs(["reach", "session"]));
-    expect(advice).toContain("охват сессии — 5");
-    expect(advice).toContain("убери --reach session");
+    expect(advice).toContain("session reach — 5");
+    expect(advice).toContain("drop --reach session");
   });
 
   test("ни одной причины — совет не сваливается в дежурный список", () => {

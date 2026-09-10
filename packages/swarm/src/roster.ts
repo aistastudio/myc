@@ -142,7 +142,7 @@ function requireHarness(value: string): Harness {
   if ((HARNESSES as readonly string[]).includes(value)) return value as Harness;
   throw new RosterError(
     "usage.harness",
-    `неизвестный харнесс "${value}"; известно: ${HARNESSES.join(", ")}`,
+    `unknown harness "${value}"; allowed: ${HARNESSES.join(", ")}`,
   );
 }
 
@@ -150,16 +150,16 @@ function requireEffort(value: string): Effort {
   if ((EFFORTS as readonly string[]).includes(value)) return value as Effort;
   throw new RosterError(
     "usage.effort",
-    `неизвестный уровень рассуждений "${value}"; известно: ${EFFORTS.join(", ")}`,
+    `unknown reasoning effort "${value}"; allowed: ${EFFORTS.join(", ")}`,
   );
 }
 
 function requirePrice(price: PriceInput): void {
   if (!Number.isFinite(price.usdPerMIn) || price.usdPerMIn < 0) {
-    throw new RosterError("usage.price", `usdPerMIn обязан быть числом ≥ 0`);
+    throw new RosterError("usage.price", `usdPerMIn must be a number ≥ 0`);
   }
   if (!Number.isFinite(price.usdPerMOut) || price.usdPerMOut < 0) {
-    throw new RosterError("usage.price", `usdPerMOut обязан быть числом ≥ 0`);
+    throw new RosterError("usage.price", `usdPerMOut must be a number ≥ 0`);
   }
   for (const [name, value] of [
     ["usdPerMCacheRead", price.usdPerMCacheRead],
@@ -167,13 +167,13 @@ function requirePrice(price: PriceInput): void {
   ] as const) {
     if (value === undefined) continue;
     if (!Number.isFinite(value) || value < 0) {
-      throw new RosterError("usage.price", `${name} обязан быть числом ≥ 0`);
+      throw new RosterError("usage.price", `${name} must be a number ≥ 0`);
     }
   }
   if (!Number.isInteger(price.validFrom) || price.validFrom <= 0) {
     throw new RosterError(
       "usage.price",
-      "цена обязана храниться с датой: validFrom (unix ms) отсутствует",
+      "a price must be stored with a date: validFrom (unix ms) is missing",
     );
   }
 }
@@ -257,10 +257,10 @@ export class Roster {
 
   addModel(input: AddModelInput): RosterModel {
     if (input.modelId.trim() === "") {
-      throw new RosterError("usage.input", "modelId обязан быть непустым");
+      throw new RosterError("usage.input", "modelId must be non-empty");
     }
     if (input.family.trim() === "") {
-      throw new RosterError("usage.input", "family обязан быть непустым");
+      throw new RosterError("usage.input", "family must be non-empty");
     }
     requireHarness(input.harness);
     const effort = input.effort ?? "medium";
@@ -294,7 +294,7 @@ export class Roster {
       if (e instanceof Error && /UNIQUE constraint failed: swarm_model/.test(e.message)) {
         throw new RosterError(
           "conflict.model",
-          `модель "${input.modelId}" уже в ростере; изменяйте через update`,
+          `model "${input.modelId}" is already in the roster; change it with update`,
         );
       }
       throw e;
@@ -414,7 +414,7 @@ export class Roster {
       .query("SELECT * FROM swarm_model WHERE model_id = ?1")
       .get(modelId) as ModelRow | null;
     if (row === null) {
-      throw new RosterError("notfound.model", `модель "${modelId}" не найдена в ростере`);
+      throw new RosterError("notfound.model", `model "${modelId}" not found in the roster`);
     }
     return toModel(row);
   }

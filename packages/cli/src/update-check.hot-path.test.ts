@@ -162,8 +162,8 @@ describe("измеритель: ловушка сети действительн
     // Если этот тест зелёный, пустой лог у горячего пути что-то значит.
     expect(r.netCalls).toHaveLength(1);
     expect(r.netCalls[0]).toContain("registry.npmjs.org");
-    expect(r.stdout).toContain("обновления НЕ проверены");
-    expect(r.stdout).not.toContain("обновляться некуда");
+    expect(r.stdout).toContain("updates NOT checked");
+    expect(r.stdout).not.toContain("nothing to update to");
   });
 
   test("`myc version` без --check под ловушкой не трогает сеть", () => {

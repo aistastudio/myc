@@ -287,11 +287,11 @@ export function mintSiteId(slug: string): string {
 
 function reissueWarning(from: string, to: string, dbPath: string): string {
   return (
-    `myc: WARN: site_id перевыпущен: ${from} -> ${to}\n` +
-    `  ${dbPath} — другой физический экземпляр базы, чем тот, за которым был закреплён ${from}\n` +
-    `  (обычно это копия каталога воркспейса: cp -R, tar x, восстановление из бэкапа).\n` +
-    `  Новые операции этой копии минтятся под ${to}; прежняя история не переписана,\n` +
-    `  прежний site_id сохранён в myc_meta.site_id_prev.\n`
+    `myc: WARN: site_id reissued: ${from} -> ${to}\n` +
+    `  ${dbPath} is a different physical database instance than the one ${from} was bound to\n` +
+    `  (usually a copy of the workspace directory: cp -R, tar x, a restore from backup).\n` +
+    `  New operations of this copy are minted under ${to}; the earlier history is not rewritten,\n` +
+    `  the previous site_id is kept in myc_meta.site_id_prev.\n`
   );
 }
 

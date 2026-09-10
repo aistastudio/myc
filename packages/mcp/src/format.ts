@@ -48,20 +48,20 @@ export function readyClaimText(d: {
   const c = d.claimed;
   if (c === undefined) {
     return (
-      `очередь пуста или задача ушла под носом — свободных нет\n` +
-      `${d.ready} ready · ${d.blocked} blocked · ${d.in_progress} in_progress · ${d.took_ms} мс\n`
+      `no free tasks: the ready queue is empty or the task was just taken by someone else\n` +
+      `${d.ready} ready · ${d.blocked} blocked · ${d.in_progress} in_progress · ${d.took_ms} ms\n`
     );
   }
   const lines = [
-    `claimed ${c.id} by ${c.holder} · аренда ${fmtAge(c.lease_ttl_ms)} до ${fmtClock(c.lease_expires)}`,
+    `claimed ${c.id} by ${c.holder} · lease ${fmtAge(c.lease_ttl_ms)} until ${fmtClock(c.lease_expires)}`,
     `P${c.priority} ${c.type} · ${c.title}`,
   ];
   if (c.body !== null && c.body.trim().length > 0) {
-    lines.push("описание");
+    lines.push("description");
     for (const l of c.body.trimEnd().split("\n")) lines.push(`  ${l}`);
   }
   if (c.blocked_by.length > 0) lines.push(`deps      blocked-by ${c.blocked_by.join(", ")}`);
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -79,13 +79,13 @@ export function claimText(d: {
   expired_ago_ms?: number;
 }): string {
   if (d.renewed === true) {
-    return `renewed ${d.id} by ${d.holder} · аренда ${fmtAge(d.lease_ttl_ms)} до ${fmtClock(d.lease_expires)}\n`;
+    return `renewed ${d.id} by ${d.holder} · lease ${fmtAge(d.lease_ttl_ms)} until ${fmtClock(d.lease_expires)}\n`;
   }
   let head = `claimed ${d.id} by ${d.holder}`;
   if (d.stolen_from !== undefined) {
-    head += ` (отобрана у ${d.stolen_from}, аренда истекла ${fmtAge(d.expired_ago_ms ?? 0)} назад)`;
+    head += ` (taken over from ${d.stolen_from}, lease expired ${fmtAge(d.expired_ago_ms ?? 0)} ago)`;
   } else {
-    head += ` · аренда ${fmtAge(d.lease_ttl_ms)} до ${fmtClock(d.lease_expires)}`;
+    head += ` · lease ${fmtAge(d.lease_ttl_ms)} until ${fmtClock(d.lease_expires)}`;
   }
   return `${head}\n${d.id} P${d.priority} ${d.type} ${d.prev_status}→in_progress\n`;
 }
@@ -100,13 +100,13 @@ export function closeText(d: {
   unblocked: string[];
   took_ms: number;
 }): string {
-  if (d.already === true) return `${d.id} уже ${d.status}\n`;
+  if (d.already === true) return `${d.id} already ${d.status}\n`;
   const head = [`closed ${d.id}`];
   if (d.in_progress_ms !== undefined) head.push(`in_progress ${fmtAge(d.in_progress_ms)}`);
   head.push(`@${d.closed_by}`);
   const lines = [head.join(" · ")];
-  if (d.unblocked.length > 0) lines.push(`unblocked ${d.unblocked.join(", ")}   (теперь ready)`);
-  lines.push(`${d.took_ms} мс`);
+  if (d.unblocked.length > 0) lines.push(`unblocked ${d.unblocked.join(", ")}   (now ready)`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -123,7 +123,7 @@ export function updateText(d: {
   const head = [d.id, d.type];
   if (d.kind === "task") head.push(`P${d.priority}`);
   head.push(d.status, `updated: ${d.changed.join(", ")}`);
-  return `${head.join("  ")}\n${d.took_ms} мс\n`;
+  return `${head.join("  ")}\n${d.took_ms} ms\n`;
 }
 
 /** dep add/rm: renderDepEdgeHuman (dep.ts). */
@@ -140,11 +140,11 @@ export function depText(d: {
   took_ms: number;
 }): string {
   if (d.removed === true) {
-    const tail = d.back_ready === true ? `  (${d.back_ready_id} снова ready)` : "";
-    return `${d.type} ${d.src} → ${d.dst} removed${tail}\n${d.took_ms} мс\n`;
+    const tail = d.back_ready === true ? `  (${d.back_ready_id} ready again)` : "";
+    return `${d.type} ${d.src} → ${d.dst} removed${tail}\n${d.took_ms} ms\n`;
   }
-  const tail = d.left_ready === true ? `  (${d.left_ready_id} ушла из ready)` : "";
-  return `${d.from_label} ${d.type === "blocks" ? "blocks" : "blocked-by"} ${d.type === "blocks" ? d.dst : d.src}${tail}\n${d.took_ms} мс\n`;
+  const tail = d.left_ready === true ? `  (${d.left_ready_id} left ready)` : "";
+  return `${d.from_label} ${d.type === "blocks" ? "blocks" : "blocked-by"} ${d.type === "blocks" ? d.dst : d.src}${tail}\n${d.took_ms} ms\n`;
 }
 
 /** remember: renderRememberHuman (remember.ts). */
@@ -183,13 +183,13 @@ export function rememberText(d: {
     lines.push(
       a.anchor_id !== undefined
         ? `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state ?? "fresh"}`
-        : `anchor    ${a.path}:${span} @— не привязан: ${a.reason ?? "причина не названа"} (myc anchor add)`,
+        : `anchor    ${a.path}:${span} @— not bound: ${a.reason ?? "no reason given"} (myc anchor add)`,
     );
   }
   const queue = d.queue.map((k) =>
-    k === "absorb" && d.absorb_heuristic ? "absorb(эвристика — chat-LLM выключен)" : k,
+    k === "absorb" && d.absorb_heuristic ? "absorb(heuristic — chat LLM is off)" : k,
   );
   lines.push(`queue     ${queue.length > 0 ? queue.join(", ") : "—"}`);
-  lines.push(`${d.took_ms} мс`);
+  lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }

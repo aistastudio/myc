@@ -162,14 +162,14 @@ function ledgers(driver: CliDriver): Ledger[] {
     ms.reduce((m, x) => Math.max(m, x.version), 0);
   return [
     {
-      name: "векторы",
+      name: "vectors",
       table: VEC_MIGRATIONS_TABLE,
       known: maxOf(vectorMigrations),
       objects: [VEC_MIGRATIONS_TABLE, ...vectorMigrations.flatMap((m) => m.objects)],
       applicable: driver.vec0,
       ...(driver.vec0
         ? {}
-        : { why: `vec0 не загружен (${driver.vec0Reason ?? "причина не названа"})` }),
+        : { why: `vec0 not loaded (${driver.vec0Reason ?? "no reason given"})` }),
     },
     {
       name: "swarm",
@@ -222,32 +222,32 @@ async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
   const pending = migrations.filter((m) => !appliedSet.has(m.version)).map((m) => m.version);
   if (applied === null) {
     checks.push({
-      name: "версия",
+      name: "version",
       verdict: "drift",
-      detail: "в базе нет таблицы schema_migrations — схема не накатывалась",
+      detail: "no schema_migrations table in the database — the schema was never applied",
     });
   } else if (applied > known) {
     checks.push({
-      name: "версия",
+      name: "version",
       verdict: "drift",
-      detail: `база новее бинаря: схема ${applied}, бинарь знает ${known}`,
+      detail: `database is newer than the binary: schema ${applied}, the binary knows ${known}`,
     });
   } else if (pending.length > 0) {
     checks.push({
-      name: "версия",
+      name: "version",
       verdict: "drift",
-      detail: `не применены миграции: ${pending.join(", ")} (бинарь знает до ${known})`,
+      detail: `migrations not applied: ${pending.join(", ")} (the binary knows up to ${known})`,
       items: pending.map(String),
     });
   } else {
-    checks.push({ name: "версия", verdict: "ok", detail: `схема ${applied} из ${known}` });
+    checks.push({ name: "version", verdict: "ok", detail: `schema ${applied} of ${known}` });
   }
 
   // 2. Объекты. Эталон — та же база, построенная миграциями ЭТОГО бинаря;
   //    сравнение — тот же модуль, которым schema-parity.test.ts стережёт
   //    db/schema.sqlite.sql, чтобы «расхождение» значило здесь и там одно.
   if (applied === null) {
-    checks.push({ name: "объекты", verdict: "unknown", detail: "сравнивать не с чем: схемы нет" });
+    checks.push({ name: "objects", verdict: "unknown", detail: "nothing to compare against: no schema" });
   } else {
     const reference = new Database(":memory:");
     try {
@@ -255,25 +255,25 @@ async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
       const live = schemaObjects(db);
       const ignore = new Map<string, string>();
       for (const l of side) {
-        for (const key of ownedBy(live, l.objects)) ignore.set(key, `набор «${l.name}»: своя таблица учёта`);
+        for (const key of ownedBy(live, l.objects)) ignore.set(key, `set "${l.name}": has its own bookkeeping table`);
       }
       const diff = diffSchema(schemaObjects(reference), live, { ignore });
       if (schemaConverges(diff)) {
         checks.push({
-          name: "объекты",
+          name: "objects",
           verdict: "ok",
-          detail: `${live.size - ignore.size} объектов сходятся с миграциями бинаря`,
+          detail: `${live.size - ignore.size} objects match the binary's migrations`,
         });
       } else {
         const items = [
-          ...diff.missing.map((k) => `нет в базе: ${k}`),
-          ...diff.extra.map((k) => `лишний в базе: ${k}`),
-          ...diff.differing.map((k) => `текст DDL разошёлся: ${k}`),
+          ...diff.missing.map((k) => `missing from the database: ${k}`),
+          ...diff.extra.map((k) => `extra in the database: ${k}`),
+          ...diff.differing.map((k) => `DDL text differs: ${k}`),
         ];
         checks.push({
-          name: "объекты",
+          name: "objects",
           verdict: "drift",
-          detail: `расхождений ${items.length}`,
+          detail: `${items.length} differences`,
           items,
         });
       }
@@ -284,7 +284,7 @@ async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
 
   // 3. Побочные наборы. Неприменимый набор — «не знаю», а не «в порядке».
   const reports: LedgerReport[] = [
-    { name: "база", table: "schema_migrations", applied, known, applicable: true },
+    { name: "base", table: "schema_migrations", applied, known, applicable: true },
   ];
   for (const l of side) {
     const a = appliedVersion(db, l.table);
@@ -300,7 +300,7 @@ async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
       checks.push({
         name: l.name,
         verdict: "unknown",
-        detail: `${l.why ?? "набор неприменим"} — схема этого набора не проверялась`,
+        detail: `${l.why ?? "set not applicable"} — this set's schema was not checked`,
       });
     } else if (a === null) {
       // Ни одной строки учёта — набор к этой базе просто не применяли.
@@ -310,18 +310,18 @@ async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
       checks.push({
         name: l.name,
         verdict: "n/a",
-        detail: `набор не накатывался — его объекты создаются по потребности (бинарь знает до ${l.known})`,
+        detail: `set never applied — its objects are created on demand (the binary knows up to ${l.known})`,
       });
     } else if (a > l.known) {
       checks.push({
         name: l.name,
         verdict: "drift",
-        detail: `в базе ${a}, бинарь знает ${l.known} — база новее бинаря`,
+        detail: `database has ${a}, the binary knows ${l.known} — the database is newer than the binary`,
       });
     } else if (a < l.known) {
-      checks.push({ name: l.name, verdict: "drift", detail: `в базе ${a}, бинарь знает ${l.known} — набор не догнан` });
+      checks.push({ name: l.name, verdict: "drift", detail: `database has ${a}, the binary knows ${l.known} — the set is behind` });
     } else {
-      checks.push({ name: l.name, verdict: "ok", detail: `${a} из ${l.known}` });
+      checks.push({ name: l.name, verdict: "ok", detail: `${a} of ${l.known}` });
     }
   }
 
@@ -367,8 +367,8 @@ function closureDrift(driver: CliDriver): string[] {
       applyRebuild(tx);
       const after = new Map(dumpParentClosure(tx).map((r) => [closureKey(r), r]));
       const rows: string[] = [];
-      for (const k of after.keys()) if (!before.has(k)) rows.push(`нет строки ${k}`);
-      for (const k of before.keys()) if (!after.has(k)) rows.push(`лишняя строка ${k}`);
+      for (const k of after.keys()) if (!before.has(k)) rows.push(`missing row ${k}`);
+      for (const k of before.keys()) if (!after.has(k)) rows.push(`extra row ${k}`);
       throw new RollbackProbe(rows);
     });
     return []; // недостижимо: тело всегда бросает
@@ -379,12 +379,12 @@ function closureDrift(driver: CliDriver): string[] {
 }
 
 function counterCheck(name: string, rows: readonly DriftRow[]): Check {
-  if (rows.length === 0) return { name, verdict: "ok", detail: "сходится с пересчётом" };
+  if (rows.length === 0) return { name, verdict: "ok", detail: "matches the recount" };
   return {
     name,
     verdict: "drift",
-    detail: `узлов с расхождением: ${rows.length}`,
-    items: rows.slice(0, 20).map((r) => `${r.id}: в базе ${r.stored}, пересчёт ${r.actual}`),
+    detail: `nodes that differ: ${rows.length}`,
+    items: rows.slice(0, 20).map((r) => `${r.id}: stored ${r.stored}, recount ${r.actual}`),
   };
 }
 
@@ -395,18 +395,18 @@ function checkRecount(driver: CliDriver): RecountSection {
     checks.push(counterCheck("anc_blockers", driver.all<DriftRow>(Q.anc_blockers_drift, [])));
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    checks.push({ name: "open_blockers", verdict: "unknown", detail: `не проверено: ${why}` });
-    checks.push({ name: "anc_blockers", verdict: "unknown", detail: `не проверено: ${why}` });
+    checks.push({ name: "open_blockers", verdict: "unknown", detail: `not checked: ${why}` });
+    checks.push({ name: "anc_blockers", verdict: "unknown", detail: `not checked: ${why}` });
   }
   try {
     const rows = closureDrift(driver);
     checks.push(
       rows.length === 0
-        ? { name: "parent_closure", verdict: "ok", detail: "сходится с пересчётом из рёбер" }
+        ? { name: "parent_closure", verdict: "ok", detail: "matches the recount from edges" }
         : {
             name: "parent_closure",
             verdict: "drift",
-            detail: `строк с расхождением: ${rows.length}`,
+            detail: `rows that differ: ${rows.length}`,
             items: rows.slice(0, 20),
           },
     );
@@ -414,7 +414,7 @@ function checkRecount(driver: CliDriver): RecountSection {
     checks.push({
       name: "parent_closure",
       verdict: "unknown",
-      detail: `не проверено: ${e instanceof Error ? e.message : String(e)}`,
+      detail: `not checked: ${e instanceof Error ? e.message : String(e)}`,
     });
   }
   return { checks };
@@ -555,8 +555,8 @@ function checkGenerated(
         path: WIRE_JOURNAL,
         verdict: "unknown",
         detail:
-          `не знаю: журнала ${join(journalDir, WIRE_JOURNAL)} нет или он не разбирается — ` +
-          "сверить установленные файлы с этой сборкой нечем",
+          `unknown: the journal ${join(journalDir, WIRE_JOURNAL)} is missing or unreadable — ` +
+          "nothing to check the installed files against this build",
       },
     ];
   }
@@ -578,7 +578,7 @@ function checkGenerated(
       out.push({
         path: entry.path,
         verdict: "drift",
-        detail: "пропал: журнал `myc wire` его помнит, на диске файла нет — хук запускать нечем, `myc wire`",
+        detail: "gone: the `myc wire` journal remembers it, but the file is not on disk — the hook has nothing to run; `myc wire`",
         recorded: entry.hash,
         expected: expectedHashes[0]!,
       });
@@ -589,7 +589,7 @@ function checkGenerated(
       out.push({
         path: entry.path,
         verdict: "ok",
-        detail: `актуален: совпадает с тем, что генерирует эта сборка (${actual})`,
+        detail: `up to date: matches what this build generates (${actual})`,
         recorded: entry.hash,
         expected: actual,
         actual,
@@ -601,8 +601,8 @@ function checkGenerated(
         path: entry.path,
         verdict: "drift",
         detail:
-          `устарел: файл ровно тот, что записал \`myc wire\` (${entry.hash}), но шаблон в этой ` +
-          `сборке даёт другой (${expectedHashes[0]}) — перезапустите \`myc wire\``,
+          `stale: the file is exactly what \`myc wire\` wrote (${entry.hash}), but this build's ` +
+          `template produces a different one (${expectedHashes[0]}) — rerun \`myc wire\``,
         recorded: entry.hash,
         expected: expectedHashes[0]!,
         actual,
@@ -613,15 +613,20 @@ function checkGenerated(
       path: entry.path,
       verdict: "drift",
       detail:
-        `изменён после нас: на диске (${actual}) ни то, что записал \`myc wire\` (${entry.hash}), ` +
-        `ни то, что даёт эта сборка (${expectedHashes[0]}) — \`myc wire\` вернёт наш файл, ` +
-        "прежний уйдёт в .myc.bak",
+        `changed after we wrote it: on disk (${actual}) is neither what \`myc wire\` wrote (${entry.hash}) ` +
+        `nor what this build produces (${expectedHashes[0]}) — \`myc wire\` restores our file, ` +
+        "the current one goes to .myc.bak",
       recorded: entry.hash,
       expected: expectedHashes[0]!,
       actual,
     });
   }
   return out;
+}
+
+/** `1 time`, `3 times`. */
+function times(n: number): string {
+  return `${n} time${n === 1 ? "" : "s"}`;
 }
 
 function when(ms: number): string {
@@ -695,7 +700,7 @@ function checkHooks(
         command: spec.command,
         installed: false,
         verdict: "n/a",
-        detail: `не ставится: команды \`myc ${spec.command}\` нет в этой сборке`,
+        detail: `not wired: this build has no \`myc ${spec.command}\` command`,
       });
       continue;
     }
@@ -717,9 +722,9 @@ function checkHooks(
         verdict: hollow !== undefined ? "drift" : "ok",
         detail:
           hollow !== undefined
-            ? `срабатывал ${count} раз, но в последний раз работы не сделал ` +
-              `(${when(last.last_at)}, статус ${last.last_status}${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}): ${hollow}`
-            : `срабатывал ${count} раз, последний ${when(last.last_at)} (${last.last_status}, ${last.last_ms} мс)${agents.length > 0 ? `, агенты: ${agents.join(", ")}` : ""}`,
+            ? `fired ${times(count)}, but did no work last time ` +
+              `(${when(last.last_at)}, status ${last.last_status}${agents.length > 0 ? `, agents: ${agents.join(", ")}` : ""}): ${hollow}`
+            : `fired ${times(count)}, last ${when(last.last_at)} (${last.last_status}, ${last.last_ms} ms)${agents.length > 0 ? `, agents: ${agents.join(", ")}` : ""}`,
         count,
         last_at: last.last_at,
       });
@@ -732,8 +737,8 @@ function checkHooks(
         installed: null,
         verdict: "unknown",
         detail:
-          `не знаю: журнала ${join(journalDir, WIRE_JOURNAL)} нет — ` +
-          "поставлен ли хук, отсюда не видно",
+          `unknown: no journal ${join(journalDir, WIRE_JOURNAL)} — ` +
+          "whether the hook is installed cannot be seen from here",
       });
       continue;
     }
@@ -743,7 +748,7 @@ function checkHooks(
         command: spec.command,
         installed: false,
         verdict: "drift",
-        detail: "не поставлен: события нет в журнале `myc wire`",
+        detail: "not installed: the event is not in the `myc wire` journal",
       });
       continue;
     }
@@ -762,10 +767,10 @@ function checkHooks(
       installed: true,
       verdict: selfReporting && !fresh ? "drift" : "unknown",
       detail: !selfReporting
-        ? `не знаю: поставлен, но себя не отмечает — \`myc ${spec.command}\` вызывают и руками, и хуком, и отличить их нечем`
+        ? `unknown: installed, but does not report itself — \`myc ${spec.command}\` is called both by hand and by the hook, and nothing tells them apart`
         : fresh
-          ? `не знаю: поставлен ${when(wired!.writtenAt)} и ещё не срабатывал — событию просто не было повода случиться`
-          : "поставлен, но не срабатывал ни разу",
+          ? `unknown: installed ${when(wired!.writtenAt)} and has not fired yet — the event simply had no occasion to happen`
+          : "installed, but never fired",
     });
   }
 
@@ -781,10 +786,10 @@ function checkHooks(
   const split =
     countersDir === journalDir
       ? undefined
-      : `счётчик из ${countersDir} (он принадлежит базе), журнал установки из ` +
-        `${journalDir} (он принадлежит рабочему дереву)`;
+      : `counter from ${countersDir} (it belongs to the database), install journal from ` +
+        `${journalDir} (it belongs to the working tree)`;
   if (split !== undefined) {
-    checks.unshift({ name: "источники", verdict: "ok", detail: split });
+    checks.unshift({ name: "sources", verdict: "ok", detail: split });
   }
   return {
     journal: wired !== null,
@@ -813,9 +818,9 @@ export interface DoctorData {
 
 const MARK: Record<Verdict, string> = {
   ok: "ok      ",
-  drift: "РАСХОЖД ",
-  unknown: "не знаю ",
-  "n/a": "н/д     ",
+  drift: "DRIFT   ",
+  unknown: "unknown ",
+  "n/a": "n/a     ",
 };
 
 function sectionChecks(data: DoctorData, name: string): readonly Check[] {
@@ -825,9 +830,9 @@ function sectionChecks(data: DoctorData, name: string): readonly Check[] {
 }
 
 const TITLE: Record<string, string> = {
-  schema: "схема",
-  recount: "счётчики",
-  hooks: "хуки",
+  schema: "schema",
+  recount: "counters",
+  hooks: "hooks",
 };
 
 /**
@@ -836,7 +841,7 @@ const TITLE: Record<string, string> = {
  * ненулевом коде выхода печаталось бы иначе, чем на нулевом.
  */
 export function renderReport(data: DoctorData, verbose: boolean): string[] {
-  const lines: string[] = [`база ${data.db}`];
+  const lines: string[] = [`database ${data.db}`];
   for (const name of data.sections) {
     const checks = sectionChecks(data, name);
     lines.push(`${TITLE[name] ?? name}`);
@@ -866,7 +871,7 @@ function dbPathOf(ctx: CommandContext): { path: string } | CommandFailure {
   if ("dbPath" in found) return { path: found.dbPath };
   return failure(
     "ws.not_initialized",
-    `воркспейс не инициализирован: искали ${found.searched.join(", ")}`,
+    `workspace not initialized: looked in ${found.searched.join(", ")}`,
     ExitCode.NOWS,
     "myc init",
   );
@@ -884,7 +889,7 @@ export function createDoctorCommand(registry: Registry): Command {
     ],
     help:
       "Exit 0 only when every checked item converges. A section that could not be checked is " +
-      "reported as 'не знаю' and never as 'ok' — a diagnostic that prints ok where it looked at " +
+      "reported as 'unknown' and never as 'ok' — a diagnostic that prints ok where it looked at " +
       "nothing is worse than silence.\n\n" +
       "The database is opened WITHOUT running migrations, on purpose: a database written by a " +
       "newer myc refuses to open on the normal path with `precond.schema`, and that failure is " +
@@ -911,7 +916,7 @@ export function createDoctorCommand(registry: Registry): Command {
       if ("ok" in located) return located;
       const dbPath = located.path;
       if (!existsSync(dbPath)) {
-        return failure("ws.not_initialized", `базы нет: ${dbPath}`, ExitCode.NOWS, "myc init");
+        return failure("ws.not_initialized", `no database: ${dbPath}`, ExitCode.NOWS, "myc init");
       }
       // Каталог базы — сторона ВОРКСПЕЙСА: там счётчик хуков и всё прочее,
       // что базе принадлежит. Каталог cwd — сторона РАБОЧЕГО ДЕРЕВА: там
@@ -928,7 +933,7 @@ export function createDoctorCommand(registry: Registry): Command {
         } catch (e) {
           return failure(
             "db.open",
-            `база не открывается: ${e instanceof Error ? e.message : String(e)}`,
+            `cannot open the database: ${e instanceof Error ? e.message : String(e)}`,
             ExitCode.ERR,
           );
         }
@@ -969,7 +974,7 @@ export function createDoctorCommand(registry: Registry): Command {
         if (drift > 0) {
           return failure(
             "precond.drift",
-            [`расхождений: ${drift}`, ...renderReport(data, verbose)].join("\n"),
+            [`drift: ${drift}`, ...renderReport(data, verbose)].join("\n"),
             ExitCode.PRECOND,
           );
         }

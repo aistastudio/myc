@@ -18,7 +18,7 @@ export interface PostgresDriver extends DbDriver {
 
 function unavailable(op: string): never {
   throw new Error(
-    `Postgres driver: операция '${op}' доступна с вехи M4 (myc-123: Postgres DDL и pgvector)`,
+    `Postgres driver: operation '${op}' is available from milestone M4 (myc-123: Postgres DDL and pgvector)`,
   );
 }
 

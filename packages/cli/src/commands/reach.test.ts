@@ -169,11 +169,11 @@ describe("myc remember — охват при записи", () => {
 
   test("человеческий вывод называет охват словом", async () => {
     const own = await myc("remember", "видимый охват", "--session", SESSION_A);
-    expect(text(own.stdout)).toContain(`охват session ${SESSION_A}`);
+    expect(text(own.stdout)).toContain(`reach session ${SESSION_A}`);
     const proj = await myc("remember", "видимый проектный", "--reach", "project");
-    expect(text(proj.stdout)).toContain("охват project");
+    expect(text(proj.stdout)).toContain("reach project");
     const none = await myc("remember", "видимый неизвестный");
-    expect(text(none.stdout)).toContain("охват НЕИЗВЕСТЕН");
+    expect(text(none.stdout)).toContain("reach UNKNOWN");
   });
 
   test("неверный --reach — usage-ошибка, а не молчаливое умолчание", async () => {
@@ -219,17 +219,17 @@ describe("myc prime — фильтр охвата", () => {
     const d = await data("prime", "--session", SESSION_A);
     expect(d["reach_hidden"]).toBe(1);
     const out = text((await myc("prime", "--session", SESSION_A)).stdout);
-    expect(out).toContain(`сессия ${SESSION_A.slice(0, 8)}`);
-    expect(out).toContain("чужого скрыто 1");
+    expect(out).toContain(`session ${SESSION_A.slice(0, 8)}`);
+    expect(out).toContain("1 from other sessions hidden");
   });
 
   test("подвал говорит «сессия не указана», когда её не назвали", async () => {
-    expect(text((await myc("prime")).stdout)).toContain("сессия не указана");
+    expect(text((await myc("prime")).stdout)).toContain("session not specified");
   });
 
   test("строки дайджеста помечены охватом", async () => {
     const out = text((await myc("prime", "--session", SESSION_A)).stdout);
-    expect(out).toContain("сессионный вывод альфы [@сессия]");
+    expect(out).toContain("сессионный вывод альфы [@session]");
     // Проектное — норма в prime, оно не помечается.
     expect(out).toContain("проектное правило про бюджеты\n");
   });
@@ -261,7 +261,7 @@ describe("myc prime — фильтр охвата", () => {
     const d = await data("prime", "--session", SESSION_A);
     expect(titles(d["core"])).toContain("знание до S58");
     expect(d["reach_unknown"]).toBe(1);
-    expect(text((await myc("prime", "--session", SESSION_A)).stdout)).toContain("без охвата 1");
+    expect(text((await myc("prime", "--session", SESSION_A)).stdout)).toContain("1 without reach");
   });
 });
 
@@ -359,7 +359,7 @@ describe("myc recall — охват виден и ищется", () => {
 
   test("футер называет числом чужое и неопределённое", async () => {
     const out = text((await myc("recall", "кворум", "--session", SESSION_A)).stdout);
-    expect(out).toContain("1 из чужих сессий");
+    expect(out).toContain("1 from other sessions");
   });
 
   test("неверный --reach — usage-ошибка", async () => {

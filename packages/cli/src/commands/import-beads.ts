@@ -209,7 +209,7 @@ const IGNORED_ISSUE_FIELDS = new Set([
  * текста — не комментарий: ввозить пустое тело значит засорить нить.
  */
 function normalizeComment(raw: unknown, where: string): BeadsComment | undefined {
-  if (!isRecord(raw)) throw new Error(`${where}: комментарий — не объект`);
+  if (!isRecord(raw)) throw new Error(`${where}: comment is not an object`);
   const text = raw["text"] ?? raw["body"] ?? raw["comment"];
   if (typeof text !== "string" || text.trim().length === 0) return undefined;
   const id = raw["id"];
@@ -236,10 +236,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * сотни ссылок «X → undefined» (myc-5ie.4).
  */
 function normalizeDependency(raw: unknown, where: string): BeadsDependency {
-  if (!isRecord(raw)) throw new Error(`${where}: зависимость — не объект`);
+  if (!isRecord(raw)) throw new Error(`${where}: dependency is not an object`);
   const id = raw["id"] ?? raw["depends_on_id"];
   if (typeof id !== "string" || id.length === 0) {
-    throw new Error(`${where}: у зависимости нет id`);
+    throw new Error(`${where}: dependency has no id`);
   }
   const type = raw["dependency_type"] ?? raw["type"];
   return { id, ...(typeof type === "string" ? { dependency_type: type } : {}) };
@@ -269,8 +269,8 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
         // понятнее: «строка 2 не разобралась» уводит от настоящей причины,
         // если файл вообще не в том формате.
         throw new Error(
-          `не JSON: ${whole instanceof Error ? whole.message : String(whole)}; ` +
-            `и не JSONL: строка ${n} тоже не разбирается`,
+          `not JSON: ${whole instanceof Error ? whole.message : String(whole)}; ` +
+            `and not JSONL either: line ${n} does not parse`,
         );
       }
       if (isRecord(row) && row["_type"] === "memory") {
@@ -281,13 +281,13 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
       }
       rows.push(row);
     }
-    if (rows.length === 0) throw new Error("снимок пуст: ни одной задачи");
+    if (rows.length === 0) throw new Error("snapshot is empty: no tasks");
     raw = { issues: rows, memories };
   }
   // голый массив — это `bd show <ids...> --json` целиком: считаем его issues
   if (Array.isArray(raw)) raw = { issues: raw };
-  if (!isRecord(raw)) throw new Error("корень снапшота — не объект");
-  if (!Array.isArray(raw["issues"])) throw new Error("нет массива issues");
+  if (!isRecord(raw)) throw new Error("snapshot root is not an object");
+  if (!Array.isArray(raw["issues"])) throw new Error("no issues array");
   const issues: BeadsIssue[] = [];
   const seen = new Set<string>();
   /** Незнакомые типы и сколько их: не повод отказать, но повод сказать. */
@@ -300,21 +300,21 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     const where = `issues[${i}]`;
     // `bd show --json` по одной задаче — массив из одного объекта
     const item = Array.isArray(entry) && entry.length === 1 && isRecord(entry[0]) ? entry[0] : entry;
-    if (!isRecord(item)) throw new Error(`${where}: не объект`);
+    if (!isRecord(item)) throw new Error(`${where}: not an object`);
     const id = item["id"];
     const title = item["title"];
     const status = item["status"];
     const issueType = item["issue_type"];
     const priority = item["priority"];
-    if (typeof id !== "string" || id.length === 0) throw new Error(`${where}: нет id`);
-    if (seen.has(id)) throw new Error(`${where}: дубль id '${id}'`);
+    if (typeof id !== "string" || id.length === 0) throw new Error(`${where}: no id`);
+    if (seen.has(id)) throw new Error(`${where}: duplicate id '${id}'`);
     seen.add(id);
-    if (typeof title !== "string") throw new Error(`${where} (${id}): нет title`);
+    if (typeof title !== "string") throw new Error(`${where} (${id}): no title`);
     if (typeof status !== "string" || !TASK_STATUSES.has(status)) {
-      throw new Error(`${where} (${id}): недопустимый status '${String(status)}'`);
+      throw new Error(`${where} (${id}): invalid status '${String(status)}'`);
     }
     if (typeof issueType !== "string" || issueType.length === 0) {
-      throw new Error(`${where} (${id}): нет issue_type`);
+      throw new Error(`${where} (${id}): no issue_type`);
     }
     if (!KNOWN_TASK_TYPES.has(issueType)) unknownTypes.set(issueType, (unknownTypes.get(issueType) ?? 0) + 1);
     // Нечисло — это порча формата, отказ. А вот ЧИСЛО вне 0..3 — не порча:
@@ -322,7 +322,7 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     // ввезти остальные 795. Прижимаем к границе и НАЗЫВАЕМ каждую (И2):
     // молча переписать чужой приоритет значит соврать о его данных.
     if (typeof priority !== "number" || !Number.isInteger(priority)) {
-      throw new Error(`${where} (${id}): приоритет не целое число`);
+      throw new Error(`${where} (${id}): priority is not an integer`);
     }
     let clampedPriority = priority;
     if (priority < 0 || priority > 3) {
@@ -331,11 +331,11 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     }
     const deps = item["dependencies"];
     if (deps !== undefined && !Array.isArray(deps)) {
-      throw new Error(`${where} (${id}): dependencies — не массив`);
+      throw new Error(`${where} (${id}): dependencies is not an array`);
     }
     const rawComments = item["comments"];
     if (rawComments !== undefined && !Array.isArray(rawComments)) {
-      throw new Error(`${where} (${id}): comments — не массив`);
+      throw new Error(`${where} (${id}): comments is not an array`);
     }
     const comments =
       rawComments === undefined
@@ -361,7 +361,7 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
   const memories = raw["memories"];
   let cleanMemories: Record<string, string> | undefined;
   if (memories !== undefined) {
-    if (!isRecord(memories)) throw new Error("memories — не объект");
+    if (!isRecord(memories)) throw new Error("memories is not an object");
     // служебные ключи bd (schema_version и т.п.) — не память, игнорируем
     cleanMemories = {};
     for (const [k, v] of Object.entries(memories)) {
@@ -387,15 +387,15 @@ function runBd(cwd: string, args: readonly string[]): string {
     r = Bun.spawnSync(["bd", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   } catch (e) {
     throw new Error(
-      `bd не запустился (${e instanceof Error ? e.message : String(e)}); ` +
-        "снимок можно собрать вручную и передать файлом: myc import-beads snapshot.json",
+      `bd failed to start (${e instanceof Error ? e.message : String(e)}); ` +
+        "you can build the snapshot by hand and pass it as a file: myc import-beads snapshot.json",
     );
   }
   if (r.exitCode !== 0) {
     const err = r.stderr?.toString().trim() ?? "";
     throw new Error(
-      `bd ${args[0]} завершился кодом ${r.exitCode}${err.length > 0 ? `: ${err}` : ""}; ` +
-        "снимок можно собрать вручную и передать файлом: myc import-beads snapshot.json",
+      `bd ${args[0]} exited with code ${r.exitCode}${err.length > 0 ? `: ${err}` : ""}; ` +
+        "you can build the snapshot by hand and pass it as a file: myc import-beads snapshot.json",
     );
   }
   return r.stdout?.toString() ?? "";
@@ -419,9 +419,9 @@ export function collectBeadsSnapshot(cwd: string): BeadsSnapshot {
     try {
       row = JSON.parse(line);
     } catch (e) {
-      throw new Error(`bd export: строка ${n + 1} не JSON: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`bd export: line ${n + 1} is not JSON: ${e instanceof Error ? e.message : String(e)}`);
     }
-    if (!isRecord(row)) throw new Error(`bd export: строка ${n + 1} — не объект`);
+    if (!isRecord(row)) throw new Error(`bd export: line ${n + 1} is not an object`);
     if (row["_type"] === "memory") {
       if (typeof row["key"] === "string" && typeof row["value"] === "string") {
         memories[row["key"]] = row["value"];
@@ -835,9 +835,9 @@ export function importBeadsSnapshot(
     const clash = byContent.get(contentKey(String(input.kind), input.title ?? "", input.body));
     if (clash !== undefined) {
       data.skipped.push(
-        `${ref}: ${what} не ввезена — в myc уже есть свой узел ${clash} ` +
-          `с тем же заголовком и телом (у своих узлов идентичность по содержимому); ` +
-          `разведите тексты либо удалите локальный дубль и повторите импорт`,
+        `${ref}: ${what} not imported — myc already has its own node ${clash} ` +
+          `with the same title and body (native nodes are identified by content); ` +
+          `make the texts differ or delete the local duplicate, then re-run the import`,
       );
       return undefined;
     }
@@ -847,7 +847,7 @@ export function importBeadsSnapshot(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!/UNIQUE constraint failed/i.test(msg)) throw e;
-      data.skipped.push(`${ref}: ${what} не ввезена — нарушение уникальности узлов (${msg})`);
+      data.skipped.push(`${ref}: ${what} not imported — node uniqueness violation (${msg})`);
       return undefined;
     }
   };
@@ -869,7 +869,7 @@ export function importBeadsSnapshot(
       const id = createGuarded(
         { ...input, attrs: { ...input.attrs, [BASELINE_ATTR]: snapshotBaseline(issue) as unknown as JsonValue } },
         issue.id,
-        "задача",
+        "task",
       );
       if (id === undefined) continue;
       idByRef.set(issue.id, id);
@@ -901,12 +901,12 @@ export function importBeadsSnapshot(
         data.fields_updated++;
       } else if (d === "keep") {
         data.kept_local.push(
-          `${issue.id}.${name}: локальная правка сохранена (в beads: ${fmtVal(snap[name])})`,
+          `${issue.id}.${name}: local edit kept (in beads: ${fmtVal(snap[name])})`,
         );
       } else if (d === "conflict") {
         data.conflicts.push(
-          `${issue.id}.${name}: конфликт — в beads '${fmtVal(snap[name])}', ` +
-            `в myc '${fmtVal(local[name])}', при прошлом импорте '${fmtVal(oldBase?.[name])}'`,
+          `${issue.id}.${name}: conflict — beads has '${fmtVal(snap[name])}', myc has '${fmtVal(local[name])}', ` +
+            `last import had '${fmtVal(oldBase?.[name])}'`,
         );
       }
       // слепок следует за источником; при конфликте остаётся старым, чтобы
@@ -936,7 +936,7 @@ export function importBeadsSnapshot(
     // без цели»: цель есть, выразить нечем. Общая строка про потерянные цели
     // прятала бы разную беду под одним числом.
     for (const u of deps.unknown) {
-      data.unknown_dep_types.push(`${issue.id} → ${u.id}: тип '${u.type ?? "?"}' не переносится`);
+      data.unknown_dep_types.push(`${issue.id} → ${u.id}: type '${u.type ?? "?"}' is not imported`);
     }
 
     // Зависимости со своим ребром myc (derived_from, supersedes). В слепок
@@ -1019,12 +1019,12 @@ export function importBeadsSnapshot(
         if (deps.parent !== null && deps.parent === localParent) data.edges_existing++;
         if (d === "keep" && !jsonEq(deps.parent, localParent)) {
           data.kept_local.push(
-            `${issue.id}.parent: локальная правка сохранена (в beads: ${fmtVal(deps.parent)})`,
+            `${issue.id}.parent: local edit kept (in beads: ${fmtVal(deps.parent)})`,
           );
         } else if (d === "conflict") {
           data.conflicts.push(
-            `${issue.id}.parent: конфликт — в beads '${fmtVal(deps.parent)}', ` +
-              `в myc '${fmtVal(localParent)}', при прошлом импорте '${fmtVal(storedBase?.["parent"])}'`,
+            `${issue.id}.parent: conflict — beads has '${fmtVal(deps.parent)}', myc has '${fmtVal(localParent)}', ` +
+              `last import had '${fmtVal(storedBase?.["parent"])}'`,
           );
         }
       }
@@ -1058,12 +1058,12 @@ export function importBeadsSnapshot(
         data.edges_existing += snapBlocks.filter((r) => localBlocks.includes(r)).length;
         if (d === "keep" && !jsonEq(snapBlocks, localBlocks)) {
           data.kept_local.push(
-            `${issue.id}.blocks: локальная правка сохранена (в beads: ${fmtVal(snapBlocks)})`,
+            `${issue.id}.blocks: local edit kept (in beads: ${fmtVal(snapBlocks)})`,
           );
         } else if (d === "conflict") {
           data.conflicts.push(
-            `${issue.id}.blocks: конфликт — в beads '${fmtVal(snapBlocks)}', ` +
-              `в myc '${fmtVal(localBlocks)}', при прошлом импорте '${fmtVal(storedBase?.["blocks"])}'`,
+            `${issue.id}.blocks: conflict — beads has '${fmtVal(snapBlocks)}', myc has '${fmtVal(localBlocks)}', ` +
+              `last import had '${fmtVal(storedBase?.["blocks"])}'`,
           );
         }
       }
@@ -1099,10 +1099,10 @@ export function importBeadsSnapshot(
     const taskId = idByRef.get(issue.id);
     if (taskId === undefined) {
       // задача пропущена столкновением — её заметке не к чему прицепиться
-      data.skipped.push(`${ref}: заметка не ввезена — сама задача ${issue.id} не ввезена`);
+      data.skipped.push(`${ref}: note not imported — task ${issue.id} itself was not imported`);
       continue;
     }
-    const noteId = createGuarded(noteToNodeInput(issue, notes, h.scope, h.actor), ref, "заметка");
+    const noteId = createGuarded(noteToNodeInput(issue, notes, h.scope, h.actor), ref, "note");
     if (noteId === undefined) continue;
     if (!dry) h.store.addEdge(noteId, "replies_to", taskId);
     data.notes_created++;
@@ -1125,13 +1125,13 @@ export function importBeadsSnapshot(
       }
       const taskId = idByRef.get(issue.id);
       if (taskId === undefined) {
-        data.skipped.push(`${ref}: комментарий не ввезён — сама задача ${issue.id} не ввезена`);
+        data.skipped.push(`${ref}: comment not imported — task ${issue.id} itself was not imported`);
         continue;
       }
       const id = createGuarded(
         commentToNodeInput(issue, comment, h.scope, h.actor),
         ref,
-        "комментарий",
+        "comment",
       );
       if (id === undefined) continue;
       if (!dry) h.store.addEdge(id, "replies_to", taskId);
@@ -1146,7 +1146,7 @@ export function importBeadsSnapshot(
       data.memories_existing++;
       continue;
     }
-    if (createGuarded(memoryToNodeInput(key, text, h.scope, h.actor), ref, "память") === undefined) {
+    if (createGuarded(memoryToNodeInput(key, text, h.scope, h.actor), ref, "memory") === undefined) {
       continue;
     }
     data.memories_created++;
@@ -1169,48 +1169,52 @@ export function importBeadsSnapshot(
 
 function renderImportBeadsHuman(raw: unknown): string {
   const d = raw as ImportBeadsData;
-  const head = d.dry_run ? "dry-run: ничего не записано" : "импортировано";
+  const head = d.dry_run ? "dry-run, nothing written: would import" : "imported";
   const lines = [
-    `${head} из ${d.snapshot}`,
-    `задачи    ${d.issues_total}: новых ${d.tasks_created}, уже было ${d.tasks_existing}` +
-      (d.tasks_updated > 0 ? `, обновлено ${d.tasks_updated} (полей ${d.fields_updated})` : ""),
-    `рёбра     новых ${d.edges_created}, уже было ${d.edges_existing}` +
-      (d.edges_removed > 0 ? `, снято ${d.edges_removed}` : ""),
-    `заметки   новых ${d.notes_created}, уже было ${d.notes_existing}`,
-    `коммент.  новых ${d.comments_created}, уже было ${d.comments_existing}`,
-    `память    новых ${d.memories_created}, уже было ${d.memories_existing}`,
+    `${head} from ${d.snapshot}`,
+    `tasks     ${d.issues_total}: new ${d.tasks_created}, existing ${d.tasks_existing}` +
+      (d.tasks_updated > 0 ? `, updated ${d.tasks_updated} (${d.fields_updated} fields)` : ""),
+    `edges     new ${d.edges_created}, existing ${d.edges_existing}` +
+      (d.edges_removed > 0 ? `, removed ${d.edges_removed}` : ""),
+    `notes     new ${d.notes_created}, existing ${d.notes_existing}`,
+    `comments  new ${d.comments_created}, existing ${d.comments_existing}`,
+    `memories  new ${d.memories_created}, existing ${d.memories_existing}`,
   ];
   if (!d.dry_run && d.blockers_recounted > 0) {
-    lines.push(`open_blockers пересчитан у ${d.blockers_recounted} узлов`);
+    lines.push(
+      `open_blockers recounted on ${d.blockers_recounted} ${d.blockers_recounted === 1 ? "node" : "nodes"}`,
+    );
   }
   if (d.kept_local.length > 0) {
     lines.push(
-      `локальные правки сохранены (${d.kept_local.length}): ${d.kept_local.slice(0, 3).join(", ")}` +
+      `local edits kept (${d.kept_local.length}): ${d.kept_local.slice(0, 3).join(", ")}` +
         (d.kept_local.length > 3 ? "…" : ""),
     );
   }
   if (d.conflicts.length > 0) {
     lines.push(
-      `! конфликты (${d.conflicts.length}), myc ничего не применял: ${d.conflicts.slice(0, 3).join(", ")}` +
+      `! conflicts (${d.conflicts.length}), myc applied nothing: ${d.conflicts.slice(0, 3).join(", ")}` +
         (d.conflicts.length > 3 ? "…" : ""),
     );
   }
   if (d.skipped.length > 0) {
     lines.push(
-      `! не ввезено ${d.skipped.length}: ${d.skipped.slice(0, 3).join("; ")}` +
+      `! not imported (${d.skipped.length}): ${d.skipped.slice(0, 3).join("; ")}` +
         (d.skipped.length > 3 ? "…" : ""),
     );
   }
   if (d.unknown_dep_types.length > 0) {
     lines.push(
-      `! типов зависимостей без ребра myc ${d.unknown_dep_types.length}: ` +
+      `! dependency types with no myc edge (${d.unknown_dep_types.length}): ` +
         `${d.unknown_dep_types.slice(0, 3).join(", ")}` + (d.unknown_dep_types.length > 3 ? "…" : ""),
     );
   }
   if (d.missing_refs.length > 0) {
-    lines.push(`! без цели ${d.missing_refs.length} ссылок: ${d.missing_refs.slice(0, 3).join(", ")}…`);
+    lines.push(
+      `! references with no target (${d.missing_refs.length}): ${d.missing_refs.slice(0, 3).join(", ")}…`,
+    );
   }
-  lines.push(`готово за ${d.took_ms} мс`);
+  lines.push(`done in ${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -1237,14 +1241,14 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
       let snapshotName: string;
       if (path !== undefined) {
         if (!existsSync(path)) {
-          return failure("notfound.file", `снапшот не найден: ${path}`, ExitCode.NOTFOUND);
+          return failure("notfound.file", `snapshot not found: ${path}`, ExitCode.NOTFOUND);
         }
         try {
           snapshot = parseBeadsSnapshot(readFileSync(path, "utf8"));
         } catch (e) {
           return failure(
             "precond.snapshot_format",
-            `снапшот не разбирается: ${e instanceof Error ? e.message : String(e)}`,
+            `snapshot does not parse: ${e instanceof Error ? e.message : String(e)}`,
             ExitCode.PRECOND,
           );
         }
@@ -1256,7 +1260,7 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
         } catch (e) {
           return failure(
             "precond.bd",
-            `не удалось собрать снимок через bd: ${e instanceof Error ? e.message : String(e)}`,
+            `could not build the snapshot via bd: ${e instanceof Error ? e.message : String(e)}`,
             ExitCode.PRECOND,
           );
         }
@@ -1284,7 +1288,7 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
             .join(", ");
           ctx.warn(
             "import.unknown_types",
-            `типы, которых myc не знает, ввезены дословно в attrs.type: ${list}`,
+            `types myc does not know were imported verbatim into attrs.type: ${list}`,
           );
         }
         // Незнакомое поле задачи — потеря, и она обязана быть НАЗВАНА. Молчание
@@ -1298,14 +1302,15 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
             .join(", ");
           ctx.warn(
             "import.unknown_fields",
-            `поля задач beads, которые импорт не читает и никуда не ввёз: ${list}`,
+            `beads task fields the import does not read and did not import anywhere: ${list}`,
           );
         }
         const clamped = snapshot.clampedPriorities;
         if (clamped !== undefined && clamped.length > 0) {
           ctx.warn(
             "import.priority_clamped",
-            `${clamped.length} приоритетов прижато к шкале myc P0..P3: ${clamped.slice(0, 5).join(", ")}`,
+            `${clamped.length} ${clamped.length === 1 ? "priority" : "priorities"} clamped to the myc scale P0..P3: ` +
+              `${clamped.slice(0, 5).join(", ")}`,
           );
         }
         // Столкновение идентичностей — свойство ДАННЫХ, а не поломка myc, и
@@ -1314,14 +1319,16 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
         if (data.skipped.length > 0) {
           ctx.warn(
             "import.skipped",
-            `${data.skipped.length} записей не ввезено: ${data.skipped.slice(0, 3).join("; ")}` +
+            `${data.skipped.length} ${data.skipped.length === 1 ? "record" : "records"} not imported: ` +
+              `${data.skipped.slice(0, 3).join("; ")}` +
               (data.skipped.length > 3 ? "…" : ""),
           );
         }
         if (data.unknown_dep_types.length > 0) {
           ctx.warn(
             "import.unknown_dep_types",
-            `${data.unknown_dep_types.length} зависимостей с типом, которому нет ребра в myc: ` +
+            `${data.unknown_dep_types.length} ${data.unknown_dep_types.length === 1 ? "dependency" : "dependencies"} ` +
+              `of a type that has no myc edge: ` +
               `${data.unknown_dep_types.slice(0, 3).join(", ")}` +
               (data.unknown_dep_types.length > 3 ? "…" : ""),
           );
@@ -1329,13 +1336,15 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
         if (data.conflicts.length > 0) {
           ctx.warn(
             "import.conflicts",
-            `${data.conflicts.length} конфликтов: обе стороны меняли поле, myc ничего не применял (${data.conflicts.slice(0, 2).join("; ")}…)`,
+            `${data.conflicts.length} ${data.conflicts.length === 1 ? "conflict" : "conflicts"}: ` +
+              `both sides changed the field, myc applied nothing (${data.conflicts.slice(0, 2).join("; ")}…)`,
           );
         }
         if (data.missing_refs.length > 0) {
           ctx.warn(
             "import.missing_refs",
-            `${data.missing_refs.length} зависимостей без цели в снапшоте и в базе (${data.missing_refs.slice(0, 3).join(", ")}…)`,
+            `${data.missing_refs.length} ${data.missing_refs.length === 1 ? "dependency" : "dependencies"} ` +
+              `with no target in the snapshot or the database (${data.missing_refs.slice(0, 3).join(", ")}…)`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };

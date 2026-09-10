@@ -245,14 +245,14 @@ describe("myc code symbol — читатель, ради которого инд
     await data("code", "index");
     const r = await myc("code", "symbol", "нетТакого");
     expect(r.code).toBe(ExitCode.NOTFOUND);
-    expect(r.stderr).toContain("просмотрено");
-    expect(r.stderr).toContain("файлов");
+    expect(r.stderr).toContain("scanned");
+    expect(r.stderr).toContain("files");
   });
 
   test("индекс не построен — это ДРУГОЙ ответ, а не «символа нет»", async () => {
     const r = await myc("code", "symbol", "fuseRRF");
     expect(r.code).toBe(ExitCode.PRECOND);
-    expect(r.stderr).toContain("не построен");
+    expect(r.stderr).toContain("is not built");
     expect(r.stderr).toContain("myc code index");
   });
 
@@ -304,7 +304,7 @@ describe("myc code search — вопрос без знания имени", () =
     expect(r.code).toBe(ExitCode.OK);
     // В человекочитаемом режиме предупреждения печатаются в stdout — вместе
     // с выдачей, к которой относятся; в stderr они уходят только при --json.
-    expect(r.stdout as string).toContain("просмотрено");
+    expect(r.stdout as string).toContain("scanned");
     expect(r.stdout as string).toContain("myc code grep");
   });
 
