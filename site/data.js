@@ -318,8 +318,8 @@ window.MYC_DATA = {
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.35,
-    "unpacked_mb": 12.51,
+    "compressed_mb": 3.36,
+    "unpacked_mb": 12.55,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -329,7 +329,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.0"
+    "version": "0.3.1"
   },
   "roadmap": {
     "command": "myc show <epic-id>",
@@ -339,8 +339,8 @@ window.MYC_DATA = {
         "key": "M0",
         "title_en": "core and tasks",
         "title_ru": "ядро и задачи",
-        "done": 35,
-        "total": 39
+        "done": 40,
+        "total": 43
       },
       {
         "id": "memory-ancs66k238nv",
@@ -355,31 +355,31 @@ window.MYC_DATA = {
         "key": "M1",
         "title_en": "memory",
         "title_ru": "память",
-        "done": 21,
-        "total": 23
+        "done": 22,
+        "total": 24
       },
       {
         "id": "memory-vtvz9sdjekgx",
         "key": "M2",
         "title_en": "semantics",
         "title_ru": "семантика",
-        "done": 17,
-        "total": 20
+        "done": 20,
+        "total": 22
       },
       {
         "id": "memory-cmg64b6vrw0b",
         "key": "M7",
         "title_en": "human interface: board, cards, threads",
         "title_ru": "человек в интерфейсе: доска, карточки, нити",
-        "done": 13,
-        "total": 14
+        "done": 15,
+        "total": 15
       },
       {
         "id": "memory-4ez67f48fcdv",
         "key": "M3",
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
-        "done": 5,
+        "done": 6,
         "total": 10
       },
       {
@@ -396,7 +396,7 @@ window.MYC_DATA = {
         "title_en": "swarm self-learning: routing by cost and outcome",
         "title_ru": "самообучение роя: роутинг по цене и результату",
         "done": 0,
-        "total": 12
+        "total": 13
       },
       {
         "id": "memory-6dzxkzwbsc9g",
@@ -410,13 +410,13 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 2764,
+    "pass": 2899,
     "fail": 0,
     "skip": 16,
-    "files": 189,
-    "assertions": 31505,
-    "seconds": 198.1,
-    "sources": "c1cfe0a56dae4a7a"
+    "files": 195,
+    "assertions": 32053,
+    "seconds": 233.1,
+    "sources": "d753f785e78d1554"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-10T09:23:47.997Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-10T17:40:12.581Z", assertions: 67 };

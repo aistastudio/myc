@@ -31,7 +31,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
-myc --version                     # myc 0.3.0 (schema 1)
+myc --version                     # myc 0.3.1 (schema 1)
 ```
 
 The embedding model is **not** downloaded during install. Semantic search is
@@ -108,6 +108,22 @@ $ myc absorb-session --reason manual --transcript … --agent claude
 ДАЛЬШЕ   myc show sess-5jh8je4g050m · myc ready --claim
 ```
 
+**A status line with what the agent cannot see.** `myc wire --status-line`
+puts one line under Claude Code's prompt — the task queue, the code index, the
+project's memory, and how many of this session's calls to myc actually returned
+something:
+
+```
+myc │ 60 готово · 0 в работе · 34 блок │ код 612 ф · 4268 симв · 37m │ память 101 │ полезных 594 из 647
+```
+
+"Useful" is counted from the host's own transcript, not guessed: an error, a
+refusal or an empty answer is a call, not a useful one. It is opt-in — `wire`
+without the flag never touches `statusLine` — and it does not evict a line that
+was there before: the previous command (a status line some other tool relies
+on) keeps receiving the same input and is never waited on or killed. A render
+took 34 ms at the median in the run of 2026-09-10.
+
 **Memory is separated by session, and the separation is visible.** Every note
 carries a reach: `session` (this conversation) or `project` (everyone). The
 automatic context packet — `prime` — only carries the current session's notes;
@@ -155,20 +171,20 @@ is treated as absent.
 ## Roadmap
 
 Numbers are closed/total subtasks per milestone (`myc show <epic-id>`), as of
-2026-09-08. Done and not-done are shown the same way on purpose. Totals grow
+2026-09-10. Done and not-done are shown the same way on purpose. Totals grow
 when work uncovers work: M0 went 33 → 39 because measuring it found four real
 defects, not because the plan changed.
 
 | milestone | status |
 |---|---|
-| **M0** core and tasks | 35 / 39 |
+| **M0** core and tasks | 40 / 43 |
 | **M0.5** self-hosting (myc developed through myc) | **4 / 4 — closed** |
-| **M1** memory | 21 / 23 |
-| **M2** semantics | 17 / 20 |
-| **M7** human interface (board, cards, threads, routing panel) | 13 / 14 |
-| **M3** code intelligence | 5 / 10 |
+| **M1** memory | 22 / 24 |
+| **M2** semantics | 20 / 22 |
+| **M7** human interface (board, cards, threads, routing panel, status line) | **15 / 15** |
+| **M3** code intelligence | 6 / 10 |
 | **M4** team: `myc serve`, ACL, network sync, Postgres, containers | 3 / 14 |
-| **M5** swarm self-learning: routing by cost and outcome | 0 / 12 |
+| **M5** swarm self-learning: routing by cost and outcome | 0 / 13 |
 | **M6** distillation | 0 / 7 |
 
 What that means in practice: **today myc is a single-user local tool over files
@@ -184,7 +200,7 @@ tree-sitter, with grammars fetched on demand rather than shipped (all 36 weigh
 myc code symbol <name>   where it is defined, and what knowledge is anchored there
 myc callers <name>       who calls it; --direction out, --depth all
 myc code search "…"      by meaning, when you do not know the name
-myc code grep "<lit>"    exhaustive, when you need every occurrence
+myc code grep "<lit>"    exhaustive, every occurrence; --in <path> narrows it
 myc skeleton <file>      the file's API — 26× cheaper than reading it
 ```
 

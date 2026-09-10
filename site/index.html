@@ -284,6 +284,14 @@ prj  проектное: база…          prj  проектное: база�
         <p class="sub" lang="ru"><code>ses</code> своя сессия · <code>ses*</code> чужая · <code>prj</code> общее для проекта</p>
       </div>
     </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">A status line with what the agent cannot see</h3>
+      <h3 lang="ru">Строка статуса — то, чего агент не видит</h3>
+      <p class="sub" lang="en"><code>myc wire --status-line</code> puts one line under Claude Code's prompt: the task queue, the code index, the project's memory, and how many of this session's calls to myc returned something — counted from the host's own transcript, where an error, a refusal or an empty answer is a call but not a useful one. Opt-in; a status line that was there before keeps receiving the same input and is never waited on or killed.</p>
+      <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают.</p>
+      <pre class="code"><code>myc │ 60 готово · 0 в работе · 34 блок │ код 612 ф · 4268 симв · 37m │ память 101 │ полезных 594 из 647</code></pre>
+    </div>
   </div>
 </section>
 
@@ -341,8 +349,8 @@ prj  проектное: база…          prj  проектное: база�
             <tr>
               <td>beads<br><span class="muted tnum" style="font-size:.8rem">1.0.5</span></td>
               <td>
-                <span lang="en"><strong class="win">A 1.0 release against our 0.3.0</strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
-                <span lang="ru"><strong class="win">Релиз 1.0 против нашего 0.3.0</strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
+                <span lang="en"><strong class="win">A 1.0 release against our 0.3.1</strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
+                <span lang="ru"><strong class="win">Релиз 1.0 против нашего 0.3.1</strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
               </td>
               <td>
                 <span lang="en">Hybrid search over memory with a measured MRR@10 and labelled corpora; latency budgets enforced in CI on 100 000 nodes; facts and decisions as first-class nodes next to tasks, not only issues.</span>
