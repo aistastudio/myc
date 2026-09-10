@@ -30,6 +30,10 @@
  */
 
 import { join } from "node:path";
+// Статически — только список языков: `langs.ts` не тянет ни tree-sitter, ни
+// хранилище (он тот же, что грузит `select.ts` ради строки `init`). Всё
+// тяжёлое ниже по-прежнему динамическим `import()`.
+import { L1_LANGS_LABEL } from "@myc/code-intel/langs";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
@@ -172,7 +176,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
       "code_files/code_defs. Incremental on two levels — (mtime,size), then content hash — so a " +
       "repeat run over an unchanged tree reads nothing. Costs seconds on a large tree: this is a " +
       "background job class, and the drain step spawns this very command detached rather than " +
-      "running it inline (И1). Symbols are parsed for ts/tsx/js/jsx/py (L1); every other file is " +
+      `running it inline (И1). Symbols are parsed for ${L1_LANGS_LABEL} (L1); every other file is ` +
       "registered by path, language and hash (L0) and gets no symbols. A L1 language whose " +
       "tree-sitter grammar is not staged is SKIPPED and NAMED — indexing never goes to the " +
       "network, not even in the background; `myc code fetch` does, and only when a human asks.",
@@ -300,7 +304,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
         if (scope.l1Files === 0 && data.missing_grammars.length === 0) {
           ctx.warn(
             "code_index.no_l1",
-            `файлов ts/tsx/js/jsx нет — символов не будет, реестр файлов построен (${scope.files})`,
+            `файлов ${L1_LANGS_LABEL} нет — символов не будет, реестр файлов построен (${scope.files})`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -478,7 +482,7 @@ function buildCodeSymbol(deps: StoreDeps): Command {
               `(${scope.l1Files} с определениями, ${scope.defs} символов), языки ${data.searched.langs.join(", ")}`,
             ExitCode.NOTFOUND,
             scope.l1Files === 0
-              ? "в репозитории нет файлов ts/tsx/js/jsx — символов не будет"
+              ? `в репозитории нет файлов ${L1_LANGS_LABEL} — символов не будет`
               : "индекс мог отстать: myc code index",
           );
         }
@@ -560,7 +564,7 @@ function buildCodeFetch(deps: StoreDeps): Command {
       "Grammars are NOT shipped in the package: all 36 weigh 49MB against a 12MB package, and a " +
       "given repo needs two of them. `myc code fetch` with no arguments walks the repo and " +
       "downloads exactly the grammars its L1 files need; with arguments it takes language ids " +
-      "(ts, tsx, js, jsx, py) or grammar names (typescript, tsx, javascript, python). Repeating " +
+      `(${L1_LANGS_LABEL}) or grammar names (typescript, tsx, javascript, python). Repeating ` +
       "the call touches no network: an intact file is not re-downloaded. This is the ONLY place " +
       "in the code index that opens a socket — indexing never does (see `myc code index`).",
     flags: FETCH_FLAGS,
@@ -626,7 +630,7 @@ function buildCodeFetch(deps: StoreDeps): Command {
         if (wanted.size === 0) {
           return failure(
             "notfound.lang",
-            "в этом репозитории нет файлов ts/tsx/js/jsx/py — грамматики не нужны ни одной",
+            `в этом репозитории нет файлов ${L1_LANGS_LABEL} — грамматики не нужны ни одной`,
             ExitCode.NOTFOUND,
             "myc code fetch ts   # если нужна конкретная",
           );

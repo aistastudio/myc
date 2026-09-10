@@ -26,6 +26,7 @@
  * классом.
  */
 
+import { L1_LANGS_LABEL } from "@myc/code-intel/langs";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandFailure } from "../registry.ts";
@@ -77,7 +78,7 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
       "'what does this file offer' without spending the context of reading it, and says by how " +
       "much: file bytes, skeleton bytes and their ratio are in the output. Spans come from the " +
       "index, signatures from disk — if the two disagree (the file changed after indexing) that " +
-      "is reported, not smoothed over. Only L1 languages (ts/tsx/js/jsx/py) have declarations; a " +
+      `is reported, not smoothed over. Only L1 languages (${L1_LANGS_LABEL}) have declarations; a ` +
       "file registered at L0 has a row in the index and no symbols, and says so. The body of an " +
       "interface or object type alias is NOT printed — a skeleton is signatures, and the span is " +
       "right there for whoever needs the fields.",

@@ -182,9 +182,13 @@ describe("init: выбранная реализация код-интеллек�
     expect(data["graft"]).toBe(false);
     expect((data["code_intel"] as Record<string, unknown>)["id"]).toBe("builtin");
     const meta = env["meta"] as { degraded: string[] };
-    // про сам graft говорим, но builtin деградацией не помечаем
-    expect(meta.degraded).toContain("degraded.graft");
+    // Ни graft, ни builtin деградацией не помечаются (memory-bn4cs836df52):
+    // graft необязателен, а builtin отвечает на callers/code search/code map
+    // сам. Про graft — строка отчёта `· graft не найден`, не WARN.
+    expect(meta.degraded).not.toContain("degraded.graft");
     expect(meta.degraded).not.toContain("code_intel_builtin");
+    const warn = (env["warn"] ?? []) as { code: string; msg: string }[];
+    expect(warn.filter((w) => /graft/i.test(`${w.code} ${w.msg}`))).toEqual([]);
   });
 
   test("code_intel=graft без graft: громко missing, а НЕ молчаливый откат к builtin", async () => {

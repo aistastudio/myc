@@ -337,15 +337,25 @@ function cmpVersion(a: string, b: string): number {
  * обрывается на ПЕРВОМ таком файле (в TS-репозитории это первые же записи) и
  * ограничена потолком в дереве без них — цена одной строки отчёта, а не скан
  * индекса.
+ *
+ * ЛОЖЬ В ОБРАТНУЮ СТОРОНУ (memory-bn4cs836df52). В 0.3.0 строка отставала от
+ * продукта: «символы по тексту», а к ним приписка «callers/search/map
+ * недоступны» — при том что символы разбирает tree-sitter, а `myc callers`,
+ * `myc code search` и `myc code map` отвечают на том же индексе. Агенту прямо
+ * говорили не пользоваться главной возможностью релиза. Теперь строка
+ * перечисляет то, что builtin ДАЁТ, и называет только настоящие ограничения:
+ * индекс ещё не построен (команды отвечают на это `precond.no_index`, exit 5,
+ * с подсказкой `myc code index`) и L1-файлов нет вовсе. Текстовым остался
+ * один `fan_in` — и сказано именно про него.
  */
 function builtinAbility(dir: string): string {
   const probe = probeL1Files(dir);
   if (probe.found) {
-    return `символы и fan_in по тексту для ${L1_LANGS_LABEL} — после \`myc code index\` (фон собирает сам, когда в репозитории есть якоря)`;
+    return `символы, callers, code search и code map для ${L1_LANGS_LABEL} (разбор tree-sitter; fan_in — счёт по тексту) — после \`myc code index\` (фон собирает сам, когда в репозитории есть якоря)`;
   }
   const seen = probe.langs.length > 0 ? ` (видно: ${probe.langs.slice(0, 5).join(", ")})` : "";
   const how = probe.capped ? `в первых ${probe.seen} файлах нет` : "нет";
-  return `файлов ${L1_LANGS_LABEL} ${how}${seen} — символов и fan_in не будет (якоря, протухание и ре-привязка работают на любом языке)`;
+  return `файлов ${L1_LANGS_LABEL} ${how}${seen} — символов, callers и code search не будет, code map покажет только реестр файлов (code grep, якоря, протухание и ре-привязка работают на любом языке)`;
 }
 
 /**
@@ -397,7 +407,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `builtin (code_intel=builtin${source === "default" ? ", умолчание" : ""}): ${builtinAbility(dir)}, callers/search/map недоступны${badReason}`,
+      reason: `builtin (code_intel=builtin${source === "default" ? ", умолчание" : ""}): ${builtinAbility(dir)}${badReason}`,
       degraded: badConfig,
       graft: null,
       cache: "off",
@@ -466,7 +476,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `graft не найден (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}, callers/search/map недоступны${badReason}`,
+      reason: `graft не найден (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.builtin, ...badConfig],
       graft: probe,
       cache,
@@ -478,7 +488,7 @@ export function selectCodeIntel(
       id: "builtin",
       state: "ok",
       source,
-      reason: `graft ${probe.version} старше минимальной ${MIN_GRAFT_VERSION} (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}, callers/search/map недоступны${badReason}`,
+      reason: `graft ${probe.version} старше минимальной ${MIN_GRAFT_VERSION} (code_intel=auto) — работаем на builtin: ${builtinAbility(dir)}${badReason}`,
       degraded: [CODE_INTEL_DEGRADED.incompatible, CODE_INTEL_DEGRADED.builtin, ...badConfig],
       graft: probe,
       cache,

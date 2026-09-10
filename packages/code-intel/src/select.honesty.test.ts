@@ -114,3 +114,44 @@ describe("строка init обещает ровно то, что будет", 
     expect(s.reason).toContain("callers");
   });
 });
+
+/**
+ * ЛОЖЬ В ОБРАТНУЮ СТОРОНУ (memory-bn4cs836df52). В 0.3.0 все три режима,
+ * где работает builtin, дописывали к строке «callers/search/map недоступны»,
+ * а символы называли разобранными «по тексту» — при tree-sitter и работающих
+ * `myc callers`, `myc code search`, `myc code map`. Поведенческая половина
+ * (команды на самом деле отвечают) — в guard'е пакета cli,
+ * `code-intel.honesty.test.ts`; здесь — сама строка, без чужих пакетов.
+ *
+ * МУТАЦИЯ: вернуть «, callers/search/map недоступны» в любую из трёх веток
+ * `selectCodeIntel` — краснеет строка этого режима.
+ */
+describe("builtin с L1-файлами: строка называет то, что даёт, и не отрицает этого", () => {
+  const withOldGraft = (): SelectEnv => ({
+    ...env(),
+    which: (cmd) => (cmd === "graft" ? "/usr/local/bin/graft" : null),
+    graftVersion: () => "0.0.1",
+  });
+
+  for (const [label, pick] of [
+    ["builtin", () => selectCodeIntel(dir, env(), "builtin")],
+    ["auto без graft", () => selectCodeIntel(dir, env(), "auto")],
+    ["auto со старым graft", () => selectCodeIntel(dir, withOldGraft(), "auto")],
+  ] as const) {
+    test(label, () => {
+      mkdirSync(join(dir, "src"), { recursive: true });
+      writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
+      writeFileSync(join(dir, "src", "b.py"), "def b():\n    return 1\n");
+      const s = pick();
+      expect(s.id).toBe("builtin");
+      expect(s.reason).not.toContain("недоступ");
+      // «символы … по тексту» до первой точки с запятой — прежнее «символы и
+      // fan_in по тексту»; текстовым в строке имеет право быть только fan_in.
+      expect(s.reason).not.toMatch(/символы[^;]*по тексту/u);
+      expect(s.reason).toContain("tree-sitter");
+      for (const cap of ["callers", "code search", "code map"]) expect(s.reason).toContain(cap);
+      expect(s.reason).toContain(L1_LANGS_LABEL);
+      expect(s.reason).toContain("myc code index");
+    });
+  }
+});

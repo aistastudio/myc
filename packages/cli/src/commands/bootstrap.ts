@@ -44,6 +44,7 @@ import { join, resolve } from "node:path";
 import type { JsonValue, NodeRecord, QueryDef } from "@myc/core";
 import { probeGraftPresence } from "@myc/code-intel";
 import { ExitCode } from "../exit.ts";
+import { CLI_VERSION } from "../index.ts";
 import { defaultRegistry } from "../registry.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
@@ -65,6 +66,22 @@ import {
 
 /** Версия формата вывода. Входит в отпечаток: правка рендера рвёт старый кеш. */
 export const BOOTSTRAP_FORMAT_VERSION = 1;
+
+/**
+ * Версия ФАЙЛА кеша автодетекта (`bootstrap.cache.json`, поле `v`). Отдельно
+ * от версии формата вывода: вывод не менялся, а менялось то, по чему кешу
+ * можно верить.
+ *
+ * 2 — в отпечаток вошла сборка myc (memory-bn4cs836df52). В 0.3.0 её там не
+ * было: отпечаток складывался только из файлов окружения, PATH и списка
+ * команд, и блоки, посчитанные старой логикой зондов, переживали обновление
+ * бинаря — у пользователя с graft в PATH закешированный `[auto:graft]` без
+ * индекса продолжал бы звать агента к инструменту, который ничего не находит.
+ * Файл версии 1 целиком считается промахом, какой бы отпечаток в нём ни лежал:
+ * так старый кеш не отдаётся даже сборке, собранной из исходников без смены
+ * CLI_VERSION.
+ */
+export const BOOTSTRAP_CACHE_VERSION = 2;
 
 /** Слой ручных блоков. L3 — то, что prime отдаёт каждой сессии (§2.3). */
 export const BOOTSTRAP_LAYER = 3;
@@ -351,6 +368,12 @@ interface ProbeInput {
  *   результат поиска, чтобы не платить за поиск при проверке кеша.
  * - Список команд CLI — меняется при подключении новой команды, без правки
  *   этого файла и без правки версии формата.
+ * - Сборка myc (`CLI_VERSION`) — зонды меняют логику от релиза к релизу, а
+ *   окружение при обновлении остаётся тем же. Без версии в отпечатке блок,
+ *   посчитанный прошлым релизом, отдавался бы новым как свой (так и было в
+ *   0.3.0: memory-bn4cs836df52). Релиз рвёт кеш сам; поднимать
+ *   `BOOTSTRAP_CACHE_VERSION` руками нужно только правке зондов, которая
+ *   уходит к пользователю без смены `CLI_VERSION`.
  * - Отсутствующий путь кодируется как `-`: появление и исчезновение файла
  *   меняют отпечаток так же, как правка.
  *
@@ -569,21 +592,29 @@ function probeSkills(dir: string, env: ProbeEnv): BootstrapBlock | null {
  * Блок про graft. Сам детект с S52 живёт в `@myc/code-intel`
  * (`probeGraftPresence`) и общий у бутстрапа, `init` и выбора реализации —
  * раньше это были две почти одинаковые функции, расходившиеся признаком
- * индекса. Сигнатура и вывод не изменились сознательно: блок сообщает
- * агенту, что рядом есть graft и как звать его НАПРЯМУЮ, и это верно
- * независимо от того, какую реализацию код-интеллекта выбрал сам myc
- * (по умолчанию — builtin, §12.1).
+ * индекса. Блок сообщает агенту, что рядом есть graft и как звать его
+ * НАПРЯМУЮ, независимо от того, какую реализацию код-интеллекта выбрал сам
+ * myc (по умолчанию — builtin, §12.1).
+ *
+ * ТОЛЬКО ПРИ ИНДЕКСЕ (memory-bn4cs836df52). До этого блок печатался и при
+ * одном бинаре в PATH — `bin=… index=нет` и список команд. Бинарь ставят
+ * глобально ради других репозиториев, а в этом графа нет: `graft ask` здесь
+ * отвечает `(empty) no matching nodes` с кодом 0, и каждая подсказка вела к
+ * следующему пустому вызову — мимо работающего `myc callers`. Совет, по
+ * которому инструмент молча ничего не находит, хуже отсутствия совета.
+ * Случай «индекс есть, бинаря нет» остаётся: граф в репозитории — это
+ * знание, которое можно прочитать и без бинаря.
  */
 function probeGraft(dir: string, env: ProbeEnv): BootstrapBlock | null {
   const probe = probeGraftPresence(dir, { path: env.path, which: (cmd) => env.which(cmd) });
   const indexed = probe.index;
   const bin = probe.bin;
-  if (!indexed && bin === null) return null;
+  if (!indexed) return null;
   const lines = [
-    `bin=${bin ?? "нет"} index=${indexed ? "graft/" : "нет"}`,
+    `bin=${bin ?? "нет"} index=graft/`,
     'ask "<задача>" --source | grep "<литерал>" | skeleton <файл> | callers <символ> [--depth all] | map',
   ];
-  if (indexed && bin === null) {
+  if (bin === null) {
     lines.push("граф есть, бинаря нет: поставить graft или читать graft/*.md напрямую");
   }
   return autoBlock("graft", lines.join("\n"));
@@ -719,7 +750,7 @@ function cachePath(mycDir: string): string {
 function readCacheFile(mycDir: string): CacheFile | null {
   try {
     const raw = JSON.parse(readFileSync(cachePath(mycDir), "utf8")) as CacheFile;
-    if (raw.v !== BOOTSTRAP_FORMAT_VERSION) return null;
+    if (raw.v !== BOOTSTRAP_CACHE_VERSION) return null;
     if (raw.trees === null || typeof raw.trees !== "object") return null;
     return raw;
   } catch {
@@ -748,7 +779,7 @@ function writeCache(
       .sort((a, b) => b[1].at - a[1].at)
       .slice(0, CACHE_TREES - 1);
     const payload: CacheFile = {
-      v: BOOTSTRAP_FORMAT_VERSION,
+      v: BOOTSTRAP_CACHE_VERSION,
       trees: { ...Object.fromEntries(kept), [treeRoot]: { fp, at: now, blocks } },
     };
     writeFileSync(cachePath(mycDir), JSON.stringify(payload));
@@ -832,6 +863,12 @@ export interface BootstrapDeps {
   readonly env: ProbeEnv;
   /** Имена команд верхнего уровня — для блока auto:myc и для отпечатка. */
   commands(): readonly string[];
+  /**
+   * Сборка myc для отпечатка кеша; по умолчанию `CLI_VERSION`. Поле, а не
+   * прямое чтение константы, ради теста «обновление рвёт кеш»: две сборки в
+   * одном процессе иначе не получить.
+   */
+  readonly build?: string;
   /**
    * Личный ярус `~/.myc` (S41, воркспейс от myc-ye3.6). Отдельная функция,
    * а не встроенный вызов: тесты подменяют ярус, не создавая второй базы,
@@ -1014,6 +1051,7 @@ function buildPrint(deps: BootstrapDeps): Command {
       const fp = environmentFingerprint(probeInputs(dir, env), [
         `path:${env.path}`,
         `cmds:${commands.join(",")}`,
+        `myc:${deps.build ?? CLI_VERSION}`,
       ]);
 
       // Отсутствие воркспейса — не ошибка команды: блок обязан собираться
@@ -1054,14 +1092,12 @@ function buildPrint(deps: BootstrapDeps): Command {
             msg: "модель эмбеддингов не уложена, ретривал без векторов: myc models fetch",
           });
         }
-        if (!auto.some((b) => b.key === "graft")) {
-          degraded.push({
-            code: "graft.absent",
-            msg:
-              "graft недоступен: код-интеллект на builtin — символы по тексту " +
-              "для ts/tsx/js/jsx, callers/search/map недоступны",
-          });
-        }
+        // Отсутствие graft деградацией НЕ считается (memory-bn4cs836df52): он
+        // необязателен, а builtin отвечает на callers, code search и code map
+        // сам. Прежняя строка `graft.absent` уверяла агента в обратном в
+        // каждой сессии. Настоящие ограничения builtin называют сами команды
+        // кода: не построенный индекс — `precond.no_index` (exit 5) с
+        // подсказкой `myc code index`, дерево без L1-файлов — `code_index.no_l1`.
         const extra: BootstrapBlock[] = [];
         const deg = probeDegraded(degraded);
         if (deg) extra.push(deg);

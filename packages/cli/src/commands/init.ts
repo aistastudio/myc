@@ -915,12 +915,11 @@ export function createInitCommand(): Command {
 
       const graft = detectGraft(workspaceDir);
       const ci = codeIntelOf(workspaceDir);
-      if (!graft) {
-        ctx.warn(
-          "degraded.graft",
-          "graft не найден — код-интеллект на builtin (текст), callers/search/map недоступны",
-        );
-      }
+      // Отдельного WARN «graft не найден» нет (memory-bn4cs836df52): graft
+      // необязателен, и его отсутствие — строка «· graft не найден» в отчёте,
+      // а не деградация. Прежний WARN уверял, что callers/search/map
+      // недоступны, — а builtin на них отвечает. Всё, что про код-интеллект
+      // действительно не в порядке, говорит `warnCodeIntel` кодами выбора.
       warnCodeIntel(ctx, ci);
       ctx.warn(
         "degraded.embeddings",

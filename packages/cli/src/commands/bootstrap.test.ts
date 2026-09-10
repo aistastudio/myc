@@ -23,11 +23,12 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { defaultModelsDir } from "@myc/embed";
 import { ExitCode } from "../exit.ts";
-import { run, type RunResult } from "../index.ts";
+import { CLI_VERSION, run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
 import { createInitCommand } from "./init.ts";
 import {
   autoBlocks,
+  BOOTSTRAP_CACHE_VERSION,
   createBootstrapCommand,
   environmentFingerprint,
   isBootstrapKey,
@@ -134,10 +135,14 @@ describe("чистая машина: ни воркспейса, ни ручны�
     expect(r.code).toBe(ExitCode.DEGRADED);
   });
 
-  test("отсутствие модели и graft видно в блоке деградаций", async () => {
+  test("отсутствие модели видно в блоке деградаций, а необязательного graft — нет", async () => {
+    // graft необязателен: builtin сам отвечает на callers, code search и code
+    // map (memory-bn4cs836df52). Строка `graft.absent` уверяла агента в
+    // обратном в каждой сессии — её нет, а не переформулировали.
     const text = (await myc("bootstrap")).stdout as string;
     expect(text).toContain("embed.model_absent");
-    expect(text).toContain("graft.absent");
+    expect(text).not.toContain("graft.absent");
+    expect(text).not.toContain("graft");
   });
 });
 
@@ -481,6 +486,102 @@ describe("кеш автодетекта по отпечатку окружени
 });
 
 // ---------------------------------------------------------------------------
+// Обновление myc рвёт кеш (memory-bn4cs836df52, п.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * В 0.3.0 сборки в отпечатке не было: окружение при обновлении не меняется,
+ * отпечаток тоже — и блоки, посчитанные старой логикой зондов, отдавались
+ * новым бинарём как свои. Конкретно: `[auto:graft]` при одном бинаре без
+ * индекса пережил бы исправление. Блок-«метка» ниже — ровно такой блок, каким
+ * его писал 0.3.0; если кеш его отдаёт, он виден в выводе.
+ *
+ * У каждого утверждения «не отдаётся» есть контроль «отдаётся»: без него тест
+ * был бы зелёным и тогда, когда кеш не читается вовсе.
+ */
+describe("обновление myc: блоки прошлой логики из кеша не отдаются", () => {
+  const STALE: BootstrapBlock = {
+    key: "graft",
+    source: "auto",
+    tier: "project",
+    text:
+      "bin=/usr/local/bin/graft index=нет\n" +
+      'ask "<задача>" --source | grep "<литерал>" | skeleton <файл> | callers <символ> [--depth all] | map',
+  };
+  const cacheFile = (): string => join(dir, ".myc", "bootstrap.cache.json");
+
+  interface RawCache {
+    v: number;
+    trees: Record<string, { fp: string; at: number; blocks: BootstrapBlock[] }>;
+  }
+
+  /** Подложить метку в кеш под версией файла `v`, отпечаток — какой лежит. */
+  function plant(v: number): void {
+    const raw = JSON.parse(readFileSync(cacheFile(), "utf8")) as RawCache;
+    const entry = raw.trees[dir]!;
+    writeFileSync(
+      cacheFile(),
+      JSON.stringify({ v, trees: { [dir]: { ...entry, blocks: [...entry.blocks, STALE] } } }),
+    );
+  }
+
+  beforeEach(async () => {
+    await myc("init");
+  });
+
+  test("файл кеша 0.3.0 (v1) — промах даже при совпавшем отпечатке", async () => {
+    const first = await data("bootstrap");
+    expect(first["cache"]).toBe("miss");
+
+    // Контроль: под ТЕКУЩЕЙ версией файла метка отдаётся — кеш читается, и
+    // подлог в нём виден в выводе.
+    plant(BOOTSTRAP_CACHE_VERSION);
+    const control = await data("bootstrap");
+    expect(control["cache"]).toBe("hit");
+    expect(control["text"] as string).toContain("[auto:graft] bin=/usr/local/bin/graft index=нет");
+
+    // Файл, каким его писал 0.3.0: v=1. Отпечаток в записи оставлен тем же,
+    // что считает текущая сборка, — худший случай, а не удобный.
+    plant(1);
+    const after = await data("bootstrap");
+    expect(after["fp"]).toBe(first["fp"] as string);
+    expect(after["cache"]).toBe("miss");
+    expect(after["text"] as string).not.toContain("[auto:graft]");
+    // Промах переписал файл под текущей версией — следующий вызов снова hit.
+    expect((JSON.parse(readFileSync(cacheFile(), "utf8")) as RawCache).v).toBe(
+      BOOTSTRAP_CACHE_VERSION,
+    );
+  });
+
+  test("смена сборки myc меняет отпечаток: кеш прошлой версии не отдаётся", async () => {
+    registry = makeRegistry(makeDeps({ build: "0.3.0" }));
+    const old = await data("bootstrap");
+    expect(old["cache"]).toBe("miss");
+    plant(BOOTSTRAP_CACHE_VERSION);
+
+    // Контроль: та же сборка — метка отдаётся из кеша.
+    const same = await data("bootstrap");
+    expect(same["cache"]).toBe("hit");
+    expect(same["text"] as string).toContain("[auto:graft]");
+
+    // Обновились: окружение то же, сборка другая.
+    registry = makeRegistry(makeDeps({ build: "0.3.1" }));
+    const upgraded = await data("bootstrap");
+    expect(upgraded["fp"]).not.toBe(old["fp"] as string);
+    expect(upgraded["cache"]).toBe("miss");
+    expect(upgraded["text"] as string).not.toContain("[auto:graft]");
+  });
+
+  test("по умолчанию в отпечаток идёт CLI_VERSION", async () => {
+    const byDefault = await data("bootstrap");
+    registry = makeRegistry(makeDeps({ build: CLI_VERSION }));
+    const explicit = await data("bootstrap");
+    expect(explicit["fp"]).toBe(byDefault["fp"] as string);
+    expect(explicit["cache"]).toBe("hit");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Автодетект по существу
 // ---------------------------------------------------------------------------
 
@@ -527,6 +628,19 @@ describe("автодетект", () => {
 
   test("без graft вовсе блока нет — не выдумываем несуществующий инструмент", () => {
     expect(autoBlocks(dir, env, COMMANDS).some((b) => b.key === "graft")).toBe(false);
+  });
+
+  test("бинарь в PATH без индекса в репозитории — блока нет: graft здесь ничего не найдёт", () => {
+    // memory-bn4cs836df52: бинарь ставят глобально ради других репозиториев,
+    // а здесь `graft ask` отвечает `(empty) no matching nodes` с кодом 0.
+    // Реклама такого инструмента уводит агента от работающего `myc callers`.
+    const binOnly = autoBlocks(dir, makeEnv({ which: () => "/usr/local/bin/graft" }), COMMANDS);
+    expect(binOnly.some((b) => b.key === "graft")).toBe(false);
+
+    // Каталог graft/ без собранного INDEX.md — тоже не индекс.
+    mkdirSync(join(dir, "graft"), { recursive: true });
+    const dirOnly = autoBlocks(dir, makeEnv({ which: () => "/usr/local/bin/graft" }), COMMANDS);
+    expect(dirOnly.some((b) => b.key === "graft")).toBe(false);
   });
 
   test("модель считается уложенной по manifest.json, а не по имени каталога", () => {
@@ -733,7 +847,7 @@ describe("каркас", () => {
       v: number;
       trees: Record<string, { fp: string; at: number; blocks: unknown[] }>;
     };
-    expect(raw.v).toBe(1);
+    expect(raw.v).toBe(BOOTSTRAP_CACHE_VERSION);
     expect(Object.keys(raw.trees)).toEqual([dir]);
     expect(raw.trees[dir]!.fp).toHaveLength(16);
     expect(raw.trees[dir]!.blocks.length).toBeGreaterThan(0);
