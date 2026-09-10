@@ -343,16 +343,27 @@ export async function run(
     ? command.renderHuman(result.data, ctx)
     : renderDataHuman(result.data, globals.color);
 
+  // Машинный stdout: его читает не человек, а хук агента — и читает ЦЕЛИКОМ,
+  // как один JSON-документ. Строка WARN, приклеенная следом, ломает разбор, и
+  // громкая деградация оборачивается полной потерей пакета
+  // (memory-mgkkdrbt27fb). Поэтому здесь блок WARN уходит в stderr, а до хоста
+  // деградация доезжает внутри самого документа — см. hooks/hook-output.ts.
+  // Решает это КАРКАС, а не команда: правило одно на все хуки, и новый хук не
+  // может забыть его в одном месте из двух.
+  const machineStdout = command.machineStdout?.(ctx) === true;
+  const stdoutWarn = machineStdout ? "" : warnBlock;
+  const warnStderr = machineStdout && warnBlock.length > 0 ? { stderr: warnBlock } : {};
+
   if (typeof rendered === "string") {
-    return { code, stdout: (globals.quiet ? "" : rendered) + warnBlock };
+    return { code, stdout: (globals.quiet ? "" : rendered) + stdoutWarn, ...warnStderr };
   }
 
   const dataChunks = globals.quiet ? [] : rendered;
   function* chunks(): Iterable<string> {
     yield* dataChunks;
-    yield warnBlock;
+    yield stdoutWarn;
   }
-  return { code, stdout: chunks() };
+  return { code, stdout: chunks(), ...warnStderr };
 }
 
 /**

@@ -190,8 +190,8 @@ test("без --session хук говорит вслух, что охват вы�
   const data = env["data"] as Record<string, unknown>;
   expect(data["session_derived"]).toBe(true);
   expect(data["session"]).toBe(`episode:${data["episode"] as string}`);
-  // Сказано это пакетом, а не WARN-строкой: под --hook-output json строка
-  // WARN ушла бы в тот же stdout, что и JSON для хоста.
+  // Сказано это пакетом, а не WARN-строкой: читателю знание нужно ВНУТРИ
+  // контекста — пакет и есть то, что доезжает до агента.
   expect(data["packet"] as string).toContain("охват выведен из эпизода");
 
   // И такое знание всё равно доступно тому, кто назовёт этот ключ.

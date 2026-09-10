@@ -58,6 +58,7 @@ import {
 } from "../commands/store.ts";
 import { reconcileEpisodes, sweepPartialEpisodes, writeEpisode } from "./episode.ts";
 import { recordHook } from "./counters.ts";
+import { hookJson, isHookJson } from "./hook-output.ts";
 import { activeTasks, buildRescuePacket } from "./rescue.ts";
 import { extractSignals, parseTranscript } from "./transcript.ts";
 
@@ -296,13 +297,6 @@ export const realAbsorbDeps: AbsorbDeps = {
   readStdin: () => new Response(Bun.stdin.stream()).text(),
 };
 
-/** Вывод для Claude Code: только так пакет попадает именно в контекст (§6.2). */
-function hookJson(packet: string): string {
-  return `${JSON.stringify({
-    hookSpecificOutput: { hookEventName: "PreCompact", additionalContext: packet },
-  })}\n`;
-}
-
 export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): Command {
   return {
     name: "absorb-session",
@@ -482,9 +476,12 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
         const tasks = activeTasks(h);
         // И2: охват, выведенный из эпизода, — не то же самое, что охват,
         // названный хостом; второе сжатие той же сессии получит другой ключ.
-        // Сказано это ПАКЕТОМ, а не ctx.warn: под `--hook-output json` строка
-        // WARN ушла бы в тот же stdout, что и JSON для хоста, и сломала бы
-        // разбор — а пакет как раз то место, которое агент и читает.
+        // Сказано это ПАКЕТОМ, а не ctx.warn, потому что читателю это нужно
+        // ВНУТРИ контекста: пакет — единственное, что доезжает до агента, и
+        // именно агенту решать, назвать ли ключ следующему `prime`. (Раньше
+        // здесь стояла вторая причина — что WARN сломал бы разбор JSON. Она
+        // больше не действует: блок WARN уходит в stderr, а деградация едет в
+        // документе полем `warn`, см. hook-output.ts.)
         // Ключ из стенограммы деградацией НЕ является: он устойчив между
         // сжатиями и совпадает с тем, что хост даёт `prime`.
         const reachNote =
@@ -568,9 +565,14 @@ export function createAbsorbSessionCommand(deps: AbsorbDeps = realAbsorbDeps): C
         h.close();
       }
     },
+    // stdout под `--hook-output json` читает Claude Code, а не человек: каркас
+    // не приклеивает к нему блок WARN, а уводит его в stderr (см. index.ts и
+    // hooks/hook-output.ts). Деградация при этом не пропадает — она едет в том
+    // же документе полем `warn`.
+    machineStdout: (ctx) => isHookJson(ctx),
     renderHuman: (data, ctx) => {
       const d = data as AbsorbData;
-      return flagStr(ctx, "hook-output") === "json" ? hookJson(d.packet) : d.packet;
+      return isHookJson(ctx) ? hookJson("PreCompact", d.packet, ctx.diagnostics) : d.packet;
     },
   };
 }

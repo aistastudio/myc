@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
 import { createAbsorbSessionCommand } from "../hooks/absorb-session.ts";
+import { createAnchorCommand } from "./anchor.ts";
 import { createPrimeCommand } from "./prime.ts";
 import { createUnwireCommand, createWireCommand, resolveMycBin } from "./wire.ts";
 
@@ -288,6 +289,164 @@ describe("чужие файлы", () => {
     expect(settings.hooks.SessionStart.length).toBe(1);
     expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("myc-hooks.mjs");
     expect(read(".claude/settings.json.myc.bak")).toBe(FOREIGN_SETTINGS);
+  });
+
+  /**
+   * Конфиг заказчика (memory-vspyaxt3edvn): ДВА чужих обработчика на одном
+   * событии и ещё два на другом, с матчерами. `replace` выключил все четыре и
+   * назвал ноль — человек согласился на цену, которой не увидел.
+   */
+  const CUSTOMER_SETTINGS = `{
+  "statusLine": {"type": "command", "command": "my-own-statusline"},
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "bd prime --hook-json"}]},
+      {"hooks": [{"type": "command", "command": "graft session-start"}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "graft post-edit"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "graft tool-savings"}]}
+    ]
+  }
+}
+`;
+
+  test("replace называет КАЖДЫЙ вытесненный обработчик: событие и команда", async () => {
+    // PostToolUse ставится, только если `myc anchor` есть в сборке: без него
+    // wire честно пропустит событие, и второй пары хуков заказчика не будет.
+    registry.register(createAnchorCommand());
+    write(".claude/settings.json", CUSTOMER_SETTINGS);
+    const r = await myc("wire", "--agents", "claude", "--hook-mode", "replace");
+    const out = r.stdout as string;
+
+    // Ровно те четыре, что были у заказчика, — и команда, и событие каждого.
+    for (const command of [
+      "bd prime --hook-json",
+      "graft session-start",
+      "graft post-edit",
+      "graft tool-savings",
+    ]) {
+      expect(out).toContain(command);
+    }
+    expect(out).toContain("SessionStart: bd prime --hook-json");
+    expect(out).toContain("SessionStart: graft session-start");
+    // Матчер — часть адреса: без него два хука PostToolUse не различить.
+    expect(out).toContain("PostToolUse[Edit|Write]: graft post-edit");
+    expect(out).toContain("PostToolUse[Bash]: graft tool-savings");
+
+    // И цена названа целиком: сколько, куда сохранено, как вернуть.
+    expect(out).toContain("4 чужих обработчика");
+    expect(out).toContain("cp .claude/settings.json.myc.bak .claude/settings.json");
+  });
+
+  test("обещание про .myc.bak исполнено: копия содержит все четыре чужих хука", async () => {
+    write(".claude/settings.json", CUSTOMER_SETTINGS);
+    await myc("wire", "--agents", "claude", "--hook-mode", "replace");
+    const bak = read(".claude/settings.json.myc.bak");
+    expect(bak).toBe(CUSTOMER_SETTINGS);
+    // Строка «вернуть: cp …» — не украшение: после неё конфиг снова рабочий.
+    write(".claude/settings.json", bak);
+    const restored = JSON.parse(read(".claude/settings.json"));
+    expect(restored.hooks.SessionStart.length).toBe(2);
+    expect(restored.hooks.PostToolUse.length).toBe(2);
+  });
+
+  test("вытесненное доезжает и до конверта --json, не только до человека", async () => {
+    registry.register(createAnchorCommand());
+    write(".claude/settings.json", CUSTOMER_SETTINGS);
+    const r = await myc("wire", "--agents", "claude", "--hook-mode", "replace", "--json");
+    const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
+    const evicted = (env["data"] as Record<string, unknown>)["evicted"] as
+      { event: string; matcher?: string; command: string }[];
+    expect(evicted.map((e) => e.command)).toEqual([
+      "bd prime --hook-json",
+      "graft session-start",
+      "graft post-edit",
+      "graft tool-savings",
+    ]);
+    expect(evicted[2]!.matcher).toBe("Edit|Write");
+  });
+
+  test("одна запись с несколькими командами — вытеснены и названы ВСЕ", async () => {
+    // Claude Code разрешает несколько обработчиков под одним matcher. Пока
+    // отчёт брал из записи первую команду (`foreignCommand`), вторая исчезала
+    // молча — ровно тот дефект, что и был, только на уровень глубже.
+    write(
+      ".claude/settings.json",
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  { type: "command", command: "bd prime --hook-json" },
+                  { type: "command", command: "graft session-start" },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    const r = await myc("wire", "--agents", "claude", "--hook-mode", "replace");
+    const out = r.stdout as string;
+    expect(out).toContain("SessionStart: bd prime --hook-json");
+    expect(out).toContain("SessionStart: graft session-start");
+    expect(out).toContain("2 чужих обработчика");
+  });
+
+  test("без replace вытеснять нечего: список пуст", async () => {
+    write(".claude/settings.json", CUSTOMER_SETTINGS);
+    const r = await myc("wire", "--agents", "claude", "--hook-mode", "append", "--json");
+    const env = JSON.parse(r.stdout as string) as Record<string, unknown>;
+    expect((env["data"] as Record<string, unknown>)["evicted"]).toEqual([]);
+    expect(r.stdout as string).not.toContain("вытеснено");
+  });
+
+  test("append переставляет наш хук в конец — и говорит об этом", async () => {
+    // Наш хук стоял ПЕРВЫМ, чужой вторым. После append чужой запускается
+    // раньше нашего: порядок чужого файла изменён, значит назван.
+    write(
+      ".claude/settings.json",
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  {
+                    type: "command",
+                    command: 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/myc-hooks.mjs" session-start',
+                    timeout: 5,
+                  },
+                ],
+              },
+              { hooks: [{ type: "command", command: "graft session-start" }] },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    const r = await myc("wire", "--agents", "claude", "--hook-mode", "append");
+    const out = r.stdout as string;
+    expect(out).toContain("myc-хук переставлен в конец массива");
+    expect(out).toContain("graft session-start");
+
+    const after = JSON.parse(read(".claude/settings.json"));
+    const order = after.hooks.SessionStart.map((e: { hooks: { command: string }[] }) => e.hooks[0]!.command);
+    expect(order[0]).toBe("graft session-start");
+    expect(order[1]).toContain("myc-hooks.mjs");
+  });
+
+  test("append без перестановки молчит о ней", async () => {
+    // Чужой хук один и уже первый — append ничего не двигает, и заметки нет.
+    write(".claude/settings.json", FOREIGN_SETTINGS);
+    const r = await myc("wire", "--agents", "claude", "--hook-mode", "append");
+    expect(r.stdout as string).not.toContain("переставлен в конец");
   });
 
   test("нечитаемый JSON — конфликт, а не перезапись", async () => {

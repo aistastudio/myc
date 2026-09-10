@@ -29,6 +29,7 @@ import type { Command, CommandContext, CommandFailure, Registry } from "../regis
 import { flagStr } from "./store.ts";
 import { maybeSpawnUpdateCheck, updateNoticeFor } from "../update-check.ts";
 import { CLI_VERSION } from "../index.ts";
+import { plural } from "../render.ts";
 import { HARNESSES, type Harness } from "@myc/swarm";
 import {
   AGENTS_END,
@@ -86,15 +87,34 @@ interface Conflict {
   readonly command: string;
 }
 
+/**
+ * Чужой обработчик, которого убрал `--hook-mode replace`.
+ *
+ * Отказ ДО выбора режима перечисляет чужие хуки поимённо; отчёт ПОСЛЕ выбора
+ * был беднее отказа — «merge +4 узла» и всё (memory-vspyaxt3edvn). Человек
+ * соглашался на цену, которой не видел: у заказчика так молча выключились
+ * `bd prime` и три хука graft, и graft перестал обновлять граф на правках.
+ * Поэтому вытеснение — не побочный эффект записи, а её результат, и он
+ * доезжает до вывода отдельным списком.
+ */
+interface Evicted {
+  readonly path: string;
+  readonly event: string;
+  /** Матчер записи, если был: два хука на одном событии различает он. */
+  readonly matcher?: string;
+  readonly command: string;
+}
+
 interface Plan {
   readonly actions: Action[];
   readonly conflicts: Conflict[];
+  readonly evicted: Evicted[];
   readonly untouched: string[];
   readonly notes: string[];
 }
 
 function emptyPlan(): Plan {
-  return { actions: [], conflicts: [], untouched: [], notes: [] };
+  return { actions: [], conflicts: [], evicted: [], untouched: [], notes: [] };
 }
 
 function sha256(text: string): string {
@@ -179,12 +199,29 @@ function isOurHookEntry(entry: unknown): boolean {
 }
 
 function foreignCommand(entry: unknown): string | null {
+  return foreignCommands(entry)[0] ?? null;
+}
+
+/**
+ * ВСЕ чужие команды одной записи, а не первая. Запись `hooks[Event][i]` —
+ * это `{matcher?, hooks: [...]}`, и обработчиков внутри может быть несколько.
+ * `foreignCommand` показывает одну, потому что отказу хватает образца; отчёт
+ * о вытеснении обязан назвать каждую (memory-vspyaxt3edvn).
+ */
+function foreignCommands(entry: unknown): string[] {
   const hooks = asArray(asRecord(entry)["hooks"]);
+  const out: string[] = [];
   for (const h of hooks) {
     const cmd = asRecord(h)["command"];
-    if (typeof cmd === "string" && !cmd.includes(HELPER_MARK)) return cmd;
+    if (typeof cmd === "string" && !cmd.includes(HELPER_MARK)) out.push(cmd);
   }
-  return null;
+  return out;
+}
+
+/** Матчер записи — часть её адреса: два хука на PostToolUse различает он. */
+function entryMatcher(entry: unknown): string | undefined {
+  const m = asRecord(entry)["matcher"];
+  return typeof m === "string" && m.length > 0 ? m : undefined;
 }
 
 function hookEntry(spec: HookSpec): Record<string, unknown> {
@@ -199,6 +236,10 @@ function hookEntry(spec: HookSpec): Record<string, unknown> {
 interface SettingsPlan {
   readonly nodes: string[];
   readonly conflicts: Conflict[];
+  /** Что убрал `replace`; у планировщиков без хуков — пусто. */
+  readonly evicted?: readonly Evicted[];
+  /** Что переставил `append`; строка уже готова к печати. */
+  readonly notes?: readonly string[];
   readonly value: Record<string, unknown>;
 }
 
@@ -217,6 +258,8 @@ function mergeClaudeSettings(
   const hooks = asRecord(value["hooks"]);
   const nodes: string[] = [];
   const conflicts: Conflict[] = [];
+  const evicted: Evicted[] = [];
+  const notes: string[] = [];
 
   for (const spec of specs) {
     const event = spec.claudeEvent;
@@ -230,12 +273,35 @@ function mergeClaudeSettings(
     }
     if (foreign.length > 0 && mode === "skip") continue;
 
+    if (mode === "replace") {
+      for (const entry of foreign) {
+        const matcher = entryMatcher(entry);
+        const commands = foreignCommands(entry);
+        // Запись без единой команды — тоже потеря, и назвать её надо: молчание
+        // здесь ничем не лучше молчания про команду, которую мы прочитали.
+        for (const command of commands.length > 0 ? commands : ["(команда не прочитана)"]) {
+          evicted.push({ path: relPath, event, ...(matcher !== undefined ? { matcher } : {}), command });
+        }
+      }
+    } else if (foreign.length > 0) {
+      // append: чужие сохраняются, но наша запись уходит В КОНЕЦ массива. Если
+      // до нас наш же хук стоял выше чужого, чужой сдвигается вверх и порядок
+      // запуска меняется. Это тихое изменение чужого файла — значит, вслух.
+      const moved = foreign.filter((e, i) => existing.indexOf(e) !== i);
+      if (moved.length > 0) {
+        notes.push(
+          `${relPath}: ${node} — myc-хук переставлен в конец массива, чужие поднялись выше и ` +
+            `запустятся раньше него: ${moved.map((e) => foreignCommands(e).join(", ") || "(команда не прочитана)").join("; ")}`,
+        );
+      }
+    }
+
     const kept = mode === "replace" ? [] : foreign;
     hooks[event] = [...kept, hookEntry(spec)];
     nodes.push(node);
   }
 
-  if (conflicts.length > 0) return { nodes, conflicts, value };
+  if (conflicts.length > 0) return { nodes, conflicts, evicted, notes, value };
 
   if (nodes.length > 0) value["hooks"] = hooks;
 
@@ -247,7 +313,7 @@ function mergeClaudeSettings(
     nodes.push(`permissions.allow[${MYC_PERMISSION}]`);
   }
 
-  return { nodes, conflicts, value };
+  return { nodes, conflicts, evicted, notes, value };
 }
 
 function planJsonMerge(
@@ -265,6 +331,8 @@ function planJsonMerge(
   const merged = merge(source);
   plan.conflicts.push(...merged.conflicts);
   if (merged.conflicts.length > 0) return;
+  plan.evicted.push(...(merged.evicted ?? []));
+  plan.notes.push(...(merged.notes ?? []));
 
   // Мы мержим через JSON.parse/stringify: порядок ключей и отступ сохраняются,
   // но однострочные объекты разворачиваются. Молчать об этом нельзя — файл
@@ -624,6 +692,8 @@ export interface WireData {
   readonly events: readonly string[];
   readonly skipped_events: readonly { event: string; reason: string }[];
   readonly actions: readonly { path: string; action: ActionKind; detail: string }[];
+  /** Чужие обработчики, убранные `--hook-mode replace`: поимённо. */
+  readonly evicted: readonly Evicted[];
   readonly untouched: readonly string[];
   readonly notes: readonly string[];
   readonly dry_run: boolean;
@@ -781,6 +851,7 @@ export function createWireCommand(registry: Registry): Command {
         events: options.events,
         skipped_events: skipped,
         actions: plan.actions.map((a) => ({ path: a.path, action: a.kind, detail: a.detail })),
+        evicted: plan.evicted,
         untouched: plan.untouched,
         notes: plan.notes,
         dry_run: dryRun,
@@ -798,6 +869,26 @@ export function createWireCommand(registry: Registry): Command {
         lines.push(`  ${a.action.padEnd(9)} ${a.path.padEnd(width)}  ${a.detail}`);
       }
       if (d.untouched.length > 0) lines.push(`не тронуто: ${d.untouched.join(", ")}`);
+      // Вытесненное печатается ПЕРЕД служебными заметками и журналом: это
+      // единственная строка отчёта, за которой стоит потеря чужой работы, а не
+      // наша собственная запись. Каждый обработчик назван — событие и команда, —
+      // иначе человек узнает цену выбора, только когда что-то перестанет
+      // работать (memory-vspyaxt3edvn).
+      if (d.evicted.length > 0) {
+        const paths = [...new Set(d.evicted.map((e) => e.path))];
+        lines.push(
+          `вытеснено --hook-mode replace: ${d.evicted.length} ${plural(d.evicted.length, "чужой обработчик", "чужих обработчика", "чужих обработчиков")}`,
+        );
+        for (const e of d.evicted) {
+          const at = e.matcher !== undefined ? `${e.event}[${e.matcher}]` : e.event;
+          lines.push(`  ${e.path} → ${at}: ${e.command}`);
+        }
+        lines.push(
+          d.dry_run
+            ? `  вернуть: они останутся на месте — ничего не записано (--dry-run)`
+            : `  вернуть: ${paths.map((p) => `cp ${p}${BAK_SUFFIX} ${p}`).join(" && ")}`,
+        );
+      }
       for (const note of d.notes) lines.push(`! ${note}`);
       if (d.journal !== null) lines.push(`журнал: ${d.journal} (для myc unwire)`);
       if (d.dry_run) lines.push("ничего не записано (--dry-run)");

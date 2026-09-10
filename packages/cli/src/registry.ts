@@ -63,6 +63,15 @@ export type Command = {
   subcommands?: readonly Command[];
   handler?: (ctx: CommandContext) => CommandResult | Promise<CommandResult>;
   renderHuman?: HumanRenderer;
+  /**
+   * Человеческий stdout этой команды при таких флагах читает МАШИНА (хук
+   * агента разбирает его как один JSON-документ). Тогда `run()` НЕ приклеивает
+   * к stdout блок `WARN`, а уводит его в stderr: лишняя строка там ломает
+   * разбор целиком, и громкая деградация превращается в полную потерю
+   * (memory-mgkkdrbt27fb). Сама деградация при этом обязана доехать до хоста
+   * внутри документа — см. hooks/hook-output.ts.
+   */
+  machineStdout?: (ctx: CommandContext) => boolean;
 };
 
 /**
