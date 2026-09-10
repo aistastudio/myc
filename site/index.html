@@ -290,7 +290,7 @@ prj  проектное: база…          prj  проектное: база�
       <h3 lang="ru">Строка статуса — то, чего агент не видит</h3>
       <p class="sub" lang="en"><code>myc wire --status-line</code> puts one line under Claude Code's prompt: the task queue, the code index, the project's memory, and how many of this session's calls to myc returned something — counted from the host's own transcript, where an error, a refusal or an empty answer is a call but not a useful one. Opt-in; a status line that was there before keeps receiving the same input and is never waited on or killed.</p>
       <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают.</p>
-      <pre class="code"><code>myc │ 60 готово · 0 в работе · 34 блок │ код 612 ф · 4268 симв · 37m │ память 101 │ полезных 594 из 647</code></pre>
+      <pre class="code"><code>myc │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls</code></pre>
     </div>
   </div>
 </section>

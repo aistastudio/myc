@@ -405,8 +405,8 @@ describe("две сессии одновременно — счётчики не
       ]);
       expect(ra.data?.session?.counts).toMatchObject(a);
       expect(rb.data?.session?.counts).toMatchObject(b);
-      expect(ra.data!.line.endsWith(`полезных ${a.useful} из ${a.total}`)).toBe(true);
-      expect(rb.data!.line.endsWith(`полезных ${b.useful} из ${b.total}`)).toBe(true);
+      expect(ra.data!.line.endsWith(`${a.useful}/${a.total} useful calls`)).toBe(true);
+      expect(rb.data!.line.endsWith(`${b.useful}/${b.total} useful calls`)).toBe(true);
       appendFileSync(ta, call("useful"));
       appendFileSync(tb, call("refusal"));
       a = { useful: a.useful + 1, total: a.total + 1 };

@@ -127,7 +127,7 @@ describe("что показывает строка", () => {
     expect(d.code!.symbols).toBeGreaterThan(0);
     expect(d.degraded).toEqual([]);
     expect(d.line).toMatch(
-      /^myc │ 1 готово · 1 в работе · 1 блок │ код 1 ф · \d+ симв · \d+s │ память 3 │ сессия неизвестна$/,
+      /^myc │ 1 ready · 1 in progress · 1 blocked │ 1 file · \d+ symbols? · \d+s ago │ 3 notes │ no session$/,
     );
     expect(d.line).not.toContain("⚠");
     expect(d.lines).toEqual([d.line]);
@@ -144,8 +144,8 @@ describe("что показывает строка", () => {
   test("индекса нет — так и сказано, а не нули", async () => {
     const d = await line();
     expect(d.code?.state).toBe("none");
-    expect(d.line).toContain("код: нет индекса");
-    expect(d.line).not.toContain("0 ф");
+    expect(d.line).toContain("no code index");
+    expect(d.line).not.toContain("0 files");
   });
 
   test("идёт фоновая индексация — сказано словом", async () => {
@@ -157,14 +157,14 @@ describe("что показывает строка", () => {
     db.close();
     const d = await line();
     expect(d.code?.state).toBe("indexing");
-    expect(d.line).toContain("индексируется");
+    expect(d.line).toContain("· indexing");
   });
 
   test("нет модели эмбеддингов — маркер ⚠ сразу после myc", async () => {
     register({ MYC_MODELS_DIR: join(root, "нет-моделей") });
     const d = await line();
-    expect(d.degraded).toEqual(["нет эмбеддера"]);
-    expect(d.line.startsWith("myc ⚠ нет эмбеддера │ ")).toBe(true);
+    expect(d.degraded).toEqual(["no embedding model"]);
+    expect(d.line.startsWith("myc ⚠ no embedding model │ ")).toBe(true);
   });
 
   test("нет воркспейса — строка об этом, сессия всё равно считается", async () => {
@@ -176,7 +176,7 @@ describe("что показывает строка", () => {
     const r = await run(["statusline", "--json"], { registry });
     const d = (JSON.parse(r.stdout as string) as { data: StatuslineData }).data;
     expect(d.workspace).toBeNull();
-    expect(d.line).toBe("myc │ нет воркспейса (myc init) │ полезных 0 из 0");
+    expect(d.line).toBe("myc │ no myc workspace — run myc init │ 0/0 useful calls");
   });
 
   test("полезных N из M — из транскрипта этой сессии", async () => {
@@ -200,7 +200,7 @@ describe("что показывает строка", () => {
     stdin = payload({ transcript_path: t });
     const d = await line();
     expect(d.session?.counts).toEqual({ total: 3, useful: 2, empty: 1, refusal: 0, error: 0 });
-    expect(d.line.endsWith("│ полезных 2 из 3")).toBe(true);
+    expect(d.line.endsWith("│ 2/3 useful calls")).toBe(true);
   });
 });
 
@@ -258,7 +258,7 @@ describe("две сессии вперемешку при малом потол�
     }
     expect(a!.session).toMatchObject({ behind_bytes: 0, counts: { total: 40, useful: 40 } });
     expect(b!.session).toMatchObject({ behind_bytes: 0, counts: { total: 30, useful: 15, empty: 15 } });
-    expect(a!.line.endsWith("полезных 40 из 40")).toBe(true);
+    expect(a!.line.endsWith("40/40 useful calls")).toBe(true);
   });
 });
 
@@ -316,7 +316,7 @@ describe("кеш прошлой логики не переиспользуетс
     const d = await renderWith(reg);
     expect(d.session?.counts).toEqual({ total: 2, useful: 1, empty: 1, refusal: 0, error: 0 });
     expect(d.session?.read_bytes).toBe(size);
-    expect(d.line.endsWith("полезных 1 из 2")).toBe(true);
+    expect(d.line.endsWith("1/2 useful calls")).toBe(true);
   });
 
   test("документ первой сдачи (v: 1, без сборки) — выброшен целиком", async () => {

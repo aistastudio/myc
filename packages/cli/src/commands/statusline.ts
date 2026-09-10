@@ -2,7 +2,7 @@
  * `myc statusline` — строка статуса Claude Code: то, чего агент не видит
  * сам, одной компактной строкой, и на КАЖДУЮ отрисовку.
  *
- *   myc │ 56 готово · 2 в работе · 31 блок │ код 604 ф · 4129 симв · 12m │ память 135 │ полезных 7 из 9
+ *   myc │ 56 ready · 2 in progress · 31 blocked │ 604 files · 4129 symbols · 12m ago │ 135 notes │ 7/9 useful calls
  *
  * Слева направо: очередь задач (готово / в работе / заблокировано), код-индекс
  * (файлы, символы, давность последней записи — или «нет индекса», или
@@ -316,36 +316,42 @@ async function queueStats(h: StoreHandle, repo: string, now: number): Promise<Qu
 export function renderLine(d: Omit<StatuslineData, "line" | "lines" | "took_ms">): string {
   const parts: string[] = [];
   if (d.workspace === null) {
-    parts.push(d.workspace_error ?? "нет воркспейса (myc init)");
+    parts.push(d.workspace_error ?? "no myc workspace — run myc init");
   } else {
     const q = d.queue;
     if (q !== null) {
-      const blocked = q.blocked_by_ancestor > 0 ? `${q.blocked}+${q.blocked_by_ancestor}` : `${q.blocked}`;
-      parts.push(`${q.ready} готово · ${q.in_progress} в работе · ${blocked} блок`);
+      const inProgress = q.in_progress > 0 ? ` · ${q.in_progress} in progress` : "";
+      const viaParent = q.blocked_by_ancestor > 0 ? ` (+${q.blocked_by_ancestor} via parent)` : "";
+      parts.push(`${q.ready} ready${inProgress} · ${q.blocked} blocked${viaParent}`);
     } else {
-      parts.push("очередь: ?");
+      parts.push("tasks: ?");
     }
     parts.push(codePart(d.code));
-    parts.push(d.memory !== null ? `память ${d.memory}` : "память: ?");
+    parts.push(d.memory !== null ? count(d.memory, "note") : "notes: ?");
   }
   parts.push(sessionPartText(d.session));
   const marker = d.degraded.length > 0 ? ` ⚠ ${d.degraded.join(", ")}` : "";
   return `myc${marker} │ ${parts.join(" │ ")}`;
 }
 
+/** `1 file`, `2 files` — строка читается человеком, а не парсером. */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 function codePart(c: CodeStats | null): string {
-  if (c === null) return "код: ?";
-  if (c.state === "none") return "код: нет индекса";
-  const counts = `код ${c.files} ф · ${c.symbols} симв`;
-  if (c.state === "indexing") return `${counts} · индексируется`;
-  if (c.state === "queued") return `${counts} · ${c.queued} ждут разбора`;
-  return `${counts} · ${c.age}`;
+  if (c === null) return "code: ?";
+  if (c.state === "none") return "no code index";
+  const counts = `${count(c.files, "file")} · ${count(c.symbols, "symbol")}`;
+  if (c.state === "indexing") return `${counts} · indexing`;
+  if (c.state === "queued") return `${counts} · ${count(c.queued, "file")} queued`;
+  return `${counts} · ${c.age} ago`;
 }
 
 function sessionPartText(s: SessionPart | null): string {
-  if (s === null) return "сессия неизвестна";
-  const tail = s.behind_bytes > 0 ? "…" : "";
-  return `полезных ${s.counts.useful} из ${s.counts.total}${tail}`;
+  if (s === null) return "no session";
+  const tail = s.behind_bytes > 0 ? " (counting)" : "";
+  return `${s.counts.useful}/${s.counts.total} useful calls${tail}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +564,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     error = e instanceof Error ? e.message : String(e);
     body = {
       workspace: null,
-      workspace_error: `сбой строки: ${error}`,
+      workspace_error: `status line failed: ${error}`,
       repo: "",
       queue: null,
       code: null,
@@ -637,7 +643,7 @@ async function ownPart(
 
   const degraded: string[] = [];
   // Эмбеддер — самый дешёвый признак: наличие манифеста модели на диске.
-  if (!existsSync(modelManifestPath(DEFAULT_MODEL_ID, deps.env))) degraded.push("нет эмбеддера");
+  if (!existsSync(modelManifestPath(DEFAULT_MODEL_ID, deps.env))) degraded.push("no embedding model");
 
   let opened: Awaited<ReturnType<StoreDeps["openStore"]>>;
   try {
@@ -655,8 +661,8 @@ async function ownPart(
     return {
       workspace: null,
       workspace_error: opened.failure.code.startsWith("ws.")
-        ? "нет воркспейса (myc init)"
-        : `база недоступна: ${opened.failure.msg.split("\n")[0]!.slice(0, 60)}`,
+        ? "no myc workspace — run myc init"
+        : `database unavailable: ${opened.failure.msg.split("\n")[0]!.slice(0, 60)}`,
       repo: "",
       queue: null,
       code: null,
@@ -728,9 +734,9 @@ async function ownPart(
     };
 
     // Дешёвые признаки деградации (И2): только то, что уже посчитано.
-    if (code.l1_files > 0 && code.symbols === 0 && jobs.leased === 0) degraded.push("нет грамматик");
-    if (stats.anchors_stale > 0) degraded.push(`якорей протухло ${stats.anchors_stale}`);
-    if (stats.jobs_dead > 0) degraded.push(`работ упало ${stats.jobs_dead}`);
+    if (code.l1_files > 0 && code.symbols === 0 && jobs.leased === 0) degraded.push("no grammars");
+    if (stats.anchors_stale > 0) degraded.push(`${stats.anchors_stale} stale anchor${stats.anchors_stale === 1 ? "" : "s"}`);
+    if (stats.jobs_dead > 0) degraded.push(`${stats.jobs_dead} failed job${stats.jobs_dead === 1 ? "" : "s"}`);
 
     writeCache(deps.cacheDir, cachePath, cache, now);
     return {

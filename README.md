@@ -114,7 +114,7 @@ project's memory, and how many of this session's calls to myc actually returned
 something:
 
 ```
-myc │ 60 готово · 0 в работе · 34 блок │ код 612 ф · 4268 симв · 37m │ память 101 │ полезных 594 из 647
+myc │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls
 ```
 
 "Useful" is counted from the host's own transcript, not guessed: an error, a

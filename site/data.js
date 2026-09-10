@@ -319,7 +319,7 @@ window.MYC_DATA = {
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 3.36,
-    "unpacked_mb": 12.55,
+    "unpacked_mb": 12.54,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -414,9 +414,9 @@ window.MYC_DATA = {
     "fail": 0,
     "skip": 16,
     "files": 195,
-    "assertions": 32052,
-    "seconds": 217.1,
-    "sources": "fa60457dddf2525c"
+    "assertions": 32051,
+    "seconds": 220.5,
+    "sources": "426344c44748ce9f"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-10T17:56:56.014Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-10T18:35:30.071Z", assertions: 67 };
