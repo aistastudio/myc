@@ -201,6 +201,11 @@ const ALLOWLISTED_LITERAL_PRAGMA_FILES = new Set<string>([
   "packages/store-sqlite/src/index.ts", // определение STORE_PRAGMAS
   "packages/cli/src/commands/init.ts", // `myc init`: одноразовое создание файла, без GraphStore
   "packages/cli/src/commands/store.ts", // createPersonalWorkspace (S41): одноразовое создание личного яруса
+  // queue.db очереди `myc run` (memory-n2r3krccqyj6): отдельная база без GraphStore и оплога.
+  // STORE_PRAGMAS не подходят по сути (wal_autocheckpoint=0 требует WalGuard, mmap 256 МБ на
+  // файл в 16 КБ) и по цене (импорт @myc/store-sqlite ~9 мс к каждому `myc run` против 3.3 мс
+  // всего пути очереди).
+  "packages/cli/src/run-queue.ts",
 ]);
 
 const SCAN_ROOTS = ["packages/cli/src", "packages/mcp/src", "packages/store-sqlite/src"];

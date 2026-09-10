@@ -29,11 +29,11 @@ const CLI_COMMANDS = [
   "tasks", "attempt", "import-beads", "retrieve", "dep", "recall", "prime", "show", "move",
   "absorb", "import", "ready", "search", "remember", "roster", "viz", "store", "link",
   "export", "reindex", "embedd", "list", "merge-driver", "move.worker", "show.merge.worker",
-  "digest-cache.worker",
+  "digest-cache.worker", "run",
 ] as const;
 
 /** Файлы каркаса CLI, принадлежащие зоне A. */
-const CLI_FILES = ["drain.ts", "registry.ts", "net-trap.preload.ts"] as const;
+const CLI_FILES = ["drain.ts", "registry.ts", "net-trap.preload.ts", "run-queue.ts"] as const;
 
 /** Пакеты зоны A целиком (их src). */
 const PACKAGES = [

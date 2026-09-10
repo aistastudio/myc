@@ -76,6 +76,10 @@ export function registerAll(registry: Registry): void {
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("absorb-session", () =>
     import("./hooks/absorb-session.ts").then((m) => m.createAbsorbSessionCommand()));
+  // Очередь тяжёлых команд на машине (эпик memory-14qyv1gmacef): модуль
+  // один, команды две — run ставит и исполняет, queue показывает.
+  lazy("run", () => import("./commands/run.ts").then((m) => m.createRunCommand()));
+  lazy("queue", () => import("./commands/run.ts").then((m) => m.createQueueCommand()));
   // doctor строится ОТ реестра: разделу `--hooks` нужно знать, есть ли в ЭТОЙ
   // сборке команда, на которую хук ставится, — иначе «не срабатывал» и «не на
   // что ставить» стали бы неразличимы.
