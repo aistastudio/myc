@@ -31,7 +31,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
-myc --version                     # myc 0.2.2 (schema 1)
+myc --version                     # myc 0.3.0 (schema 1)
 ```
 
 The embedding model is **not** downloaded during install. Semantic search is
@@ -166,7 +166,7 @@ defects, not because the plan changed.
 | **M1** memory | 21 / 23 |
 | **M2** semantics | 17 / 20 |
 | **M7** human interface (board, cards, threads, routing panel) | 13 / 14 |
-| **M3** code intelligence | 5 / 9 |
+| **M3** code intelligence | 5 / 10 |
 | **M4** team: `myc serve`, ACL, network sync, Postgres, containers | 3 / 14 |
 | **M5** swarm self-learning: routing by cost and outcome | 0 / 12 |
 | **M6** distillation | 0 / 7 |
@@ -175,12 +175,21 @@ What that means in practice: **today myc is a single-user local tool over files
 in git.** There is no server, no ACL and no team mode. Those are designed
 (`docs/design/03…`, `04…`, `05…`) and tracked, not implemented.
 
-Code↔knowledge anchors now work: `myc task "…" --anchor src/file.ts:10-20`
-binds a task to a span, and the anchor follows the code as it moves. The
-binding is language-agnostic — it was verified on Python as well as
-TypeScript. What is *not* there yet is symbol-level understanding: parsing
-functions and classes covers `ts/tsx/js/jsx` only, and the symbol index is
-built but not yet wired to any command (tracked, not hidden).
+Code intelligence is built in, and it is the same engine the alternatives use:
+tree-sitter, with grammars fetched on demand rather than shipped (all 36 weigh
+49 MB against a 12 MB package). `myc code index` builds it — on this repository,
+826 files and 3 949 symbols in 904 ms — and four commands read it:
+
+```
+myc code symbol <name>   where it is defined, and what knowledge is anchored there
+myc callers <name>       who calls it; --direction out, --depth all
+myc code search "…"      by meaning, when you do not know the name
+myc code grep "<lit>"    exhaustive, when you need every occurrence
+myc skeleton <file>      the file's API — 26× cheaper than reading it
+```
+
+Anchors tie knowledge to a span and follow the code as it moves; that half is
+language-agnostic and was verified on Python as well as TypeScript.
 
 ## Syncing between machines
 

@@ -59,8 +59,11 @@ function failure(code: string, msg: string, exit: ExitCode, hint?: string): Comm
   return { ok: false, code, msg, exit, hint };
 }
 
-/** Все виды вхождений — они же значения `--kind`. */
-const REF_KINDS = ["call", "new", "type", "import", "read", "prop"] as const;
+/**
+ * Все виды вхождений — они же значения `--kind`. Экспорт — для сверки со
+ * схемой инструмента myc_callers (code.parity.test.ts): у MCP своя копия.
+ */
+export const REF_KINDS = ["call", "new", "type", "import", "read", "prop"] as const;
 
 /** Сколько групп печатается по умолчанию: дальше ответ перестаёт читаться. */
 const DEFAULT_LIMIT = 40;

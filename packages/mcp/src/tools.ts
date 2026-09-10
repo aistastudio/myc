@@ -1,8 +1,9 @@
 /**
- * Профиль agent — ровно 7 инструментов (docs/design/03 §4.2).
+ * Профиль agent — 13 инструментов: 7 работы с памятью и задачами
+ * (WORK_TOOLS, docs/design/03 §4.2) и 6 кода (CODE_TOOLS, memory-5h06ty5sz38c).
  * Гранулярность по намерению, не по CRUD (D8): один вызов = одно намерение.
- * Описания сжаты под бюджет 1100 токенов (tokens.ts, проверяется тестом) —
- * каждое слово здесь оплачивается в каждой сессии агента.
+ * Описания сжаты под бюджет (tokens.ts, проверяется тестом) — каждое слово
+ * здесь оплачивается в каждой сессии агента.
  *
  * outputSchema намеренно не объявляется: structuredContent возвращается
  * всегда, а схема ответа стоила бы токены в каждом tools/list.
@@ -28,7 +29,7 @@ const WS = {
   description: "воркспейс; M0: один, параметр игнорируется",
 } as const;
 
-export const AGENT_TOOLS: readonly McpToolDef[] = [
+export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_prime",
     description:
@@ -201,6 +202,141 @@ export const AGENT_TOOLS: readonly McpToolDef[] = [
     },
   },
 ];
+
+/**
+ * Виды вхождений у `myc callers --kind`. Копия списка из commands/callers.ts
+ * (REF_KINDS) — пакет mcp не импортирует команды CLI, — и поэлементное
+ * совпадение копий проверяет code.parity.test.ts, а не этот комментарий.
+ */
+export const CODE_REF_KINDS = ["call", "new", "type", "import", "read", "prop"] as const;
+
+/**
+ * Инструменты кода: шесть вопросов, ради которых в .mcp.json стоял graft, —
+ * где определён символ, кто зовёт и что зовёт, все вхождения литерала, поиск
+ * по вопросу, API файла, карта репозитория (memory-5h06ty5sz38c).
+ *
+ * ИМЯ = КОМАНДА CLI: `myc code search` → myc_code_search, `myc callers` →
+ * myc_callers. Инструмент не считает ничего сам — он и есть команда, с теми же
+ * флагами и тем же текстом ответа; расхождение поверхностей в этом репозитории
+ * ловили шесть раз, и седьмому здесь неоткуда взяться (code.parity.test.ts).
+ *
+ * Флаг `--repo` не выдан: сервер отвечает про репозиторий своего каталога,
+ * как graft, стоящий в каждом репозитории своим процессом.
+ *
+ * Бюджет — CODE_DESCRIPTION_TOKEN_BUDGET (tokens.ts): не дороже того, что
+ * агент платил за инструменты graft, которые эти заменяют.
+ */
+export const CODE_TOOLS: readonly McpToolDef[] = [
+  {
+    name: "myc_code_search",
+    description:
+      "Найти код по вопросу своими словами, когда имени не знаешь: файлы по рангу " +
+      "и совпавшие в них символы с path:line — читай сверху. Поиск лексический: " +
+      "чем ближе слова к коду, тем точнее. Имя известно — myc_code_symbol; " +
+      "нужны ВСЕ вхождения — myc_code_grep.",
+    inputSchema: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string", minLength: 1 },
+        limit: { type: "integer", default: 10, minimum: 1, description: "файлов" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "myc_code_grep",
+    description:
+      "Каждое вхождение строки в файлах репозитория с владельцем (функция, класс) — " +
+      "исчерпывающе, в отличие от поиска. Для правки константы, SQL, ключа, текста " +
+      "ошибки. Читает диск и от кода не отстаёт; число вхождений полное, даже если " +
+      "группы урезаны.",
+    inputSchema: {
+      type: "object",
+      required: ["literal"],
+      properties: {
+        literal: { type: "string", minLength: 1 },
+        ignore_case: { type: "boolean", default: false },
+        lang: { type: "array", items: { type: "string" }, description: "ts, py, md…" },
+        limit: { type: "integer", default: 60, minimum: 1, description: "групп" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "myc_code_symbol",
+    description:
+      "Где определён символ с точным именем: path:span, вид, экспорт, число " +
+      "упоминаний — и какие задачи и факты памяти привязаны к этому участку. " +
+      "Самый дешёвый ответ, когда имя известно.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string", minLength: 1 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "myc_callers",
+    description:
+      "Кто зовёт символ (in) или что зовёт он сам (out): ребро на каждого зовущего, " +
+      "внутри — строки кода. depth N или \"all\" — радиус правки: вызывай ДО " +
+      "переименования и смены сигнатуры. Граф по именам: WARN callers.ambiguous — " +
+      "одноимённые символы склеены.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string", minLength: 1 },
+        direction: { type: "string", enum: ["in", "out"], default: "in" },
+        // Без type — как у graft_trace_calls: целое ИЛИ "all", а объединение
+        // типов часть клиентов не переваривает.
+        depth: { default: 1, description: "1, N или \"all\"" },
+        kind: {
+          type: "array",
+          items: { type: "string", enum: [...CODE_REF_KINDS, "all"] },
+          description: "умолч. все для in, call+new для out",
+        },
+        limit: { type: "integer", default: 40, minimum: 1, description: "групп" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "myc_skeleton",
+    description:
+      "API файла вместо чтения целиком: объявления с сигнатурами и спанами, " +
+      "вложенность сдвигом, и во сколько раз это дешевле файла. Дальше читай " +
+      "нужный спан, а не файл. WARN skeleton.stale — файл изменился после индексации.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string", minLength: 1, description: "от корня репозитория" },
+        exported: { type: "boolean", default: false, description: "только видимое снаружи" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "myc_code_map",
+    description:
+      "Карта незнакомого репозитория: каталоги по весу, их хаб-символы и кто от " +
+      "кого зависит по import. Один вызов для ориентации, дальше — " +
+      "myc_code_search и myc_callers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        top: { type: "integer", default: 14, minimum: 1, description: "каталогов" },
+      },
+      additionalProperties: false,
+    },
+  },
+];
+
+export const AGENT_TOOLS: readonly McpToolDef[] = [...WORK_TOOLS, ...CODE_TOOLS];
 
 export function toolsForProfile(profile: McpProfile): readonly McpToolDef[] {
   // leader/full — отдельная задача (myc-zdk); сюда они попадут расширением

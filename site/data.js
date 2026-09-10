@@ -318,9 +318,9 @@ window.MYC_DATA = {
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.33,
-    "unpacked_mb": 12.43,
-    "files": 10,
+    "compressed_mb": 3.35,
+    "unpacked_mb": 12.51,
+    "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
       "command": "myc models fetch multilingual-e5-small-q8",
@@ -329,7 +329,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.2.2"
+    "version": "0.3.0"
   },
   "roadmap": {
     "command": "myc show <epic-id>",
@@ -380,7 +380,7 @@ window.MYC_DATA = {
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
         "done": 5,
-        "total": 9
+        "total": 10
       },
       {
         "id": "memory-aw5d21x3wa87",
@@ -410,13 +410,13 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 2749,
+    "pass": 2764,
     "fail": 0,
     "skip": 16,
-    "files": 188,
-    "assertions": 31336,
-    "seconds": 214.49,
-    "sources": "8036a2b53da56e82"
+    "files": 189,
+    "assertions": 31505,
+    "seconds": 198.1,
+    "sources": "c1cfe0a56dae4a7a"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-10T08:26:04.406Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-10T09:23:47.997Z", assertions: 67 };

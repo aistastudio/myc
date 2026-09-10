@@ -10,7 +10,14 @@ import { ensureSqliteRuntime } from "@myc/store-sqlite";
 import { createDispatcher, type CliOutcome } from "./dispatch.ts";
 import { McpServer, serveStdio } from "./server.ts";
 import { openMcpStore } from "./store.ts";
-import { toolsForProfile, type McpToolDef, type McpProfile } from "./tools.ts";
+import {
+  AGENT_TOOLS,
+  CODE_TOOLS,
+  WORK_TOOLS,
+  toolsForProfile,
+  type McpToolDef,
+  type McpProfile,
+} from "./tools.ts";
 
 type Registry = NonNullable<RunOptions["registry"]>;
 
@@ -26,8 +33,16 @@ const SERVER_RULES =
   "и повторяй его сразу после сжатия контекста; работу бери myc_ready{claim:true} " +
   "(один вызов — и задача твоя, и весь её контекст); перед изменением кода ищи " +
   "контекст через myc_recall; выводы и решения сразу пиши через myc_remember — " +
-  "следующая сессия их не узнает иначе. WARN/degraded в ответе — не шум, а " +
+  "следующая сессия их не узнает иначе. Про сам код спрашивай инструменты кода, " +
+  "а не читай файлы целиком: myc_code_map — ориентация, myc_code_search и " +
+  "myc_code_symbol — найти, myc_skeleton — API файла, myc_callers — радиус " +
+  "правки, myc_code_grep — все вхождения. WARN/degraded в ответе — не шум, а " +
   "признак, что часть системы не работает.";
+
+/** "prime/ready/update" — имена без префикса, тот же вид, что был в справке. */
+function toolList(tools: readonly McpToolDef[]): string {
+  return tools.map((t) => t.name.replace(/^myc_/, "")).join("/");
+}
 
 /** Инструкции initialize: правила + свежий bootstrap-блок воркспейса (§4.4). */
 async function buildInstructions(runCli: (argv: readonly string[]) => Promise<CliOutcome>): Promise<string> {
@@ -107,8 +122,9 @@ export function createMcpCommand(registry?: Registry) {
       },
     ],
     help:
-      "Поднимает MCP-сервер на stdio (NDJSON JSON-RPC 2.0). Профиль agent — " +
-      "7 инструментов: prime/ready/update/recall/remember/show/link. " +
+      `Поднимает MCP-сервер на stdio (NDJSON JSON-RPC 2.0). Профиль agent — ` +
+      `${AGENT_TOOLS.length} инструментов: работа — ${toolList(WORK_TOOLS)}; ` +
+      `код — ${toolList(CODE_TOOLS)} (индекс строит \`myc code index\`). ` +
       "Правила работы и bootstrap-блок уезжают клиенту в initialize.instructions.",
     handler: async (ctx: McpCommandContext) => {
       const profileRaw = ctx.flags["profile"];

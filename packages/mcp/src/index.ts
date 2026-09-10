@@ -1,8 +1,11 @@
 // Публичный API @myc/mcp: команда `myc mcp` для реестра CLI и сервер для тестов.
 export type { McpProfile, McpToolDef } from "./tools.ts";
-export { AGENT_TOOLS, toolsForProfile } from "./tools.ts";
+export { AGENT_TOOLS, CODE_REF_KINDS, CODE_TOOLS, WORK_TOOLS, toolsForProfile } from "./tools.ts";
 export {
+  AGENT_PROFILE_TOKEN_BUDGET,
+  CODE_DESCRIPTION_TOKEN_BUDGET,
   DESCRIPTION_TOKEN_BUDGET,
+  GRAFT_TOOLS_TOKENS,
   estimateTokens,
   profileDescriptionTokens,
   toolDescriptionChars,

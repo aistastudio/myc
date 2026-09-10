@@ -293,3 +293,99 @@ describe("myc_update: операции, не выданные агенту", () 
     expect(schema).toContain("человеческое суждение");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Инструменты кода: аргументы → флаги той же команды CLI
+// ---------------------------------------------------------------------------
+
+describe("инструменты кода: argv — та же команда, что набрал бы человек", () => {
+  const ok = (_argv: readonly string[], json: boolean): CliOutcome =>
+    json ? { code: 0, stdout: okEnvelope({ hits: [], took_ms: 1 }) } : { code: 0, stdout: "ответ\n" };
+
+  test("myc_code_grep: флаги до `--`, литерал после, --json ДО разделителя", async () => {
+    const { d, fake } = dispatchWith(ok);
+    const r = await d("myc_code_grep", { literal: "--limit", ignore_case: true, lang: ["ts", "md"], limit: 5 });
+    expect(r.isError).toBeUndefined();
+    // Литерал, похожий на флаг, — позиционный: без `--` его съел бы разбор
+    // флагов, и grep искал бы не то, о чём спросили.
+    expect(fake.calls).toEqual([
+      ["code", "grep", "--ignore-case", "--lang", "ts,md", "--limit", "5", "--", "--limit"],
+      ["code", "grep", "--ignore-case", "--lang", "ts,md", "--limit", "5", "--json", "--", "--limit"],
+    ]);
+    expect(text(r)).toBe("ответ\n");
+  });
+
+  test("myc_code_grep: пробелы литерала — часть вопроса, trim их не съедает", async () => {
+    const { d, fake } = dispatchWith(ok);
+    await d("myc_code_grep", { literal: "  x = " });
+    expect(fake.calls[0]).toEqual(["code", "grep", "--", "  x = "]);
+  });
+
+  test("myc_callers: direction/depth/kind/limit — флагами, проверку ведёт команда", async () => {
+    const { d, fake } = dispatchWith(ok);
+    await d("myc_callers", { name: "leaf", direction: "out", depth: "all", kind: ["call", "new"], limit: 3 });
+    expect(fake.calls[0]).toEqual([
+      "callers", "--direction", "out", "--depth", "all", "--kind", "call,new", "--limit", "3", "--", "leaf",
+    ]);
+    await d("myc_callers", { name: "leaf", depth: 2 });
+    expect(fake.calls[2]).toEqual(["callers", "--depth", "2", "--", "leaf"]);
+  });
+
+  test("myc_code_search, myc_code_symbol, myc_skeleton, myc_code_map", async () => {
+    const { d, fake } = dispatchWith(ok);
+    await d("myc_code_search", { query: "очередь заданий", limit: 4 });
+    await d("myc_code_symbol", { name: "drainAfterCommand" });
+    await d("myc_skeleton", { path: "src/a.ts", exported: true });
+    await d("myc_code_map", { top: 2 });
+    await d("myc_code_map", {});
+    const human = fake.calls.filter((c) => !c.includes("--json"));
+    expect(human).toEqual([
+      ["code", "search", "--limit", "4", "--", "очередь заданий"],
+      ["code", "symbol", "--", "drainAfterCommand"],
+      ["skeleton", "--exported", "--", "src/a.ts"],
+      ["code", "map", "--top", "2"],
+      ["code", "map"],
+    ]);
+    expect(fake.calls.filter((c) => c.includes("--json"))).toHaveLength(5);
+  });
+
+  test("мусор во входе — usage до похода в движок; лимит не зажимается молча", async () => {
+    const { d, fake } = dispatchWith(ok);
+    for (const [tool, args] of [
+      ["myc_code_grep", {}],
+      ["myc_code_grep", { literal: "" }],
+      ["myc_code_symbol", { name: "  " }],
+      ["myc_callers", { name: "x", depth: { n: 2 } }],
+      ["myc_code_search", { query: "x", limit: 0 }],
+      ["myc_code_map", { top: 2.5 }],
+      ["myc_code_grep", { literal: "x", lang: "ts" }],
+    ] as const) {
+      const r = await d(tool, args as Record<string, unknown>);
+      expect({ tool, isError: r.isError, code: /^myc: (usage\.[a-z]+):/.exec(text(r))?.[1] !== undefined }).toEqual({
+        tool,
+        isError: true,
+        code: true,
+      });
+    }
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  test("индекса нет — отказ команды доезжает кодом и командой, а не пустой выдачей", async () => {
+    const { d } = dispatchWith(() => ({
+      code: 5,
+      stdout: errEnvelope("precond.no_index", "код-индекс этого репозитория не построен", "myc code index"),
+    }));
+    for (const [tool, args] of [
+      ["myc_code_search", { query: "q" }],
+      ["myc_code_grep", { literal: "q" }],
+      ["myc_code_symbol", { name: "q" }],
+      ["myc_callers", { name: "q" }],
+      ["myc_skeleton", { path: "q.ts" }],
+      ["myc_code_map", {}],
+    ] as const) {
+      const r = await d(tool, args as Record<string, unknown>);
+      expect(r.isError).toBe(true);
+      expect(text(r)).toBe("myc: precond.no_index: код-индекс этого репозитория не построен\nhint: myc code index");
+    }
+  });
+});

@@ -1,14 +1,17 @@
 /**
  * E2E: настоящий `myc mcp` процесс на stdio против временного воркспейса.
- * Прогоняет рукопожатие и каждый из 7 инструментов, проверяет, что
- * claim:true действительно берёт задачу за один вызов (верификация снаружи,
- * отдельным процессом `myc show --json`), и что деградация доезжает до клиента.
+ * Первый сценарий прогоняет рукопожатие и каждый из 7 инструментов работы,
+ * проверяет, что claim:true действительно берёт задачу за один вызов
+ * (верификация снаружи, отдельным процессом `myc show --json`), и что
+ * деградация доезжает до клиента. Второй — каждый из 6 инструментов кода: без
+ * индекса они говорят, что выполнить, с индексом отвечают тем же текстом, что
+ * команда в терминале, отдельным процессом.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { CLI_VERSION } from "@myc/cli";
 import { cliTestEnv } from "@myc/core";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -123,7 +126,7 @@ afterEach(() => {
 
 describe("myc mcp: stdio end-to-end", () => {
   test(
-    "рукопожатие, все 7 инструментов, claim за один вызов, деградация до клиента",
+    "рукопожатие, все 7 инструментов работы, claim за один вызов, деградация до клиента",
     async () => {
       expect((await cli(dir, "init")).code).toBe(0);
       const t1 = (await cli(dir, "task", "Первая задача e2e", "-p", "P0")).out.split(/\s+/)[0]!;
@@ -150,9 +153,9 @@ describe("myc mcp: stdio end-to-end", () => {
         expect(instructions).toContain("MYC BOOTSTRAP");
         await mcp.notify("notifications/initialized");
 
-        // 2. tools/list: профиль agent целиком
+        // 2. tools/list: профиль agent целиком — 7 работы и 6 кода
         const list = await mcp.request("tools/list");
-        expect((list.result!["tools"] as unknown[]).length).toBe(7);
+        expect((list.result!["tools"] as unknown[]).length).toBe(13);
 
         // 3. myc_prime
         const prime = await mcp.call("myc_prime", { budget: 800 });
@@ -234,6 +237,77 @@ describe("myc mcp: stdio end-to-end", () => {
         expect(bad.result!.content![0]!.text).toContain("myc: usage.missing");
         const unknown = await mcp.call("myc_nope", {});
         expect(unknown.error?.code).toBe(-32602);
+      } finally {
+        await mcp.close();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "инструменты кода: без индекса — что выполнить; с индексом — тот же ответ, что в терминале",
+    async () => {
+      expect((await cli(dir, "init")).code).toBe(0);
+      mkdirSync(join(dir, "src", "core"), { recursive: true });
+      mkdirSync(join(dir, "src", "app"), { recursive: true });
+      writeFileSync(
+        join(dir, "src", "core", "chain.ts"),
+        "export function leaf(n: number): number {\n  return n + 1;\n}\n\n" +
+          "export function mid(n: number): number {\n  return leaf(leaf(n));\n}\n",
+      );
+      writeFileSync(
+        join(dir, "src", "app", "use.ts"),
+        'import { mid } from "../core/chain.ts";\n\nexport function useIt(): number {\n  return mid(1);\n}\n',
+      );
+
+      // Один и тот же вопрос в двух формах: вызов инструмента и argv терминала.
+      const questions: { tool: string; args: Record<string, unknown>; argv: string[]; expect: string }[] = [
+        { tool: "myc_code_search", args: { query: "leaf mid" }, argv: ["code", "search", "leaf", "mid"], expect: "src/core/chain.ts" },
+        { tool: "myc_code_grep", args: { literal: "leaf(" }, argv: ["code", "grep", "leaf("], expect: "mid · function" },
+        { tool: "myc_code_symbol", args: { name: "leaf" }, argv: ["code", "symbol", "leaf"], expect: "src/core/chain.ts:1-3" },
+        { tool: "myc_callers", args: { name: "mid", direction: "in" }, argv: ["callers", "mid"], expect: "← useIt" },
+        { tool: "myc_skeleton", args: { path: "src/core/chain.ts" }, argv: ["skeleton", "src/core/chain.ts"], expect: "export function mid(n: number): number" },
+        { tool: "myc_code_map", args: {}, argv: ["code", "map"], expect: "src/core" },
+      ];
+
+      const mcp = new McpSession(dir);
+      try {
+        await mcp.request("initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "e2e", version: "0" },
+        });
+        await mcp.notify("notifications/initialized");
+        const list = await mcp.request("tools/list");
+        const names = (list.result!["tools"] as { name: string }[]).map((t) => t.name);
+        expect(names).toEqual(expect.arrayContaining(questions.map((q) => q.tool)));
+
+        // 1. Свежий воркспейс, индекса нет: каждый инструмент отказывает
+        //    precond.no_index и называет команду — не пустая выдача и не падение.
+        for (const q of questions) {
+          const r = await mcp.call(q.tool, q.args);
+          expect(r.error).toBeUndefined();
+          expect({ tool: q.tool, isError: r.result!.isError }).toEqual({ tool: q.tool, isError: true });
+          const t = r.result!.content![0]!.text;
+          expect(t).toStartWith("myc: precond.no_index: ");
+          expect(t).toEndWith("\nhint: myc code index");
+        }
+
+        // 2. Индекс построен отдельным процессом — сервер видит его без рестарта.
+        expect((await cli(dir, "code", "index")).code).toBe(0);
+
+        const norm = (s: string): string => s.replace(/\d+ мс/g, "N мс").replace(/из кеша/g, "N мс");
+        for (const q of questions) {
+          const r = await mcp.call(q.tool, q.args);
+          expect({ tool: q.tool, isError: r.result!.isError }).toEqual({ tool: q.tool, isError: undefined });
+          const t = r.result!.content![0]!.text;
+          expect(t).toContain(q.expect);
+          expect(r.result!.structuredContent!["meta"]).toBeDefined();
+          // Тот же вопрос из терминала, отдельным процессом: текст тот же.
+          const term = await cli(dir, ...q.argv);
+          expect(term.code).toBe(0);
+          expect({ tool: q.tool, text: norm(t) }).toEqual({ tool: q.tool, text: norm(term.out) });
+        }
       } finally {
         await mcp.close();
       }

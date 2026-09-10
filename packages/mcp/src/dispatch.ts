@@ -180,9 +180,14 @@ function optBool(args: Args, key: string): boolean {
 // ---------------------------------------------------------------------------
 
 async function runJson(runCli: RunCli, argv: readonly string[]): Promise<Envelope> {
+  return runEnvelope(runCli, [...argv, "--json"]);
+}
+
+/** Прогон, в argv которого `--json` уже стоит на своём месте. */
+async function runEnvelope(runCli: RunCli, argv: readonly string[]): Promise<Envelope> {
   let out: CliOutcome;
   try {
-    out = await runCli([...argv, "--json"]);
+    out = await runCli(argv);
   } catch (e) {
     throw new ToolError("internal.unexpected", e instanceof Error ? e.message : String(e));
   }
@@ -747,6 +752,118 @@ async function toolLink(deps: DispatchDeps, args: Args): Promise<CallToolResult>
 }
 
 // ---------------------------------------------------------------------------
+// код: инструмент = команда CLI (memory-5h06ty5sz38c)
+// ---------------------------------------------------------------------------
+
+/**
+ * Инструмент кода не считает ничего сам: он собирает argv той же команды,
+ * которую набрал бы человек, и отдаёт её ответ — текст дословно, конверт в
+ * structuredContent. Своего слоя, в котором ответ мог бы разойтись с
+ * терминалом, здесь нет; всё, что остаётся на долю этого файла, — перевод
+ * аргументов во флаги, и именно его стережёт code.parity.test.ts.
+ *
+ * Отказ команды доезжает как есть. `precond.no_index` («индекс не построен»,
+ * hint `myc code index`) и `notfound.symbol` — два разных ответа с разными
+ * кодами, и превращать первый в пустую выдачу здесь нечем.
+ *
+ * Позиционный аргумент идёт после `--`: литерал `--limit` или имя `-x` иначе
+ * съел бы разбор флагов, и grep ответил бы про другой вопрос. `--json` поэтому
+ * встаёт ДО разделителя — после него он уже позиционный.
+ */
+async function codeRead(
+  deps: DispatchDeps,
+  head: readonly string[],
+  positional?: string,
+): Promise<CallToolResult> {
+  const tail = positional !== undefined ? ["--", positional] : [];
+  const [text, env] = await Promise.all([
+    runText(deps.runCli, [...head, ...tail]),
+    runEnvelope(deps.runCli, [...head, "--json", ...tail]),
+  ]);
+  if (!env.ok) return envelopeFailure(env);
+  return textResult(text, { ...env.data, meta: metaOf(env) });
+}
+
+/** Непустая строка как есть, без trim: пробелы в литерале grep — часть вопроса. */
+function reqRaw(args: Args, key: string): string {
+  const v = args[key];
+  if (typeof v !== "string" || v.length === 0) {
+    throw new ToolError("usage.missing", `нужен параметр '${key}'`);
+  }
+  return v;
+}
+
+/**
+ * Целое от 1 — строкой для флага CLI. Не зажимается в диапазон, как optInt:
+ * зажатый молча лимит — это другой вопрос, чем тот, что задал агент.
+ */
+function optCount(args: Args, key: string): string | undefined {
+  const v = args[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+    throw new ToolError("usage.invalid", `'${key}' — целое от 1`);
+  }
+  return String(v);
+}
+
+function flagIf(argv: string[], flag: string, value: string | undefined): void {
+  if (value !== undefined) argv.push(flag, value);
+}
+
+async function toolCodeSearch(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  const query = reqStr(args, "query");
+  const head = ["code", "search"];
+  flagIf(head, "--limit", optCount(args, "limit"));
+  return codeRead(deps, head, query);
+}
+
+async function toolCodeGrep(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  const literal = reqRaw(args, "literal");
+  const head = ["code", "grep"];
+  if (optBool(args, "ignore_case")) head.push("--ignore-case");
+  const langs = strList(args, "lang");
+  if (langs.length > 0) head.push("--lang", langs.join(","));
+  flagIf(head, "--limit", optCount(args, "limit"));
+  return codeRead(deps, head, literal);
+}
+
+async function toolCodeSymbol(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  return codeRead(deps, ["code", "symbol"], reqStr(args, "name"));
+}
+
+async function toolCallers(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  const name = reqStr(args, "name");
+  const head = ["callers"];
+  // direction, depth и kind проверяет КОМАНДА: её отказ и есть ответ, а
+  // вторая проверка здесь рано или поздно разошлась бы с первой текстом.
+  flagIf(head, "--direction", optStr(args, "direction"));
+  const depth = args["depth"];
+  if (depth !== undefined) {
+    if (typeof depth !== "number" && typeof depth !== "string") {
+      throw new ToolError("usage.invalid", "'depth' — целое от 1 или \"all\"");
+    }
+    head.push("--depth", String(depth));
+  }
+  const kinds = strList(args, "kind");
+  if (kinds.length > 0) head.push("--kind", kinds.join(","));
+  flagIf(head, "--limit", optCount(args, "limit"));
+  return codeRead(deps, head, name);
+}
+
+async function toolSkeleton(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  const path = reqStr(args, "path");
+  const head = ["skeleton"];
+  if (optBool(args, "exported")) head.push("--exported");
+  return codeRead(deps, head, path);
+}
+
+async function toolCodeMap(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  const head = ["code", "map"];
+  flagIf(head, "--top", optCount(args, "top"));
+  return codeRead(deps, head);
+}
+
+// ---------------------------------------------------------------------------
 
 export type ToolHandler = (deps: DispatchDeps, args: Args) => Promise<CallToolResult>;
 
@@ -758,6 +875,12 @@ const HANDLERS: Readonly<Record<string, ToolHandler>> = {
   myc_remember: toolRemember,
   myc_show: toolShow,
   myc_link: toolLink,
+  myc_code_search: toolCodeSearch,
+  myc_code_grep: toolCodeGrep,
+  myc_code_symbol: toolCodeSymbol,
+  myc_callers: toolCallers,
+  myc_skeleton: toolSkeleton,
+  myc_code_map: toolCodeMap,
 };
 
 export type Dispatch = (name: string, args: Args) => Promise<CallToolResult>;
