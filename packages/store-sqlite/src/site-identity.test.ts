@@ -88,7 +88,7 @@ describe("наблюдение экземпляра на настоящей ФС
     expect(mid.ino).toBe(before.ino);
     expect(after.ino).toBe(before.ino);
     expect(sameInstance(before, after)).toBe(true);
-  });
+  }, 30_000); // VACUUM и чекпоинт на настоящей ФС: в CI 0.3.2 не уложились в стандартные 5 с
 
   test("симлинк на базу — тот же экземпляр: identity берётся с цели, не с ссылки", () => {
     const dir = workspace("symlink");
