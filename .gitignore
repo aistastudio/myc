@@ -1,4 +1,5 @@
-# graft's local graph cache — regenerable, not committed (run `graft build`).
+# graft здесь больше не используется (его заменил myc code), но глобальный хук
+# graft для Codex пишет graft/.cache/ в каждом репозитории, где его запускают.
 /graft/
 
 # Bun / TypeScript build outputs
@@ -23,9 +24,6 @@ dist/
 .myc/hooks.json
 .myc/bootstrap.cache.json
 .myc/projections/
-
-# graft — локальные помощники с путями конкретной машины, генерируются `graft init`
-/.claude/helpers/graft-*.cjs
 
 # .claude/ создаётся командой `myc wire` под конкретную машину и набор
 # инструментов: хуки ссылаются на локальные пути, а settings.json смешивает
