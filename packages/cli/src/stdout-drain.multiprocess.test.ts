@@ -106,9 +106,18 @@ async function reference(...args: string[]): Promise<{ out: Buffer; code: number
   return { out: readFileSync(out), code };
 }
 
-/** Последняя строка code grep — время в мс; от прогона к прогону оно разное. */
+/**
+ * Последняя строка code grep — время в ms; от прогона к прогону оно разное.
+ * Нормализация ОБЯЗАНА сработать: в 0.3.2 вывод перевели («мс» → «ms»), шаблон
+ * молча перестал совпадать, и тест проходил лишь тогда, когда оба прогона
+ * случайно укладывались в одинаковое число мс (локально — да, в CI 2 ≠ 3).
+ * Промах шаблона — теперь падение с объяснением, а не мигание.
+ */
 function stable(b: Buffer): string {
-  return b.toString("utf8").replace(/\d+ мс\n$/u, "N мс\n");
+  const text = b.toString("utf8");
+  const out = text.replace(/\d+ ms\n$/u, "N ms\n");
+  if (out === text) throw new Error(`нормализация времени не сработала — последняя строка: ${JSON.stringify(text.slice(-80))}`);
+  return out;
 }
 
 beforeAll(async () => {
