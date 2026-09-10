@@ -366,6 +366,132 @@ export async function run(
   return { code, stdout: chunks(), ...warnStderr };
 }
 
+// ---------------------------------------------------------------------------
+// Выход процесса: только после слива stdout/stderr (memory-vzst83nfmp3q)
+// ---------------------------------------------------------------------------
+
+/**
+ * ПОЧЕМУ НЕ ПРОСТО process.exit ПОСЛЕ write. Запись в pipe у Bun асинхронна:
+ * ядро берёт столько, сколько влезает в буфер пайпа (64 КБ на macOS), а
+ * остаток ждёт в очереди процесса. `process.exit` сразу после `write` эту
+ * очередь выбрасывал: `myc code grep import --limit 5000` в файл — 226087
+ * байт, через `| cat` — ровно 65536, код 0 и ни слова об обрыве. Агент читает
+ * myc именно через pipe.
+ *
+ * ПОЧЕМУ НЕ process.exitCode БЕЗ exit. Тогда процесс живёт, пока жив хоть один
+ * handle — воркер пула разбора, таймер фона, сервер viz. Замер на Bun 1.3.14:
+ * `exitCode` при живом `setInterval` — процесс не завершается вовсе.
+ *
+ * ПОЧЕМУ НЕ БАРЬЕР `write("", cb)`. У Bun колбэк пустой записи зовётся сразу,
+ * не дожидаясь очереди: замер — 65536 байт из 300000. Бесполезны и
+ * `writableLength`/`writableNeedDrain`: у stdout Bun они 0 и false при
+ * полной очереди.
+ *
+ * ЧТО ДЕЛАЕТСЯ. Каждая непустая запись в поток считается, пока её колбэк не
+ * пришёл, — а Bun зовёт его, когда байты ушли в fd, и по порядку записей.
+ * Считаются ВСЕ записи процесса, а не только вывод RunResult: MCP-сервер и
+ * viz пишут в stdout сами, и их хвост тоже терялся бы на выходе. Выход —
+ * когда очередь пуста, и всё равно через `process.exit`: handle'ы значения не
+ * имеют.
+ *
+ * ЧИТАТЕЛЬ УШЁЛ РАНО (`myc … | head -1`). Колбэк всё равно приходит (у Bun —
+ * с EPIPE или без него), SIGPIPE Bun игнорирует; колбэк с ошибкой помечает
+ * поток сломанным, и ждать остальных уже не нужно. Выход — с кодом САМОЙ
+ * команды, без стека и без сообщения: отказ читать дальше — решение
+ * читателя, а не ошибка команды, и под `pipefail` код сигнала читался бы как
+ * её провал.
+ *
+ * ЧЕГО ЗДЕСЬ СОЗНАТЕЛЬНО НЕТ — таймаута слива. Живой читатель, который не
+ * читает, держит myc так же, как держит `cat` любого файла; выйти по таймеру
+ * значит вернуть ровно ту молчаливую обрезку, ради которой всё это.
+ */
+export type WritesSettled = () => Promise<void>;
+
+type WriteCallback = (err?: Error | null) => void;
+
+/** Обернуть `stream.write` счётчиком незавершённых записей. */
+export function trackWrites(stream: NodeJS.WriteStream): WritesSettled {
+  let pending = 0;
+  let broken = false;
+  let waiters: Array<() => void> = [];
+  const wake = (): void => {
+    if (pending > 0 && !broken) return;
+    const ready = waiters;
+    waiters = [];
+    for (const resolve of ready) resolve();
+  };
+  const original = stream.write.bind(stream) as (
+    chunk: unknown,
+    encoding?: unknown,
+    cb?: WriteCallback,
+  ) => boolean;
+  stream.write = ((chunk: unknown, encodingOrCb?: unknown, maybeCb?: unknown): boolean => {
+    const cb = (typeof encodingOrCb === "function" ? encodingOrCb : maybeCb) as
+      | WriteCallback
+      | undefined;
+    const encoding = typeof encodingOrCb === "string" ? encodingOrCb : undefined;
+    const size =
+      typeof chunk === "string"
+        ? chunk.length
+        : chunk instanceof Uint8Array
+          ? chunk.byteLength
+          : 1;
+    // Пустую запись Bun подтверждает сразу, а после EPIPE колбэка можно не
+    // дождаться вовсе: ни то, ни другое считать нельзя.
+    if (size === 0 || broken) return original(chunk, encoding, cb);
+    pending++;
+    return original(chunk, encoding, (err) => {
+      pending--;
+      if (err) broken = true;
+      cb?.(err);
+      wake();
+    });
+  }) as typeof stream.write;
+  // Без слушателя EPIPE, пришедший событием, стал бы необработанной ошибкой
+  // со стеком — ровно тем, что под `| head -1` читается как провал команды.
+  stream.on("error", () => {
+    broken = true;
+    wake();
+  });
+  return () =>
+    pending === 0 || broken ? Promise.resolve() : new Promise<void>((r) => waiters.push(r));
+}
+
+let stdio: { readonly stdout: WritesSettled; readonly stderr: WritesSettled } | null = null;
+
+/**
+ * Поставить счётчики на stdout и stderr процесса. Звать ДО первой записи —
+ * `main.ts` делает это до `run()`; повторный вызов ничего не меняет.
+ */
+export function guardStdio(): { readonly stdout: WritesSettled; readonly stderr: WritesSettled } {
+  if (stdio === null) {
+    stdio = { stdout: trackWrites(process.stdout), stderr: trackWrites(process.stderr) };
+  }
+  return stdio;
+}
+
+/**
+ * Отдать RunResult в stdio и завершить процесс его кодом — после слива.
+ *
+ * stderr пишется ПОСЛЕ слива stdout: при `2>&1` оба потока — один пайп, и
+ * строка ошибки, отправленная раньше хвоста stdout, врезалась бы в его
+ * середину. `exitCode` ставится первым: если Bun закончит цикл сам (все
+ * handle'ы закрылись раньше колбэка), код всё равно будет кодом команды.
+ */
+export async function finish(result: RunResult): Promise<never> {
+  const io = guardStdio();
+  process.exitCode = result.code;
+  if (typeof result.stdout === "string") {
+    process.stdout.write(result.stdout);
+  } else {
+    for (const chunk of result.stdout) process.stdout.write(chunk);
+  }
+  await io.stdout();
+  if (result.stderr !== undefined) process.stderr.write(result.stderr);
+  await io.stderr();
+  process.exit(result.code);
+}
+
 /**
  * Реестр и его наполнение наружу: `@myc/web` пишет через `run()` в ТОМ ЖЕ
  * процессе, а `defaultRegistry` заполняет только `main.ts`. Сервер, поднятый
