@@ -188,8 +188,10 @@ export function buildCard(db: ReadOnlyDb, id: string): CardView | undefined {
   const reachInfo = readReach(attrs as never);
   const repoInfo = readRepo(attrs as never);
   const estimate = attrs["estimate_min"];
+  // Аренда — пара «держатель + срок», как у fmtLease в CLI: колонка срока
+  // NOT NULL DEFAULT 0, и 0 значит «аренды нет», а не полночь 1970 года.
   const lease =
-    row.lease_holder.length > 0 && row.lease_expires !== null
+    row.lease_holder.length > 0 && row.lease_expires !== null && row.lease_expires > 0
       ? { holder: row.lease_holder, expires: row.lease_expires }
       : null;
 

@@ -289,6 +289,20 @@ describe("приёмка W3: карточка со связями — myc show �
     expect(card.blocked_by[0]?.status).toBe("open");
     expect(card.status).toBe("in_progress");
   }, 60_000);
+
+  // memory-3a4b6d4hax96: аренда — пара «держатель + срок», как у fmtLease в
+  // CLI. Срок 0 при записанном держателе — не аренда, иначе клиент нарисует
+  // полночь 1970 года.
+  test("срок аренды 0 — карточка отдаёт lease: null, а не эпоху", async () => {
+    const { w, run } = await ws();
+    const task = await makeTask(run, "держатель без срока");
+    expect((await run(["claim", task, "--lease", "30m", "--json"])).code).toBe(0);
+    w.db.query("UPDATE nodes SET lease_expires = 0 WHERE id = ?1").run(task);
+
+    const card = buildCard(openReadOnly(w.dbPath), task);
+    expect(card?.status).toBe("in_progress");
+    expect(card?.lease).toBeNull();
+  }, 60_000);
 });
 
 describe("приёмка W13 (memory-tje3kp7avp13): нить комментариев на карточке", () => {

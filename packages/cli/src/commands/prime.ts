@@ -95,9 +95,8 @@ import { markHookCall } from "../hooks/counters.ts";
 import {
   flagNum,
   flagStr,
-  fmtAge,
-  fmtClock,
   fmtEstimate,
+  fmtLease,
   fmtPriority,
   personalWorkspaceStatus,
   personalHome,
@@ -225,10 +224,19 @@ export const primeQueries = defineQueries({
   },
   prime_inprogress: {
     name: "prime_inprogress",
-    sql: `SELECT id, title, priority, assignee, lease_expires FROM nodes INDEXED BY ix_nodes_lease
+    sql: `SELECT id, title, priority, assignee, lease_holder, lease_expires FROM nodes INDEXED BY ix_nodes_lease
            WHERE status = 'in_progress' AND scope = ?1 AND kind = 'task' AND deleted_at IS NULL
            ORDER BY lease_expires DESC LIMIT ?2`,
     params: ["scope", "lim"],
+  },
+  // Сколько всего в работе — тот же частичный индекс, спрашивается только
+  // когда показанные строки упёрлись в лимит. Раньше итогом служило число
+  // показанных, и заголовок «IN PROGRESS 3» стоял над 37 задачами в работе.
+  prime_inprogress_count: {
+    name: "prime_inprogress_count",
+    sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_lease
+           WHERE status = 'in_progress' AND scope = ?1 AND kind = 'task' AND deleted_at IS NULL`,
+    params: ["scope"],
   },
 });
 
@@ -427,6 +435,9 @@ export interface PrimeInProgressRow {
   readonly title: string;
   readonly priority: number;
   readonly assignee: string;
+  /** Держатель аренды; пусто — аренды нет (так ввозятся in_progress из beads). */
+  readonly lease_holder: string;
+  /** Срок аренды, мс; 0 — аренды нет. Число, как в хранилище: текст — fmtLease. */
   readonly lease_expires: number;
 }
 
@@ -506,15 +517,21 @@ function collectInProgress(h: StoreHandle): { total: number; items: PrimeInProgr
     title: string;
     priority: number;
     assignee: string;
+    lease_holder: string;
     lease_expires: number;
   }>(QP.prime_inprogress, [h.scope, INPROGRESS_LIMIT]);
+  const total =
+    rows.length < INPROGRESS_LIMIT
+      ? rows.length
+      : (h.driver.one<{ n: number }>(QP.prime_inprogress_count, [h.scope])?.n ?? rows.length);
   return {
-    total: rows.length,
+    total,
     items: rows.map((r) => ({
       id: r.id,
       title: r.title,
       priority: r.priority,
       assignee: r.assignee,
+      lease_holder: r.lease_holder,
       lease_expires: r.lease_expires,
     })),
   };
@@ -844,14 +861,18 @@ function buildSections(d: Omit<PrimeData, "chars" | "truncated" | "cut">, md: bo
   });
 
   if (d.in_progress.length > 0) {
+    // «free» здесь читалось бы как «аренда свободна», а задача в работе: у
+    // неё просто нет исполнителя. Срок аренды — fmtLease (три случая).
     const lines = d.in_progress.map((it) => {
-      const age = fmtAge(Math.max(0, d.now - it.lease_expires));
-      const who = it.assignee.length > 0 ? `@${it.assignee}` : "free";
-      return `${it.id}  ${fmtPriority(it.priority)}  ${it.title}  ${who}  until ${fmtClock(it.lease_expires)} (${age})`;
+      const who = it.assignee.length > 0 ? `@${it.assignee}` : "unassigned";
+      return `${it.id}  ${fmtPriority(it.priority)}  ${it.title}  ${who}  ${fmtLease(it.lease_holder, it.lease_expires, d.now)}`;
     });
     sections.push({
       key: "in_progress",
-      text: [`${h1}IN PROGRESS ${d.in_progress_total}`, ...lines].join("\n"),
+      text: [
+        `${h1}IN PROGRESS ${d.in_progress_total > d.in_progress.length ? `${d.in_progress.length} of ${d.in_progress_total}` : d.in_progress_total}`,
+        ...lines,
+      ].join("\n"),
     });
   }
 

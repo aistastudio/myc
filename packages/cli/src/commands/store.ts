@@ -1488,6 +1488,43 @@ export function fmtAge(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+/** Три состояния аренды задачи — см. {@link fmtLease}. */
+export type LeaseState = "none" | "active" | "expired";
+
+/**
+ * Есть ли у задачи аренда и жива ли она. Аренда — это ПАРА «держатель + срок»:
+ * claim_node пишет обе колонки одним UPDATE, lease_release и lease_close обе
+ * обнуляют (queries.ts). Любая другая комбинация — не аренда: задача, ввезённая
+ * из beads со статусом in_progress, пары не имеет вовсе (дефолт схемы '' и 0),
+ * а срок без держателя некому ни продлить, ни отпустить.
+ *
+ * Граница — та же, что у CAS захвата: чужой claim проходит при
+ * `lease_expires < now`, поэтому ровно в момент истечения аренда ещё действует.
+ */
+export function leaseState(holder: string, expires: number | null | undefined, now: number): LeaseState {
+  if (holder.length === 0 || expires === null || expires === undefined || !(expires > 0)) return "none";
+  return expires < now ? "expired" : "active";
+}
+
+/**
+ * Срок аренды для человека и агента — одна строка на три случая
+ * (memory-3a4b6d4hax96):
+ *   - аренды нет  → `no lease`;
+ *   - действует   → `until 09:55:00Z (in 25m)`;
+ *   - истекла     → `lease expired 3h ago`.
+ *
+ * Прежняя форма `until ${fmtClock(expires)} (${fmtAge(now - expires)})` врала
+ * дважды: у задачи без аренды печатала эпоху 1970 («until 00:00:00Z (20707d)»),
+ * а у настоящей — время С истечения там, где «until 12:00 (3h)» читается как
+ * «осталось 3 часа». Отсюда слово в скобке: `in` — до истечения, `ago` — после.
+ */
+export function fmtLease(holder: string, expires: number | null | undefined, now: number): string {
+  const state = leaseState(holder, expires, now);
+  if (state === "none") return "no lease";
+  const at = expires as number;
+  return state === "active" ? `until ${fmtClock(at)} (in ${fmtAge(at - now)})` : `lease expired ${fmtAge(now - at)} ago`;
+}
+
 /** Оценка из estimate_min: ~20m, ~2h. */
 export function fmtEstimate(minutes: number): string {
   return `~${fmtAge(minutes * 60_000)}`;

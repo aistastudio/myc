@@ -1104,6 +1104,45 @@ describe("карточка узла: смена эпика (S… myc-k7s2f240zkm
   });
 });
 
+// Три случая аренды — те же, что у fmtLease в CLI (memory-3a4b6d4hax96).
+// Прежняя строка «в работе @кто до 12:00» печаталась и после истечения, то
+// есть называла брошенную задачу занятой, а задача из beads без аренды не
+// говорила о ней ничего.
+describe("карточка узла: срок аренды (memory-3a4b6d4hax96)", () => {
+  async function leaseText(over: Partial<CardView>): Promise<string | undefined> {
+    const dom = await boot("#graph", 3, { readOnly: false });
+    dom.cards.set("n0", defaultCardView("n0", over));
+    await openCard(dom, 3);
+    return dom.findCreated((e) => e.className.includes("card-lease"))?.textContent;
+  }
+
+  test("аренда действует — держатель, часы и время ДО истечения", async () => {
+    const t = await leaseText({ status: "in_progress", lease: { holder: "agent7", expires: Date.now() + 25 * 60_000 } });
+    expect(t).toMatch(/^в работе @agent7 до \d{2}:\d{2}:\d{2} \(через 2[45]m\)$/);
+  });
+
+  test("аренда истекла — «истекла … назад», а не «в работе до»", async () => {
+    const t = await leaseText({
+      status: "in_progress",
+      lease: { holder: "agent7", expires: Date.now() - 3 * 3_600_000 - 60_000 },
+    });
+    expect(t).toBe("аренда @agent7 истекла 3h назад");
+  });
+
+  test("в работе без аренды (ввоз из beads) — сказано прямо", async () => {
+    expect(await leaseText({ status: "in_progress", lease: null })).toBe("в работе без аренды");
+  });
+
+  test("срок 0 — не аренда и не полночь 1970", async () => {
+    const t = await leaseText({ status: "in_progress", lease: { holder: "agent7", expires: 0 } });
+    expect(t).toBe("в работе без аренды");
+  });
+
+  test("открытая задача без аренды строки не получает", async () => {
+    expect(await leaseText({ status: "open", lease: null })).toBeUndefined();
+  });
+});
+
 describe("карточка узла: нить комментариев (W13, memory-tje3kp7avp13)", () => {
   test("комментарии агента и человека рисуются в одной ленте и различимы по классу", async () => {
     const dom = await boot("#graph", 3, { readOnly: false });

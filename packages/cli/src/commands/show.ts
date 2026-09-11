@@ -34,10 +34,10 @@ import type { Command, CommandFailure } from "../registry.ts";
 import {
   estimateMin,
   flagStr,
-  fmtAge,
   fmtClock,
   fmtDate,
   fmtEstimate,
+  fmtLease,
   fmtPriority,
   resolveId,
   tagsOf,
@@ -556,10 +556,13 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   if (v.estimate_min !== undefined) extras.push(`est ${fmtEstimate(v.estimate_min)}`);
   if (extras.length > 0) lines.push(`notes     ${extras.join(" · ")}`);
 
+  // Срок — та же fmtLease, что у prime. Задача в работе без аренды (так
+  // ввозятся in_progress из beads) называется прямо: CAS захвата считает её
+  // свободной (lease_expires = 0 < now), а строки lease у неё раньше не было вовсе.
   if (v.lease !== undefined) {
-    const left = v.lease.expires - now;
-    const tail = left > 0 ? `${fmtAge(left)} left` : `expired ${fmtAge(-left)} ago`;
-    lines.push(`lease     ${v.lease.holder} until ${fmtClock(v.lease.expires)} (${tail})`);
+    lines.push(`lease     ${v.lease.holder} · ${fmtLease(v.lease.holder, v.lease.expires, now)}`);
+  } else if (v.kind === "task" && v.status === "in_progress") {
+    lines.push(`lease     ${fmtLease("", 0, now)}`);
   }
 
   if (v.related !== undefined) {

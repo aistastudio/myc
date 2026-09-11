@@ -613,6 +613,25 @@ function commentsSection(id: string, comments: readonly CardComment[], onSent: (
 }
 
 /**
+ * Аренда на карточке — те же три случая, что у `fmtLease` в CLI
+ * (packages/cli/src/commands/store.ts): нет аренды, действует, истекла.
+ * Клиент самодостаточен и импортировать CLI не может, поэтому смысл повторён
+ * здесь. Прежняя строка «в работе @кто до 12:00» печаталась и после истечения,
+ * то есть называла брошенную задачу занятой. Граница — как у CAS захвата:
+ * ровно в момент истечения аренда ещё действует. Задача в работе без аренды
+ * (так ввозятся in_progress из beads) называется прямо, остальные молчат.
+ */
+function leaseLine(c: CardView, now: number): string | null {
+  if (c.lease === null || !(c.lease.expires > 0)) {
+    return c.kind === "task" && c.status === "in_progress" ? "в работе без аренды" : null;
+  }
+  const at = c.lease.expires;
+  return at < now
+    ? `аренда @${c.lease.holder} истекла ${fmtAge(now - at)} назад`
+    : `в работе @${c.lease.holder} до ${fmtTime(at)} (через ${fmtAge(at - now)})`;
+}
+
+/**
  * Связи узла тем же разбором, что у `myc show`: «входит в» у ребёнка,
  * «состав N из M закрыто» с отметками у эпика, блокировки и остальные рёбра.
  * Прогресс считает СЕРВЕР (buildCard), и считает закрытыми: отменённые
@@ -634,11 +653,8 @@ async function fillCardLinks(host: HTMLElement, id: string): Promise<void> {
   if (c.type !== c.kind) {
     host.append(el("div", "card-type", `тип ${c.type} · вид ${c.kind}`));
   }
-  if (c.lease !== null) {
-    host.append(
-      el("div", "mono", `в работе @${c.lease.holder} до ${new Date(c.lease.expires).toLocaleTimeString("ru-RU")}`),
-    );
-  }
+  const lease = leaseLine(c, Date.now());
+  if (lease !== null) host.append(el("div", "mono card-lease", lease));
   if (c.parent !== null) {
     host.append(el("div", "mono", `входит в  ${c.parent.id}  ${c.parent.title}`));
   }

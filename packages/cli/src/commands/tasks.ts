@@ -38,6 +38,7 @@ import {
   flagStr,
   fmtAge,
   fmtClock,
+  fmtLease,
   fmtPriority,
   graphFailure,
   parseDuration,
@@ -986,7 +987,7 @@ export function createReleaseCommand(deps: StoreDeps = realStoreDeps): Command {
         if (lease.holder !== h.actor && !force) {
           return failure(
             "conflict.claimed",
-            `${node.id} is claimed by ${lease.holder} (lease until ${fmtClock(lease.expires)}); releasing someone else's claim must be explicit`,
+            `${node.id} is claimed by ${lease.holder}, ${fmtLease(lease.holder, lease.expires, Date.now())}; releasing someone else's claim must be explicit`,
             ExitCode.CONFLICT,
             `myc release ${node.id} --force`,
           );
