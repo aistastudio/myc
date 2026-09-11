@@ -56,6 +56,7 @@ writing a config that silently won't start.
 ```bash
 ./dist/myc init                     # .myc/ + SQLite + migrations in this repo
 ./dist/myc wire                     # hooks for Claude Code / Codex / opencode / Kimi
+./dist/myc wire --scope user        # the same for agents in git worktrees (Claude Code's user layer)
 ./dist/myc ready                    # what can be picked up right now
 ./dist/myc remember "why X, not Y"  # record a fact or decision
 ./dist/myc recall "how retrieval works"
@@ -64,6 +65,25 @@ writing a config that silently won't start.
 ```
 
 Full command list: `./dist/myc --help`.
+
+**Agents in git worktrees.** `myc wire` writes into the project:
+`.claude/settings.json`, `.mcp.json`. An agent that orca starts in a git
+worktree of a nested repository (`~/orca/workspaces/<repo>/<branch>`) lives in
+the team's tree, where those files are not, even though `myc` itself finds the
+main copy's workspace from there. `myc wire --scope user` puts the same into
+Claude Code's user layer, which every session reads:
+`~/.claude/helpers/myc-hooks.mjs`, SessionStart/PreCompact/PostToolUse hooks and
+`Bash(myc <command>:*)` rules in `~/.claude/settings.json` (merged node by node;
+the hooks of orca, herdr and other tools stay byte for byte), the skill in
+`~/.claude/skills/myc`, and the MCP server through `claude mcp add --scope user`.
+Before anything else the helper checks, without starting myc, whether there is
+a workspace here (a git worktree is resolved through its main copy), and stays
+silent when there is none or the project wires myc itself: in a project without
+myc the hook costs one node start, and prime never arrives twice. Outside a
+workspace the MCP server offers zero tools and no instructions. The user's
+`statusLine` is never touched (it belongs to orca), and `--hook-mode replace`
+is refused here. The journal is `~/.myc/wire-user.json`; `myc unwire --scope
+user` restores the settings node by node and removes the MCP server.
 
 ## Heavy commands take turns
 

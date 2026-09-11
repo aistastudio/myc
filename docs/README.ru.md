@@ -47,6 +47,9 @@ bun run build           # собирает один бинарь: dist/myc (dist
 # по желанию — хук, который сам ставит тяжёлые команды агента (полный bun test, сборки) в очередь машины
 ./dist/myc wire --queue-hook
 
+# агентам в git worktree и вложенных репозиториях — то же в пользовательском слое Claude Code (~/.claude)
+./dist/myc wire --scope user
+
 # что можно взять в работу прямо сейчас
 ./dist/myc ready
 
@@ -64,6 +67,25 @@ bun run build           # собирает один бинарь: dist/myc (dist
 ```
 
 Полный список команд: `./dist/myc --help`, детали каждой — `myc <command> --help`.
+
+**Агенты в git worktree.** `myc wire` пишет в проект: `.claude/settings.json`,
+`.mcp.json`. Агент, которого orca запускает в git worktree вложенного
+репозитория (`~/orca/workspaces/<repo>/<ветка>`), живёт в дереве командного
+репозитория, и этих файлов там нет, хотя сам `myc` из worktree находит
+воркспейс основной копии. `myc wire --scope user` ставит то же в
+пользовательский слой Claude Code, который читает любая сессия:
+`~/.claude/helpers/myc-hooks.mjs`, хуки SessionStart/PreCompact/PostToolUse и
+правила `Bash(myc <команда>:*)` в `~/.claude/settings.json` (слиянием по узлам,
+чужие хуки orca, herdr и других инструментов остаются байт в байт), навык
+`~/.claude/skills/myc`, MCP-сервер через `claude mcp add --scope user`. Helper
+этого слоя сначала сам, без запуска myc, проверяет, есть ли здесь воркспейс
+(git worktree — через основную копию), и молчит, если его нет или проект
+проводит myc сам, — в проектах без myc хук стоит один старт node, а prime не
+приходит дважды. MCP-сервер вне воркспейса отдаёт ноль инструментов и ни
+строки инструкций. `statusLine` пользователя не трогается (она принадлежит
+orca), `--hook-mode replace` здесь запрещён. Журнал — `~/.myc/wire-user.json`;
+`myc unwire --scope user` возвращает настройки к прежним по узлам и снимает
+MCP-сервер.
 
 ## Тяжёлые команды — по очереди
 

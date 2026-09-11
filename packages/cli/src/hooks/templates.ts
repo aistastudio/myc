@@ -165,6 +165,234 @@ process.exit(0);
 }
 
 /**
+ * Пользовательский слой Claude Code (`myc wire --scope user`,
+ * memory-bh5pbp4nyjwk).
+ *
+ * ЗАЧЕМ. orca создаёт агентам git worktree вложенных репозиториев вне дерева
+ * воркспейса (`~/orca/workspaces/<repo>/<ветка>`). Для Claude Code проект такого
+ * агента — сам worktree, а в нём только файлы командного репозитория: ни
+ * хуков myc, ни MCP. Единственный слой, который Claude Code читает там и
+ * который не принадлежит команде, — пользовательский (`~/.claude`).
+ *
+ * ЦЕНА ЭТОГО СЛОЯ. Файл отсюда зовёт КАЖДАЯ сессия на машине — и в проектах
+ * без myc. Поэтому до всего остального стоит сторож без единого процесса:
+ *   1. есть ли здесь воркспейс myc — тот же подъём, что у самого myc
+ *      (commands/wsfind.ts): первый `.myc/myc.db` вверх, домашний каталог —
+ *      только как стартовый (его `.myc` — личный ярус); из git worktree —
+ *      тот же подъём от того же места в основном дереве (`.git` — файл
+ *      `gitdir: …`, внутри служебного каталога — `commondir`);
+ *   2. не проводит ли проект myc сам: его `.claude/settings.json` (или
+ *      `.local`) зовёт СВОЙ `.claude/helpers/<mark>`, и этот helper на месте —
+ *      тогда работу делает он, а этот молчит, иначе prime попал бы в контекст
+ *      дважды (хуки пользовательского и проектного слоя Claude Code запускает
+ *      оба, одинаковые команды схлопывает, а наши разные).
+ * Нет воркспейса или проводка своя — выход 0 и пустой вывод, myc не
+ * запускается: хук стоит один старт node.
+ *
+ * Сторож — текст, который вклеивается в начало helper'а: так же он встаёт и
+ * перед helper'ом очереди (его текст живёт в queue-hook.ts и здесь не
+ * меняется). Импорты и имена — с префиксом `__myc`, чтобы не столкнуться с
+ * именами того, перед чем он стоит; импорты ESM поднимаются, так что
+ * `process.exit(0)` сторожа срабатывает раньше любого кода helper'а.
+ */
+export function userScopeGuard(selfDir: string, mark: string): string {
+  return `import * as __mycFs from "node:fs";
+import * as __mycPath from "node:path";
+import { homedir as __mycHomedir } from "node:os";
+
+// ---- user-layer guard: decides first and starts no process ----------------
+// This helper lives in the user layer, so every Claude Code session on the
+// machine runs it, with myc or without. It goes on only when (1) there is a
+// myc workspace here and (2) the project does not wire myc itself.
+const __MYC_SELF_DIR = ${JSON.stringify(selfDir)};
+const __MYC_MARK = ${JSON.stringify(mark)};
+
+// The walk-up of myc itself: the first .myc/myc.db upwards. The home
+// directory counts only as the starting point: its .myc is the personal
+// tier, not a project's workspace.
+function __mycClimb(start) {
+  const boundary = __mycPath.resolve(process.env.MYC_HOME ?? __mycHomedir());
+  const dirs = [];
+  let dir = __mycPath.resolve(start);
+  for (let climbed = false; ; climbed = true) {
+    if (climbed && dir === boundary) break;
+    dirs.push(dir);
+    if (__mycFs.existsSync(__mycPath.join(dir, ".myc", "myc.db"))) return { hit: dir, dirs };
+    const parent = __mycPath.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return { hit: "", dirs };
+}
+
+// A git worktree: .git is a file "gitdir: <dir>", and <dir>/commondir names
+// the shared .git of the main tree. undefined — not a worktree; "" — the
+// worktree's main tree is gone.
+function __mycMainTree(dir) {
+  let text;
+  try {
+    text = __mycFs.readFileSync(__mycPath.join(dir, ".git"), "utf8");
+  } catch {
+    return undefined;
+  }
+  const m = /^gitdir:\\s*(.+?)\\s*$/m.exec(text);
+  if (m === null) return undefined;
+  const gitDir = __mycPath.resolve(dir, m[1]);
+  let common;
+  try {
+    common = __mycPath.resolve(gitDir, __mycFs.readFileSync(__mycPath.join(gitDir, "commondir"), "utf8").trim());
+  } catch {
+    // No commondir: a submodule, or a worktree whose main tree was taken away.
+    if (__mycPath.basename(__mycPath.dirname(gitDir)) !== "worktrees") return undefined;
+    common = __mycPath.dirname(__mycPath.dirname(gitDir));
+    if (__mycPath.basename(common) !== ".git") return undefined;
+  }
+  const main = __mycPath.dirname(common);
+  return __mycFs.existsSync(main) ? main : "";
+}
+
+// The same search myc runs: here, else from the same place in the main tree.
+function __mycWorkspace(start) {
+  const local = __mycClimb(start);
+  if (local.hit !== "") return local.hit;
+  for (const dir of local.dirs) {
+    const main = __mycMainTree(dir);
+    if (main === undefined) continue;
+    if (main === "") return "";
+    const rest = __mycPath.relative(dir, __mycPath.resolve(start));
+    const from = rest.startsWith("..") || __mycPath.isAbsolute(rest) ? __mycPath.resolve(start) : rest === "" ? main : __mycPath.join(main, rest);
+    return __mycClimb(from).hit;
+  }
+  return "";
+}
+
+// The project's own myc wiring: its settings run its own helper (not this
+// file), and that helper exists — then it does the work.
+function __mycProjectWired(dir) {
+  if (!__mycFs.existsSync(__mycPath.join(dir, ".claude", "helpers", __MYC_MARK))) return false;
+  for (const name of ["settings.json", "settings.local.json"]) {
+    let settings;
+    try {
+      settings = JSON.parse(__mycFs.readFileSync(__mycPath.join(dir, ".claude", name), "utf8"));
+    } catch {
+      continue;
+    }
+    const hooks = settings !== null && typeof settings === "object" ? settings.hooks : null;
+    if (hooks === null || typeof hooks !== "object") continue;
+    for (const list of Object.values(hooks)) {
+      if (!Array.isArray(list)) continue;
+      for (const entry of list) {
+        const handlers = entry !== null && typeof entry === "object" && Array.isArray(entry.hooks) ? entry.hooks : [];
+        for (const h of handlers) {
+          const cmd = h !== null && typeof h === "object" ? h.command : undefined;
+          if (typeof cmd === "string" && cmd.includes(__MYC_MARK) && !cmd.includes(__MYC_SELF_DIR)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+{
+  let go = false;
+  try {
+    const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    go = __mycWorkspace(dir) !== "" && !__mycProjectWired(dir);
+  } catch {}
+  if (!go) process.exit(0);
+}
+// ---- end of the user-layer guard -------------------------------------------
+`;
+}
+
+export interface UserHelperOptions extends HelperOptions {
+  /** Абсолютный каталог helper'ов пользовательского слоя: по нему сторож отличает себя от проектного. */
+  readonly selfDir: string;
+  /** myc, выбранный при wire: абсолютный путь или `myc` (PATH). */
+  readonly mycBin: string;
+}
+
+/**
+ * `~/.claude/helpers/myc-hooks.mjs`. Тело — то же, что у проектного helper'а
+ * (claudeHelper): те же события, аргументы, внутренние таймауты и правило
+ * «myc никогда не валит сессию»; отличий три — сторож (userScopeGuard) в
+ * начале, myc, выбранный при wire, и поиск бинаря БЕЗ путей от каталога
+ * проекта: в пользовательском слое проект — чужой репозиторий, и его
+ * `node_modules/.bin/myc` или `dist/myc` к myc отношения не имеют.
+ */
+export function claudeUserHelper(opts: UserHelperOptions): string {
+  const specs = HOOK_SPECS.filter((s) => opts.events.includes(s.event));
+  const limits = specs.map((s) => `  "${s.event}": ${s.innerMs},`).join("\n");
+  const args = specs.map((s) => `  "${s.event}": ${s.argsExpr},`).join("\n");
+  return `#!/usr/bin/env node
+// ${opts.selfDir}/myc-hooks.mjs — generated by \`myc wire --scope user\`; edits will be overwritten.
+//
+// The rule of every myc hook: myc NEVER breaks the agent's session. Any error,
+// any timeout, a missing binary — exit 0 and empty stdout.
+${userScopeGuard(opts.selfDir, "myc-hooks.mjs")}
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const EV = process.argv[2];
+const DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const HOOK_OUTPUT = ${JSON.stringify(opts.hookOutput)};
+const WIRED_BIN = ${JSON.stringify(opts.mycBin)};
+
+const LIMIT = {
+${limits}
+}[EV] ?? 2000;
+
+// MYC_BIN, then the myc chosen by wire, then ~/.myc/bin, then PATH. Nothing
+// relative to the project: in the user layer it is someone else's repository.
+function bin() {
+  const env = process.env.MYC_BIN;
+  if (env && existsSync(env)) return env;
+  if (WIRED_BIN !== "myc" && existsSync(WIRED_BIN)) return WIRED_BIN;
+  const home = join(process.env.HOME ?? "", ".myc/bin/myc");
+  if (existsSync(home)) return home;
+  return "myc";
+}
+
+let payload = {};
+try {
+  payload = JSON.parse(readFileSync(0, "utf8") || "{}");
+} catch {}
+
+const ARGS = {
+${args}
+}[EV];
+
+// post-edit with no file path has nothing to do: exit before spawning.
+if (!ARGS || (EV === "post-edit" && !ARGS[2])) process.exit(0);
+
+try {
+  const r = spawnSync(bin(), ARGS, {
+    cwd: DIR,
+    timeout: LIMIT,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, MYC_HOOK: EV, MYC_HOOK_AGENT: "claude" },
+  });
+  if (r.status === 0 && r.stdout) process.stdout.write(r.stdout);
+} catch {}
+
+process.exit(0);
+`;
+}
+
+/**
+ * Helper очереди для пользовательского слоя: сторож + текст queueHelper()
+ * без изменений (без его первой строки — shebang у файла один). Текст
+ * helper'а очереди принадлежит queue-hook.ts; здесь он только оборачивается.
+ */
+export function withUserScopeGuard(helper: string, selfDir: string, mark: string, header: string): string {
+  const nl = helper.indexOf("\n");
+  if (!helper.startsWith("#!") || nl === -1) throw new Error("helper text without a shebang line: the user-scope guard has nowhere to go");
+  return `${helper.slice(0, nl + 1)}${header}\n${userScopeGuard(selfDir, mark)}${helper.slice(nl + 1)}`;
+}
+
+/**
  * Codex (`.codex/myc-hooks.mjs` + `.codex/hooks.json`).
  *
  * Всё ниже установлено ЧТЕНИЕМ бинаря codex-cli 0.153.4
@@ -749,7 +977,8 @@ name: myc
 description: Project memory, tasks and links. Use it when you need to learn
   the state of the project, take the next task, recall a past decision, record
   a finding, see which tasks relate to the file you are editing, or find where
-  code lives and who calls it.
+  code lives and who calls it. Only in projects with a myc workspace (a .myc
+  directory here, in a parent, or in the main tree of this git worktree).
 ---
 
 # myc

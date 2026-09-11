@@ -23,11 +23,12 @@
  */
 
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
-import type { Command, CommandContext, CommandFailure, Registry } from "../registry.ts";
+import type { Command, CommandContext, CommandFailure, CommandResult, Registry } from "../registry.ts";
 import { flagStr } from "./store.ts";
 import { maybeSpawnUpdateCheck, updateNoticeFor } from "../update-check.ts";
 import { CLI_VERSION } from "../index.ts";
@@ -36,6 +37,7 @@ import {
   isOurStatusLine,
   ourStatusLineCommand,
   readStatusLine,
+  shellQuote,
   STATUSLINE_COMMAND,
   statusLineCommand,
   userSettingsPath,
@@ -45,6 +47,8 @@ import {
   AGENTS_START,
   agentsBlock,
   claudeHelper,
+  claudeUserHelper,
+  withUserScopeGuard,
   CODEX_EVENTS,
   CODEX_HELPER_REL,
   CODEX_NEEDS_REVIEW,
@@ -59,7 +63,14 @@ import {
   type HookEvent,
   type HookSpec,
 } from "../hooks/templates.ts";
-import { QUEUE_ENV, QUEUE_HELPER_MARK, QUEUE_HELPER_REL, queueHelper, queueHookEntry } from "../hooks/queue-hook.ts";
+import {
+  QUEUE_ENV,
+  QUEUE_HELPER_MARK,
+  QUEUE_HELPER_REL,
+  queueHelper,
+  queueHookCommand,
+  queueHookEntry,
+} from "../hooks/queue-hook.ts";
 import { ensureMycGitignore } from "../myc-gitignore.ts";
 
 export const WIRE_JOURNAL = "wire.json";
@@ -1306,7 +1317,16 @@ function mergeJournal(prev: Journal | null, plan: Plan, agents: readonly Harness
 // Команда
 // ---------------------------------------------------------------------------
 
+const SCOPE_FLAG: FlagSpec = {
+  name: "scope",
+  value: "string",
+  description:
+    "project (default) — this tree; user — Claude Code's user layer (~/.claude), for agents in git worktrees " +
+    "and nested repos where the project layer has no myc",
+};
+
 const WIRE_FLAGS: readonly FlagSpec[] = [
+  SCOPE_FLAG,
   { name: "agents", value: "string", description: `${HARNESSES.join(",")} (default: all ${HARNESSES.length})` },
   { name: "dry-run", description: "print every file and change, write nothing" },
   { name: "agents-md", description: "also insert the myc block into AGENTS.md (opt-in)" },
@@ -1423,6 +1443,8 @@ export const probeQueueBin: QueueProbe = (root, env) => {
 export interface WireDeps {
   readonly probeStatusLine: StatusLineProbe;
   readonly probeQueue: QueueProbe;
+  /** `--scope user`: отвечает ли выбранный myc пустым списком инструментов вне воркспейса. */
+  readonly probeMcp: McpProbe;
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
 }
@@ -1448,6 +1470,27 @@ function failure(code: string, msg: string, exit: ExitCode, hint?: string): Comm
   return { ok: false, code, msg, exit, hint };
 }
 
+/** `--scope`: project по умолчанию; null — значение, которого нет. */
+function parseScope(ctx: CommandContext): "project" | "user" | null {
+  const raw = flagStr(ctx, "scope") ?? "project";
+  return raw === "project" || raw === "user" ? raw : null;
+}
+
+/**
+ * Хук на команду, которой в этой сборке нет, — обещание, которое некому
+ * исполнить. Ставим только то, что реально отработает (И2). Один расчёт на
+ * оба слоя: проектный и пользовательский ставят одни и те же события.
+ */
+function availableEvents(registry: Registry): { available: HookEvent[]; skipped: { event: string; reason: string }[] } {
+  const available: HookEvent[] = [];
+  const skipped: { event: string; reason: string }[] = [];
+  for (const spec of HOOK_SPECS) {
+    if (registry.hasTop(spec.command)) available.push(spec.event);
+    else skipped.push({ event: spec.event, reason: `no \`myc ${spec.command}\` command in this build` });
+  }
+  return { available, skipped };
+}
+
 function parseAgents(raw: string | undefined): Harness[] | null {
   if (raw === undefined) return [...HARNESSES];
   const out: Harness[] = [];
@@ -1462,6 +1505,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
   const deps: WireDeps = {
     probeStatusLine: probeStatusLineBin,
     probeQueue: probeQueueBin,
+    probeMcp: probeUserMcpBin,
     env: process.env,
     platform: process.platform,
     ...overrides,
@@ -1479,13 +1523,21 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       "receiving the same stdin, and unwire puts it back byte for byte. --queue-hook adds a " +
       "PreToolUse hook on Bash that rewrites a heavy command (a full test run, a build) into " +
       "`myc run -- <the same command>`, so agents on one machine take turns; without the flag no " +
-      "such hook is written, and unwire removes it.",
+      "such hook is written, and unwire removes it. --scope user wires Claude Code's user layer " +
+      "(~/.claude) instead of the project: for agents in git worktrees and nested repos whose " +
+      "project layer has no myc. Its helper exits at once where there is no myc workspace or the " +
+      "project wires myc itself; foreign hooks on the same event stay (append is the default, " +
+      "replace is refused); statusLine is never touched; the MCP server is registered with " +
+      "`claude mcp add --scope user`; the journal is ~/.myc/wire-user.json.",
     handler: (ctx) => {
       // Фоновая проверка обновлений: no-op по умолчанию, при
       // MYC_UPDATE_CHECK=1 — отсоединённый процесс, которого wire не ждёт.
       // `wire` выбран точкой подключения потому, что это церемония ЧЕЛОВЕКА
       // (настройка агента в проекте), а не команда, которую агент зовёт в работе.
       maybeSpawnUpdateCheck();
+      const scope = parseScope(ctx);
+      if (scope === null) return failure("usage.invalid", "--scope takes project or user", ExitCode.USAGE);
+      if (scope === "user") return wireUser(ctx, registry, deps);
       const root = resolve(ctx.globals.directory ?? process.cwd());
       const agents = parseAgents(flagStr(ctx, "agents"));
       if (agents === null) {
@@ -1503,14 +1555,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         return failure("usage.invalid", "--hook-output takes json or text", ExitCode.USAGE);
       }
 
-      // Хук на команду, которой в этой сборке нет, — обещание, которое некому
-      // исполнить. Ставим только то, что реально отработает (И2).
-      const available: HookEvent[] = [];
-      const skipped: { event: string; reason: string }[] = [];
-      for (const spec of HOOK_SPECS) {
-        if (registry.hasTop(spec.command)) available.push(spec.event);
-        else skipped.push({ event: spec.event, reason: `no \`myc ${spec.command}\` command in this build` });
-      }
+      const { available, skipped } = availableEvents(registry);
       if (!available.includes("pre-compact")) {
         return failure(
           "precond.missing_command",
@@ -1675,6 +1720,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       return { ok: true, data };
     },
     renderHuman: (data) => {
+      if ((data as { scope?: unknown }).scope === "user") return renderWireUser(data as WireUserData);
       const d = data as WireData;
       const verb = d.dry_run ? "would write:" : "written:";
       const lines: string[] = [verb];
@@ -1789,16 +1835,23 @@ function stripJsonNodes(
   return out;
 }
 
-export function createUnwireCommand(): Command {
+export function createUnwireCommand(overrides: Partial<Pick<WireDeps, "env" | "platform">> = {}): Command {
+  const env = overrides.env ?? process.env;
   return {
     name: "unwire",
     summary: "remove exactly what `myc wire` installed, by the .myc/wire.json journal",
-    flags: [{ name: "dry-run", description: "print what would be removed, change nothing" }],
+    flags: [{ name: "dry-run", description: "print what would be removed, change nothing" }, SCOPE_FLAG],
     help:
       "Files changed after we wrote them are left alone and reported: a journal hash mismatch " +
       "means a human edited the file, and removing our node blind would be the same trust " +
-      "breach as writing it blind.",
+      "breach as writing it blind. --scope user undoes `myc wire --scope user` by " +
+      "~/.myc/wire-user.json: myc's hook entries and the permission rules wire added come out of " +
+      "~/.claude/settings.json node by node (everything else stays byte for byte), the helpers " +
+      "and the skill are deleted, the MCP server goes through `claude mcp remove --scope user`.",
     handler: (ctx) => {
+      const scope = parseScope(ctx);
+      if (scope === null) return failure("usage.invalid", "--scope takes project or user", ExitCode.USAGE);
+      if (scope === "user") return unwireUser(ctx, env);
       const root = resolve(ctx.globals.directory ?? process.cwd());
       const jPath = journalPath(root, ctx);
       const raw = fileText(jPath);
@@ -1893,4 +1946,940 @@ export function createUnwireCommand(): Command {
       return `${lines.join("\n")}\n`;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// --scope user: пользовательский слой Claude Code (memory-bh5pbp4nyjwk)
+// ---------------------------------------------------------------------------
+//
+// ЗАЧЕМ — в шапке userScopeGuard (hooks/templates.ts): агенты orca живут в git
+// worktree командных репозиториев, где проектного слоя myc нет и быть не может
+// (командные файлы не наши), а пользовательский слой Claude Code читает всегда.
+//
+// Правила D10 те же, что у проектного wire: целиком пишутся только свои файлы,
+// чужой JSON мержится по узлам, `.myc.bak` рядом, журнал, повтор ничего не
+// меняет. Отличий пять, и каждое — из того, что этот слой один на ВСЕ проекты
+// и ВСЕ инструменты человека:
+//
+// 1. Чужой хук на том же событии — НОРМА, а не конфликт: у пользователя
+//    SessionStart держат orca, herdr, agent-flow, и работать обязаны все.
+//    Режим по умолчанию — append: чужие записи остаются на своих местах байт в
+//    байт, наша встаёт в конец массива при первой установке и обновляется НА
+//    МЕСТЕ при повторной (гнать её в конец при каждом wire значило бы двигать
+//    чужие записи всякий раз, когда их инструмент перепишет себя). `skip` — не
+//    ставить наш хук там, где уже есть чужой. `replace` — отказ: он выселил бы
+//    глобальные хуки других инструментов из всех проектов разом.
+// 2. Файл настроек пишется, только если его раскладка каноническая
+//    (`JSON.stringify(v, null, отступ)`): тогда разбор и обратная запись
+//    оставляют чужое байт в байт. Иначе — отказ: проектный wire в этом случае
+//    переформатирует файл с заметкой, но здесь это глобальные настройки
+//    человека, и переписать в них чужие строки, пусть без потери смысла, нельзя.
+// 3. `statusLine` не читается и не пишется вовсе: глобальная строка
+//    принадлежит orca, и orca её перезаписывает. `--status-line` — отказ.
+// 4. MCP — только через `claude mcp add --scope user`: `~/.claude.json` —
+//    файл состояния, который работающие сессии переписывают сами. Сам файл
+//    myc только ЧИТАЕТ — узнать, стоит ли уже сервер (повтор — «unchanged»).
+// 5. unwire снимает узлы по признаку (путь нашего helper'а в команде, правила
+//    из журнала), а не по хешу всего файла: этот файл правят orca и сам Claude
+//    Code (`/config`, «always allow»), и сверка хеша запретила бы снимать наше
+//    навсегда. Правило, которое стояло у человека ДО wire, журнал не называет
+//    нашим, и unwire его не трогает.
+
+export const USER_JOURNAL = "wire-user.json";
+const USER_MCP_NAME = "myc";
+const USER_MCP_ARGS: readonly string[] = ["mcp", "--profile", "agent"];
+
+export interface UserPaths {
+  readonly home: string;
+  readonly claudeDir: string;
+  readonly settings: string;
+  readonly helpersDir: string;
+  readonly helper: string;
+  readonly queueHelper: string;
+  readonly skill: string;
+  /** Куда `claude mcp add --scope user` кладёт сервер — только читаем. */
+  readonly claudeJson: string;
+  readonly journal: string;
+}
+
+function nonEmpty(v: string | undefined): string | undefined {
+  return v !== undefined && v.length > 0 ? v : undefined;
+}
+
+/**
+ * Пути пользовательского слоя — ТОЛЬКО из переданного окружения, без
+ * os.homedir(): тест с подменённым HOME не должен дотянуться до настоящего
+ * `~/.claude` ни одной веткой. Нет HOME — null, и wire отказывает.
+ *
+ * `claudeJson` проверен запуском claude 2.1.268 на изолированном HOME:
+ * без CLAUDE_CONFIG_DIR сервер пишется в `$HOME/.claude.json`, с ним — в
+ * `$CLAUDE_CONFIG_DIR/.claude.json`, ключ верхнего уровня `mcpServers`.
+ */
+export function userPaths(env: NodeJS.ProcessEnv): UserPaths | null {
+  const home = nonEmpty(env.HOME) ?? nonEmpty(env.USERPROFILE);
+  if (home === undefined) return null;
+  const cfg = nonEmpty(env.CLAUDE_CONFIG_DIR);
+  const claudeDir = cfg ?? join(home, ".claude");
+  const helpersDir = join(claudeDir, "helpers");
+  return {
+    home,
+    claudeDir,
+    settings: join(claudeDir, "settings.json"),
+    helpersDir,
+    helper: join(helpersDir, HELPER_MARK),
+    queueHelper: join(helpersDir, QUEUE_HELPER_MARK),
+    skill: join(claudeDir, "skills", "myc", "SKILL.md"),
+    claudeJson: join(cfg ?? home, ".claude.json"),
+    journal: join(nonEmpty(env.MYC_HOME) ?? home, ".myc", USER_JOURNAL),
+  };
+}
+
+/**
+ * Какой myc получат helper и MCP-сервер пользовательского слоя. Порядок
+ * проектного resolveMycBin без путей от корня проекта (у этого слоя проекта
+ * нет), и найденное пишется АБСОЛЮТНЫМ путём: конфиг личный, а сессии,
+ * запущенные не из терминала, видят другой PATH.
+ */
+export function resolveUserMycBin(env: NodeJS.ProcessEnv, exists: (p: string) => boolean = existsSync): MycBinChoice {
+  const own = nonEmpty(env.MYC_BIN);
+  if (own !== undefined && exists(resolve(own))) return { command: resolve(own), source: "env" };
+  const home = nonEmpty(env.HOME);
+  if (home !== undefined && exists(join(home, ".myc/bin/myc"))) return { command: join(home, ".myc/bin/myc"), source: "home" };
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (dir.length > 0 && isAbsolute(dir) && exists(join(dir, "myc"))) return { command: join(dir, "myc"), source: "path" };
+  }
+  return { command: "myc", source: "none" };
+}
+
+/**
+ * Годится ли myc для MCP пользовательского слоя: вне воркспейса он обязан
+ * отдать ноль инструментов и не отдать instructions. Сервер этого слоя
+ * стартует в КАЖДОЙ сессии на машине; сборка до memory-bh5pbp4nyjwk отдавала
+ * там 13 инструментов, каждый отвечал ws.not_initialized, а instructions
+ * «myc — this project's memory…» ехали в системный промпт всех проектов.
+ * Проверяется запуском в пустом каталоге — церемония человека, не горячий путь.
+ */
+export type McpProbe = (bin: MycBinChoice, env: NodeJS.ProcessEnv) => { readonly ok: true } | { readonly ok: false; readonly why: string };
+
+export const probeUserMcpBin: McpProbe = (bin, env) => {
+  if (bin.source === "none") return { ok: false, why: "no myc executable found (MYC_BIN, ~/.myc/bin/myc, PATH)" };
+  const dir = mkdtempSync(join(tmpdir(), "myc-wire-probe-"));
+  try {
+    const requests = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "myc-wire", version: "0" } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ];
+    const r = Bun.spawnSync([bin.command, "mcp", "--profile", "agent"], {
+      cwd: dir,
+      // Сервер пользовательского слоя Claude Code запускает с cwd = ~/.claude и
+      // CLAUDE_PROJECT_DIR = проект; здесь «проект» — пустой каталог.
+      env: { ...env, CLAUDE_PROJECT_DIR: dir },
+      stdin: Buffer.from(`${requests.map((q) => JSON.stringify(q)).join("\n")}\n`),
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 15_000,
+    });
+    const replies = new Map<number, Record<string, unknown>>();
+    for (const line of r.stdout.toString().split("\n")) {
+      try {
+        const msg = JSON.parse(line) as { id?: unknown; result?: unknown };
+        if (typeof msg.id === "number") replies.set(msg.id, asRecord(msg.result));
+      } catch {
+        // не JSON — не ответ
+      }
+    }
+    const list = replies.get(2);
+    if (list === undefined || !Array.isArray(list["tools"])) {
+      const err = r.stderr.toString().trim().split("\n")[0] ?? "";
+      return { ok: false, why: `${bin.command} mcp did not answer tools/list (exit ${r.exitCode}${err.length > 0 ? `: ${err}` : ""})` };
+    }
+    const tools = (list["tools"] as unknown[]).length;
+    const instructions = replies.get(1)?.["instructions"] !== undefined;
+    if (tools > 0 || instructions) {
+      return {
+        ok: false,
+        why:
+          `${bin.command} mcp outside a myc workspace still serves ${tools} tools${instructions ? " and its instructions" : ""} — ` +
+          "an older build; registered for every project, it would put them into every session",
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, why: `${bin.command} mcp does not start: ${e instanceof Error ? e.message : String(e)}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+/** `claude` из PATH окружения wire; null — нет. */
+function findClaude(env: NodeJS.ProcessEnv): string | null {
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (dir.length > 0 && existsSync(join(dir, "claude"))) return join(dir, "claude");
+  }
+  return null;
+}
+
+function runClaude(exe: string, args: readonly string[], env: NodeJS.ProcessEnv): { code: number; out: string } {
+  try {
+    const r = Bun.spawnSync([exe, ...args], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 60_000 });
+    const out = `${r.stdout.toString()}${r.stderr.toString()}`.trim().split("\n").filter((l) => l.length > 0).pop() ?? "";
+    return { code: r.exitCode ?? -1, out };
+  } catch (e) {
+    return { code: -1, out: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Команда для человека: `claude mcp …` целиком, с кавычками где надо. */
+function claudeLine(args: readonly string[]): string {
+  return ["claude", ...args].map(shellQuote).join(" ");
+}
+
+interface McpServerEntry {
+  readonly command: string;
+  readonly args: readonly string[];
+}
+
+/** Сервер `myc` пользовательского слоя, как лежит в ~/.claude.json; broken — файл не разобрать. */
+function readUserMcpServer(path: string): { readonly value: Record<string, unknown> | undefined; readonly broken: boolean } {
+  const text = fileText(path);
+  if (text === null) return { value: undefined, broken: false };
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isPlainObject(parsed)) return { value: undefined, broken: true };
+    const server = asRecord(parsed["mcpServers"])[USER_MCP_NAME];
+    return { value: isPlainObject(server) ? server : undefined, broken: false };
+  } catch {
+    return { value: undefined, broken: true };
+  }
+}
+
+/** Тот же ли это сервер: stdio с той же командой и аргументами (env `{}` claude пишет сам). */
+function sameServer(entry: Record<string, unknown> | McpServerEntry, want: McpServerEntry): boolean {
+  const rec = entry as Record<string, unknown>;
+  const type = rec["type"];
+  return (
+    (type === undefined || type === "stdio") &&
+    rec["command"] === want.command &&
+    JSON.stringify(asArray(rec["args"])) === JSON.stringify(want.args)
+  );
+}
+
+/** Запись хука пользовательского слоя: абсолютный путь и защита от удалённого helper'а. */
+function userHookEntry(spec: HookSpec, helper: string): Record<string, unknown> {
+  // helper удалили руками — без проверки `node` падал бы с кодом 1, и Claude
+  // Code показывал бы ошибку хука в каждой сессии каждого проекта; `cat`
+  // вычерпывает stdin, чтобы хост не писал в закрытую трубу.
+  const q = shellQuote(helper);
+  const command = `if [ -f ${q} ]; then node ${q} ${spec.event}; else cat >/dev/null; fi`;
+  return {
+    ...(spec.matcher !== undefined ? { matcher: spec.matcher } : {}),
+    hooks: [{ type: "command", command, timeout: hostTimeoutSeconds(spec) }],
+  };
+}
+
+/**
+ * Хук очереди пользовательского слоя: та же запись, что у проекта
+ * (queueHookEntry — матчер, таймаут, фильтр на shell хоста), только helper
+ * указан абсолютным путём. Форма команды принадлежит queue-hook.ts; если она
+ * изменится и подстановка перестанет совпадать — ошибка здесь, а не хук,
+ * молча зовущий несуществующий файл.
+ */
+function userQueueEntry(helper: string, mycCommand: string): Record<string, unknown> {
+  const entry = queueHookEntry(mycCommand);
+  const from = `f="\${CLAUDE_PROJECT_DIR:-.}/${QUEUE_HELPER_REL}"`;
+  const base = queueHookCommand(mycCommand);
+  if (!base.startsWith(from)) throw new Error(`queue hook command no longer starts with ${from}: the user-scope path substitution is out of date`);
+  const command = `f=${shellQuote(helper)}${base.slice(from.length)}`;
+  return { ...entry, hooks: asArray(entry["hooks"]).map((h) => ({ ...asRecord(h), command })) };
+}
+
+/** Наша ли запись пользовательского слоя: команда зовёт один из НАШИХ helper'ов (абсолютный путь). */
+function isUserEntry(entry: unknown, helpers: readonly string[]): boolean {
+  return asArray(asRecord(entry)["hooks"]).some((h) => {
+    const cmd = asRecord(h)["command"];
+    return typeof cmd === "string" && helpers.some((p) => cmd.includes(p));
+  });
+}
+
+/** Каноническая ли раскладка: разбор и обратная запись дают тот же текст. */
+function sameLayout(text: string, value: unknown, indent: string): { readonly ok: boolean; readonly newline: boolean } {
+  const newline = text.endsWith("\n");
+  return { ok: `${JSON.stringify(value, null, indent)}${newline ? "\n" : ""}` === text, newline };
+}
+
+/**
+ * Контейнеры, бывшие в файле ДО нас: пустыми после unwire они остаются.
+ * Считается на каждом прогоне и копится в журнале: контейнер без нашего узла
+ * внутри — не наш, откуда бы он ни взялся; с нашим — не знаем, и он не
+ * добавляется (так же, как у проектного preexistingContainers).
+ */
+function userPreexisting(value: Record<string, unknown>, helpers: readonly string[], ourRules: readonly string[]): string[] {
+  const out: string[] = [];
+  const hooks = value["hooks"];
+  if (isPlainObject(hooks)) {
+    let ours = false;
+    for (const [event, list] of Object.entries(hooks)) {
+      const has = asArray(list).some((e) => isUserEntry(e, helpers));
+      ours = ours || has;
+      if (Array.isArray(list) && !has) out.push(`hooks.${event}`);
+    }
+    if (!ours) out.push("hooks");
+  }
+  const permissions = value["permissions"];
+  if (isPlainObject(permissions)) {
+    const allow = permissions["allow"];
+    const has = Array.isArray(allow) && allow.some((r) => ourRules.includes(r as string));
+    if (Array.isArray(allow) && !has) out.push("permissions.allow");
+    if (!has) out.push("permissions");
+  }
+  return out;
+}
+
+function union(a: readonly string[], b: readonly string[]): string[] {
+  return [...new Set([...a, ...b])];
+}
+
+export interface UserJournal {
+  readonly v: 1;
+  readonly scope: "user";
+  readonly written_at: number;
+  readonly hook_output: "json" | "text";
+  /** Файлы, которые myc пишет целиком (helper'ы, скилл), и их хеш на момент записи. */
+  readonly files: readonly { readonly path: string; readonly hash: string }[];
+  /** Каталоги, которых не было до wire: unwire снимает их, если они пусты. */
+  readonly dirs: readonly string[];
+  readonly settings: {
+    readonly path: string;
+    /** Файла не было до ПЕРВОГО wire: пустым после unwire он удаляется. */
+    readonly created: boolean;
+    readonly preexisting: readonly string[];
+    /** Правила permissions.allow, которые добавил wire (стоявшие до него сюда не попадают). */
+    readonly permissions: readonly string[];
+    /** Наши helper'ы: запись хука, чья команда зовёт один из них, — наша. */
+    readonly helpers: readonly string[];
+    /** `.myc.bak`, записанный последним: снимается, если его не трогали. */
+    readonly backup?: { readonly path: string; readonly hash: string };
+  } | null;
+  /** Сервер `myc` в пользовательском слое; added — его зарегистрировал wire. */
+  readonly mcp: { readonly config: string; readonly command: string; readonly args: readonly string[]; readonly added: boolean } | null;
+}
+
+export function readUserJournal(path: string): UserJournal | null {
+  const raw = fileText(path);
+  if (raw === null) return null;
+  try {
+    const j = JSON.parse(raw) as Partial<UserJournal>;
+    if (!isPlainObject(j) || j.scope !== "user" || !Array.isArray(j.files)) return null;
+    return {
+      v: 1,
+      scope: "user",
+      written_at: typeof j.written_at === "number" ? j.written_at : Number.NaN,
+      hook_output: j.hook_output === "text" ? "text" : "json",
+      files: j.files,
+      dirs: Array.isArray(j.dirs) ? j.dirs : [],
+      settings: isPlainObject(j.settings) ? (j.settings as UserJournal["settings"]) : null,
+      mcp: isPlainObject(j.mcp) ? (j.mcp as UserJournal["mcp"]) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Путь для человека: домашний каталог — `~`. */
+function tilde(path: string, home: string): string {
+  return path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+interface UserFileAction {
+  readonly path: string;
+  readonly kind: ActionKind;
+  readonly content: string;
+  readonly detail: string;
+}
+
+function planUserFile(files: UserFileAction[], path: string, content: string): void {
+  const current = fileText(path);
+  if (current === content) {
+    files.push({ path, kind: "unchanged", content, detail: "up to date" });
+    return;
+  }
+  files.push({
+    path,
+    kind: current === null ? "new" : "rewrite",
+    content,
+    detail: `${(Buffer.byteLength(content, "utf8") / 1024).toFixed(1)} KB`,
+  });
+}
+
+type McpState = "add" | "replace" | "unchanged" | "foreign" | "refused";
+
+interface UserMcpPlan {
+  readonly state: McpState;
+  readonly server: McpServerEntry;
+  /** Что запустит wire (или человек): `claude mcp add --scope user myc -- …`. */
+  readonly add: readonly string[];
+  readonly reason?: string;
+  /** Сервер уже стоит и его ставил wire (для журнала при unchanged). */
+  readonly oursBefore: boolean;
+}
+
+function planUserMcp(
+  paths: UserPaths,
+  bin: MycBinChoice,
+  prev: UserJournal | null,
+  probe: () => ReturnType<McpProbe>,
+  claude: string | null,
+): UserMcpPlan {
+  const server: McpServerEntry = { command: bin.command, args: USER_MCP_ARGS };
+  const add = ["mcp", "add", "--scope", "user", USER_MCP_NAME, "--", bin.command, ...USER_MCP_ARGS];
+  const base = { server, add };
+  const current = readUserMcpServer(paths.claudeJson);
+  if (current.broken) {
+    return { ...base, state: "refused", oursBefore: false, reason: `${paths.claudeJson} is not valid JSON — can't tell whether myc is registered` };
+  }
+  const recorded = prev?.mcp;
+  const oursBefore =
+    recorded?.added === true && current.value !== undefined && sameServer(current.value, { command: recorded.command, args: recorded.args });
+  if (current.value !== undefined && sameServer(current.value, server)) return { ...base, state: "unchanged", oursBefore };
+  if (current.value !== undefined && !oursBefore) {
+    const cmd = [current.value["command"], ...asArray(current.value["args"])].map(String).join(" ");
+    return {
+      ...base,
+      state: "foreign",
+      oursBefore,
+      reason: `mcpServers.myc in ${paths.claudeJson} was not registered by myc wire (${cmd}) — left alone`,
+    };
+  }
+  const checked = probe();
+  if (!checked.ok) return { ...base, state: "refused", oursBefore, reason: checked.why };
+  if (claude === null) return { ...base, state: "refused", oursBefore, reason: "claude is not on PATH" };
+  return { ...base, state: current.value === undefined ? "add" : "replace", oursBefore };
+}
+
+export interface WireUserData {
+  readonly scope: "user";
+  readonly home: string;
+  readonly events: readonly string[];
+  readonly skipped_events: readonly { event: string; reason: string }[];
+  readonly actions: readonly { path: string; action: ActionKind; detail: string }[];
+  readonly mcp: { readonly state: McpState | "added" | "failed"; readonly command: string; readonly reason?: string };
+  readonly untouched: readonly string[];
+  readonly notes: readonly string[];
+  readonly dry_run: boolean;
+  readonly changed: number;
+  readonly journal: string | null;
+}
+
+function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): CommandResult {
+  const refuse = (msg: string): CommandFailure => failure("usage.scope", msg, ExitCode.USAGE);
+  const agentsRaw = flagStr(ctx, "agents");
+  if (agentsRaw !== undefined) {
+    const agents = parseAgents(agentsRaw);
+    if (agents === null) return failure("usage.invalid", `--agents takes ${HARNESSES.join(", ")}`, ExitCode.USAGE);
+    const other = agents.filter((a) => a !== "claude");
+    if (other.length > 0) {
+      return refuse(
+        `--scope user wires Claude Code only; ${other.join(", ")} ${other.length === 1 ? "is" : "are"} not implemented ` +
+          `in the user layer — wire them per project: myc wire --agents ${other.join(",")}`,
+      );
+    }
+  }
+  if (ctx.flags["status-line"] === true) {
+    return refuse(
+      "--status-line is not available with --scope user: the user-level statusLine belongs to orca, which rewrites " +
+        "it — a myc line there would be overwritten, or would cut orca's line off. Put myc's line into a project " +
+        "(myc wire --status-line): there it passes the same input on to the user line",
+    );
+  }
+  if (ctx.flags["agents-md"] === true) return refuse("--agents-md is not available with --scope user: AGENTS.md is a project file");
+  const modeRaw = flagStr(ctx, "hook-mode");
+  if (modeRaw === "replace") {
+    return refuse(
+      "--hook-mode replace is not available with --scope user: it would evict other tools' hooks (orca, herdr, …) " +
+        "from every project on the machine. The default, append, keeps them and adds myc's alongside; skip leaves " +
+        "an event alone when a foreign hook is there",
+    );
+  }
+  if (modeRaw !== undefined && modeRaw !== "append" && modeRaw !== "skip") {
+    return failure("usage.invalid", "--hook-mode takes append or skip with --scope user", ExitCode.USAGE);
+  }
+  const mode: "append" | "skip" = modeRaw === "skip" ? "skip" : "append";
+  const outRaw = flagStr(ctx, "hook-output") ?? "json";
+  if (outRaw !== "json" && outRaw !== "text") return failure("usage.invalid", "--hook-output takes json or text", ExitCode.USAGE);
+  if (deps.platform === "win32") {
+    return failure(
+      "precond.platform",
+      "--scope user is not implemented on Windows: its hook commands are POSIX shell, checked on macOS and Linux only",
+      ExitCode.PRECOND,
+    );
+  }
+  const paths = userPaths(deps.env);
+  if (paths === null) return failure("precond.no_home", "HOME is not set: no user layer of Claude Code to wire", ExitCode.PRECOND);
+  const { available: events, skipped } = availableEvents(registry);
+  if (!events.includes("pre-compact")) {
+    return failure("precond.missing_command", "no `myc absorb-session` command — nothing to install pre-compact on", ExitCode.PRECOND);
+  }
+
+  const home = paths.home;
+  const show = (p: string): string => tilde(p, home);
+  const prev = readUserJournal(paths.journal);
+  const bin = resolveUserMycBin(deps.env);
+  const notes: string[] = [];
+  const untouched: string[] = [];
+  const files: UserFileAction[] = [];
+
+  let queueBin: QueueBinChoice | null = null;
+  if (ctx.flags["queue-hook"] === true) {
+    const probe = deps.probeQueue(paths.claudeDir, deps.env);
+    if (!probe.ok) {
+      return failure(
+        "precond.queue_bin",
+        `nowhere to queue heavy commands through: ${probe.why}. A hook on a myc without \`run\` would turn every heavy ` +
+          "command into an error — nothing written",
+        ExitCode.PRECOND,
+        "MYC_BIN=<path to a fresh myc> myc wire --scope user --queue-hook",
+      );
+    }
+    queueBin = probe.bin;
+  }
+
+  planUserFile(files, paths.helper, claudeUserHelper({ events, hookOutput: outRaw, selfDir: paths.helpersDir, mycBin: bin.command }));
+  planUserFile(files, paths.skill, skillMd());
+
+  // --- ~/.claude/settings.json ------------------------------------------------
+  const settingsText = fileText(paths.settings);
+  const source = readJsonSource(paths.settings);
+  if (source.broken) {
+    return failure("conflict.user_settings", `${paths.settings} is not valid JSON — nothing written`, ExitCode.CONFLICT);
+  }
+  const layout = settingsText === null ? { ok: true, newline: true } : sameLayout(settingsText, source.value, source.indent);
+  if (!layout.ok) {
+    return failure(
+      "conflict.user_settings",
+      `${paths.settings} is not laid out the way JSON.stringify writes it (indent ${JSON.stringify(source.indent)}), so a ` +
+        "node-by-node merge would reformat other tools' entries — nothing written",
+      ExitCode.CONFLICT,
+      "let Claude Code or orca rewrite the file (e.g. change any setting in /config), then run wire again",
+    );
+  }
+  const helpers = [paths.helper, paths.queueHelper];
+  const isOurs = (e: unknown): boolean => isUserEntry(e, helpers);
+  const placements: Placement[] = HOOK_SPECS.filter((s) => events.includes(s.event)).map((s) => ({
+    event: s.claudeEvent,
+    entry: userHookEntry(s, paths.helper),
+  }));
+  // Хук очереди — как у проекта: без флага не ставится, а стоящий наш
+  // сохраняется как лежит (обычный wire обновляет helper'ы, а не выбор человека).
+  let queueEntry: Record<string, unknown> | null = null;
+  for (const entry of asArray(asRecord(source.value["hooks"])["PreToolUse"])) {
+    if (isUserEntry(entry, [paths.queueHelper])) queueEntry = asRecord(entry);
+  }
+  if (queueBin !== null) {
+    queueEntry = userQueueEntry(paths.queueHelper, queueBin.command);
+    notes.push(
+      `${show(paths.settings)}: hooks.PreToolUse[Bash] — in a myc workspace a heavy command goes through \`myc run -- …\` ` +
+        `with ${queueBin.command} (${queueBin.source}); approved without asking only when your own rules allow the original command`,
+    );
+  }
+  if (queueEntry !== null) {
+    placements.push({ event: "PreToolUse", entry: queueEntry });
+    planUserFile(
+      files,
+      paths.queueHelper,
+      withUserScopeGuard(
+        queueHelper(),
+        paths.helpersDir,
+        QUEUE_HELPER_MARK,
+        "// User-layer copy, generated by `myc wire --scope user --queue-hook`: the same helper behind a guard that " +
+          "lets it act only in a myc workspace whose project does not run its own queue hook.",
+      ),
+    );
+  } else {
+    untouched.push(`${show(paths.settings)}:hooks.PreToolUse (needs --queue-hook)`);
+  }
+
+  const value: Record<string, unknown> = { ...source.value };
+  const hooks = asRecord(value["hooks"]);
+  const nodes: string[] = [];
+  for (const { event, entry } of placements) {
+    const existing = asArray(hooks[event]);
+    const foreign = existing.filter((e) => !isOurs(e));
+    const ours = existing.length > foreign.length;
+    if (!ours && foreign.length > 0 && mode === "skip") {
+      notes.push(`${show(paths.settings)}: hooks.${event} — a foreign hook is there, myc's not installed (--hook-mode skip)`);
+      continue;
+    }
+    let next: unknown[];
+    if (ours) {
+      // На месте: чужие записи вокруг нашей не двигаются никогда.
+      next = [];
+      let placed = false;
+      for (const e of existing) {
+        if (!isOurs(e)) next.push(e);
+        else if (!placed) {
+          next.push(entry);
+          placed = true;
+        }
+      }
+    } else {
+      next = [...existing, entry];
+      if (foreign.length > 0) {
+        notes.push(
+          `${show(paths.settings)}: hooks.${event} — ${foreign.length} foreign ${foreign.length === 1 ? "entry stays" : "entries stay"} ` +
+            "byte for byte; Claude Code runs them and myc's side by side",
+        );
+      }
+    }
+    hooks[event] = next;
+    nodes.push(`hooks.${event}`);
+  }
+  if (nodes.length > 0) value["hooks"] = hooks;
+
+  const rules = mycPermissions(registry);
+  const permissions = asRecord(value["permissions"]);
+  const allow = asArray(permissions["allow"]);
+  const addedRules = rules.filter((r) => !allow.includes(r));
+  if (addedRules.length > 0) {
+    permissions["allow"] = [...allow, ...addedRules];
+    value["permissions"] = permissions;
+    nodes.push(`permissions.allow[${addedRules.length === 1 ? addedRules[0] : `Bash(myc <command>:*) ×${addedRules.length}`}]`);
+  }
+  const broad = allow.find((r) => r === LEGACY_PERMISSION || r === "Bash(myc run:*)");
+  if (broad !== undefined) {
+    notes.push(
+      `${show(paths.settings)}: permissions.allow has ${String(broad)}, so \`myc run -- <any command>\` runs without asking ` +
+        "in every project; wire did not write it and leaves it alone — remove it by hand",
+    );
+  }
+  const settingsContent = `${JSON.stringify(value, null, source.indent)}${layout.newline ? "\n" : ""}`;
+  const settingsKind: ActionKind = settingsText === settingsContent ? "unchanged" : settingsText === null ? "new" : "merge";
+  untouched.push(`${show(paths.settings)}:statusLine (the user line belongs to orca)`);
+
+  // --- MCP ---------------------------------------------------------------------
+  const claude = findClaude(deps.env);
+  const mcp = planUserMcp(paths, bin, prev, () => deps.probeMcp(bin, deps.env), claude);
+  if (mcp.state !== "unchanged" && mcp.state !== "foreign") {
+    notes.push(
+      `${show(paths.claudeJson)} is written by \`claude mcp\` itself (it keeps its own backup under ${show(paths.claudeDir)}/backups); ` +
+        "running sessions rewrite that file, so myc only reads it",
+    );
+  }
+  if (mcp.state === "foreign" && mcp.reason !== undefined) notes.push(mcp.reason);
+
+  const dryRun = ctx.flags["dry-run"] === true;
+  const settingsAction = { path: paths.settings, action: settingsKind, detail: nodes.length > 0 && settingsKind !== "unchanged" ? `+${countNodes(nodes.length)}: ${nodes.join(", ")}` : "up to date" };
+  let mcpOutcome: WireUserData["mcp"] = {
+    state: mcp.state,
+    command: claudeLine(mcp.add),
+    ...(mcp.reason !== undefined ? { reason: mcp.reason } : {}),
+  };
+  let journal: string | null = null;
+
+  if (!dryRun) {
+    // Файл настроек мог измениться между чтением и записью (его правят orca и
+    // сессии Claude Code): тогда ничего не пишем — свежий прогон спланирует заново.
+    if (fileText(paths.settings) !== settingsText) {
+      return failure(
+        "conflict.user_settings_changed",
+        `${paths.settings} changed while wire was planning — nothing written`,
+        ExitCode.CONFLICT,
+        "myc wire --scope user",
+      );
+    }
+    const wanted = [paths.claudeDir, paths.helpersDir, dirname(dirname(paths.skill)), dirname(paths.skill), dirname(paths.journal)];
+    const madeDirs = wanted.filter((d) => !existsSync(d));
+    // `.myc.bak` своих файлов — тоже созданные нами файлы: журнал знает их
+    // хеш, и unwire снимает их, если их с тех пор не трогали.
+    const baks: { path: string; hash: string }[] = [];
+    for (const f of files) {
+      if (f.kind === "unchanged") continue;
+      mkdirSync(dirname(f.path), { recursive: true });
+      const before = fileText(f.path);
+      if (before !== null) {
+        copyFileSync(f.path, `${f.path}${BAK_SUFFIX}`);
+        baks.push({ path: `${f.path}${BAK_SUFFIX}`, hash: sha256(before) });
+      }
+      writeFileSync(f.path, f.content);
+    }
+    let backup = prev?.settings?.backup;
+    if (settingsKind !== "unchanged") {
+      mkdirSync(dirname(paths.settings), { recursive: true });
+      if (settingsText !== null) {
+        const bak = `${paths.settings}${BAK_SUFFIX}`;
+        copyFileSync(paths.settings, bak);
+        backup = { path: bak, hash: sha256(settingsText) };
+      }
+      writeFileSync(paths.settings, settingsContent);
+    }
+
+    let added = mcp.state === "unchanged" ? mcp.oursBefore : false;
+    if ((mcp.state === "add" || mcp.state === "replace") && claude !== null) {
+      let ok = true;
+      if (mcp.state === "replace") {
+        const r = runClaude(claude, ["mcp", "remove", "--scope", "user", USER_MCP_NAME], deps.env);
+        if (r.code !== 0) {
+          ok = false;
+          mcpOutcome = { state: "failed", command: claudeLine(mcp.add), reason: `claude mcp remove: exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` };
+        }
+      }
+      if (ok) {
+        const r = runClaude(claude, mcp.add, deps.env);
+        if (r.code === 0) {
+          added = true;
+          mcpOutcome = { state: "added", command: claudeLine(mcp.add) };
+        } else {
+          mcpOutcome = { state: "failed", command: claudeLine(mcp.add), reason: `exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` };
+        }
+      }
+    }
+
+    const rulesOurs = union(prev?.settings?.permissions ?? [], addedRules);
+    const doc: UserJournal = {
+      v: 1,
+      scope: "user",
+      written_at: Date.now(),
+      hook_output: outRaw,
+      files: [
+        ...(prev?.files ?? []).filter((e) => !files.some((f) => f.path === e.path) && !baks.some((b) => b.path === e.path)),
+        ...files.map((f) => ({ path: f.path, hash: sha256(f.content) })),
+        ...baks,
+      ],
+      dirs: union(prev?.dirs ?? [], madeDirs),
+      settings: {
+        path: paths.settings,
+        created: prev?.settings?.created ?? settingsText === null,
+        preexisting: union(prev?.settings?.preexisting ?? [], userPreexisting(source.value, helpers, rulesOurs)),
+        permissions: rulesOurs,
+        helpers: union(prev?.settings?.helpers ?? [], helpers),
+        ...(backup !== undefined ? { backup } : {}),
+      },
+      mcp:
+        added || mcp.state === "unchanged"
+          ? { config: paths.claudeJson, command: mcp.server.command, args: mcp.server.args, added }
+          : (prev?.mcp ?? null),
+    };
+    try {
+      mkdirSync(dirname(paths.journal), { recursive: true });
+      writeFileSync(paths.journal, `${JSON.stringify(doc, null, 2)}\n`);
+      journal = paths.journal;
+    } catch (e) {
+      ctx.warn(
+        "degraded.journal",
+        `journal ${paths.journal} not written (${e instanceof Error ? e.message : String(e)}): myc unwire --scope user won't be able to remove the hooks`,
+      );
+    }
+  }
+
+  for (const skip of skipped) ctx.warn("degraded.hook_missing", `hook ${skip.event} not installed: ${skip.reason}`);
+  if (bin.source === "none") {
+    ctx.warn(
+      "degraded.bin_unresolved",
+      "no myc executable found: not in MYC_BIN, ~/.myc/bin/myc or PATH — the helper falls back to `myc` on the session's PATH",
+    );
+  }
+  if (mcpOutcome.state === "refused" || mcpOutcome.state === "failed") {
+    ctx.warn(
+      "degraded.mcp_unregistered",
+      `MCP server myc ${dryRun ? "would not be" : "not"} registered in the user layer: ${mcpOutcome.reason ?? "unknown reason"}. ` +
+        `Hooks, skill and permissions ${dryRun ? "would be" : "are"} in place; to register it yourself: ${mcpOutcome.command}`,
+    );
+  }
+
+  const actions = [
+    ...files.map((f) => ({ path: f.path, action: f.kind, detail: f.detail })),
+    settingsAction,
+  ];
+  const data: WireUserData = {
+    scope: "user",
+    home,
+    events,
+    skipped_events: skipped,
+    actions,
+    mcp: mcpOutcome,
+    untouched,
+    notes,
+    dry_run: dryRun,
+    changed: actions.filter((a) => a.action !== "unchanged").length + (mcp.state === "add" || mcp.state === "replace" ? 1 : 0),
+    journal,
+  };
+  return { ok: true, data };
+}
+
+function renderWireUser(d: WireUserData): string {
+  const show = (p: string): string => tilde(p, d.home);
+  const lines: string[] = [d.dry_run ? "would write (user layer of Claude Code):" : "written (user layer of Claude Code):"];
+  const width = Math.max(...d.actions.map((a) => show(a.path).length), 10);
+  for (const a of d.actions) lines.push(`  ${a.action.padEnd(9)} ${show(a.path).padEnd(width)}  ${a.detail}`);
+  const mcpLine: Record<WireUserData["mcp"]["state"], string> = {
+    add: d.dry_run ? `would run: ${d.mcp.command}` : d.mcp.command,
+    replace: d.dry_run ? `would re-register: ${d.mcp.command}` : d.mcp.command,
+    added: d.mcp.command,
+    unchanged: "already registered",
+    foreign: "someone else's server named myc — left alone",
+    refused: `not registered: ${d.mcp.reason ?? ""}`,
+    failed: `failed: ${d.mcp.reason ?? ""}`,
+  };
+  lines.push(`  ${(d.mcp.state === "added" ? "register" : d.mcp.state).padEnd(9)} ${"MCP server myc (user)".padEnd(width)}  ${mcpLine[d.mcp.state]}`);
+  if (d.untouched.length > 0) lines.push(`untouched: ${d.untouched.join(", ")}`);
+  for (const note of d.notes) lines.push(`! ${note}`);
+  if (d.journal !== null) lines.push(`journal: ${show(d.journal)} (for myc unwire --scope user)`);
+  if (d.dry_run) lines.push("nothing written (--dry-run)");
+  else if (d.changed === 0) lines.push("everything already in place, no files touched");
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Наши узлы из пользовательских настроек: записи хуков, чья команда зовёт
+ * наш helper, и правила, которые добавил wire. Контейнер удаляется, только
+ * если опустел ИЗ-ЗА НАС и его не было до первого wire.
+ */
+function stripUserSettings(
+  value: Record<string, unknown>,
+  rec: NonNullable<UserJournal["settings"]>,
+): { readonly value: Record<string, unknown>; readonly nodes: string[] } {
+  const out = { ...value };
+  const keep = new Set(rec.preexisting);
+  const nodes: string[] = [];
+  const hooks = asRecord(out["hooks"]);
+  let hooksTouched = false;
+  for (const key of Object.keys(hooks)) {
+    const list = asArray(hooks[key]);
+    const rest = list.filter((e) => !isUserEntry(e, rec.helpers));
+    if (rest.length === list.length) continue;
+    hooksTouched = true;
+    nodes.push(`hooks.${key}`);
+    if (rest.length === 0 && !keep.has(`hooks.${key}`)) delete hooks[key];
+    else hooks[key] = rest;
+  }
+  if (hooksTouched) {
+    if (Object.keys(hooks).length === 0 && !keep.has("hooks")) delete out["hooks"];
+    else out["hooks"] = hooks;
+  }
+  const permissions = asRecord(out["permissions"]);
+  if (Array.isArray(permissions["allow"])) {
+    const list = permissions["allow"] as unknown[];
+    const allow = list.filter((r) => !rec.permissions.includes(r as string));
+    if (allow.length !== list.length) {
+      nodes.push(`permissions.allow[${list.length - allow.length}]`);
+      if (allow.length === 0 && !keep.has("permissions.allow")) delete permissions["allow"];
+      else permissions["allow"] = allow;
+      if (Object.keys(permissions).length === 0 && !keep.has("permissions")) delete out["permissions"];
+      else out["permissions"] = permissions;
+    }
+  }
+  return { value: out, nodes };
+}
+
+function unwireUser(ctx: CommandContext, env: NodeJS.ProcessEnv): CommandResult {
+  const paths = userPaths(env);
+  if (paths === null) return failure("precond.no_home", "HOME is not set: no user layer of Claude Code to unwire", ExitCode.PRECOND);
+  const j = readUserJournal(paths.journal);
+  if (j === null) {
+    return failure("notfound.journal", `no journal ${paths.journal}: nothing to remove`, ExitCode.NOTFOUND, "myc wire --scope user");
+  }
+  const dryRun = ctx.flags["dry-run"] === true;
+  const removed: string[] = [];
+  const kept: { path: string; reason: string }[] = [];
+  const gone: string[] = [];
+
+  // 1. settings.json — пока наши записи хуков там, helper'ы обязаны остаться:
+  //    удалить файл, который настройки ещё зовут, — ошибка хука в каждой сессии.
+  let settingsClean = true;
+  const s = j.settings;
+  if (s !== null) {
+    const text = fileText(s.path);
+    if (text === null) {
+      gone.push(s.path);
+    } else {
+      const src = readJsonSource(s.path);
+      const layout = src.broken ? { ok: false, newline: true } : sameLayout(text, src.value, src.indent);
+      if (!layout.ok) {
+        settingsClean = false;
+        kept.push({
+          path: s.path,
+          reason:
+            `${src.broken ? "not valid JSON" : "not laid out the way JSON.stringify writes it"} — stripping would reformat ` +
+            `other tools' entries; myc's entries left in place (hooks running ${s.helpers.join(", ")}; ` +
+            `${s.permissions.length} permissions.allow rules Bash(myc <command>:*))`,
+        });
+      } else {
+        const stripped = stripUserSettings(src.value, s);
+        if (stripped.nodes.length === 0) {
+          removed.push(`${s.path} (no myc entries left)`);
+        } else if (s.created && Object.keys(stripped.value).length === 0) {
+          if (!dryRun) rmSync(s.path, { force: true });
+          removed.push(`${s.path} (${stripped.nodes.join(", ")}; file created by wire — deleted)`);
+        } else {
+          if (!dryRun) writeFileSync(s.path, `${JSON.stringify(stripped.value, null, src.indent)}${layout.newline ? "\n" : ""}`);
+          removed.push(`${s.path} (${stripped.nodes.join(", ")})`);
+        }
+      }
+    }
+    const bak = s.backup;
+    if (settingsClean && bak !== undefined) {
+      const t = fileText(bak.path);
+      if (t !== null && sha256(t) === bak.hash) {
+        if (!dryRun) rmSync(bak.path, { force: true });
+        removed.push(bak.path);
+      }
+    }
+  }
+
+  // 2. Свои файлы: по хешу, как у проектного unwire.
+  for (const f of j.files) {
+    if (!settingsClean && s !== null && s.helpers.includes(f.path)) {
+      kept.push({ path: f.path, reason: `${s.path} still runs it` });
+      continue;
+    }
+    const text = fileText(f.path);
+    if (text === null) {
+      gone.push(f.path);
+      continue;
+    }
+    if (sha256(text) !== f.hash) {
+      kept.push({ path: f.path, reason: "changed after we wrote it — left alone" });
+      continue;
+    }
+    if (!dryRun) rmSync(f.path, { force: true });
+    removed.push(f.path);
+  }
+
+  // 3. MCP — только тот, что ставил wire, и только если его с тех пор не меняли.
+  const m = j.mcp;
+  if (m !== null && m.added) {
+    const label = "MCP server myc (user scope)";
+    const removeArgs = ["mcp", "remove", "--scope", "user", USER_MCP_NAME];
+    const current = readUserMcpServer(m.config);
+    if (current.value === undefined && !current.broken) {
+      gone.push(label);
+    } else if (current.broken || !sameServer(current.value ?? {}, { command: m.command, args: m.args })) {
+      kept.push({ path: label, reason: `${current.broken ? `${m.config} is not valid JSON` : "changed after wire registered it"} — left alone` });
+    } else {
+      const claude = findClaude(env);
+      if (claude === null) {
+        kept.push({ path: label, reason: `claude is not on PATH — remove it yourself: ${claudeLine(removeArgs)}` });
+      } else if (dryRun) {
+        removed.push(`${label}: ${claudeLine(removeArgs)}`);
+      } else {
+        const r = runClaude(claude, removeArgs, env);
+        if (r.code === 0) removed.push(`${label}: ${claudeLine(removeArgs)}`);
+        else kept.push({ path: label, reason: `${claudeLine(removeArgs)}: exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` });
+      }
+    }
+  }
+
+  // 4. Журнал и каталоги, которых до wire не было: пустые — долой, глубокие первыми.
+  if (!dryRun && kept.length === 0) {
+    rmSync(paths.journal, { force: true });
+    for (const dir of [...j.dirs].sort((a, b) => b.length - a.length)) {
+      try {
+        if (readdirSync(dir).length === 0) rmdirSync(dir);
+      } catch {
+        // каталога уже нет или он не пуст — не наше
+      }
+    }
+  }
+
+  const data: UnwireData = { removed, kept, gone, dry_run: dryRun };
+  return { ok: true, data };
 }

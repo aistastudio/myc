@@ -4,12 +4,15 @@
  * диспетчер ходил в тот же движок команд, что и человек.
  */
 
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { run, CLI_VERSION } from "@myc/cli";
 import type { RunOptions, RunResult } from "@myc/cli";
 import { ensureSqliteRuntime } from "@myc/store-sqlite";
-import { createDispatcher, type CliOutcome } from "./dispatch.ts";
+import { createDispatcher, UnknownToolError, type CliOutcome } from "./dispatch.ts";
 import { McpServer, serveStdio } from "./server.ts";
 import { openMcpStore } from "./store.ts";
+import { findMcpWorkspace } from "./workspace.ts";
 import {
   AGENT_TOOLS,
   CODE_TOOLS,
@@ -110,6 +113,40 @@ export function raiseVectorRuntime(tools: readonly McpToolDef[]): string | undef
   }
 }
 
+/**
+ * Какой проект обслуживает сервер: `-C`, иначе CLAUDE_PROJECT_DIR, иначе cwd.
+ *
+ * CLAUDE_PROJECT_DIR — не удобство, а единственный способ узнать проект у
+ * сервера ПОЛЬЗОВАТЕЛЬСКОГО слоя: такой сервер Claude Code запускает с cwd =
+ * своему каталогу настроек (`~/.claude`), а проект передаёт в этой переменной
+ * (code.claude.com/docs/en/mcp: «Claude Code sets CLAUDE_PROJECT_DIR in the
+ * spawned server's environment to the project root»; таблица рабочих
+ * каталогов: user scope — «Your configuration directory, ~/.claude»). Для
+ * проектного `.mcp.json` это тот же каталог, что и cwd.
+ */
+export function mcpProjectDir(
+  globals: { readonly directory?: string | undefined },
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (globals.directory !== undefined) return globals.directory;
+  const fromHost = env.CLAUDE_PROJECT_DIR;
+  return fromHost !== undefined && fromHost.length > 0 ? fromHost : undefined;
+}
+
+/**
+ * Воркспейс, который обслужит сервер, — тем же правилом, что у CLI: явный
+ * `--db` — ровно этот файл, иначе подъём с разрешением git worktree в
+ * основное дерево (workspace.ts). `undefined` — воркспейса нет.
+ */
+export function mcpWorkspace(
+  globals: { readonly db?: string | undefined },
+  startDir: string,
+): { readonly wsDir: string } | undefined {
+  if (globals.db !== undefined) return existsSync(globals.db) ? { wsDir: resolve(startDir) } : undefined;
+  const wsDir = findMcpWorkspace(startDir);
+  return wsDir !== undefined ? { wsDir } : undefined;
+}
+
 export function createMcpCommand(registry?: Registry) {
   return {
     name: "mcp",
@@ -141,12 +178,40 @@ export function createMcpCommand(registry?: Registry) {
         };
       }
 
+      // ВНЕ ВОРКСПЕЙСА — НИ ОДНОГО ИНСТРУМЕНТА И НИ СТРОКИ ИНСТРУКЦИЙ
+      // (memory-bh5pbp4nyjwk). Прежде такой сервер отдавал весь профиль, каждый
+      // инструмент отвечал ws.not_initialized, а instructions «myc — this
+      // project's memory…» ехали в системный промпт. Пока сервер жил только в
+      // `.mcp.json` проектов с myc, это был редкий случай; сервер
+      // пользовательского слоя (`myc wire --scope user`) стартует в КАЖДОЙ
+      // сессии на машине. Сервер при этом жив: упавший виден в /mcp как
+      // сломанный. Решение принимается один раз, на старте: `myc init` посреди
+      // сессии инструменты не добавит — нужен перезапуск сессии.
+      const directory = mcpProjectDir(ctx.globals);
+      const ws = mcpWorkspace(ctx.globals, directory ?? process.cwd());
+      if (ws === undefined) {
+        const idle = new McpServer({
+          tools: [],
+          version: CLI_VERSION,
+          dispatch: async (name) => {
+            throw new UnknownToolError(`unknown tool '${name}': no myc workspace here`);
+          },
+        });
+        process.stderr.write(`myc mcp: no myc workspace at ${resolve(directory ?? process.cwd())} — 0 tools, stdio\n`);
+        await serveStdio(idle, Bun.stdin.stream(), (chunk) => {
+          process.stdout.write(chunk);
+        });
+        return { ok: true as const, data: null };
+      }
+
       // СТРОГО ДО первого `new Database` в процессе — до buildInstructions,
       // который прогоняет `bootstrap` и тем самым открывает базу.
       const wantsVector = vectorNeeded(tools);
       const vectorFailure = raiseVectorRuntime(tools);
 
-      const runCli = makeRunCli(registry, ctx.globals);
+      // Каталог проекта из CLAUDE_PROJECT_DIR доезжает до команд как `-C`:
+      // процесс сервера пользовательского слоя стоит в ~/.claude.
+      const runCli = makeRunCli(registry, { directory, db: ctx.globals.db });
       const server = new McpServer({
         tools,
         // Версия объявляется клиенту в serverInfo и это ЕДИНСТВЕННОЕ место,
@@ -156,7 +221,10 @@ export function createMcpCommand(registry?: Registry) {
         version: CLI_VERSION,
         dispatch: createDispatcher({
           runCli,
-          openStore: () => openMcpStore(ctx.globals.directory, { extensions: wantsVector }),
+          // Прямой стор открывается в НАЙДЕННОМ воркспейсе: openMcpStore
+          // смотрит ровно в `<каталог>/.myc`, и из git worktree или вложенного
+          // репозитория экосистемы myc_link и заметки иначе отказывали бы.
+          openStore: () => openMcpStore(ws.wsDir, { extensions: wantsVector }),
         }),
         instructions: () => buildInstructions(runCli),
       });

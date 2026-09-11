@@ -13,7 +13,9 @@ export {
 export { createDispatcher, UnknownToolError } from "./dispatch.ts";
 export type { CallToolResult, CliOutcome, Dispatch, DispatchDeps, RunCli } from "./dispatch.ts";
 export { McpServer, serveStdio, MCP_PROTOCOL_VERSION } from "./server.ts";
-export { createMcpCommand } from "./command.ts";
+export { createMcpCommand, mcpProjectDir, mcpWorkspace } from "./command.ts";
+/** @internal паритет с findWorkspaceDb CLI — commands/mcp-workspace.parity.test.ts в @myc/cli */
+export { findMcpWorkspace } from "./workspace.ts";
 export { openMcpStore, resolveNode } from "./store.ts";
 /** @internal используется только store.parity.test.ts в @myc/cli (myc-qie.12) */
 export { openDriver as internalOpenDriver, type McpDriver } from "./store.ts";
