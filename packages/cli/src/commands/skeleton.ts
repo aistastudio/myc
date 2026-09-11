@@ -31,7 +31,7 @@ import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import { flagStr, realStoreDeps, type StoreDeps } from "./store.ts";
-import { codeRepo, count } from "./code.ts";
+import { codeTarget, count, noIndexFailure, type SourceData, sourceData, sourceLines, warnWorktree } from "./code.ts";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
@@ -66,6 +66,7 @@ interface SkeletonData {
   on_disk: boolean;
   stale: boolean;
   took_ms: number;
+  source?: SourceData;
 }
 
 export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command {
@@ -93,19 +94,20 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId, repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
+        const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const { repoId, view } = t;
         const { fileSkeleton, indexScope } = await import("@myc/code-intel/read");
         const db = h.driver.database;
-        const scope = indexScope(db, repoId);
-        if (scope.files === 0) {
-          return failure(
-            "precond.no_index",
-            `the code index of this repo (${repoId.length > 0 ? repoId : "workspace root"}) is not built: ` +
-              "code_files has zero rows — nowhere to take a skeleton from",
-            ExitCode.PRECOND,
-            "myc code index",
+        const scope = indexScope(db, view);
+        if (t.missing || scope.files === 0) {
+          return await noIndexFailure(
+            h,
+            t,
+            "nowhere to take a skeleton from",
+            "the code index of this repo (workspace root) is not built: code_files has zero rows — nowhere to take a skeleton from",
           );
         }
+        warnWorktree(ctx, t, "signatures are read from the copy whose content the index saw");
 
         // Путь принимается и как относительный от корня репозитория, и как
         // тот, что человек скопировал из вывода другой команды. Нормализация
@@ -113,7 +115,7 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
         const path = raw.trim().replace(/^\.\//, "").replaceAll("\\", "/");
         const known = db
           .query("SELECT lang FROM code_files WHERE repo_id = ?1 AND path = ?2")
-          .get(repoId, path) as { lang: string } | null;
+          .get(view.repoId, view.prefix + path) as { lang: string } | null;
         if (known === null) {
           return failure(
             "notfound.file",
@@ -123,7 +125,26 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
           );
         }
 
-        const sk = fileSkeleton(db, repoId, path, repoRoot);
+        // Сигнатуры — из файла, спаны — из индекса, и сверка их хешей — то,
+        // что держит скелет честным. Из git worktree сначала читается его
+        // копия (то, что правит агент); разошлась она с индексом, а основная
+        // копия с ним совпадает — показывается ОСНОВНАЯ, и это называется:
+        // сигнатуры, нарезанные по чужим спанам из файла ветки, — мусор,
+        // а скелет основной копии — правда, пусть и про другую ветку.
+        let sk = fileSkeleton(db, view, path, t.fileRoot, t.fallbackRoot);
+        let readFrom = t.fileRoot;
+        if (sk.stale && t.fallbackRoot !== undefined) {
+          const main = fileSkeleton(db, view, path, t.fallbackRoot);
+          if (main.onDisk && !main.stale) {
+            sk = main;
+            readFrom = t.fallbackRoot;
+            ctx.warn(
+              "skeleton.main_copy",
+              `your worktree copy of ${path} differs from what the index saw — shown: the declarations and ` +
+                `signatures of the MAIN copy ${t.fallbackRoot}, not of your file`,
+            );
+          }
+        }
         const kindsRaw = flagStr(ctx, "kind");
         const want =
           kindsRaw === undefined || kindsRaw.trim().length === 0
@@ -163,6 +184,8 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
           took_ms: 0,
         };
         data.took_ms = Math.round(performance.now() - t0);
+        const origin = sourceData(t, readFrom);
+        if (origin !== undefined) data.source = origin;
 
         if (!sk.onDisk) {
           ctx.warn(
@@ -204,6 +227,7 @@ export function createSkeletonCommand(deps: StoreDeps = realStoreDeps): Command 
         `skeleton ${d.skeleton_bytes} B vs file ${d.file_bytes} B` +
           `${d.cheaper > 0 ? ` — ${d.cheaper}× cheaper` : ""}  ${d.took_ms} ms`,
       );
+      out.push(...sourceLines(d.source));
       return `${out.join("\n")}\n`;
     },
   };

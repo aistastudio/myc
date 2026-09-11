@@ -53,7 +53,7 @@ import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import { flagBool, flagStr, realStoreDeps, type StoreDeps } from "./store.ts";
-import { codeRepo, count } from "./code.ts";
+import { codeTarget, count, noIndexFailure, type SourceData, sourceData, sourceLines, warnWorktree } from "./code.ts";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
@@ -149,6 +149,7 @@ interface CallersData {
   queries: number;
   files_read: number;
   took_ms: number;
+  source?: SourceData;
 }
 
 function parseDepth(raw: string | undefined): number | "bad" {
@@ -188,17 +189,25 @@ function parseKinds(raw: string | undefined, direction: "in" | "out"): string[] 
   return parts;
 }
 
-/** Читатель строк файла с кешем на один вызов команды. */
-function sourceReader(root: string): { line(path: string, n: number): string | undefined; files(): number } {
+/**
+ * Читатель строк файла с кешем на один вызов команды. `roots` — по порядку:
+ * из git worktree первым идёт его копия (то, что правит агент), вторым —
+ * основная копия для файла, которого на ветке нет.
+ */
+function sourceReader(roots: readonly string[]): { line(path: string, n: number): string | undefined; files(): number } {
   const cache = new Map<string, string[] | null>();
   return {
     line(path, n) {
       let lines = cache.get(path);
       if (lines === undefined) {
-        try {
-          lines = readFileSync(join(root, path), "utf8").split("\n");
-        } catch {
-          lines = null;
+        lines = null;
+        for (const root of roots) {
+          try {
+            lines = readFileSync(join(root, path), "utf8").split("\n");
+            break;
+          } catch {
+            lines = null;
+          }
         }
         cache.set(path, lines);
       }
@@ -271,22 +280,23 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId, repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
-        const { callGraph, indexScope, refsIndexed, symbolDefs } = await import(
+        const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const { repoId, view } = t;
+        const { ambiguousNames, callGraph, definedNames, indexScope, refsIndexed, symbolDefs } = await import(
           "@myc/code-intel/read"
         );
         const db = h.driver.database;
-        const scope = indexScope(db, repoId);
-        if (scope.files === 0) {
-          return failure(
-            "precond.no_index",
-            `the code index of this repo (${repoId.length > 0 ? repoId : "workspace root"}) is not built: ` +
-              "code_files has zero rows — nothing to build the call graph from",
-            ExitCode.PRECOND,
-            "myc code index",
+        const scope = indexScope(db, view);
+        if (t.missing || scope.files === 0) {
+          return await noIndexFailure(
+            h,
+            t,
+            "nothing to build the call graph from",
+            "the code index of this repo (workspace root) is not built: code_files has zero rows — nothing to build the call graph from",
           );
         }
-        const refs = refsIndexed(db, repoId);
+        warnWorktree(ctx, t, "source lines are read from the main copy, so they match the line numbers");
+        const refs = refsIndexed(db, view);
         if (refs === 0) {
           return failure(
             "precond.no_refs",
@@ -297,7 +307,7 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
           );
         }
 
-        const defs = symbolDefs(db, repoId, name);
+        const defs = symbolDefs(db, view, name);
         if (direction === "out" && defs.length === 0) {
           return failure(
             "notfound.symbol",
@@ -308,7 +318,7 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
           );
         }
 
-        const graph = callGraph(db, repoId, name, {
+        const graph = callGraph(db, view, name, {
           direction,
           depth: depth as number,
           kinds,
@@ -325,12 +335,7 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         // нет.
         const ambiguousNodes: { name: string; defs: number }[] = [];
         if (graph.nodes.length > 0 && depth > 1) {
-          const q = db.query(
-            "SELECT name, count(*) AS n FROM code_defs WHERE repo_id = ?1 GROUP BY name HAVING n > 1",
-          );
-          const multi = new Map(
-            (q.all(repoId) as Array<{ name: string; n: number }>).map((r) => [r.name, Number(r.n)]),
-          );
+          const multi = ambiguousNames(db, view);
           for (const n of graph.nodes) {
             const c = multi.get(n);
             if (c !== undefined) ambiguousNodes.push({ name: n, defs: c });
@@ -339,7 +344,11 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         }
 
         const withSource = !flagBool(ctx, "no-source");
-        const src = sourceReader(repoRoot);
+        // Номера строк вхождений — из индекса, а индекс снят с ОСНОВНОЙ копии.
+        // Текст строки поэтому читается оттуда же (`repoRoot`), а не из
+        // worktree: строка 12 файла ветки — другая строка, и подпись под
+        // номером врала бы. Вне worktree это одно и то же место.
+        const src = sourceReader([t.repoRoot]);
         const shownEdges = graph.edges.slice(0, limit);
 
         // Конец спана зовущего берётся из `code_defs` того же файла: без него
@@ -352,23 +361,14 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         for (const e of shownEdges) {
           if (e.callerStart === 0 || seenPaths.has(e.path)) continue;
           seenPaths.add(e.path);
-          for (const fd of fileDefs(db, repoId, e.path)) {
+          for (const fd of fileDefs(db, view, e.path)) {
             spanEnd.set(`${e.path}:${fd.spanStart}:${fd.name}`, fd.spanEnd);
           }
         }
         // Для `--direction out` важно отличить «зовёт своё» от «зовёт чужое»:
         // у импортированного имени тела здесь нет, и следующий шаг обхода по
         // нему невозможен. Один запрос на всю выдачу.
-        const defined =
-          direction === "out"
-            ? new Set(
-                (
-                  db
-                    .query("SELECT DISTINCT name FROM code_defs WHERE repo_id = ?1")
-                    .all(repoId) as Array<{ name: string }>
-                ).map((r) => r.name),
-              )
-            : null;
+        const defined = direction === "out" ? definedNames(db, view) : null;
 
         const edges: EdgeOut[] = shownEdges.map((e) => ({
           depth: e.depth,
@@ -419,6 +419,8 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
           took_ms: 0,
         };
         data.took_ms = Math.round(performance.now() - t0);
+        const origin = sourceData(t, t.repoRoot);
+        if (origin !== undefined) data.source = origin;
 
         // §6.3: пустой выдачи без причины не бывает. Три разных «пусто» —
         // три разных ответа, и путать их нельзя.
@@ -536,6 +538,7 @@ export function createCallersCommand(deps: StoreDeps = realStoreDeps): Command {
         `scanned ${count(d.searched.files, "file")}, ${count(d.searched.defs, "symbol")}, ${count(d.searched.refs, "reference")}; ` +
           `queries ${d.queries}, files read ${d.files_read}  ${d.took_ms} ms`,
       );
+      out.push(...sourceLines(d.source));
       return `${out.join("\n")}\n`;
     },
   };

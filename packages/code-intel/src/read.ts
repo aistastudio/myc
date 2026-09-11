@@ -23,12 +23,19 @@
  * конце файла — `refsTo`/`refsFrom`/`refsIndexed`. Там расклад другой и
  * обратный: строк не тысячи, а сотни тысяч, и полный скан по имени
  * недопустим — поэтому у той таблицы индекс по (repo_id, name) есть.
+ *
+ * ЧАСТЬ ИНДЕКСА (`view.ts`, memory-m0md9fybwrdh). Каждый читатель принимает
+ * вместо `repoId` и ВИД — `{repoId, prefix}`: строки берутся из-под префикса,
+ * пути наружу уходят без него. Строка `repoId` — прежний вызов, и для него
+ * исполняется ровно прежний SQL: ответ из корня не меняется ни запросом, ни
+ * планом.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { L1_LANGS } from "./langs.ts";
+import { type CodeView, prefixEnd, type RepoRef, refsCacheKey, stripPrefix, viewOf, withPrefix } from "./view.ts";
 
 /** Определение, как оно лежит в `code_defs` (плюс язык из `code_files`). */
 export interface IndexedDef {
@@ -63,9 +70,9 @@ interface DefRow {
   lang: string | null;
 }
 
-function toDef(r: DefRow): IndexedDef {
+function toDef(r: DefRow, view?: CodeView): IndexedDef {
   return {
-    path: r.path,
+    path: view === undefined ? r.path : stripPrefix(view, r.path),
     name: r.name,
     kind: r.kind,
     spanStart: r.span_start,
@@ -80,19 +87,37 @@ const SQL_BY_NAME = `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.
   WHERE d.repo_id = ?1 AND d.name = ?2
   ORDER BY d.path, d.span_start`;
 
+/**
+ * То же под префиксом вида. Отрезок `path` стоит СРАЗУ за `repo_id` в
+ * первичном ключе `(repo_id, path, name, span_start)`, поэтому скан идёт
+ * только по файлам вложенного репозитория, а не по всему индексу корня:
+ * вопрос из репозитория стоит не дороже, чем из корня, а обычно дешевле.
+ */
+const SQL_BY_NAME_IN = `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
+  FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
+  WHERE d.repo_id = ?1 AND d.name = ?2 AND d.path >= ?3 AND d.path < ?4
+  ORDER BY d.path, d.span_start`;
+
 const SQL_BY_FILE = `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
   FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
   WHERE d.repo_id = ?1 AND d.path = ?2
   ORDER BY d.span_start`;
 
 /** Определения с этим именем во всём репозитории. Пусто — символ не найден. */
-export function symbolDefs(db: Database, repoId: string, name: string): IndexedDef[] {
-  return (db.query(SQL_BY_NAME).all(repoId, name) as DefRow[]).map(toDef);
+export function symbolDefs(db: Database, repo: RepoRef, name: string): IndexedDef[] {
+  const v = viewOf(repo);
+  if (v.prefix.length === 0) return (db.query(SQL_BY_NAME).all(v.repoId, name) as DefRow[]).map((r) => toDef(r));
+  return (db.query(SQL_BY_NAME_IN).all(v.repoId, name, v.prefix, prefixEnd(v.prefix)) as DefRow[]).map((r) =>
+    toDef(r, v),
+  );
 }
 
 /** Все определения одного файла — «скелет» файла в терминах индекса. */
-export function fileDefs(db: Database, repoId: string, path: string): IndexedDef[] {
-  return (db.query(SQL_BY_FILE).all(repoId, path) as DefRow[]).map(toDef);
+export function fileDefs(db: Database, repo: RepoRef, path: string): IndexedDef[] {
+  const v = viewOf(repo);
+  return (db.query(SQL_BY_FILE).all(v.repoId, withPrefix(v, path)) as DefRow[]).map((r) =>
+    toDef(r, v.prefix.length === 0 ? undefined : v),
+  );
 }
 
 /**
@@ -102,21 +127,34 @@ export function fileDefs(db: Database, repoId: string, path: string): IndexedDef
  */
 export function defsInSpan(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   path: string,
   start: number,
   end: number,
 ): IndexedDef[] {
-  return fileDefs(db, repoId, path).filter((d) => d.spanStart <= end && d.spanEnd >= start);
+  return fileDefs(db, repo, path).filter((d) => d.spanStart <= end && d.spanEnd >= start);
 }
 
 /** Состояние индекса по репозиторию: сколько файлов, символов, на чём написано. */
-export function indexScope(db: Database, repoId: string): IndexScope {
+export function indexScope(db: Database, repo: RepoRef): IndexScope {
+  const v = viewOf(repo);
+  const whole = v.prefix.length === 0;
+  const range = whole ? [] : [v.prefix, prefixEnd(v.prefix)];
   const files = db
-    .query("SELECT lang, count(*) AS n, max(indexed_at) AS at FROM code_files WHERE repo_id = ?1 GROUP BY lang")
-    .all(repoId) as Array<{ lang: string; n: number; at: number }>;
+    .query(
+      whole
+        ? "SELECT lang, count(*) AS n, max(indexed_at) AS at FROM code_files WHERE repo_id = ?1 GROUP BY lang"
+        : "SELECT lang, count(*) AS n, max(indexed_at) AS at FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 GROUP BY lang",
+    )
+    .all(v.repoId, ...range) as Array<{ lang: string; n: number; at: number }>;
   const defs = (
-    db.query("SELECT count(*) AS n FROM code_defs WHERE repo_id = ?1").get(repoId) as { n: number }
+    db
+      .query(
+        whole
+          ? "SELECT count(*) AS n FROM code_defs WHERE repo_id = ?1"
+          : "SELECT count(*) AS n FROM code_defs WHERE repo_id = ?1 AND path >= ?2 AND path < ?3",
+      )
+      .get(v.repoId, ...range) as { n: number }
   ).n;
   const langs = files
     .map((r) => ({ lang: r.lang, files: Number(r.n) }))
@@ -155,15 +193,20 @@ export interface FanInResult {
  */
 export function fanIn(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   name: string,
   root: string,
   opts: { readonly now?: number; readonly write?: boolean } = {},
 ): FanInResult {
   const t0 = performance.now();
+  const v = viewOf(repo);
+  // Счёт по части индекса кешируется под СВОИМ ключом (`refsCacheKey`), а не
+  // под ключом всего индекса: иначе число вложенного репозитория перетёрло бы
+  // число корня, и наоборот.
+  const cacheKey = refsCacheKey(v);
   const cached = db
     .query("SELECT n_files, n_hits FROM code_refs WHERE repo_id = ?1 AND name = ?2")
-    .get(repoId, name) as { n_files: number; n_hits: number } | null;
+    .get(cacheKey, name) as { n_files: number; n_hits: number } | null;
   if (cached !== null) {
     return {
       n: Number(cached.n_hits),
@@ -178,30 +221,35 @@ export function fanIn(
   // Строки определений вычитаются по (path, span_start): вхождение имени в
   // собственном объявлении — не входящая ссылка.
   const defLines = new Map<string, Set<number>>();
-  for (const d of symbolDefs(db, repoId, name)) {
+  for (const d of symbolDefs(db, v, name)) {
     const set = defLines.get(d.path) ?? new Set<number>();
     set.add(d.spanStart);
     defLines.set(d.path, set);
   }
 
   const word = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
-  const paths = db
-    .query("SELECT path, lang FROM code_files WHERE repo_id = ?1")
-    .all(repoId) as Array<{ path: string; lang: string }>;
+  const paths = (
+    v.prefix.length === 0
+      ? db.query("SELECT path, lang FROM code_files WHERE repo_id = ?1").all(v.repoId)
+      : db
+          .query("SELECT path, lang FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3")
+          .all(v.repoId, v.prefix, prefixEnd(v.prefix))
+  ) as Array<{ path: string; lang: string }>;
   let hits = 0;
   let nFiles = 0;
   let read = 0;
   for (const p of paths) {
     if (!L1_LANGS.has(p.lang)) continue;
+    const rel = stripPrefix(v, p.path);
     let text: string;
     try {
-      text = readFileSync(join(root, p.path), "utf8");
+      text = readFileSync(join(root, rel), "utf8");
     } catch {
       continue; // файл исчез между индексом и вопросом — не повод падать
     }
     read++;
     if (!text.includes(name)) continue;
-    const skip = defLines.get(p.path);
+    const skip = defLines.get(rel);
     let inFile = 0;
     const lines = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
@@ -221,7 +269,7 @@ export function fanIn(
         `INSERT INTO code_refs (repo_id, name, n_files, n_hits, computed_at) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (repo_id, name) DO UPDATE SET
            n_files = excluded.n_files, n_hits = excluded.n_hits, computed_at = excluded.computed_at`,
-      ).run(repoId, name, nFiles, hits, opts.now ?? Date.now());
+      ).run(cacheKey, name, nFiles, hits, opts.now ?? Date.now());
     } catch {
       // Кеш — ускорение, а не ответ: база под чужой записью не отменяет счёт.
     }
@@ -264,9 +312,9 @@ interface RefRow {
   from_start: number;
 }
 
-function toRef(r: RefRow): RefSite {
+function toRef(r: RefRow, view?: CodeView): RefSite {
   return {
-    path: r.path,
+    path: view === undefined ? r.path : stripPrefix(view, r.path),
     line: Number(r.line),
     kind: r.kind,
     from: r.from_name,
@@ -295,6 +343,15 @@ export const SQL_REFS_TO = `SELECT path, line, kind, from_name, from_start FROM 
   ORDER BY path, line`;
 
 /**
+ * То же под префиксом вида. Индекс тот же `(repo_id, name)`: имя отсекает
+ * почти всё, и отрезок пути проверяется уже на единицах найденных строк.
+ */
+const SQL_REFS_TO_IN = `SELECT path, line, kind, from_name, from_start FROM code_ref_sites
+  INDEXED BY ix_code_ref_sites_name
+  WHERE repo_id = ?1 AND name = ?2 AND path >= ?3 AND path < ?4
+  ORDER BY path, line`;
+
+/**
  * Кто ссылается на имя — сырьё для `myc callers` (задача memory-wrntvzwx8dh0;
  * саму команду здесь НЕ делаем).
  *
@@ -311,11 +368,17 @@ export const SQL_REFS_TO = `SELECT path, line, kind, from_name, from_start FROM 
  */
 export function refsTo(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   name: string,
   opts: { readonly kinds?: readonly string[] } = {},
 ): RefSite[] {
-  const rows = (db.query(SQL_REFS_TO).all(repoId, name) as RefRow[]).map(toRef);
+  const v = viewOf(repo);
+  const rows =
+    v.prefix.length === 0
+      ? (db.query(SQL_REFS_TO).all(v.repoId, name) as RefRow[]).map((r) => toRef(r))
+      : (db.query(SQL_REFS_TO_IN).all(v.repoId, name, v.prefix, prefixEnd(v.prefix)) as RefRow[]).map((r) =>
+          toRef(r, v),
+        );
   if (opts.kinds === undefined) return rows;
   const want = new Set(opts.kinds);
   return rows.filter((r) => want.has(r.kind));
@@ -337,19 +400,20 @@ export function refsTo(
  */
 export function refsFrom(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   name: string,
 ): Array<RefSite & { readonly name: string }> {
+  const v = viewOf(repo);
   const out: Array<RefSite & { readonly name: string }> = [];
   const q = db.query(
     `SELECT path, line, name, kind, from_name, from_start FROM code_ref_sites
      WHERE repo_id = ?1 AND path = ?2 AND from_start = ?3 ORDER BY line`,
   );
-  for (const d of symbolDefs(db, repoId, name)) {
-    const rows = q.all(repoId, d.path, d.spanStart) as Array<RefRow & { name: string }>;
+  for (const d of symbolDefs(db, v, name)) {
+    const rows = q.all(v.repoId, withPrefix(v, d.path), d.spanStart) as Array<RefRow & { name: string }>;
     for (const r of rows) {
       if (r.from_name !== name) continue; // чужой символ, начавшийся на той же строке
-      out.push({ ...toRef(r), name: r.name });
+      out.push({ ...toRef(r, v.prefix.length === 0 ? undefined : v), name: r.name });
     }
   }
   return out;
@@ -360,10 +424,15 @@ export function refsFrom(
  * `indexScope`: пустая выдача `callers` обязана уметь отличить «никто не
  * зовёт» от «ссылки ещё не построены» (§6.3).
  */
-export function refsIndexed(db: Database, repoId: string): number {
-  const r = db
-    .query("SELECT count(*) AS n FROM code_ref_sites WHERE repo_id = ?1")
-    .get(repoId) as { n: number };
+export function refsIndexed(db: Database, repo: RepoRef): number {
+  const v = viewOf(repo);
+  const r = (
+    v.prefix.length === 0
+      ? db.query("SELECT count(*) AS n FROM code_ref_sites WHERE repo_id = ?1").get(v.repoId)
+      : db
+          .query("SELECT count(*) AS n FROM code_ref_sites WHERE repo_id = ?1 AND path >= ?2 AND path < ?3")
+          .get(v.repoId, v.prefix, prefixEnd(v.prefix))
+  ) as { n: number };
   return Number(r.n);
 }
 
@@ -460,44 +529,80 @@ const SQL_REFS_IN_SPAN = `SELECT path, line, name, kind, from_name, from_start F
  */
 export function refsWithin(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   name: string,
   opts: { readonly kinds?: readonly string[]; readonly defs?: readonly IndexedDef[] } = {},
 ): Array<RefSite & { readonly name: string }> {
+  const v = viewOf(repo);
   const q = db.query(SQL_REFS_IN_SPAN);
   const want = opts.kinds === undefined ? null : new Set(opts.kinds);
   const out: Array<RefSite & { readonly name: string }> = [];
-  const defs = opts.defs ?? symbolDefs(db, repoId, name);
+  // Определения приходят уже в путях ВИДА (без префикса) — и из
+  // `symbolDefs`, и из `defsByName`; в базу идут с префиксом обратно.
+  const defs = opts.defs ?? symbolDefs(db, v, name);
   for (const d of defs) {
-    const rows = q.all(repoId, d.path, d.spanStart, d.spanEnd) as Array<RefRow & { name: string }>;
+    const rows = q.all(v.repoId, withPrefix(v, d.path), d.spanStart, d.spanEnd) as Array<
+      RefRow & { name: string }
+    >;
     for (const r of rows) {
       if (want !== null && !want.has(r.kind)) continue;
-      out.push({ ...toRef(r), name: r.name });
+      out.push({ ...toRef(r, v.prefix.length === 0 ? undefined : v), name: r.name });
     }
   }
   return out;
 }
 
 /** Имена, у которых в этом репозитории есть определение. Один запрос на обход. */
-function definedNames(db: Database, repoId: string): Set<string> {
-  const rows = db
-    .query("SELECT DISTINCT name FROM code_defs WHERE repo_id = ?1")
-    .all(repoId) as Array<{ name: string }>;
+export function definedNames(db: Database, repo: RepoRef): Set<string> {
+  const v = viewOf(repo);
+  const rows = (
+    v.prefix.length === 0
+      ? db.query("SELECT DISTINCT name FROM code_defs WHERE repo_id = ?1").all(v.repoId)
+      : db
+          .query("SELECT DISTINCT name FROM code_defs WHERE repo_id = ?1 AND path >= ?2 AND path < ?3")
+          .all(v.repoId, v.prefix, prefixEnd(v.prefix))
+  ) as Array<{ name: string }>;
   return new Set(rows.map((r) => r.name));
 }
 
+/**
+ * Имена, определённые в репозитории больше одного раза, с числом определений —
+ * то, через что протекает обход по именам (`myc callers --depth`).
+ */
+export function ambiguousNames(db: Database, repo: RepoRef): Map<string, number> {
+  const v = viewOf(repo);
+  const rows = (
+    v.prefix.length === 0
+      ? db
+          .query("SELECT name, count(*) AS n FROM code_defs WHERE repo_id = ?1 GROUP BY name HAVING n > 1")
+          .all(v.repoId)
+      : db
+          .query(
+            "SELECT name, count(*) AS n FROM code_defs WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 GROUP BY name HAVING n > 1",
+          )
+          .all(v.repoId, v.prefix, prefixEnd(v.prefix))
+  ) as Array<{ name: string; n: number }>;
+  return new Map(rows.map((r) => [r.name, Number(r.n)]));
+}
+
 /** Все определения репозитория, разложенные по имени. Один запрос на обход. */
-function defsByName(db: Database, repoId: string): Map<string, IndexedDef[]> {
+function defsByName(db: Database, repo: RepoRef): Map<string, IndexedDef[]> {
+  const v = viewOf(repo);
+  const whole = v.prefix.length === 0;
   const rows = db
     .query(
-      `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
+      whole
+        ? `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
          FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
-        WHERE d.repo_id = ?1 ORDER BY d.path, d.span_start`,
+        WHERE d.repo_id = ?1 ORDER BY d.path, d.span_start`
+        : `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
+         FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
+        WHERE d.repo_id = ?1 AND d.path >= ?2 AND d.path < ?3 ORDER BY d.path, d.span_start`,
     )
-    .all(repoId) as DefRow[];
+    .all(v.repoId, ...(whole ? [] : [v.prefix, prefixEnd(v.prefix)])) as DefRow[];
   const map = new Map<string, IndexedDef[]>();
   for (const r of rows) {
-    const def = toDef(r);
+    const def = toDef(r, whole ? undefined : v);
     const list = map.get(def.name);
     if (list === undefined) map.set(def.name, [def]);
     else list.push(def);
@@ -523,14 +628,14 @@ function edgeKey(path: string, caller: string, callerStart: number, callee: stri
  */
 export function callGraph(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   name: string,
   opts: CallGraphOptions & { readonly direction?: CallDirection } = {},
 ): CallGraph {
   const t0 = performance.now();
   return walk(
     db,
-    repoId,
+    repo,
     name,
     opts.direction ?? "in",
     opts.depth === undefined ? 1 : opts.depth,
@@ -542,7 +647,7 @@ export function callGraph(
 
 function walk(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   root: string,
   direction: CallDirection,
   depth: number,
@@ -562,8 +667,8 @@ function walk(
   // Оба справочника нужны только транзитивному обходу; на глубине 1 их цена
   // (два запроса по всей `code_defs`) была бы платой ни за что.
   const transitive = depth > 1;
-  const defined = direction === "out" && transitive ? definedNames(db, repoId) : null;
-  const spans = direction === "out" && transitive ? defsByName(db, repoId) : null;
+  const defined = direction === "out" && transitive ? definedNames(db, repo) : null;
+  const spans = direction === "out" && transitive ? defsByName(db, repo) : null;
 
   for (let d = 1; d <= depth && frontier.length > 0; d++) {
     const next: string[] = [];
@@ -571,11 +676,11 @@ function walk(
       queries++;
       const rows =
         direction === "in"
-          ? refsTo(db, repoId, node, kinds === undefined ? {} : { kinds }).map((r) => ({
+          ? refsTo(db, repo, node, kinds === undefined ? {} : { kinds }).map((r) => ({
               ...r,
               name: node,
             }))
-          : refsWithin(db, repoId, node, {
+          : refsWithin(db, repo, node, {
               ...(kinds === undefined ? {} : { kinds }),
               ...(spans === null ? {} : { defs: spans.get(node) ?? [] }),
             });
@@ -752,20 +857,30 @@ function signatureAt(lines: readonly string[], start: number, end: number): stri
  */
 export function fileSkeleton(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   path: string,
   root: string,
+  /**
+   * Где читать файл, которого нет под `root`: из git worktree это основная
+   * копия (файл не приехал на ветку). Как у якорей `localFile`: путь в
+   * репозитории есть, и «файла нет» было бы неправдой.
+   */
+  fallbackRoot?: string,
 ): FileSkeleton {
   const t0 = performance.now();
-  const defs = fileDefs(db, repoId, path);
+  const v = viewOf(repo);
+  const defs = fileDefs(db, v, path);
   const meta = db
     .query("SELECT lang, file_hash FROM code_files WHERE repo_id = ?1 AND path = ?2")
-    .get(repoId, path) as { lang: string; file_hash: string } | null;
-  let source: Buffer | null;
-  try {
-    source = readFileSync(join(root, path));
-  } catch {
-    source = null;
+    .get(v.repoId, withPrefix(v, path)) as { lang: string; file_hash: string } | null;
+  let source: Buffer | null = null;
+  for (const dir of fallbackRoot === undefined ? [root] : [root, fallbackRoot]) {
+    try {
+      source = readFileSync(join(dir, path));
+      break;
+    } catch {
+      source = null;
+    }
   }
   const text = source === null ? "" : source.toString("utf8");
   const lines = text.length === 0 ? [] : text.split("\n");

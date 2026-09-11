@@ -749,7 +749,12 @@ async function ownPart(
       codeHit = "hit";
     } else {
       const { indexScope } = await import("@myc/code-intel/read");
-      const scope = indexScope(h.driver.database, repo);
+      const { coveringIndex } = await import("@myc/code-intel/view");
+      // Из вложенного репозитория и его worktree своего индекса нет — строки
+      // лежат в индексе корня под префиксом репозитория (memory-m0md9fybwrdh);
+      // без этого строка статуса говорила «no code index» там, где код-команды
+      // отвечают.
+      const scope = indexScope(h.driver.database, coveringIndex(h.driver.database, repo) ?? repo);
       code = {
         key: codeKey,
         at: now,

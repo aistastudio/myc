@@ -423,6 +423,16 @@ function gitBinary(opts: ListOptions): { readonly git: string; readonly absent: 
 }
 
 /**
+ * Как звать git из код-интеллекта ВНЕ перечня (`worktree.ts`): тот же бинарь
+ * мимо шима xcrun и то же окружение без привязки к чужому репозиторию. null —
+ * git не установлен, и спрашивать его не о чем.
+ */
+export function gitSpawn(): { readonly git: string; readonly env: Record<string, string | undefined> } | null {
+  const { git, absent } = gitBinary({});
+  return absent === null ? { git, env: gitEnv() } : null;
+}
+
+/**
  * Перечень файлов дерева — ЕДИНСТВЕННЫЙ источник реестра `code_files`, а через
  * него — и `code grep`, и `code search`, и карты. git-репозиторий (и каждый
  * вложенный) перечисляется `git ls-files`, то есть с .gitignore; не-git —

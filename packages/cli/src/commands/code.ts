@@ -29,11 +29,18 @@
  * «функция drainQueueTail, и вот три записи про неё».
  */
 
-import { join } from "node:path";
-// Статически — только список языков: `langs.ts` не тянет ни tree-sitter, ни
-// хранилище (он тот же, что грузит `select.ts` ради строки `init`). Всё
-// тяжёлое ниже по-прежнему динамическим `import()`.
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Database } from "bun:sqlite";
+// Статически — только список языков и вид: `langs.ts` не тянет ни tree-sitter,
+// ни хранилище (он тот же, что грузит `select.ts` ради строки `init`), а
+// `view.ts` не импортирует ничего вовсе. Всё тяжёлое ниже по-прежнему
+// динамическим `import()`.
 import { L1_LANGS_LABEL } from "@myc/code-intel/langs";
+import { type CodeView, coveringAncestor, coveringIndex, SQL_HAS_ROWS } from "@myc/code-intel/view";
+// Ближайший индекс живёт в view.ts: его спрашивает и строка статуса, которой
+// тянуть весь этот модуль на каждой перерисовке незачем.
+export { coveringAncestor, coveringIndex };
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
@@ -45,6 +52,7 @@ import {
   type StoreDeps,
   type StoreHandle,
 } from "./store.ts";
+import { mapIntoWorktree, readWorktreeLink, type WorktreeLink } from "./wsfind.ts";
 
 /**
  * Ключ отметки последнего прогона код-индекса в `myc_meta`. Живёт здесь, у
@@ -105,12 +113,331 @@ export async function codeRepo(
 }
 
 // ---------------------------------------------------------------------------
+// Откуда отвечать: свой индекс, часть индекса корня, основная копия worktree
+// (memory-m0md9fybwrdh)
+// ---------------------------------------------------------------------------
+//
+// ЗАЧЕМ. В экосистеме (S59) индекс строят из КОРНЯ: одна строка на файл,
+// `repo_id = ''`, пути вида `messaging-server/server/src/x.ts`. Агент стоит во
+// вложенном репозитории или в его git worktree, и `codeRepo` выводит ему
+// `messaging-server` — ключ, под которым строк нет. До этого места каждый
+// читатель отвечал `precond.no_index` и советовал `myc code index`, то есть
+// вторую копию тех же файлов под другим ключом (база cherry — уже 185 МБ).
+//
+// ПРАВИЛО — БЛИЖАЙШИЙ ИНДЕКС. Есть строки под своим `repo_id` — отвечает свой
+// (прежнее поведение, байт в байт). Нет — отвечает ближайший предок, чей
+// индекс покрывает путь репозитория: для `messaging-server` это корень с
+// префиксом `messaging-server/`. Пути в выдаче — от корня репозитория, где
+// стоит агент, как и у собственного индекса. Ключи в базе не меняются, ничего
+// не переписывается; почему не «переключить ключ на репозиторий» — в README и
+// в шапке `@myc/code-intel/view`.
+//
+// WORKTREE. Индекс — это основная копия репозитория: отдельного индекса на
+// ветку нет. Перечень, символы и спаны берутся из него. Файлы читаются по
+// правилу «текст обязан сходиться с тем, что к нему приложено»:
+//   code grep — из worktree (вхождения и номера строк — файлов агента;
+//               файла нет на ветке — из основной копии, и это названо);
+//   skeleton  — из worktree, если его копия совпала с тем, что видел индекс,
+//               иначе из основной копии с WARN `skeleton.main_copy`: сигнатуры,
+//               нарезанные спанами основной копии из файла ветки, — мусор;
+//   callers   — строки вхождений из основной копии: номера — её;
+//   fan_in    — по основной копии: это статистика индекса, и кеш её общий.
+// Коммит worktree не тот, что у основной копии, или в нём правки
+// отслеживаемых файлов — WARN `code_index.worktree_divergent` с обеими
+// ветками у КАЖДОГО читателя: строки и спаны могут не совпасть.
+
+/** Состояние git worktree, из которого позвали, против основной копии. */
+export interface CodeWorktree {
+  /** Рабочее дерево worktree. */
+  readonly dir: string;
+  /** Корень ОСНОВНОЙ копии того же репозитория — с неё снят индекс. */
+  readonly mainRoot: string;
+  /** `feature @1a2b3c4` */
+  readonly branch: string;
+  readonly mainBranch: string;
+  /** Правки отслеживаемых файлов в worktree; null — не спрашивали или git не ответил. */
+  readonly dirty: boolean | null;
+  /** Коммиты worktree и основной копии совпали (и оба известны). */
+  readonly sameCommit: boolean;
+  readonly divergent: boolean;
+  readonly tookMs: number;
+}
+
+/** Откуда отвечает код-запрос — одно решение на все читатели. */
+export interface CodeTarget {
+  /** Репозиторий вопроса (S59): его пути — в выдаче. */
+  readonly repoId: string;
+  /** Его корень в основной копии. */
+  readonly repoRoot: string;
+  /** Чей индекс и какая его часть. */
+  readonly view: CodeView;
+  /** Ответ из части индекса предка, а не из своего. */
+  readonly borrowed: boolean;
+  /** Индекса нет ни у репозитория, ни у предков. */
+  readonly missing: boolean;
+  /** Где читать файлы по путям выдачи: в worktree — его копия репозитория. */
+  readonly fileRoot: string;
+  /** Где читать файл, которого нет под `fileRoot`: основная копия. Вне worktree — нет. */
+  readonly fallbackRoot?: string;
+  readonly worktree?: CodeWorktree;
+  /** Корень воркспейса — для подсказки «строить отсюда». */
+  readonly wsDir: string;
+}
+
+/** `dir` лежит под `root` (или совпадает) — по строке, а при симлинках по realpath. */
+function under(root: string, dir: string): boolean {
+  const inside = (a: string, b: string): boolean => {
+    const rel = relative(a, b);
+    return rel.length === 0 || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  if (inside(root, dir)) return true;
+  try {
+    return inside(realpathSync(root), realpathSync(dir));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ссылка worktree для код-запроса. Первая форма — worktree ВНЕ воркспейса:
+ * её уже нашёл поиск воркспейса (`h.worktree`). Вторая — worktree ВНУТРИ
+ * дерева экосистемы (`wt-collector` рядом с `collector`): подъём нашёл
+ * воркспейс сам, ссылки в хендле нет, а охват уже переименован в основное
+ * дерево (`deriveRepoAcrossWorktrees`) — значит, файлы надо читать не там,
+ * куда указывает охват. Одна `stat` первого сегмента, и только когда он не
+ * совпал с именем репозитория.
+ *
+ * Годится лишь ссылка, чьё основное дерево СОДЕРЖИТ корень репозитория
+ * вопроса: иначе индекс снят с самого этого дерева, и сравнивать не с чем.
+ */
+function worktreeOf(h: StoreHandle, cwd: string, repoId: string, repoRoot: string): WorktreeLink | undefined {
+  let link = h.worktree;
+  if (link === undefined) {
+    const rel = relative(h.wsDir, resolve(cwd));
+    if (rel.length === 0 || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+    const first = rel.split(sep)[0]!;
+    if (first === repoId.split("/")[0]) return undefined; // обычный вложенный репозиторий
+    link = readWorktreeLink(join(h.wsDir, first));
+  }
+  if (link === undefined || !under(link.mainRoot, repoRoot)) return undefined;
+  return link;
+}
+
+/**
+ * Цель код-запроса: `codeRepo` плюс ближайший покрывающий индекс плюс
+ * worktree. Git спрашивается только из worktree (см. `compareWorktree`).
+ */
+export async function codeTarget(
+  h: StoreHandle,
+  explicit: string | undefined,
+  cwd: string,
+): Promise<CodeTarget> {
+  const { repoId, repoRoot } = await codeRepo(h, explicit);
+  const cover = coveringIndex(h.driver.database, repoId);
+  const view: CodeView = cover ?? { repoId, prefix: "" };
+  const base = {
+    repoId,
+    repoRoot,
+    view,
+    borrowed: cover !== null && (cover.repoId !== repoId || cover.prefix.length > 0),
+    missing: cover === null,
+    wsDir: h.wsDir,
+  };
+  const link = worktreeOf(h, cwd, repoId, repoRoot);
+  if (link === undefined) return { ...base, fileRoot: repoRoot };
+  const { compareWorktree, headLabel } = await import("@myc/code-intel/worktree");
+  const cmp = compareWorktree(link.gitDir, link.worktreeDir);
+  let fileRoot = mapIntoWorktree(link, repoRoot);
+  if (fileRoot === repoRoot) {
+    // Пути пришли через разные симлинки (/tmp против /private/tmp): тот же
+    // перенос по realpath.
+    try {
+      fileRoot = mapIntoWorktree(link, realpathSync(repoRoot));
+    } catch {
+      /* корня нет на диске — читать будет нечего в любом случае */
+    }
+  }
+  return {
+    ...base,
+    fileRoot,
+    fallbackRoot: repoRoot,
+    worktree: {
+      dir: link.worktreeDir,
+      mainRoot: link.mainRoot,
+      branch: headLabel(cmp.worktree),
+      mainBranch: headLabel(cmp.main),
+      dirty: cmp.dirty,
+      sameCommit: cmp.worktree.sha !== null && cmp.worktree.sha === cmp.main.sha,
+      divergent: cmp.divergent,
+      tookMs: cmp.tookMs,
+    },
+  };
+}
+
+/** Что попадает в `--json` о происхождении ответа. Поля нет — ответ из своего индекса вне worktree. */
+export interface SourceData {
+  /** Чей индекс ответил: `repo` и префикс части в нём, корень на диске. */
+  index: { repo: string; prefix: string; root: string };
+  /** Где прочитаны файлы; null — команда файлов не читает (search, map). */
+  files: string | null;
+  worktree?: {
+    dir: string;
+    branch: string;
+    main_root: string;
+    main_branch: string;
+    dirty: boolean | null;
+    divergent: boolean;
+    took_ms: number;
+  };
+}
+
+/**
+ * Поле `source` ответа — только когда ответ НЕ из собственного индекса или
+ * позван из worktree. Для запроса из корня (и из репозитория со своим
+ * индексом) выдача остаётся прежней байт в байт.
+ */
+export function sourceData(t: CodeTarget, files: string | null = t.fileRoot): SourceData | undefined {
+  if (!t.borrowed && t.worktree === undefined) return undefined;
+  const indexRoot = t.view.repoId.length === 0 ? t.wsDir : join(t.wsDir, t.view.repoId);
+  const out: SourceData = {
+    index: { repo: t.view.repoId, prefix: t.view.prefix, root: indexRoot },
+    files,
+  };
+  if (t.worktree !== undefined) {
+    out.worktree = {
+      dir: t.worktree.dir,
+      branch: t.worktree.branch,
+      main_root: t.worktree.mainRoot,
+      main_branch: t.worktree.mainBranch,
+      dirty: t.worktree.dirty,
+      divergent: t.worktree.divergent,
+      took_ms: Math.round(t.worktree.tookMs),
+    };
+  }
+  return out;
+}
+
+/** Строки человеческой выдачи про происхождение ответа; пусто — ответ из своего индекса. */
+export function sourceLines(s: SourceData | undefined): string[] {
+  if (s === undefined) return [];
+  const out: string[] = [];
+  if (s.index.prefix.length > 0) {
+    out.push(
+      `index     ${s.index.repo.length > 0 ? `repo ${s.index.repo}` : "workspace root"} ${s.index.root}, ` +
+        `part ${s.index.prefix} — paths above are relative to that part`,
+    );
+  }
+  if (s.worktree !== undefined) {
+    const from =
+      s.files === null
+        ? ""
+        : `; files read from ${s.files === s.worktree.main_root ? "the main copy" : s.files === s.worktree.dir ? "the worktree" : s.files}`;
+    out.push(
+      `worktree  ${s.worktree.dir} (${s.worktree.branch}${s.worktree.dirty === true ? ", uncommitted changes" : ""}) — ` +
+        `index of the main copy ${s.worktree.main_root} (${s.worktree.main_branch})${from}`,
+    );
+  }
+  return out;
+}
+
+/**
+ * WARN расхождения worktree с основной копией (И2). Один текст на все
+ * читатели: из какой копии и ветки ответ, где стоит агент, и что может не
+ * совпасть.
+ */
+export function warnWorktree(ctx: CommandContext, t: CodeTarget, reads?: string): void {
+  const w = t.worktree;
+  if (w === undefined || !w.divergent) return;
+  const why = !w.sameCommit
+    ? "it is on another commit"
+    : w.dirty === true
+      ? "it has uncommitted changes to tracked files"
+      : "git did not say whether it has uncommitted changes";
+  ctx.warn(
+    "code_index.worktree_divergent",
+    `answer from the code index of the MAIN copy ${w.mainRoot} (${w.mainBranch}), not from your worktree ` +
+      `${w.dir} (${w.branch}) — ${why}: the file list, symbols and spans are the main copy's, so lines and ` +
+      `spans may not match your files${reads === undefined ? "" : ` (${reads})`}`,
+  );
+}
+
+/**
+ * Покроет ли индекс КОРНЯ этот вложенный репозиторий, когда корень
+ * переиндексируют: есть индекс корня, и git корня каталог не игнорирует
+ * (перечень корня берёт вложенный репозиторий ровно тогда). Тогда свой
+ * индекс у репозитория — будущий дубль, а правильное действие — корень.
+ * Git спрашивается только здесь, на пути отказа и первого индекса.
+ */
+async function rootWouldCover(db: Database, ws: string, repoId: string): Promise<{ indexed: boolean; ignored: boolean | null }> {
+  const indexed = db.query(SQL_HAS_ROWS).get("") !== null;
+  if (!indexed || repoId.length === 0) return { indexed, ignored: null };
+  const { gitIgnores } = await import("@myc/code-intel/worktree");
+  return { indexed, ignored: gitIgnores(ws, repoId.split("/")[0]!) };
+}
+
+/**
+ * Отказ «индекса нет» с советом, который НЕ строит дубль. Случаи и подсказки:
+ * репозиторий — сам корень, или индекса нет нигде — строить из корня
+ * воркспейса (путь печатается: одна команда на все вложенные репозитории);
+ * индекс корня есть, но этого репозитория в нём нет, и git корня его не
+ * игнорирует — индекс корня просто старше репозитория, переиндексировать
+ * корень; git корня его игнорирует — корень его не возьмёт никогда, и
+ * собственный индекс репозитория дублем не будет.
+ */
+export async function noIndexFailure(
+  h: StoreHandle,
+  t: CodeTarget,
+  tail: string,
+  /**
+   * Прежний текст отказа корня — для вопроса из самого корня он не меняется
+   * ни на слово: `myc code index` оттуда и так строит индекс корня, а
+   * одинаковость текста CLI и MCP стережёт code.parity.test.ts.
+   */
+  rootMsg: string,
+): Promise<CommandFailure> {
+  const ws = t.wsDir;
+  if (t.repoId.length === 0) {
+    return failure("precond.no_index", rootMsg, ExitCode.PRECOND, "myc code index");
+  }
+  const root = await rootWouldCover(h.driver.database, ws, t.repoId);
+  if (root.indexed && root.ignored === true) {
+    return failure(
+      "precond.no_index",
+      `no code index covers ${t.repoId}: it has no index of its own, and the workspace-root index (${ws}) ` +
+        `never will — the root's git ignores ${t.repoId}/ — ${tail}`,
+      ExitCode.PRECOND,
+      `myc -C ${t.repoRoot} code index   # not a duplicate: the root index does not cover ${t.repoId}`,
+    );
+  }
+  if (root.indexed) {
+    return failure(
+      "precond.no_index",
+      `no code index covers ${t.repoId} yet: the workspace-root index (${ws}) has no files under ` +
+        `${t.repoId}/ — it was built before this repo appeared — ${tail}`,
+      ExitCode.PRECOND,
+      `myc -C ${ws} code index   # adds ${t.repoId}/ to the root index; incremental, the rest is not re-read`,
+    );
+  }
+  return failure(
+    "precond.no_index",
+    `no code index covers ${t.repoId}: neither its own nor the workspace-root index (${ws}) is built — ${tail}`,
+    ExitCode.PRECOND,
+    `myc -C ${ws} code index   # one index for the workspace root and every nested repo`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // myc code index — вход
 // ---------------------------------------------------------------------------
 
 interface CodeIndexData {
   repo: string;
   root: string;
+  /**
+   * Прогон обновил ЧАСТЬ индекса предка, а не свой (memory-m0md9fybwrdh):
+   * чей индекс, какой префикс, где его корень. Поля нет — индекс свой.
+   */
+  into?: { repo: string; prefix: string; root: string };
   dry_run: boolean;
   scan: {
     files: number;
@@ -201,11 +528,36 @@ function buildCodeIndex(deps: StoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId, repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
+        // ВЛОЖЕННЫЙ РЕПОЗИТОРИЙ, КОТОРЫЙ УЖЕ ПОКРЫТ ИНДЕКСОМ КОРНЯ, не строит
+        // свою копию (memory-m0md9fybwrdh): прогон обновляет ЕГО ЧАСТЬ индекса
+        // корня — перечень его git, строки под ключом корня с префиксом, и
+        // удаление исчезнувшего только под этим префиксом. Отказ с командой
+        // для корня был бы проще, но фон (`drain.ts`) поднимает этот же
+        // прогон из каталога, где работает агент, — отказ там значил бы, что
+        // индекс корня не освежается никогда, пока все сидят во вложенных
+        // репозиториях и worktree.
+        let t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const { repoId, repoRoot } = t;
+        const db = h.driver.database;
+        if (t.missing && repoId.length > 0 && !repoId.includes("/")) {
+          // Первый индекс репозитория, которого в индексе корня ещё нет. Если
+          // корень проиндексирован и его git этот каталог не игнорирует —
+          // следующий прогон корня всё равно его возьмёт, и свой индекс здесь
+          // стал бы дублем. Поэтому часть корня — сразу. Индекса корня нет
+          // вовсе — прежнее поведение: частичный индекс корня отвечал бы из
+          // корня про один репозиторий, не говоря об этом.
+          const root = await rootWouldCover(db, h.wsDir, repoId);
+          if (root.indexed && root.ignored !== true) {
+            t = { ...t, view: { repoId: "", prefix: `${repoId}/` }, borrowed: true, missing: false };
+          }
+        }
         const { scanCodeIndex, drainCodeIndex } = await import("@myc/code-intel/code-index");
         const { indexScope } = await import("@myc/code-intel/read");
-        const db = h.driver.database;
-        const opts = { repoId, root: repoRoot };
+        const part = t.borrowed ? t.view.prefix : "";
+        const indexRoot = t.view.repoId.length === 0 ? h.wsDir : join(h.wsDir, t.view.repoId);
+        const opts = t.borrowed
+          ? { repoId: t.view.repoId, root: indexRoot, subtree: part.slice(0, -1) }
+          : { repoId, root: repoRoot };
         const dryRun = flagBool(ctx, "dry-run");
         const scan = await scanCodeIndex(db, opts, !dryRun);
         const batchRaw = flagNum(ctx, "batch");
@@ -232,11 +584,12 @@ function buildCodeIndex(deps: StoreDeps): Command {
         const { buildSearchUnits } = await import("@myc/code-intel/search");
         const search = dryRun
           ? { rebuilt: 0, reused: 0, removed: 0, units: 0, bytes: 0, tookMs: 0, missing: 0 }
-          : buildSearchUnits(db, repoId, repoRoot);
-        const scope = indexScope(db, repoId);
+          : buildSearchUnits(db, opts.repoId, opts.root, part);
+        const scope = indexScope(db, t.borrowed ? t.view : repoId);
         const data: CodeIndexData = {
           repo: repoId,
           root: repoRoot,
+          ...(t.borrowed ? { into: { repo: t.view.repoId, prefix: part, root: indexRoot } } : {}),
           dry_run: dryRun,
           scan: {
             files: scan.files,
@@ -295,6 +648,22 @@ function buildCodeIndex(deps: StoreDeps): Command {
         }
         if (drain.failed > 0) {
           ctx.warn("code_index.failed", `files not parsed: ${drain.failed} (see jobs.last_error)`);
+        }
+        // Из worktree индексируется ОСНОВНАЯ копия — своего индекса у ветки
+        // нет; разошлись они — сказать, что построено не то, что правит агент.
+        warnWorktree(ctx, t, "this run indexed the main copy, not the worktree");
+        if (!t.borrowed && !t.missing && repoId.length > 0) {
+          // Две копии одних файлов: свой индекс, построенный до этого правила,
+          // и часть индекса корня. Запросы отсюда берут свой (ближайший);
+          // молча держать обе — ровно то, от чего правило заведено.
+          const anc = coveringAncestor(db, repoId);
+          if (anc !== null) {
+            ctx.warn(
+              "code_index.duplicate",
+              `${repoId} has its own code index AND the ${anc.repoId.length > 0 ? `index of ${anc.repoId}` : "workspace-root index"} ` +
+                `covers ${anc.prefix} — two copies of the same files; queries from ${repoId} use its own`,
+            );
+          }
         }
         if (scan.unignored.length > 0) {
           // Перечень без .gitignore — не обычный перечень: в реестр попало
@@ -355,7 +724,10 @@ function buildCodeIndex(deps: StoreDeps): Command {
       const d = data as CodeIndexData;
       const langs = d.langs.map((l) => `${l.lang} ${l.files}`).join(", ");
       const lines = [
-        `repo      ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}`,
+        `repo      ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}` +
+          (d.into !== undefined
+            ? `  → its part ${d.into.prefix} of the ${d.into.repo.length > 0 ? `index of ${d.into.repo}` : "workspace-root index"} ${d.into.root}`
+            : ""),
         `scan      files ${d.scan.files}, unchanged ${d.scan.unchanged}, touched ${d.scan.touched}, ` +
           `queued ${d.scan.enqueued}, removed ${d.scan.removed}, ` +
           `secret-named skipped ${d.scan.secret_skipped}  ${d.scan.scan_ms} ms` +
@@ -400,6 +772,8 @@ interface SymbolData {
   /** Что просмотрено — §6.3: пустой выдачи без причины не бывает. */
   searched: { files: number; l1_files: number; defs: number; langs: string[] };
   took_ms: number;
+  /** Чей индекс ответил и где прочитаны файлы — только если не свой индекс вне worktree. */
+  source?: SourceData;
 }
 
 const SQL_ANCHORS_IN_SPAN = `
@@ -442,34 +816,44 @@ function buildCodeSymbol(deps: StoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId, repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
-        const { symbolDefs, defsInSpan, indexScope, fanIn } = await import("@myc/code-intel/read");
+        const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const { repoId, view } = t;
+        const { symbolDefs, indexScope, fanIn } = await import("@myc/code-intel/read");
+        const { anchorKeysFor } = await import("./anchor.ts");
         const db = h.driver.database;
-        const scope = indexScope(db, repoId);
-        if (scope.files === 0) {
-          return failure(
-            "precond.no_index",
-            `the code index of this repo (${repoId.length > 0 ? repoId : "workspace root"}) is not built: ` +
-              `code_files has zero rows — nowhere to look for a symbol`,
-            ExitCode.PRECOND,
-            "myc code index",
+        const scope = indexScope(db, view);
+        if (t.missing || scope.files === 0) {
+          return await noIndexFailure(
+            h,
+            t,
+            "nowhere to look for a symbol",
+            "the code index of this repo (workspace root) is not built: code_files has zero rows — nowhere to look for a symbol",
           );
         }
-        const defs = symbolDefs(db, repoId, name.trim());
+        warnWorktree(ctx, t);
+        const defs = symbolDefs(db, view, name.trim());
         const anchorsQ = db.query(SQL_ANCHORS_IN_SPAN);
         const ownersQ = db.query(SQL_ANCHOR_OWNERS);
+        // Путь определения от корня ВОРКСПЕЙСА — из него оба ключа якоря
+        // (`anchorKeysFor`): поставленный из корня и поставленный изнутри
+        // вложенного репозитория (или его worktree) видны с обеих сторон.
+        const wsPathOf = (p: string): string => {
+          const full = view.prefix + p;
+          return view.repoId.length === 0 ? full : `${view.repoId}/${full}`;
+        };
         const data: SymbolData = {
           repo: repoId,
           name: name.trim(),
           defs: defs.map((d) => {
             const knowledge: SymbolData["defs"][number]["knowledge"] = [];
-            const rows = anchorsQ.all(repoId, d.path, d.spanStart, d.spanEnd) as Array<{
-              node_id: string;
-              path: string;
-              s: number;
-              e: number;
-              state: string;
-            }>;
+            type AnchorRow = { node_id: string; path: string; s: number; e: number; state: string };
+            const rows: AnchorRow[] = [];
+            for (const k of anchorKeysFor(wsPathOf(d.path))) {
+              rows.push(...(anchorsQ.all(k.repoId, k.path, d.spanStart, d.spanEnd) as AnchorRow[]));
+            }
+            // Порядок SQL (самый тесный спан первым) — поверх ОБОИХ ключей;
+            // сортировка устойчива, и при одном ключе порядок прежний.
+            rows.sort((a, b) => a.e - a.s - (b.e - b.s) || a.s - b.s);
             for (const a of rows) {
               for (const o of ownersQ.all(a.node_id) as Array<{
                 id: string;
@@ -482,7 +866,10 @@ function buildCodeSymbol(deps: StoreDeps): Command {
                   kind: o.kind,
                   status: o.status,
                   title: o.title,
-                  anchor: `${a.path}:${a.s}-${a.e}`,
+                  // Путь — в терминах спросившего (тот же файл, что у
+                  // определения): якорь, записанный другим ключом, иначе
+                  // печатался бы чужим путём.
+                  anchor: `${d.path}:${a.s}-${a.e}`,
                   state: a.state,
                 });
               }
@@ -506,7 +893,10 @@ function buildCodeSymbol(deps: StoreDeps): Command {
           took_ms: 0,
         };
         if (defs.length > 0 && !flagBool(ctx, "no-fan-in")) {
-          const f = fanIn(db, repoId, name.trim(), repoRoot);
+          // Счёт — по ОСНОВНОЙ копии, а не по worktree: fan_in — статистика
+          // индекса и кешируется в нём (`code_refs`), а кеш общий для всех,
+          // кто спрашивает этот индекс, в том числе из основной копии.
+          const f = fanIn(db, view, name.trim(), t.repoRoot);
           data.fan_in = {
             n: f.n,
             files: f.files,
@@ -516,6 +906,8 @@ function buildCodeSymbol(deps: StoreDeps): Command {
           };
         }
         data.took_ms = Math.round(performance.now() - t0);
+        const src = sourceData(t, data.fan_in !== undefined && !data.fan_in.cached ? t.repoRoot : null);
+        if (src !== undefined) data.source = src;
         if (defs.length === 0) {
           return failure(
             "notfound.symbol",
@@ -552,6 +944,7 @@ function buildCodeSymbol(deps: StoreDeps): Command {
       out.push(
         `scanned ${count(d.searched.files, "file")}, ${count(d.searched.defs, "symbol")}  ${d.took_ms} ms`,
       );
+      out.push(...sourceLines(d.source));
       return `${out.join("\n")}\n`;
     },
   };
@@ -829,6 +1222,7 @@ interface SearchData {
   stages: string[];
   searched: { units: number; files: number };
   took_ms: number;
+  source?: SourceData;
 }
 
 const SEARCH_FLAGS: readonly FlagSpec[] = [
@@ -860,11 +1254,21 @@ function buildCodeSearch(deps: StoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId } = await codeRepo(h, flagStr(ctx, "repo"));
+        const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const { repoId } = t;
+        if (t.missing) {
+          return await noIndexFailure(
+            h,
+            t,
+            "the code search corpus is empty",
+            "the code search corpus is empty: code_units has zero units for repo (workspace root)",
+          );
+        }
+        warnWorktree(ctx, t);
         const { searchCode } = await import("@myc/code-intel/search");
         const limit = flagNum(ctx, "limit");
         const symbols = flagNum(ctx, "symbols");
-        const res = searchCode(h.driver.database, repoId, query, {
+        const res = searchCode(h.driver.database, t.view, query, {
           ...(limit !== undefined && limit > 0 ? { limit: Math.floor(limit) } : {}),
           ...(symbols !== undefined && symbols > 0 ? { unitsPerFile: Math.floor(symbols) } : {}),
         });
@@ -897,6 +1301,8 @@ function buildCodeSearch(deps: StoreDeps): Command {
           searched: { units: res.searched.units, files: res.searched.files },
           took_ms: Math.round(res.tookMs),
         };
+        const src = sourceData(t, null);
+        if (src !== undefined) data.source = src;
         if (data.hits.length === 0) {
           // §6.3: пустой выдачи без причины не бывает. Что просмотрено —
           // обязано приехать вместе с пустотой, иначе она неотличима от сбоя.
@@ -925,6 +1331,7 @@ function buildCodeSearch(deps: StoreDeps): Command {
         `${count(d.hits.length, "file")} · stages ${d.stages.length > 0 ? d.stages.join(">") : "—"} · ` +
           `scanned ${count(d.searched.units, "unit")} in ${count(d.searched.files, "file")} · ${d.took_ms} ms`,
       );
+      out.push(...sourceLines(d.source));
       return `${out.join("\n")}\n`;
     },
   };
@@ -956,6 +1363,9 @@ interface GrepData {
   missing: number;
   truncated: boolean;
   took_ms: number;
+  /** Из worktree: файлов, прочитанных из основной копии, потому что в worktree их нет. */
+  from_main?: number;
+  source?: SourceData;
 }
 
 const GREP_FLAGS: readonly FlagSpec[] = [
@@ -1008,19 +1418,21 @@ function buildCodeGrep(deps: StoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId, repoRoot } = await codeRepo(h, flagStr(ctx, "repo"));
+        const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const { repoId, view } = t;
         const { grepCode, resolveGrepScope } = await import("@myc/code-intel/grep");
         const { indexScope } = await import("@myc/code-intel/read");
         const db = h.driver.database;
-        const scope = indexScope(db, repoId);
-        if (scope.files === 0) {
-          return failure(
-            "precond.no_index",
-            `this repo has no file registry: code_files has zero rows — nothing to grep`,
-            ExitCode.PRECOND,
-            "myc code index",
+        const scope = indexScope(db, view);
+        if (t.missing || scope.files === 0) {
+          return await noIndexFailure(
+            h,
+            t,
+            "nothing to grep",
+            "this repo has no file registry: code_files has zero rows — nothing to grep",
           );
         }
+        warnWorktree(ctx, t, "occurrences and line numbers are read from the worktree files, their owners from the index");
         // `--in` через запятую, как `--lang`. Повтор флага разбор argv
         // схлопывает в последнее значение ещё до обработчика — поэтому
         // несколько областей пишутся одним флагом.
@@ -1028,13 +1440,16 @@ function buildCodeGrep(deps: StoreDeps): Command {
         const inScope =
           inRaw === undefined
             ? undefined
-            : resolveGrepScope(db, repoId, repoRoot, inRaw.split(","), ctx.globals.directory ?? process.cwd());
+            : resolveGrepScope(db, view, t.fileRoot, inRaw.split(","), ctx.globals.directory ?? process.cwd());
         if (inScope !== undefined && !inScope.ok) {
           return failure(inScope.code, inScope.msg, GREP_SCOPE_EXIT[inScope.code] ?? ExitCode.USAGE, inScope.hint);
         }
         const langsRaw = flagStr(ctx, "lang");
         const limit = flagNum(ctx, "limit");
-        const res = grepCode(db, repoId, repoRoot, literal, {
+        // Файлы — там, где стоит агент (`fileRoot`, в worktree — его копия),
+        // перечень и владельцы — из индекса вида.
+        const res = grepCode(db, view, t.fileRoot, literal, {
+          ...(t.fallbackRoot !== undefined ? { fallbackRoot: t.fallbackRoot } : {}),
           ignoreCase: flagBool(ctx, "ignore-case"),
           ...(langsRaw !== undefined
             ? { langs: langsRaw.split(",").map((x) => x.trim()).filter((x) => x.length > 0) }
@@ -1063,6 +1478,16 @@ function buildCodeGrep(deps: StoreDeps): Command {
           truncated: res.truncated,
           took_ms: Math.round(res.tookMs),
         };
+        if (t.worktree !== undefined) data.from_main = res.fallback;
+        const src = sourceData(t);
+        if (src !== undefined) data.source = src;
+        if (res.fallback > 0) {
+          ctx.warn(
+            "code_grep.from_main",
+            `${count(res.fallback, "indexed file")} not in the worktree ${t.worktree?.dir ?? t.fileRoot} ` +
+              `(deleted or never checked out on this branch) — read from the main copy ${t.fallbackRoot}`,
+          );
+        }
         if (data.skipped.length > 0) {
           ctx.warn(
             "code_grep.skipped",
@@ -1109,6 +1534,7 @@ function buildCodeGrep(deps: StoreDeps): Command {
       }
       out.push("");
       out.push(`${d.took_ms} ms`);
+      out.push(...sourceLines(d.source));
       return `${out.join("\n")}\n`;
     },
   };
@@ -1138,6 +1564,7 @@ interface MapData {
   /** Знаков в человекочитаемой выдаче — бюджет контекста, названный числом. */
   render_bytes: number;
   took_ms: number;
+  source?: SourceData;
 }
 
 const MAP_FLAGS: readonly FlagSpec[] = [
@@ -1173,6 +1600,7 @@ function renderMap(d: MapData): string {
     `edges     ${d.cross_edges} cross-directory via import; ${d.ambiguous_edges} dropped — ` +
       `the name is defined more than once in the repo`,
   );
+  out.push(...sourceLines(d.source));
   return `${out.join("\n")}\n`;
 }
 
@@ -1196,7 +1624,10 @@ function buildCodeMap(deps: StoreDeps): Command {
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
-        const { repoId } = await codeRepo(h, flagStr(ctx, "repo"));
+        const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const mapMsg = "this repo has no file registry: code_files has zero rows — nothing to build the map from";
+        if (t.missing) return await noIndexFailure(h, t, "nothing to build the map from", mapMsg);
+        warnWorktree(ctx, t);
         const { repoMap } = await import("@myc/code-intel/map");
         const num = (name: string): number | undefined => {
           const v = flagNum(ctx, name);
@@ -1206,22 +1637,16 @@ function buildCodeMap(deps: StoreDeps): Command {
         const hubs = num("hubs");
         const links = num("links");
         const depth = num("depth");
-        const m = repoMap(h.driver.database, repoId, {
+        const m = repoMap(h.driver.database, t.view, {
           ...(top !== undefined ? { top } : {}),
           ...(hubs !== undefined ? { hubs } : {}),
           ...(links !== undefined ? { links } : {}),
           ...(depth !== undefined ? { depth } : {}),
         });
-        if (m.files === 0) {
-          return failure(
-            "precond.no_index",
-            `this repo has no file registry: code_files has zero rows — nothing to build the map from`,
-            ExitCode.PRECOND,
-            "myc code index",
-          );
-        }
+        if (m.files === 0) return await noIndexFailure(h, t, "nothing to build the map from", mapMsg);
         const data: MapData = {
-          repo: m.repo,
+          // Репозиторий ВОПРОСА: у части индекса корня `m.repo` — это корень.
+          repo: t.repoId,
           files: m.files,
           defs: m.defs,
           refs: m.refs,
@@ -1240,6 +1665,8 @@ function buildCodeMap(deps: StoreDeps): Command {
           render_bytes: 0,
           took_ms: Math.round(m.tookMs),
         };
+        const src = sourceData(t, null);
+        if (src !== undefined) data.source = src;
         data.render_bytes = Buffer.byteLength(renderMap(data), "utf8");
         if (m.defs === 0) {
           ctx.warn(

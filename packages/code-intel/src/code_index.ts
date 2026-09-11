@@ -44,7 +44,8 @@ import {
 } from "./symbols.ts";
 import { listDefsAndRefs, type ParsedFile, type Ref } from "./refs.ts";
 import { PARSE_WORKER_IN_BINARY } from "./parse_worker_entry.ts";
-import { L1_LANGS, langOf, listFiles, type UnignoredDir } from "./langs.ts";
+import { type FileListing, L1_LANGS, langOf, listFiles, type UnignoredDir } from "./langs.ts";
+import { prefixEnd, REFS_VIEW_SEP } from "./view.ts";
 import { isSecretPath } from "./secret-paths.ts";
 import { GRAMMAR_BY_LANG, type MissingGrammar, missingGrammars } from "./grammars.ts";
 
@@ -116,6 +117,15 @@ export interface CodeIndexOptions {
    * каждый файл при каждом прогоне.
    */
   readonly incremental?: boolean;
+  /**
+   * ЧАСТЬ индекса (memory-m0md9fybwrdh): каталог под `root` (`messaging-server`),
+   * и скан перечисляет ТОЛЬКО его — своим `git ls-files`, — пишет строки под
+   * `repoId` с префиксом `<subtree>/` и удаляет исчезнувшее только под этим
+   * префиксом. Так `myc code index` из вложенного репозитория обновляет его
+   * часть индекса корня, а не строит вторую копию тех же файлов под своим
+   * `repo_id`. Пусто — весь `root`, как прежде.
+   */
+  readonly subtree?: string;
 }
 
 export interface ScanStats {
@@ -419,10 +429,18 @@ class ParsePool {
 // Скан: сверки по code_files + постановка работ
 // ---------------------------------------------------------------------------
 
-function loadLedger(db: Database, repoId: string): Map<string, FileRow> {
-  const rows = db
-    .query("SELECT path, lang, mtime_ms, size_bytes, file_hash FROM code_files WHERE repo_id = ?1")
-    .all(repoId) as Array<{
+function loadLedger(db: Database, repoId: string, prefix = ""): Map<string, FileRow> {
+  const rows = (
+    prefix.length === 0
+      ? db
+          .query("SELECT path, lang, mtime_ms, size_bytes, file_hash FROM code_files WHERE repo_id = ?1")
+          .all(repoId)
+      : db
+          .query(
+            "SELECT path, lang, mtime_ms, size_bytes, file_hash FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3",
+          )
+          .all(repoId, prefix, prefixEnd(prefix))
+  ) as Array<{
     path: string;
     lang: string;
     mtime_ms: number;
@@ -471,9 +489,25 @@ export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write 
 
   // git запускается ПЕРВЫМ и работает своим процессом, пока здесь читается
   // реестр: ожидание перечня и чтение базы идут одновременно.
-  const listing = listFiles(opts.root);
-  const ledger = loadLedger(db, opts.repoId);
-  const listed = await listing;
+  //
+  // Часть индекса (`subtree`): перечень — от каталога части, и её же git; все
+  // пути дальше — от `root` с префиксом части, то есть ровно те, что дал бы
+  // перечень корня. Реестр читается только под префиксом: исчезнувшим
+  // считается лишь то, что лежало В ЭТОЙ части.
+  const sub = (opts.subtree ?? "").replace(/^\/+|\/+$/g, "");
+  const prefix = sub.length === 0 ? "" : `${sub}/`;
+  const listing = listFiles(prefix.length === 0 ? opts.root : join(opts.root, sub));
+  const ledger = loadLedger(db, opts.repoId, prefix);
+  const raw = await listing;
+  const listed: FileListing =
+    prefix.length === 0
+      ? raw
+      : {
+          files: raw.files.map((p) => prefix + p),
+          gitRepos: raw.gitRepos.map((d) => (d === "." ? sub : prefix + d)),
+          unignored: raw.unignored.map((u) => ({ dir: u.dir === "." ? sub : prefix + u.dir, reason: u.reason })),
+          secretSkipped: raw.secretSkipped,
+        };
   const paths = listed.files;
   const dirtyL1: Array<{ path: string; lang: string }> = [];
   const dirtyL0: Array<{ path: string; lang: string; mtimeMs: number; size: number; hash: string }> = [];
@@ -649,9 +683,16 @@ export interface DrainOptions {
  * L1-файлах). Снести его целиком дешевле, чем хранить обратный индекс
  * «имя → файлы, где встречается», который пришлось бы поддерживать при
  * каждом разборе.
+ *
+ * Вместе со своим ключом снимаются ключи ВИДОВ этого индекса (`view.ts`,
+ * `refsCacheKey`): счёт вложенного репозитория, взятый из части индекса корня,
+ * устаревает от той же правки, что и счёт корня. Отрезок `<repo>…` — по
+ * первичному ключу `(repo_id, name)`, не скан.
  */
 function invalidateRefs(db: Database, repoId: string): void {
   db.query("DELETE FROM code_refs WHERE repo_id = ?1").run(repoId);
+  const lo = `${repoId}${REFS_VIEW_SEP}`;
+  db.query("DELETE FROM code_refs WHERE repo_id >= ?1 AND repo_id < ?2").run(lo, prefixEnd(lo));
 }
 
 function defaultHolder(): string {

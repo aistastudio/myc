@@ -159,6 +159,26 @@ export function anchorRepo(h: StoreHandle): { repoId: string; repoRoot: string }
   return { repoId, repoRoot: repoId.length === 0 ? h.wsDir : join(h.wsDir, repoId) };
 }
 
+/**
+ * Под какими ключами `(repo_id, path)` может лежать якорь на файл экосистемы
+ * (memory-m0md9fybwrdh). `wsPath` — путь файла от КОРНЯ воркспейса.
+ *
+ * Якорь пишется ключом того места, откуда его поставили (`anchorRepo`): из
+ * корня — `('', 'messaging-server/x.ts')`, из вложенного репозитория или его
+ * worktree — `('messaging-server', 'x.ts')`. Это один и тот же файл, и
+ * читатель, спрашивающий «что знают об этом месте», обязан спросить оба ключа —
+ * иначе знание, записанное из одного места, невидимо из другого. Ключей ровно
+ * два, потому что охват S59 — корень или ПЕРВЫЙ сегмент под ним (`deriveRepo`):
+ * другого `repo_id` у якоря на этот файл быть не может. Переписывать уже
+ * записанные якоря под общий ключ не нужно — поиск сходится сам.
+ */
+export function anchorKeysFor(wsPath: string): Array<{ readonly repoId: string; readonly path: string }> {
+  const keys = [{ repoId: "", path: wsPath }];
+  const slash = wsPath.indexOf("/");
+  if (slash > 0) keys.push({ repoId: wsPath.slice(0, slash), path: wsPath.slice(slash + 1) });
+  return keys;
+}
+
 /** Путь в базе — всегда относительный от корня репозитория и POSIX-слэшами. */
 export function repoRelative(repoRoot: string, input: string, cwd: string): string {
   const abs = isAbsolute(input) ? input : resolve(cwd, input);

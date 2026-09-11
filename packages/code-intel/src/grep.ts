@@ -53,6 +53,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { isSecretPath, SECRET_NAMES_LABEL } from "./secret-paths.ts";
+import { type CodeView, prefixEnd, type RepoRef, stripPrefix, viewOf } from "./view.ts";
 
 export interface GrepHit {
   readonly line: number;
@@ -86,6 +87,8 @@ export interface GrepResult {
   readonly binary: number;
   /** Файлов, которых нет на диске (индекс отстал). */
   readonly missing: number;
+  /** Файлов, прочитанных из `fallbackRoot`, потому что под `repoRoot` их нет. */
+  readonly fallback: number;
   /** Область, к которой ответ СУЖЕН (метки `GrepScope.label`); null — весь репозиторий. */
   readonly scope: readonly string[] | null;
   readonly truncated: boolean;
@@ -112,6 +115,12 @@ export interface GrepOptions {
   /** Файлы крупнее — пропускаются и НАЗЫВАЮТСЯ. */
   readonly maxFileBytes?: number;
   readonly maxLineChars?: number;
+  /**
+   * Где читать файл, которого нет под `repoRoot`: из git worktree — основная
+   * копия (файл не приехал на ветку или удалён на ней). Такие файлы
+   * считаются в `fallback`, чтобы вызывающий мог их назвать.
+   */
+  readonly fallbackRoot?: string;
 }
 
 const DEFAULT_LIMIT = 60;
@@ -129,6 +138,21 @@ const SQL_FILES = `SELECT path, lang, size_bytes FROM code_files WHERE repo_id =
 const SQL_PATHS = `SELECT path FROM code_files WHERE repo_id = ?1`;
 const SQL_DEFS = `SELECT path, name, kind, span_start, span_end FROM code_defs
   WHERE repo_id = ?1 ORDER BY path, span_start`;
+
+/** Те же три запроса под префиксом вида (`view.ts`): отрезок первичного ключа. */
+const SQL_FILES_IN = `SELECT path, lang, size_bytes FROM code_files
+  WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 ORDER BY path`;
+const SQL_PATHS_IN = `SELECT path FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3`;
+const SQL_DEFS_IN = `SELECT path, name, kind, span_start, span_end FROM code_defs
+  WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 ORDER BY path, span_start`;
+
+/** Строки одного из запросов выше — под видом или по всему индексу; пути без префикса. */
+function rowsOf<T extends { path: string }>(db: Database, v: CodeView, whole: string, part: string): T[] {
+  if (v.prefix.length === 0) return db.query(whole).all(v.repoId) as T[];
+  const rows = db.query(part).all(v.repoId, v.prefix, prefixEnd(v.prefix)) as T[];
+  for (const r of rows) r.path = stripPrefix(v, r.path);
+  return rows;
+}
 
 /** NUL в первых BINARY_PROBE_BYTES байтах — признак git, не расширение имени. */
 export function looksBinary(buf: Uint8Array): boolean {
@@ -164,10 +188,14 @@ export type GrepScopeRefusal = {
  *
  * `cwd` нужен только подсказке: из подкаталога легко написать путь от себя, а
  * не от корня, и отказ тогда называет, как было бы правильно.
+ *
+ * `repoRoot` — корень репозитория ТАМ, ГДЕ СТОИТ АГЕНТ (в git worktree — его
+ * каталог): пути вопроса считаются от него и проверяются на его диске, а
+ * реестр — из индекса, который назвал `repo` (вид: часть индекса корня).
  */
 export function resolveGrepScope(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   repoRoot: string,
   inputs: readonly string[],
   cwd?: string,
@@ -219,7 +247,7 @@ export function resolveGrepScope(
     }
     const path = dir ? (rel.length === 0 ? "" : `${rel}/`) : rel;
     const scope: GrepScope = { label: dir ? (rel.length === 0 ? "." : `${rel}/`) : rel, path, dir };
-    registry ??= (db.query(SQL_PATHS).all(repoId) as Array<{ path: string }>).map((r) => r.path);
+    registry ??= rowsOf<{ path: string }>(db, viewOf(repo), SQL_PATHS, SQL_PATHS_IN).map((r) => r.path);
     if (!registry.some((p) => inScope(p, [scope]) && !isSecretPath(p))) {
       return {
         ok: false,
@@ -256,14 +284,22 @@ function ownerOf(defs: readonly OwnerDef[] | undefined, line: number): OwnerDef 
   return best;
 }
 
+/**
+ * `repo` — чей индекс даёт перечень и владельцев (строка — весь индекс
+ * репозитория, вид — часть индекса корня); `repoRoot` — где лежат ФАЙЛЫ, по
+ * путям уже без префикса вида. В git worktree это каталог worktree: вхождения
+ * и номера строк — из файлов, которые агент правит, а владельцы — из индекса
+ * основной копии (расхождение называет вызывающий, `code_index.worktree_divergent`).
+ */
 export function grepCode(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   repoRoot: string,
   literal: string,
   opts: GrepOptions = {},
 ): GrepResult {
   const t0 = performance.now();
+  const view = viewOf(repo);
   const limit = Math.max(1, Math.floor(opts.limit ?? DEFAULT_LIMIT));
   const maxBytes = Math.max(1, Math.floor(opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES));
   const maxLine = Math.max(20, Math.floor(opts.maxLineChars ?? DEFAULT_MAX_LINE_CHARS));
@@ -272,13 +308,13 @@ export function grepCode(
   const needle = opts.ignoreCase === true ? literal.toLowerCase() : literal;
 
   const defsByPath = new Map<string, OwnerDef[]>();
-  for (const d of db.query(SQL_DEFS).all(repoId) as Array<{
+  for (const d of rowsOf<{
     path: string;
     name: string;
     kind: string;
     span_start: number;
     span_end: number;
-  }>) {
+  }>(db, view, SQL_DEFS, SQL_DEFS_IN)) {
     let list = defsByPath.get(d.path);
     if (list === undefined) {
       list = [];
@@ -294,12 +330,13 @@ export function grepCode(
   let searched = 0;
   let binary = 0;
   let missing = 0;
+  let fallback = 0;
 
-  for (const f of db.query(SQL_FILES).all(repoId) as Array<{
+  for (const f of rowsOf<{
     path: string;
     lang: string;
     size_bytes: number;
-  }>) {
+  }>(db, view, SQL_FILES, SQL_FILES_IN)) {
     // Реестр, собранный до запрета, может ещё держать секретный файл — до
     // ближайшего `code index`, который строку удалит. Читать его нельзя и тогда.
     if (isSecretPath(f.path)) continue;
@@ -314,8 +351,17 @@ export function grepCode(
     try {
       buf = readFileSync(join(repoRoot, f.path));
     } catch {
-      missing++;
-      continue;
+      if (opts.fallbackRoot === undefined) {
+        missing++;
+        continue;
+      }
+      try {
+        buf = readFileSync(join(opts.fallbackRoot, f.path));
+        fallback++;
+      } catch {
+        missing++;
+        continue;
+      }
     }
     if (looksBinary(buf)) {
       binary++;
@@ -378,6 +424,7 @@ export function grepCode(
     skipped,
     binary,
     missing,
+    fallback,
     scope: scopes === null ? null : scopes.map((s) => s.label),
     truncated,
     tookMs: performance.now() - t0,

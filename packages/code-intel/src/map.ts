@@ -45,6 +45,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { prefixEnd, type RepoRef, stripPrefix, viewOf } from "./view.ts";
 
 export interface MapCluster {
   /** Каталог (POSIX, относительно корня репозитория). */
@@ -119,6 +120,24 @@ const SQL_DEF_PATHS = `SELECT path, name FROM code_defs WHERE repo_id = ?1`;
 const SQL_REF_EDGES = `SELECT name, path, COUNT(*) AS n
   FROM code_ref_sites WHERE repo_id = ?1 AND kind = 'import' GROUP BY name, path`;
 
+/**
+ * Все пять под префиксом вида (`view.ts`): карта ЧАСТИ индекса корня — это
+ * карта вложенного репозитория, с его путями, его кластерами и рёбрами только
+ * между его файлами. Импорт имени, определённого в соседнем репозитории,
+ * ребром не становится — ровно как у отдельного индекса этого репозитория.
+ */
+const SQL_TOTALS_IN = `SELECT
+  (SELECT COUNT(*) FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3) AS files,
+  (SELECT COUNT(*) FROM code_defs  WHERE repo_id = ?1 AND path >= ?2 AND path < ?3) AS defs,
+  (SELECT COUNT(*) FROM code_ref_sites WHERE repo_id = ?1 AND path >= ?2 AND path < ?3) AS refs,
+  (SELECT COUNT(*) FROM code_ref_sites WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 AND kind = 'import') AS imports`;
+const SQL_LANGS_IN = `SELECT lang, COUNT(*) AS files FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3
+  GROUP BY lang ORDER BY files DESC, lang`;
+const SQL_FILE_DIRS_IN = `SELECT path FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3`;
+const SQL_DEF_PATHS_IN = `SELECT path, name FROM code_defs WHERE repo_id = ?1 AND path >= ?2 AND path < ?3`;
+const SQL_REF_EDGES_IN = `SELECT name, path, COUNT(*) AS n
+  FROM code_ref_sites WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 AND kind = 'import' GROUP BY name, path`;
+
 function dirOf(path: string, depth: number): string {
   const parts = path.split("/");
   if (parts.length <= 1) return ".";
@@ -126,24 +145,30 @@ function dirOf(path: string, depth: number): string {
   return dir.slice(0, Math.max(1, depth)).join("/");
 }
 
-export function repoMap(db: Database, repoId: string, opts: RepoMapOptions = {}): RepoMap {
+export function repoMap(db: Database, repo: RepoRef, opts: RepoMapOptions = {}): RepoMap {
   const t0 = performance.now();
   const top = Math.max(1, Math.floor(opts.top ?? DEFAULT_TOP));
   const hubsN = Math.max(0, Math.floor(opts.hubs ?? DEFAULT_HUBS));
   const linksN = Math.max(0, Math.floor(opts.links ?? DEFAULT_LINKS));
   const depth = Math.max(1, Math.floor(opts.depth ?? DEFAULT_DEPTH));
+  const v = viewOf(repo);
+  const part = v.prefix.length > 0;
+  const args = part ? [v.repoId, v.prefix, prefixEnd(v.prefix)] : [v.repoId];
+  // Пути под префиксом вида — в пути вложенного репозитория: кластер
+  // `server/src`, а не `messaging-server/server`.
+  const rel = (p: string): string => (part ? stripPrefix(v, p) : p);
 
-  const totals = db.query(SQL_TOTALS).get(repoId) as {
+  const totals = db.query(part ? SQL_TOTALS_IN : SQL_TOTALS).get(...args) as {
     files: number;
     defs: number;
     refs: number;
     imports: number;
   };
-  const langs = db.query(SQL_LANGS).all(repoId) as Array<{ lang: string; files: number }>;
+  const langs = db.query(part ? SQL_LANGS_IN : SQL_LANGS).all(...args) as Array<{ lang: string; files: number }>;
 
   const filesPerDir = new Map<string, number>();
-  for (const r of db.query(SQL_FILE_DIRS).all(repoId) as Array<{ path: string }>) {
-    const d = dirOf(r.path, depth);
+  for (const r of db.query(part ? SQL_FILE_DIRS_IN : SQL_FILE_DIRS).all(...args) as Array<{ path: string }>) {
+    const d = dirOf(rel(r.path), depth);
     filesPerDir.set(d, (filesPerDir.get(d) ?? 0) + 1);
   }
 
@@ -151,7 +176,11 @@ export function repoMap(db: Database, repoId: string, opts: RepoMapOptions = {})
   // см. второй фильтр в шапке.
   const defPath = new Map<string, string | null>();
   const defsPerDir = new Map<string, number>();
-  for (const r of db.query(SQL_DEF_PATHS).all(repoId) as Array<{ path: string; name: string }>) {
+  for (const raw of db.query(part ? SQL_DEF_PATHS_IN : SQL_DEF_PATHS).all(...args) as Array<{
+    path: string;
+    name: string;
+  }>) {
+    const r = { path: rel(raw.path), name: raw.name };
     defsPerDir.set(dirOf(r.path, depth), (defsPerDir.get(dirOf(r.path, depth)) ?? 0) + 1);
     if (defPath.has(r.name)) {
       const prev = defPath.get(r.name);
@@ -165,11 +194,12 @@ export function repoMap(db: Database, repoId: string, opts: RepoMapOptions = {})
   const usedBy = new Map<string, Map<string, number>>();
   let ambiguous = 0;
   let cross = 0;
-  for (const e of db.query(SQL_REF_EDGES).all(repoId) as Array<{
+  for (const raw of db.query(part ? SQL_REF_EDGES_IN : SQL_REF_EDGES).all(...args) as Array<{
     name: string;
     path: string;
     n: number;
   }>) {
+    const e = { name: raw.name, path: rel(raw.path), n: raw.n };
     const target = defPath.get(e.name);
     if (target === undefined) continue; // импорт того, что здесь не определено
     if (target === null) {
@@ -222,7 +252,7 @@ export function repoMap(db: Database, repoId: string, opts: RepoMapOptions = {})
     .sort((a, b) => b.defs - a.defs || b.files - a.files || (a.dir < b.dir ? -1 : 1));
 
   return {
-    repo: repoId,
+    repo: v.repoId,
     files: totals.files,
     defs: totals.defs,
     refs: totals.refs,

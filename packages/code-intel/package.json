@@ -15,7 +15,9 @@
     "./grammars": "./src/grammars.ts",
     "./search": "./src/search.ts",
     "./grep": "./src/grep.ts",
-    "./map": "./src/map.ts"
+    "./map": "./src/map.ts",
+    "./view": "./src/view.ts",
+    "./worktree": "./src/worktree.ts"
   },
   "dependencies": {
     "@myc/bench": "workspace:*",

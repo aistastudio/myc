@@ -60,6 +60,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { analyzeFtsQuery } from "@myc/retrieval/fts";
+import { prefixEnd, type RepoRef, stripPrefix, viewOf } from "./view.ts";
 
 // ---------------------------------------------------------------------------
 // Извлечение текста единиц
@@ -206,6 +207,19 @@ const SQL_DEFS = `SELECT path, name, kind, span_start, span_end
   FROM code_defs WHERE repo_id = ?1 ORDER BY path, span_start`;
 
 /**
+ * Те же три под отрезком путей — для перестройки ЧАСТИ корпуса, когда
+ * `myc code index` из вложенного репозитория обновляет его часть индекса
+ * корня (memory-m0md9fybwrdh). Пути здесь НЕ срезаются: это запись в индекс
+ * корня, и ключ строк — его.
+ */
+const SQL_FILES_IN = `SELECT f.path AS path, f.lang AS lang, f.file_hash AS file_hash
+  FROM code_files f WHERE f.repo_id = ?1 AND f.path >= ?2 AND f.path < ?3 ORDER BY f.path`;
+const SQL_UNIT_HASHES_IN = `SELECT path, file_hash, COUNT(*) AS n
+  FROM code_units WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 GROUP BY path, file_hash`;
+const SQL_DEFS_IN = `SELECT path, name, kind, span_start, span_end
+  FROM code_defs WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 ORDER BY path, span_start`;
+
+/**
  * Перестроить корпус поиска по тому, что уже лежит в индексе.
  *
  * ИНКРЕМЕНТАЛЬНОСТЬ ПО ХЕШУ ФАЙЛА, а не по отметке времени: `code_units`
@@ -224,15 +238,22 @@ export function buildSearchUnits(
   db: Database,
   repoId: string,
   repoRoot: string,
+  /**
+   * Только файлы под этим префиксом (`R/`): часть корпуса, остальное не
+   * трогается — ни перестройкой, ни удалением «исчезнувших». Пусто — весь.
+   */
+  prefix = "",
 ): BuildSearchResult {
   const t0 = performance.now();
-  const files = db.query(SQL_FILES).all(repoId) as Array<{
+  const part = prefix.length > 0;
+  const args = part ? [repoId, prefix, prefixEnd(prefix)] : [repoId];
+  const files = db.query(part ? SQL_FILES_IN : SQL_FILES).all(...args) as Array<{
     path: string;
     lang: string;
     file_hash: string;
   }>;
   const known = new Map<string, string>();
-  for (const row of db.query(SQL_UNIT_HASHES).all(repoId) as Array<{
+  for (const row of db.query(part ? SQL_UNIT_HASHES_IN : SQL_UNIT_HASHES).all(...args) as Array<{
     path: string;
     file_hash: string;
     n: number;
@@ -240,7 +261,7 @@ export function buildSearchUnits(
     known.set(row.path, row.file_hash);
   }
   const defsByPath = new Map<string, Array<{ name: string; kind: string; s: number; e: number }>>();
-  for (const d of db.query(SQL_DEFS).all(repoId) as Array<{
+  for (const d of db.query(part ? SQL_DEFS_IN : SQL_DEFS).all(...args) as Array<{
     path: string;
     name: string;
     kind: string;
@@ -427,6 +448,33 @@ const SQL_SCOPE = `SELECT
 
 const SQL_LANGS = `SELECT path, lang FROM code_files WHERE repo_id = ?1`;
 
+/**
+ * Под префиксом вида (`view.ts`). Отрезок пути стоит в ступени ПОСЛЕ MATCH и
+ * ДО `LIMIT`: верх берётся уже среди единиц вложенного репозитория, а не
+ * срезается из верха всего корня — иначе репозиторий, чьи единицы проигрывают
+ * соседу, получал бы пустую выдачу. Статистика bm25 — по всему корпусу, как и
+ * из корня: порядок внутри репозитория тот же, что у тех же единиц в выдаче
+ * корня.
+ *
+ * УНАРНЫЙ `+` У ПУТИ — НЕ ОПЕЧАТКА, А ПЛАН. Без него отрезок `(repo_id, path)`
+ * делает индекс `ix_code_units_file` привлекательным, и SQLite идёт от
+ * единиц репозитория, проверяя MATCH на КАЖДОЙ строке: замер на 462 файлах
+ * (4 543 определения) — 188 мс на вопрос против 1.5 мс из корня. `+` снимает
+ * столбец с индекса, и план становится планом корня: сначала FTS, потом
+ * единица по rowid, потом отрезок пути фильтром.
+ */
+export const SQL_STAGE_IN = `SELECT u.id AS id, u.path AS path, u.unit AS unit, u.name AS name,
+       u.kind AS kind, u.span_start AS s, u.span_end AS e
+  FROM code_fts f JOIN code_units u ON u.id = f.rowid
+ WHERE code_fts MATCH ?1 AND u.repo_id = ?2 AND +u.path >= ?4 AND +u.path < ?5
+ ORDER BY bm25(code_fts, 4.0, 1.0, 1.0, 0.5) LIMIT ?3`;
+
+const SQL_SCOPE_IN = `SELECT
+  (SELECT COUNT(*) FROM code_units WHERE repo_id = ?1 AND path >= ?2 AND path < ?3) AS units,
+  (SELECT COUNT(DISTINCT path) FROM code_units WHERE repo_id = ?1 AND path >= ?2 AND path < ?3) AS files`;
+
+const SQL_LANGS_IN = `SELECT path, lang FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3`;
+
 interface StageRow {
   id: number;
   path: string;
@@ -443,12 +491,18 @@ interface StageRow {
  */
 export function searchCode(
   db: Database,
-  repoId: string,
+  repo: RepoRef,
   query: string,
   opts: CodeSearchOptions = {},
 ): CodeSearchResult {
   const t0 = performance.now();
-  const scope = db.query(SQL_SCOPE).get(repoId) as { units: number; files: number };
+  const v = viewOf(repo);
+  const part = v.prefix.length > 0;
+  const range = part ? [v.prefix, prefixEnd(v.prefix)] : [];
+  const scope = db.query(part ? SQL_SCOPE_IN : SQL_SCOPE).get(v.repoId, ...range) as {
+    units: number;
+    files: number;
+  };
   const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
   const perStage = Math.max(1, Math.floor(opts.perStage ?? DEFAULT_PER_STAGE));
   const unitsPerFile = Math.max(1, Math.floor(opts.unitsPerFile ?? DEFAULT_UNITS_PER_FILE));
@@ -467,7 +521,7 @@ export function searchCode(
     };
   }
 
-  const stageQ = db.query(SQL_STAGE);
+  const stageQ = db.query(part ? SQL_STAGE_IN : SQL_STAGE);
   const acc = new Map<number, { row: StageRow; score: number }>();
   const stages: string[] = [];
   const seenMatch = new Set<string>();
@@ -482,7 +536,8 @@ export function searchCode(
     seenMatch.add(match);
     let rows: StageRow[];
     try {
-      rows = stageQ.all(match, repoId, perStage) as StageRow[];
+      rows = stageQ.all(match, v.repoId, perStage, ...range) as StageRow[];
+      if (part) for (const r of rows) r.path = stripPrefix(v, r.path);
     } catch {
       // Ступень, которую FTS5 не разобрал, — не повод уронить весь поиск:
       // остальные ступени того же запроса остаются в силе.
@@ -528,8 +583,11 @@ export function searchCode(
   }
 
   const langs = new Map<string, string>();
-  for (const r of db.query(SQL_LANGS).all(repoId) as Array<{ path: string; lang: string }>) {
-    langs.set(r.path, r.lang);
+  for (const r of db.query(part ? SQL_LANGS_IN : SQL_LANGS).all(v.repoId, ...range) as Array<{
+    path: string;
+    lang: string;
+  }>) {
+    langs.set(part ? stripPrefix(v, r.path) : r.path, r.lang);
   }
 
   const hits: CodeSearchHit[] = [...byFile.entries()]

@@ -293,6 +293,27 @@ secret-named files are never indexed, whatever `.gitignore` says: `.env` and
 keystores, private SSH keys, `.npmrc`, `.netrc` and other credential files —
 `code index` counts them without naming them, and `code grep` refuses to read one.
 
+**Nested repositories and git worktrees.** A workspace can be an ecosystem: a
+root that is a git repository with independent repositories inside it (not
+submodules). It has one code index, built from the root — one row per file,
+paths like `messaging-server/server/src/x.ts`. From inside a nested
+repository every code command answers from that repository's part of the
+root index, with paths relative to the repository you are in; from the root
+the answers do not change. `myc code index` run inside a nested repository
+refreshes its part of the root index instead of building a second copy of the
+same files, and so does the background refresh. A git worktree — even one
+outside the workspace tree — is answered from the index of the main checkout:
+there is no index per branch. When the worktree is on another commit, or has
+uncommitted changes to tracked files, every answer carries
+`WARN code_index.worktree_divergent` naming both branches, because lines and
+spans may not match your files. `code grep` reads the worktree's files (the
+line numbers are yours, the owning symbols come from the index); `skeleton`
+shows the main copy's declarations when your copy differs from what the index
+saw, and says so. When nothing covers the repository, the hint is the command
+for the workspace root (`myc -C <root> code index`), not one that would build a
+duplicate. Anchors set from the root and from inside a repository are stored
+under different keys; `code symbol` reads both.
+
 Anchors tie knowledge to a span and follow the code as it moves; that half is
 language-agnostic and was verified on Python as well as TypeScript.
 
