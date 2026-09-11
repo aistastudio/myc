@@ -318,8 +318,8 @@ window.MYC_DATA = {
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.34,
-    "unpacked_mb": 12.35,
+    "compressed_mb": 3.36,
+    "unpacked_mb": 12.42,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -329,7 +329,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.2"
+    "version": "0.3.3"
   },
   "roadmap": {
     "command": "myc show <epic-id>",
@@ -410,13 +410,13 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 2922,
+    "pass": 3156,
     "fail": 0,
     "skip": 16,
-    "files": 197,
-    "assertions": 32185,
-    "seconds": 233.3,
-    "sources": "f5608db6158bb412"
+    "files": 207,
+    "assertions": 33045,
+    "seconds": 261.3,
+    "sources": "321fc9d46281d875"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-10T21:08:15.156Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-11T08:39:40.122Z", assertions: 67 };
