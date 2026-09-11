@@ -71,6 +71,7 @@ import {
 // основное дерево живёт там же, где её читает поиск воркспейса, и второй
 // реализации у неё быть не должно.
 import { findWorktreeLink, type WorktreeLink } from "./wsfind.ts";
+import { ensureMycGitignore } from "../myc-gitignore.ts";
 
 // bun:sqlite Database напрямую, без vec0-рантайма CliDriver (store.ts) и без
 // GraphStore: init только создаёт файл, накатывает миграции и пишет пару
@@ -102,59 +103,6 @@ function detectGitRoot(dir: string): string | undefined {
   } catch {
     return undefined; // git не установлен — не блокирует init
   }
-}
-
-/**
- * S42/myc-qie.11: `.myc/.gitignore` — только оплог, meta.json, .gitattributes
- * и workspace.toml идут в git; база sqlite (и её -wal/-shm/-journal, S42
- * дискуссия про мержи бинарников) и кеш проекций (уже само-игнорируется, но
- * дублируем здесь — работает и до первого `myc export`) остаются локальными.
- * Список — не markdown-блок с маркерами, а плоские строки: писать в конец
- * недостающие построчно достаточно для идемпотентности и не тянет за собой
- * парсер разметки.
- */
-const MYC_GITIGNORE_LINES = [
-  "myc.db",
-  "myc.db-wal",
-  "myc.db-shm",
-  "myc.db-journal",
-  "projections/",
-  // Кеш детекта код-интеллекта (S52): он про эту машину — какой PATH, где
-  // лежит graft. Закоммитить его значит навязать чужому клону свой PATH.
-  "state.json",
-] as const;
-
-function mycGitignoreContent(): string {
-  return [
-    "# myc (S42): local files — kept out of git",
-    "# the oplog, meta.json, .gitattributes and workspace.toml are committed as is",
-    ...MYC_GITIGNORE_LINES,
-    "",
-  ].join("\n");
-}
-
-/**
- * Пишет `.myc/.gitignore`, если его ещё нет; иначе дописывает только те
- * строки из MYC_GITIGNORE_LINES, которых не хватает — не трогая остальное
- * содержимое (в т.ч. добавленное пользователем) и не дублируя уже
- * присутствующие строки при повторном `init`.
- */
-function ensureMycGitignore(mycDir: string): void {
-  const path = join(mycDir, ".gitignore");
-  if (!existsSync(path)) {
-    writeFileSync(path, mycGitignoreContent(), "utf8");
-    return;
-  }
-  const existing = readFileSync(path, "utf8");
-  const present = new Set(existing.split("\n").map((line) => line.trim()));
-  const missing = MYC_GITIGNORE_LINES.filter((line) => !present.has(line));
-  if (missing.length === 0) return;
-  const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  writeFileSync(
-    path,
-    `${existing}${sep}# myc: added automatically by init\n${missing.join("\n")}\n`,
-    "utf8",
-  );
 }
 
 /**

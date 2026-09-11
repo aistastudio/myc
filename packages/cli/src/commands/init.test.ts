@@ -223,6 +223,14 @@ describe("init: выбранная реализация код-интеллек�
     await myc(dir, "init");
     expect(readFileSync(join(dir, ".myc", ".gitignore"), "utf8")).toContain("state.json");
   });
+
+  test("счётчики хуков, журнал wire, кеш бутстрапа и журнал якорей не коммитятся", async () => {
+    await myc(dir, "init");
+    const lines = readFileSync(join(dir, ".myc", ".gitignore"), "utf8").split("\n");
+    for (const f of ["hooks.json", "wire.json", "bootstrap.cache.json", "anchor-dirty.log"]) {
+      expect(lines).toContain(f);
+    }
+  });
 });
 
 describe("init: .myc/.gitignore (myc-qie.11)", () => {

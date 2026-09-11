@@ -748,7 +748,8 @@ export function skillMd(): string {
 name: myc
 description: Project memory, tasks and links. Use it when you need to learn
   the state of the project, take the next task, recall a past decision, record
-  a finding, or see which tasks relate to the file you are editing.
+  a finding, see which tasks relate to the file you are editing, or find where
+  code lives and who calls it.
 ---
 
 # myc
@@ -774,6 +775,18 @@ One graph: tasks with dependencies, project memory, links to code.
   agents on one machine take turns instead of fighting for the cores; \`myc queue\` shows who is ahead.
   \`myc run\` runs what it is given, so Claude Code asks about it unless your rules allow the command itself.
 
+## Code
+
+Ask the code index before grepping or reading whole files:
+
+- \`myc code map\` — orientation: directory clusters, their hubs, who depends on them.
+- \`myc code search "<question>"\` — ranked, by meaning; \`myc code symbol <name>\` — where it is defined.
+- \`myc code grep "<literal>"\` — every occurrence with its owner; \`--in <dir>\` narrows it.
+- \`myc skeleton <file>\` — a file's API in a fraction of its bytes.
+- \`myc callers <name>\` — who calls it; run it before renaming or changing a signature.
+
+After large changes refresh the index: \`myc code index\` (incremental).
+
 ## Context compaction
 
 Before compaction the \`pre-compact\` hook writes an episode itself and returns a rescue
@@ -792,6 +805,8 @@ export function agentsBlock(): string {
 
 \`myc_*\` tools (MCP) or the \`myc\` CLI. Order: \`myc prime\` → \`myc ready --claim\`
 → \`myc recall\` before a decision → \`myc remember\` after a finding → \`myc close --reason\`.
+Code, before reading whole files: \`myc code map\`, \`myc code search\`, \`myc code grep\`,
+\`myc skeleton <file>\`, \`myc callers <name>\`.
 Heavy commands (the full test suite, a build): \`myc run -- <cmd>\`, one machine-wide queue.
 Full instructions: \`myc --help\`, \`.claude/skills/myc/SKILL.md\`.
 ${AGENTS_END}`;

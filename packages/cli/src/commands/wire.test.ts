@@ -244,6 +244,38 @@ describe("resolveMycBin — команда для .mcp.json", () => {
   });
 });
 
+describe(".myc/.gitignore: машинные файлы не уходят в git проекта", () => {
+  const MACHINE_FILES = ["hooks.json", "wire.json", "bootstrap.cache.json", "anchor-dirty.log"];
+
+  test("воркспейсу от старой сборки wire дописывает недостающие строки, чужие не трогает", async () => {
+    const old = "# myc (S42): локальные файлы — не идут в git\nmyc.db\nmyc.db-wal\nprojections/\nmy-own-line\n";
+    write(".myc/.gitignore", old);
+    expect((await myc("wire", "--agents", "claude")).code).toBe(0);
+    const after = read(".myc/.gitignore");
+    expect(after.startsWith(old)).toBe(true);
+    expect(after).toContain("# myc: added automatically by wire");
+    const lines = after.split("\n");
+    for (const f of MACHINE_FILES) expect(lines).toContain(f);
+  });
+
+  test("повторный wire строк не дублирует", async () => {
+    await myc("wire", "--agents", "claude");
+    const first = read(".myc/.gitignore");
+    await myc("wire", "--agents", "claude");
+    expect(read(".myc/.gitignore")).toBe(first);
+    expect(first.split("\n").filter((l) => l === "wire.json")).toHaveLength(1);
+  });
+
+  test("git в самом деле их не видит", async () => {
+    const git = (...a: string[]) => Bun.spawnSync(["git", ...a], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    if (!git("init", "-q").success) return; // без git проверять нечем
+    await myc("wire", "--agents", "claude");
+    for (const f of MACHINE_FILES) write(`.myc/${f}`, "{}\n");
+    const status = git("status", "--porcelain", "--untracked-files=all", ".myc").stdout.toString();
+    for (const f of MACHINE_FILES) expect(status).not.toContain(`.myc/${f}`);
+  });
+});
+
 describe("чистая установка", () => {
   test("пишет только свои файлы и журнал", async () => {
     const r = await myc("wire");

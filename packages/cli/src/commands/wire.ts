@@ -60,6 +60,7 @@ import {
   type HookSpec,
 } from "../hooks/templates.ts";
 import { QUEUE_ENV, QUEUE_HELPER_MARK, QUEUE_HELPER_REL, queueHelper, queueHookEntry } from "../hooks/queue-hook.ts";
+import { ensureMycGitignore } from "../myc-gitignore.ts";
 
 export const WIRE_JOURNAL = "wire.json";
 const BAK_SUFFIX = ".myc.bak";
@@ -1628,6 +1629,11 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
           mkdirSync(dirname(jPath), { recursive: true });
           writeFileSync(jPath, `${JSON.stringify(doc, null, 2)}\n`);
           journal = relative(root, jPath);
+          // Журнал с абсолютными путями этой машины не должен уехать в git
+          // проекта; воркспейсу от старой сборки недостающие строки
+          // .gitignore дописывает этот же прогон. Только для `.myc` проекта:
+          // каталог за --db — не наше дерево.
+          if (dirname(jPath) === join(root, ".myc")) ensureMycGitignore(dirname(jPath), "wire");
         } catch (e) {
           ctx.warn(
             "degraded.journal",
