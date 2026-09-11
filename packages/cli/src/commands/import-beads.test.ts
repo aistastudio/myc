@@ -20,8 +20,11 @@ import { ExitCode } from "../exit.ts";
 import type { NodeRecord } from "@myc/core";
 import { FRESHNESS_ATTRS, IMPORT_WRITE_SLACK_MS } from "@myc/retrieval";
 import { openStore, type StoreHandle } from "./store.ts";
+import { createListCommand } from "./list.ts";
+import { createReadyCommand } from "./ready.ts";
 import { createSearchCommand } from "./search.ts";
 import { createShowCommand } from "./show.ts";
+import { createUpdateCommand } from "./tasks.ts";
 import {
   collectBeadsSnapshot,
   createImportBeadsCommand,
@@ -680,9 +683,29 @@ describe("ошибки ввода", () => {
 
   test("parseBeadsSnapshot отвергает невалидные записи", () => {
     expect(() => parseBeadsSnapshot("{}")).toThrow(/issues/);
+    // статуса НЕТ или он не строка — порча формата, отказ; а незнакомое
+    // СЛОВО — свойство чужих данных: сопоставляется и называется (ниже)
     expect(() =>
-      parseBeadsSnapshot(JSON.stringify({ issues: [{ id: "x", title: "t", status: "weird", priority: 1, issue_type: "task" }] })),
+      parseBeadsSnapshot(JSON.stringify({ issues: [{ id: "x", title: "t", priority: 1, issue_type: "task" }] })),
     ).toThrow(/status/);
+    expect(() =>
+      parseBeadsSnapshot(JSON.stringify({ issues: [{ id: "x", title: "t", status: 3, priority: 1, issue_type: "task" }] })),
+    ).toThrow(/status/);
+    const weird = parseBeadsSnapshot(
+      JSON.stringify({ issues: [{ id: "x", title: "t", status: "weird", priority: 1, issue_type: "task" }] }),
+    );
+    expect(weird.issues[0]!.status).toBe("blocked");
+    expect(weird.issues[0]!.source_status).toBe("weird");
+    expect(weird.unknownStatuses).toEqual({ weird: ["x"] });
+    // JSONL из одной строки — цельный JSON, но это СТРОКА экспорта, а не
+    // документ: одна задача без памяти не повод для «no issues array»
+    const one = parseBeadsSnapshot(
+      `${JSON.stringify({ _type: "issue", id: "x", title: "t", status: "open", priority: 1, issue_type: "task" })}\n`,
+    );
+    expect(one.issues.map((i) => i.id)).toEqual(["x"]);
+    expect(() => parseBeadsSnapshot(`${JSON.stringify({ _type: "memory", key: "k", value: "v" })}\n`)).toThrow(
+      /no tasks/,
+    );
     // приоритет-НЕ-ЧИСЛО — порча формата, отказ; приоритет ВНЕ ШКАЛЫ —
     // свойство чужих данных (у beads P0..P4), он прижимается и называется
     expect(() =>
@@ -1241,5 +1264,234 @@ describe("критерии приёмки, дизайн и факты источ
     // совпадает с assignee: это не исполнитель, а владелец в трекере.
     expect(a1.assignee).toBe("agent-7");
     expect((await taskByRef("demo-a2")).assignee).toBe("");
+  });
+});
+
+/**
+ * Статус beads, у которого нет имени в myc (memory-aewndwjjxa5e). В
+ * cherry/messaging-server две задачи `deferred` из 105 давали `invalid status
+ * 'deferred'` — ноль ввезённых. Решение (см. STATUS_MAP в import-beads.ts):
+ * deferred → blocked, исходное слово — в attrs.external_status и меткой;
+ * любой другой незнакомый статус — туда же, но с WARN, называющим задачи.
+ */
+describe("статус без имени в myc не отменяет ввоз (memory-aewndwjjxa5e)", () => {
+  const DEFER: BeadsSnapshot = {
+    issues: [
+      { id: "ms-epic", title: "Эпик встраивания", status: "open", priority: 1, issue_type: "epic" },
+      {
+        id: "ms-8mm",
+        title: "Отложенная: режим наложения",
+        status: "deferred",
+        priority: 3,
+        issue_type: "task",
+        labels: ["embed"],
+        defer_until: "2026-07-27T00:00:00Z",
+        dependencies: [{ id: "ms-epic", dependency_type: "parent-child" }],
+      },
+      {
+        id: "ms-after",
+        title: "Ждёт отложенную",
+        status: "open",
+        priority: 1,
+        issue_type: "task",
+        dependencies: [{ id: "ms-8mm", dependency_type: "blocks" }],
+      },
+      { id: "ms-pin", title: "Закреплённая", status: "pinned", priority: 2, issue_type: "task" },
+      { id: "ms-free", title: "Свободная", status: "open", priority: 2, issue_type: "task" },
+    ],
+  };
+
+  function writeSnap(name: string, snap: BeadsSnapshot): string {
+    const p = join(projectDir, name);
+    writeFileSync(p, JSON.stringify(snap));
+    return p;
+  }
+
+  function withStatus(snap: BeadsSnapshot, id: string, status: string): BeadsSnapshot {
+    return { ...snap, issues: snap.issues.map((i) => (i.id === id ? { ...i, status } : i)) };
+  }
+
+  async function tasks(): Promise<Map<string, NodeRecord>> {
+    return withStore((h) =>
+      new Map(h.store.listNodes(h.scope, "task", 10000).map((n) => [String(n.attrs["external_ref"]), n])),
+    );
+  }
+
+  /** Очередь так, как её видит агент: `myc ready`, а не свой SQL. */
+  async function readyRefs(): Promise<string[]> {
+    registry.register(createReadyCommand());
+    const env = await mycJson("ready", "-n", "50");
+    expect(env.ok).toBe(true);
+    const refOf = new Map([...(await tasks()).values()].map((n) => [n.id, String(n.attrs["external_ref"])]));
+    return (env.data as { items: { id: string }[] }).items.map((it) => refOf.get(it.id)!).sort();
+  }
+
+  /**
+   * Мутация «незнакомый статус снова отменяет импорт» (прежний throw в
+   * parseBeadsSnapshot) роняет первый же expect: env.ok=false, ноль задач.
+   * Мутация «deferred → open» роняет проверку очереди: ms-8mm в ready.
+   */
+  test("deferred → blocked: нет в ready, держит блокируемых, исходный статус и дата — в attrs", async () => {
+    const env = await mycJson("import-beads", writeSnap("defer.json", DEFER));
+    expect(env.ok).toBe(true);
+    const d = env.data as Record<string, unknown>;
+    expect(d["tasks_created"]).toBe(5);
+    expect(d["statuses_mapped"]).toEqual(["ms-8mm: deferred→blocked", "ms-pin: pinned→blocked"]);
+
+    const t = await tasks();
+    const deferred = t.get("ms-8mm")!;
+    expect(deferred.status).toBe("blocked");
+    expect(deferred.attrs["external_status"]).toBe("deferred");
+    expect(deferred.attrs["external_defer_until"]).toBe(Date.parse("2026-07-27T00:00:00Z"));
+    // отложенная не закрыта: зависящая от неё задача по-прежнему заблокирована
+    expect(t.get("ms-after")!.open_blockers).toBe(1);
+    // у задачи со статусом, который myc знает, ключа нет вовсе
+    expect(t.get("ms-free")!.attrs["external_status"]).toBeUndefined();
+    expect(t.get("ms-free")!.attrs["tags"]).toBeUndefined();
+
+    // в очереди — ровно то, что было бы в `bd ready`
+    expect(await readyRefs()).toEqual(["ms-epic", "ms-free"]);
+  });
+
+  test("видна как отложенная: show печатает метку, list --tag deferred находит, метки beads целы", async () => {
+    registry.register(createShowCommand());
+    registry.register(createListCommand());
+    await mycJson("import-beads", writeSnap("defer.json", DEFER));
+    const deferred = (await tasks()).get("ms-8mm")!;
+    expect([...(deferred.attrs["tags"] as string[])].sort()).toEqual(["deferred", "embed"]);
+
+    const shown = await myc("show", deferred.id);
+    expect(shown.code).toBe(ExitCode.OK);
+    expect(String(shown.stdout)).toMatch(/\bblocked\b/);
+    expect(String(shown.stdout)).toMatch(/tags[^\n]*\bdeferred\b/);
+
+    const listed = await mycJson("list", "--tag", "deferred");
+    expect(listed.ok).toBe(true);
+    expect((listed.data as { rows: { id: string }[] }).rows.map((r) => r.id)).toEqual([deferred.id]);
+  });
+
+  /** Мутация «незнакомый статус молча в blocked» (без WARN) роняет этот тест. */
+  test("незнакомый статус — в безопасный blocked, WARN называет слово и задачи; deferred в WARN не попадает", async () => {
+    const env = await mycJson("import-beads", writeSnap("defer.json", DEFER));
+    const warn = (env.warn ?? []).filter((w) => w.code === "import.unknown_statuses");
+    expect(warn).toHaveLength(1);
+    expect(warn[0]!.msg).toContain("pinned×1 (ms-pin)");
+    expect(warn[0]!.msg).not.toContain("deferred");
+    const pinned = (await tasks()).get("ms-pin")!;
+    expect(pinned.status).toBe("blocked");
+    expect(pinned.attrs["external_status"]).toBe("pinned");
+    expect(pinned.attrs["tags"]).toEqual(["pinned"]);
+  });
+
+  test("повторный импорт идемпотентен: ни одной операции в оплоге", async () => {
+    const p = writeSnap("defer.json", DEFER);
+    await mycJson("import-beads", p);
+    const ops = await withStore((h) => h.store.oplogCount());
+    const d = (await mycJson("import-beads", p)).data as Record<string, unknown>;
+    expect(d["tasks_created"]).toBe(0);
+    expect(d["tasks_updated"]).toBe(0);
+    expect(d["facts_updated"]).toBe(0);
+    expect(d["conflicts"]).toEqual([]);
+    expect(d["kept_local"]).toEqual([]);
+    await withStore((h) => expect(h.store.oplogCount()).toBe(ops));
+  });
+
+  test("смена статуса в beads доезжает в обе стороны: вернули в работу — в ready, отложили — ушла", async () => {
+    await mycJson("import-beads", writeSnap("defer.json", DEFER));
+    // в beads: ms-8mm вернули в работу, ms-free отложили
+    let snap2 = withStatus(DEFER, "ms-8mm", "open");
+    snap2 = withStatus(snap2, "ms-free", "deferred");
+    snap2 = { ...snap2, issues: snap2.issues.map((i) => (i.id === "ms-8mm" ? { ...i, defer_until: undefined } : i)) };
+    const d = (await mycJson("import-beads", writeSnap("defer2.json", snap2))).data as Record<string, unknown>;
+    expect(d["conflicts"]).toEqual([]);
+    expect(d["tasks_updated"]).toBe(2);
+
+    const t = await tasks();
+    const back = t.get("ms-8mm")!;
+    expect(back.status).toBe("open");
+    expect(back.attrs["tags"]).toEqual(["embed"]);
+    expect(back.attrs["external_status"] ?? null).toBeNull();
+    expect(back.attrs["external_defer_until"] ?? null).toBeNull();
+    const away = t.get("ms-free")!;
+    expect(away.status).toBe("blocked");
+    expect(away.attrs["external_status"]).toBe("deferred");
+    expect(away.attrs["tags"]).toEqual(["deferred"]);
+    // ms-8mm снова в очереди (родитель открыт, блокеров нет), ms-free ушла
+    expect(await readyRefs()).toEqual(["ms-8mm", "ms-epic"]);
+  });
+
+  /**
+   * issues.jsonl cherry-developer-portal: пять parent-child с
+   * `depends_on_id: ""` отменяли разбор всех 293 задач («dependency has no
+   * id»). Мутация «пустая цель снова отказ» роняет первый expect, мутация
+   * «пустая цель молча» — проверку WARN.
+   */
+  test("зависимость с пустой целью не отменяет ввоз: ребро не ввезено, но названо", async () => {
+    const p = join(projectDir, "dangling.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        issues: [
+          { id: "p-1", title: "Родитель", status: "open", priority: 1, issue_type: "epic" },
+          {
+            id: "p-2",
+            title: "Висячий родитель",
+            status: "open",
+            priority: 1,
+            issue_type: "task",
+            dependencies: [
+              { issue_id: "p-2", depends_on_id: "", type: "parent-child" },
+              { issue_id: "p-2", depends_on_id: "p-1", type: "blocks" },
+            ],
+          },
+        ],
+      }),
+    );
+    const env = await mycJson("import-beads", p);
+    expect(env.ok).toBe(true);
+    const d = env.data as Record<string, unknown>;
+    expect(d["tasks_created"]).toBe(2);
+    expect(d["edges_created"]).toBe(1); // blocks ввезён, висячий parent — нет
+    expect(d["missing_refs"]).toEqual([]);
+    const warn = (env.warn ?? []).find((w) => w.code === "import.dangling_deps");
+    expect(warn?.msg).toContain("p-2: parent-child");
+    // ключа цели нет ВОВСЕ — это незнакомая форма записи, по-прежнему отказ
+    expect(() =>
+      parseBeadsSnapshot(
+        JSON.stringify({
+          issues: [{ id: "x", title: "t", status: "open", priority: 1, issue_type: "task", dependencies: [{ type: "blocks" }] }],
+        }),
+      ),
+    ).toThrow(/dependency has no id/);
+  });
+
+  /**
+   * `source_status` ставит РАЗБОР, а не bd. Мутация «ключ только при
+   * сопоставлении» (без явного undefined) пропускает чужое поле с тем же
+   * именем, и задача с обычным статусом получает метку и external_status.
+   */
+  test("поле source_status из строки bd не выдаёт себя за сопоставленный статус", () => {
+    const snap = parseBeadsSnapshot(
+      JSON.stringify({
+        issues: [{ id: "x", title: "t", status: "open", priority: 1, issue_type: "task", source_status: "deferred" }],
+      }),
+    );
+    expect(snap.issues[0]!.status).toBe("open");
+    expect(snap.issues[0]!.source_status).toBeUndefined();
+    expect(snap.mappedStatuses).toBeUndefined();
+    // но и не пропадает молча: поле незнакомо импорту и названо
+    expect(snap.unknownFields).toEqual({ source_status: 1 });
+  });
+
+  test("вернули в очередь в myc, а в beads всё ещё отложена — локальная правка сохранена и названа", async () => {
+    registry.register(createUpdateCommand());
+    const p = writeSnap("defer.json", DEFER);
+    await mycJson("import-beads", p);
+    const deferred = (await tasks()).get("ms-8mm")!;
+    const upd = await mycJson("update", deferred.id, "--status", "open");
+    expect(upd.ok).toBe(true);
+    const d = (await mycJson("import-beads", p)).data as Record<string, unknown>;
+    expect((d["kept_local"] as string[]).some((s) => s.startsWith("ms-8mm.status: local edit kept"))).toBe(true);
+    expect((await tasks()).get("ms-8mm")!.status).toBe("open");
   });
 });

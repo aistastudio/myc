@@ -86,12 +86,29 @@
  * этого импорта до текущего (незнакомый issue_type, JSONL-снимок, приоритет
  * P4) были одной ошибкой: одна строка из 796 давала ноль ввезённых. Поэтому
  * всё, что может не получиться на одной записи, — незнакомый тип, приоритет
- * вне шкалы, столкновение с локальным узлом, тип зависимости без ребра myc —
- * называется поимённо в отчёте и в WARN, а импорт идёт дальше.
+ * вне шкалы, незнакомый статус, столкновение с локальным узлом, тип
+ * зависимости без ребра myc — называется поимённо в отчёте и в WARN, а импорт
+ * идёт дальше.
+ *
+ * ЭКОСИСТЕМА ИЗ МНОГИХ РЕПОЗИТОРИЕВ (memory-aewndwjjxa5e). В `~/src/cherry` один
+ * воркспейс в корне и несколько beads: корневой и по одному во вложенных
+ * git-репозиториях. `myc import-beads` из `cherry/messaging-server` находит
+ * КОРНЕВОЙ воркспейс подъёмом вверх (R1), а bd — СВОЙ beads этого
+ * репозитория: bd 1.0.5 не поднимается выше границы git (из `cherry/collector`,
+ * где `.beads` нет, он отвечает `no_beads_directory`, а не корневым beads).
+ * Охват репозитория (S59) узлы получают из каталога вызова — тот же, чей beads
+ * прочитан. Идентичность ввезённого узла — `external_ref`, уникальный в
+ * пределах воркспейса, а не репозитория: два beads с одинаковым префиксом дали
+ * бы одинаковые ссылки, и второй импорт молча «синхронизировал» бы чужие
+ * задачи. Поэтому узел с тем же `external_ref`, но ДРУГИМ записанным охватом
+ * репозитория — чужой: он не правится, не считается «уже ввезённым» и не
+ * становится целью рёбер, а строка снимка называется в skipped.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { commentInput, contentHash } from "@myc/core";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { NODE_STATUSES, commentInput, contentHash, readRepo } from "@myc/core";
+import type { RepoInfo } from "@myc/core";
 import type { EdgeKind, JsonValue, NodeInput, NodePatch, NodeRecord } from "@myc/core";
 import { FRESHNESS_ATTRS } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
@@ -150,6 +167,14 @@ export interface BeadsIssue {
   readonly started_at?: string;
   readonly created_by?: string;
   readonly owner?: string;
+  /** `bd defer --until`: факт об источнике, attrs.external_defer_until. */
+  readonly defer_until?: string;
+  /**
+   * Статус В ИСТОЧНИКЕ, когда у myc нет для него имени (deferred и любой
+   * незнакомый). Ставит разбор, а не bd: `status` тогда уже сопоставленный
+   * (см. STATUS_FALLBACK), и исходное слово иначе было бы потеряно.
+   */
+  readonly source_status?: string;
 }
 
 export interface BeadsSnapshot {
@@ -164,6 +189,12 @@ export interface BeadsSnapshot {
    * отказать — повод сказать: см. `KNOWN_ISSUE_FIELDS`.
    */
   readonly unknownFields?: Readonly<Record<string, number>>;
+  /** Статусы без имени в myc и во что легли: «id: deferred→blocked». */
+  readonly mappedStatuses?: readonly string[];
+  /** Из них НЕЗНАКОМЫЕ (не из STATUS_MAP): статус → задачи, для WARN. */
+  readonly unknownStatuses?: Readonly<Record<string, readonly string[]>>;
+  /** Зависимости с ПУСТОЙ целью в данных beads: «id: parent-child». */
+  readonly danglingDeps?: readonly string[];
 }
 
 /**
@@ -178,7 +209,60 @@ export interface BeadsSnapshot {
  * действовать — он не знает, сколько там таких.
  */
 const KNOWN_TASK_TYPES = new Set(["task", "bug", "feature", "epic", "decision"]);
-const TASK_STATUSES = new Set(["open", "in_progress", "blocked", "closed", "cancelled"]);
+
+/**
+ * Статусы задачи myc — из ядра, а не своим списком: появись у myc собственное
+ * имя для статуса beads, импорт перестанет его сопоставлять сам собой.
+ */
+const TASK_STATUSES: ReadonlySet<string> = new Set(NODE_STATUSES.task);
+
+/**
+ * СТАТУС BEADS, КОТОРОГО НЕТ В MYC, НЕ ОТМЕНЯЕТ ВВОЗ (memory-aewndwjjxa5e).
+ * Одна задача `deferred` (две в cherry/messaging-server из 105) давала
+ * `invalid status 'deferred'` и ноль ввезённых — та же ошибка, что уже
+ * снимали у типа и приоритета.
+ *
+ * РЕШЕНИЕ: deferred ложится в `blocked`, исходное слово — в
+ * attrs.external_status и меткой. Не отдельный статус myc, и вот почему.
+ *
+ * `blocked` — единственный статус myc, совпадающий с deferred по всем трём
+ * осям, которые решают судьбу задачи в очереди:
+ *  - её нет в `ready`: очередь берёт только `status='open'` (ix_nodes_ready),
+ *    а в beads отложенной задачи в `bd ready` тоже нет;
+ *  - она по-прежнему ДЕРЖИТ зависящие от неё задачи: blocked не входит в
+ *    CLOSED_STATUSES, и open_blockers у блокируемых не падает — как в beads,
+ *    где отложенная задача не закрыта;
+ *  - она живая и обратимая: `myc update --status open` возвращает её в
+ *    очередь (guardTaskStatus это разрешает), а claim её не возьмёт.
+ * `cancelled` закрыл бы её (и отпустил бы блокируемых), `open` вывалил бы в
+ * ready — ровно то, чего нет в beads, `in_progress` без аренды подобрал бы
+ * первый же claim как брошенную работу. Задача `blocked` без блокеров для
+ * myc не новость: ручной `blocked` из beads ввозится так же.
+ *
+ * Новый статус `deferred` в myc стоил бы несоразмерно: имя статуса знают ядро
+ * (NODE_STATUSES), доска веба (колонки — задача с незнакомым статусом не
+ * попадает ни в одну и исчезает с доски), правила перетаскивания и записи,
+ * фильтры list, схемы MCP и каждая реплика: операция с незнакомым статусом,
+ * приехавшая на сайт прежней версии, валидацию не пройдёт. А половину смысла
+ * deferred — пробуждение по `defer_until` — одно имя всё равно не дало бы.
+ *
+ * ВИДИМОСТЬ. Исходный статус — факт об источнике: attrs.external_status (и
+ * `defer_until` — attrs.external_defer_until), как даты и автор. Но attrs не
+ * печатают ни show, ни list, поэтому то же слово едет и МЕТКОЙ: `myc show`
+ * печатает `tags deferred`, `myc list --tag deferred` находит все отложенные,
+ * поиск индексирует метки. Метка — часть сверяемого значения `tags` (см.
+ * issueTags): смена статуса в beads снимает её той же синхронизацией.
+ */
+const STATUS_MAP: ReadonlyMap<string, string> = new Map([["deferred", "blocked"]]);
+
+/**
+ * Куда ложится статус, которого нет ни в myc, ни в STATUS_MAP (`pinned`,
+ * `hooked`, свой статус пользователя). Безопасный — значит не `open`: иначе
+ * незнакомое слово засорило бы ready работой, которой в beads в очереди нет.
+ * И не закрытый: закрытие отпустило бы блокируемых и спрятало бы живую
+ * задачу. Такие статусы называются поимённо в WARN import.unknown_statuses.
+ */
+const STATUS_FALLBACK = "blocked";
 
 /**
  * Поля задачи beads, которые импорт ЧИТАЕТ. Всё, чего здесь нет, ввозится
@@ -217,6 +301,8 @@ const MAPPED_ISSUE_FIELDS = new Set([
   "started_at",
   "created_by",
   "owner",
+  // memory-aewndwjjxa5e: пара к статусу deferred (2 задачи messaging-server)
+  "defer_until",
 ]);
 
 /**
@@ -265,13 +351,19 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * `bd show --json`: {id, dependency_type}; `bd list --json`:
  * {issue_id, depends_on_id, type}. Без нормализации импорт молча получал
  * сотни ссылок «X → undefined» (myc-5ie.4).
+ *
+ * Ключ цели ЕСТЬ, но пуст (`depends_on_id: ""` — пять parent-child в
+ * issues.jsonl cherry-developer-portal) — не порча формата, а висячая ссылка
+ * в данных beads: `undefined`, и разбор называет её, а не отменяет ввоз всех
+ * 293 задач (memory-aewndwjjxa5e). Ключа цели нет вовсе — это уже незнакомая
+ * форма записи, и она по-прежнему отказ.
  */
-function normalizeDependency(raw: unknown, where: string): BeadsDependency {
+function normalizeDependency(raw: unknown, where: string): BeadsDependency | undefined {
   if (!isRecord(raw)) throw new Error(`${where}: dependency is not an object`);
+  if (!("id" in raw) && !("depends_on_id" in raw)) throw new Error(`${where}: dependency has no id`);
   const id = raw["id"] ?? raw["depends_on_id"];
-  if (typeof id !== "string" || id.length === 0) {
-    throw new Error(`${where}: dependency has no id`);
-  }
+  if (id === null || id === "") return undefined;
+  if (typeof id !== "string") throw new Error(`${where}: dependency id is not a string`);
   const type = raw["dependency_type"] ?? raw["type"];
   return { id, ...(typeof type === "string" ? { dependency_type: type } : {}) };
 }
@@ -315,6 +407,13 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     if (rows.length === 0) throw new Error("snapshot is empty: no tasks");
     raw = { issues: rows, memories };
   }
+  // JSONL из ОДНОЙ строки сам по себе цельный JSON: экспорт beads с одной
+  // задачей и без памяти разбирался как документ и отвергался «no issues
+  // array». Строку экспорта выдаёт `_type` — у документа-снимка его нет.
+  if (isRecord(raw) && !("issues" in raw) && typeof raw["_type"] === "string") {
+    if (raw["_type"] === "memory") throw new Error("snapshot is empty: no tasks");
+    raw = { issues: [raw] };
+  }
   // голый массив — это `bd show <ids...> --json` целиком: считаем его issues
   if (Array.isArray(raw)) raw = { issues: raw };
   if (!isRecord(raw)) throw new Error("snapshot root is not an object");
@@ -327,6 +426,12 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
   const clampedPriorities: string[] = [];
   /** Поля задач, которых импорт не знает, и сколько задач их несут. */
   const unknownFields = new Map<string, number>();
+  /** Статусы без имени в myc: «id: deferred→blocked». */
+  const mappedStatuses: string[] = [];
+  /** Незнакомые статусы (не из STATUS_MAP) → задачи. */
+  const unknownStatuses = new Map<string, string[]>();
+  /** Зависимости с пустой целью: «id: parent-child». */
+  const danglingDeps: string[] = [];
   for (const [i, entry] of (raw["issues"] as unknown[]).entries()) {
     const where = `issues[${i}]`;
     // `bd show --json` по одной задаче — массив из одного объекта
@@ -341,8 +446,18 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     if (seen.has(id)) throw new Error(`${where}: duplicate id '${id}'`);
     seen.add(id);
     if (typeof title !== "string") throw new Error(`${where} (${id}): no title`);
-    if (typeof status !== "string" || !TASK_STATUSES.has(status)) {
-      throw new Error(`${where} (${id}): invalid status '${String(status)}'`);
+    // Статуса нет или он не строка — порча формата, отказ. А СЛОВО, которого
+    // нет в myc, — свойство чужих данных (см. STATUS_MAP): сопоставляем,
+    // исходное сохраняем и называем, но из-за него не отменяем ввоз.
+    if (typeof status !== "string" || status.trim().length === 0) {
+      throw new Error(`${where} (${id}): no status`);
+    }
+    let mycStatus = status;
+    if (!TASK_STATUSES.has(status)) {
+      const mapped = STATUS_MAP.get(status);
+      mycStatus = mapped ?? STATUS_FALLBACK;
+      mappedStatuses.push(`${id}: ${status}→${mycStatus}`);
+      if (mapped === undefined) unknownStatuses.set(status, [...(unknownStatuses.get(status) ?? []), id]);
     }
     if (typeof issueType !== "string" || issueType.length === 0) {
       throw new Error(`${where} (${id}): no issue_type`);
@@ -364,6 +479,16 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     if (deps !== undefined && !Array.isArray(deps)) {
       throw new Error(`${where} (${id}): dependencies is not an array`);
     }
+    const dependencies: BeadsDependency[] = [];
+    for (const [j, d] of ((deps ?? []) as unknown[]).entries()) {
+      const dep = normalizeDependency(d, `${where}.dependencies[${j}]`);
+      if (dep !== undefined) {
+        dependencies.push(dep);
+        continue;
+      }
+      const type = isRecord(d) ? (d["dependency_type"] ?? d["type"]) : undefined;
+      danglingDeps.push(`${id}: ${typeof type === "string" ? type : "?"}`);
+    }
     const rawComments = item["comments"];
     if (rawComments !== undefined && !Array.isArray(rawComments)) {
       throw new Error(`${where} (${id}): comments is not an array`);
@@ -382,10 +507,12 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     }
     issues.push({
       ...(item as unknown as BeadsIssue),
+      status: mycStatus,
+      // ключ ставится ВСЕГДА: чужое поле с тем же именем в строке bd не
+      // должно выдать себя за сопоставленный статус
+      source_status: mycStatus !== status ? status : undefined,
       priority: clampedPriority,
-      ...(deps !== undefined
-        ? { dependencies: (deps as unknown[]).map((d, j) => normalizeDependency(d, `${where}.dependencies[${j}]`)) }
-        : {}),
+      ...(deps !== undefined ? { dependencies } : {}),
       ...(comments !== undefined ? { comments } : {}),
     });
   }
@@ -405,6 +532,9 @@ export function parseBeadsSnapshot(text: string): BeadsSnapshot {
     ...(unknownTypes.size > 0 ? { unknownTypes: Object.fromEntries(unknownTypes) } : {}),
     ...(clampedPriorities.length > 0 ? { clampedPriorities } : {}),
     ...(unknownFields.size > 0 ? { unknownFields: Object.fromEntries(unknownFields) } : {}),
+    ...(mappedStatuses.length > 0 ? { mappedStatuses } : {}),
+    ...(unknownStatuses.size > 0 ? { unknownStatuses: Object.fromEntries(unknownStatuses) } : {}),
+    ...(danglingDeps.length > 0 ? { danglingDeps } : {}),
   };
 }
 
@@ -441,7 +571,146 @@ function runBd(cwd: string, args: readonly string[]): string {
  * parseBeadsSnapshot, через него же проходит валидация.
  */
 export function collectBeadsSnapshot(cwd: string): BeadsSnapshot {
-  const out = runBd(cwd, ["export", "--include-memories"]);
+  let out: string;
+  try {
+    out = runBd(cwd, ["export", "--include-memories"]);
+  } catch (e) {
+    const passive = passiveExport(cwd);
+    if (passive === undefined) throw e;
+    throw new BeadsJsonlOnly(
+      "precond.bd",
+      `${e instanceof Error ? e.message : String(e)}. There is ${describePassive(passive)}: ${PASSIVE_NOTE}`,
+      passive.path,
+    );
+  }
+  const snapshot = parseLiveExport(out);
+  if (snapshot.issues.length === 0) {
+    const passive = passiveExport(cwd);
+    if (passive !== undefined) {
+      throw new BeadsJsonlOnly(
+        "precond.bd_empty",
+        `bd export returned no tasks from ${passive.beadsDir}, but there is ${describePassive(passive)}: ` +
+          `the database was never loaded from that file, or was emptied since; ${PASSIVE_NOTE}`,
+        passive.path,
+      );
+    }
+  }
+  return snapshot;
+}
+
+/**
+ * bd не отдал ни одной задачи, а в его каталоге лежит `issues.jsonl` с
+ * задачами (memory-aewndwjjxa5e). В cherry так выглядят два beads из пяти:
+ * у miniapp-swap базы Dolt нет вовсе (bd export: `no beads database found`),
+ * рядом 5 закрытых задач июня; у cherry-developer-portal база пуста, а в файле
+ * 293 задачи. Ввезти «0 задач» и выйти с кодом 0 значило бы доложить успех
+ * там, где данные есть, — но и подхватить файл САМИМ нельзя: `issues.jsonl` —
+ * пассивный экспорт bd, он отстаёт от базы (у корня cherry в нём 226 задач
+ * при 812 в базе), и на временном сбое базы импорт молча ввёз бы старое
+ * подмножество. Поэтому отказ называет файл, его число задач и дату записи, а
+ * подсказка — точную команду: файл-снимок импорт и так принимает, отдельный
+ * флаг для него не нужен.
+ */
+export class BeadsJsonlOnly extends Error {
+  constructor(
+    readonly code: "precond.bd" | "precond.bd_empty",
+    message: string,
+    readonly jsonlPath: string,
+  ) {
+    super(message);
+  }
+}
+
+interface PassiveExport {
+  /** Каталог beads, который нашёл bd (`bd where`). */
+  readonly beadsDir: string;
+  readonly path: string;
+  /** Непустых строк в файле — число есть и тогда, когда файл не разбирается. */
+  readonly lines: number;
+  /** Задач по разбору; `undefined` — файл не разбирается (см. parseError). */
+  readonly issues: number | undefined;
+  /** «closed 240, open 47, …» — по статусам ИСТОЧНИКА. */
+  readonly statuses: string;
+  readonly parseError: string | undefined;
+  /** Дата последней записи файла — чтобы человек сам судил о свежести. */
+  readonly written: string;
+}
+
+/**
+ * Пассивный экспорт того beads, который нашёл бы bd из cwd: каталог — из
+ * `bd where --json` (правила поиска bd, вместе с редиректами и BEADS_DIR, у
+ * него, а не здесь), имя файла — из metadata.json (`jsonl_export`), иначе
+ * `issues.jsonl`. `undefined` — файла нет или в нём ни одной задачи.
+ *
+ * Неразбираемый файл — НЕ `undefined`: данные в нём есть, и молчаливое «0
+ * задач» было бы ровно той ложью, против которой эта проверка. Такой файл
+ * называется вместе с причиной, по которой его не разобрать.
+ */
+function passiveExport(cwd: string): PassiveExport | undefined {
+  let where: unknown;
+  try {
+    where = JSON.parse(runBd(cwd, ["where", "--json"]));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(where) || typeof where["path"] !== "string" || where["path"].length === 0) return undefined;
+  const beadsDir = where["path"];
+  let name = "issues.jsonl";
+  try {
+    const meta = JSON.parse(readFileSync(join(beadsDir, "metadata.json"), "utf8")) as unknown;
+    if (isRecord(meta) && typeof meta["jsonl_export"] === "string" && meta["jsonl_export"].length > 0) {
+      name = meta["jsonl_export"];
+    }
+  } catch {
+    // нет metadata.json или он битый — имя по умолчанию
+  }
+  const path = join(beadsDir, name);
+  let text: string;
+  let written: string;
+  try {
+    text = readFileSync(path, "utf8");
+    written = statSync(path).mtime.toISOString().slice(0, 10);
+  } catch {
+    return undefined;
+  }
+  const lines = text.split("\n").filter((l) => l.trim().length > 0).length;
+  if (lines === 0) return undefined;
+  let snap: BeadsSnapshot;
+  try {
+    snap = parseBeadsSnapshot(text);
+  } catch (e) {
+    const parseError = e instanceof Error ? e.message : String(e);
+    // строки есть, но задач нет (одна память) — предлагать нечего
+    if (/no tasks/.test(parseError)) return undefined;
+    return { beadsDir, path, lines, issues: undefined, statuses: "", parseError, written };
+  }
+  if (snap.issues.length === 0) return undefined;
+  const byStatus = new Map<string, number>();
+  for (const i of snap.issues) {
+    const s = i.source_status ?? i.status;
+    byStatus.set(s, (byStatus.get(s) ?? 0) + 1);
+  }
+  const statuses = [...byStatus]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([s, n]) => `${s} ${n}`)
+    .join(", ");
+  return { beadsDir, path, lines, issues: snap.issues.length, statuses, parseError: undefined, written };
+}
+
+function describePassive(p: PassiveExport): string {
+  if (p.issues === undefined) {
+    return `${p.path} with ${p.lines} ${p.lines === 1 ? "line" : "lines"}, written ${p.written}, ` +
+      `that does not parse as a snapshot (${p.parseError})`;
+  }
+  return `${p.path} with ${p.issues} ${p.issues === 1 ? "task" : "tasks"} (${p.statuses}), written ${p.written}`;
+}
+
+const PASSIVE_NOTE =
+  "the file is bd's passive export and can lag behind the database, so it is not picked up on its own — " +
+  "import it explicitly if it is the state you want";
+
+/** Разбор JSONL живого `bd export`: строки задач и строки памяти. */
+function parseLiveExport(out: string): BeadsSnapshot {
   const issues: unknown[] = [];
   const memories: Record<string, string> = {};
   for (const [n, line] of out.split("\n").entries()) {
@@ -646,6 +915,11 @@ const SOURCE_FACTS = [
   "external_started_at",
   "external_created_by",
   "external_owner",
+  // Статус источника — только когда у myc для него нет имени (STATUS_MAP):
+  // у задачи с обычным статусом ключа нет вовсе, и повторный ввоз прежних
+  // баз не пишет ни одной операции.
+  "external_status",
+  "external_defer_until",
 ] as const;
 type SourceFact = (typeof SOURCE_FACTS)[number];
 
@@ -670,7 +944,24 @@ function sourceFacts(issue: BeadsIssue): Record<SourceFact, JsonValue | undefine
     external_started_at: parseAt(issue.started_at),
     external_created_by: textOf(issue.created_by) ?? undefined,
     external_owner: textOf(issue.owner) ?? undefined,
+    external_status: issue.source_status,
+    external_defer_until: parseAt(issue.defer_until),
   };
+}
+
+/**
+ * Метки задачи в myc: метки beads и — если у статуса источника нет имени в
+ * myc — само это слово (см. STATUS_MAP: attrs не печатают ни show, ни list).
+ * Одна функция на запись нового узла и на слепок: иначе метка статуса
+ * читалась бы синхронизацией как локальная правка, и смена статуса в beads
+ * её бы не снимала.
+ */
+function issueTags(issue: BeadsIssue): string[] {
+  const tags = issue.labels?.filter((l) => l.length > 0) ?? [];
+  if (issue.source_status !== undefined && !tags.includes(issue.source_status)) {
+    return [...tags, issue.source_status];
+  }
+  return [...tags];
 }
 
 /** Задача beads → kind=task; исходный ID — в attrs.external_ref. Тексты вербатим. */
@@ -679,8 +970,8 @@ export function issueToNodeInput(issue: BeadsIssue, scope: string, actor: string
     type: issue.issue_type,
     external_ref: issue.id,
   };
-  const labels = issue.labels?.filter((l) => l.length > 0) ?? [];
-  if (labels.length > 0) attrs["tags"] = [...labels];
+  const labels = issueTags(issue);
+  if (labels.length > 0) attrs["tags"] = labels;
   if (issue.status === "closed" && issue.close_reason !== undefined && issue.close_reason.length > 0) {
     // та же форма, что пишет `myc close --reason` (attrs.outcome.reason)
     attrs["outcome"] = { reason: issue.close_reason };
@@ -839,7 +1130,7 @@ function snapshotBaseline(issue: BeadsIssue): BeadsBaseline {
     status: issue.status,
     priority: issue.priority,
     assignee: issue.assignee ?? "",
-    tags: [...(issue.labels?.filter((l) => l.length > 0) ?? [])].sort(),
+    tags: issueTags(issue).sort(),
     outcome:
       issue.status === "closed" && issue.close_reason !== undefined && issue.close_reason.length > 0
         ? { reason: issue.close_reason }
@@ -983,11 +1274,18 @@ export interface ImportBeadsData {
   /** Зависимости, тип которых myc нечем выразить: названы, а не «без цели». */
   unknown_dep_types: string[];
   /**
-   * Что не ввезено и ПОЧЕМУ, поимённо. Единственный класс причин здесь —
+   * Задачи, чей статус в beads не имеет имени в myc, и во что он лёг:
+   * «messaging-server-8mm: deferred→blocked». Исходное слово — в
+   * attrs.external_status и метке (см. STATUS_MAP).
+   */
+  statuses_mapped: string[];
+  /**
+   * Что не ввезено и ПОЧЕМУ, поимённо. Оба класса причин здесь —
    * столкновение идентичностей: в scope уже лежит СВОЙ узел myc с тем же
-   * содержимым (у своих идентичность по тексту, §ux_nodes_content). Импорт
-   * от такой строки не обрывается: одна запись из 796 не имеет права
-   * отменить остальные 795.
+   * содержимым (у своих идентичность по тексту, §ux_nodes_content) либо
+   * ввезённый узел ДРУГОГО репозитория экосистемы с той же ссылкой (см.
+   * foreignRefs). Импорт от такой строки не обрывается: одна запись из 796
+   * не имеет права отменить остальные 795.
    */
   skipped: string[];
   conflicts: string[];
@@ -1010,21 +1308,63 @@ const SCAN_LIMIT = 1_000_000;
 function scopeIndexes(h: StoreHandle): {
   readonly byRef: Map<string, string>;
   readonly byContent: Map<string, string>;
+  /** Охват репозитория (S59) ввезённого узла — по его ссылке. */
+  readonly repoByRef: Map<string, RepoInfo>;
 } {
   const byRef = new Map<string, string>();
   const byContent = new Map<string, string>();
+  const repoByRef = new Map<string, RepoInfo>();
   for (const kind of ["task", "note"] as const) {
     for (const n of h.store.listNodes(h.scope, kind, SCAN_LIMIT)) {
       const ref = n.attrs["external_ref"];
       if (typeof ref === "string") {
-        if (!byRef.has(ref)) byRef.set(ref, n.id);
+        if (!byRef.has(ref)) {
+          byRef.set(ref, n.id);
+          repoByRef.set(ref, readRepo(n.attrs));
+        }
         continue;
       }
       const key = contentKey(kind, n.title, n.body);
       if (!byContent.has(key)) byContent.set(key, n.id);
     }
   }
-  return { byRef, byContent };
+  return { byRef, byContent, repoByRef };
+}
+
+/**
+ * Ввезённые узлы ЧУЖОГО репозитория экосистемы: `external_ref` тот же, что у
+ * строки снимка, а записанный охват репозитория — другой. Так выглядят два
+ * beads с одинаковым префиксом в одном воркспейсе (`external_ref` уникален в
+ * воркспейсе, а не в репозитории) — и так же выглядит снимок корня, ввозимый
+ * из каталога вложенного репозитория. Без этого разбора второй импорт нашёл
+ * бы чужие задачи «уже ввезёнными» и синхронизировал бы их своим снимком.
+ *
+ * Чужим узел считается, только когда обе стороны ИЗВЕСТНЫ: охват импорта
+ * выведен (без него `--db` вне воркспейса — сравнивать не с чем) и у узла он
+ * записан. У 1290 узлов корня cherry он записан — общий, `""`: корневой
+ * импорт шёл из корня. Узел без охвата (ввезённый до S59 или через `--db` вне
+ * `<каталог>/.myc/`) остаётся своим — как и было до этой проверки: прятать
+ * запись, чьё происхождение неизвестно, значит терять её синхронизацию молча.
+ */
+function foreignRefs(
+  existing: Map<string, string>,
+  repoByRef: ReadonlyMap<string, RepoInfo>,
+  target: string | undefined,
+): Map<string, { readonly id: string; readonly repo: string }> {
+  const foreign = new Map<string, { readonly id: string; readonly repo: string }>();
+  if (target === undefined) return foreign;
+  for (const [ref, id] of existing) {
+    const info = repoByRef.get(ref);
+    if (info === undefined || info.state === "unknown" || info.repo === target) continue;
+    foreign.set(ref, { id, repo: info.repo });
+  }
+  for (const ref of foreign.keys()) existing.delete(ref);
+  return foreign;
+}
+
+/** Имя охвата для сообщения: пустой охват — корень воркспейса. */
+function repoLabel(repo: string): string {
+  return repo.length === 0 ? "the workspace root" : `repo '${repo}'`;
 }
 
 /** Ключ индекса содержимого: тот же (kind, content_hash), что в ux_nodes_content. */
@@ -1048,10 +1388,28 @@ export function importBeadsSnapshot(
 ): ImportBeadsData {
   const t0 = performance.now();
   const dry = opts.dryRun;
-  const { byRef: existing, byContent } = scopeIndexes(h);
+  const { byRef: existing, byContent, repoByRef } = scopeIndexes(h);
+  // Имена узлов — по ВСЕМ ввезённым, и чужим тоже: ими локальные рёбра
+  // пересказываются в терминах ссылок, а ребро на чужой узел остаётся ребром.
   const refById = new Map<string, string>();
   for (const [ref, id] of existing) refById.set(id, ref);
   const refOf = (id: string): string => refById.get(id) ?? `myc:${id}`;
+  // Чужие уходят из `existing`: не синхронизируются, не считаются «уже
+  // ввезёнными» и не разрешают ссылки снимка (resolveRef) — зависимость на
+  // одноимённую чужую задачу была бы ребром в чужой репозиторий.
+  const foreign = foreignRefs(existing, repoByRef, h.repo.repo);
+  const target = h.repo.repo ?? "";
+  const skipForeign = (ref: string, what: string): boolean => {
+    const other = foreign.get(ref);
+    if (other === undefined) return false;
+    data.skipped.push(
+      `${ref}: ${what} not imported — myc already has ${other.id} with this external_ref from ` +
+        `${repoLabel(other.repo)}, and this import writes ${repoLabel(target)}: two beads with the same id ` +
+        `prefix, or a snapshot imported from another repo's directory; run the import from the directory ` +
+        `of the beads it came from, or rename one prefix (bd rename-prefix)`,
+    );
+    return true;
+  };
 
   const data: ImportBeadsData = {
     snapshot: opts.snapshotName,
@@ -1078,6 +1436,7 @@ export function importBeadsSnapshot(
     blockers_recounted: 0,
     missing_refs: [],
     unknown_dep_types: [],
+    statuses_mapped: [...(snapshot.mappedStatuses ?? [])],
     skipped: [],
     conflicts: [],
     kept_local: [],
@@ -1133,6 +1492,7 @@ export function importBeadsSnapshot(
   const idByRef = new Map<string, string>();
   const syncs = new Map<string, NodeSync>();
   for (const issue of snapshot.issues) {
+    if (skipForeign(issue.id, "task")) continue;
     const known = existing.get(issue.id);
     if (known === undefined) {
       const input = issueToNodeInput(issue, h.scope, h.actor);
@@ -1426,6 +1786,7 @@ export function importBeadsSnapshot(
     const notes = issue.notes;
     if (notes === undefined || notes.trim().length === 0) continue;
     const ref = `${issue.id}#notes`;
+    if (skipForeign(ref, "note")) continue;
     if (existing.has(ref)) {
       data.notes_existing++;
       continue;
@@ -1453,6 +1814,7 @@ export function importBeadsSnapshot(
   for (const issue of snapshot.issues) {
     for (const comment of issue.comments ?? []) {
       const ref = commentRef(issue, comment);
+      if (skipForeign(ref, "comment")) continue;
       if (existing.has(ref)) {
         data.comments_existing++;
         continue;
@@ -1477,7 +1839,11 @@ export function importBeadsSnapshot(
 
   // Проход 5: память bd remember → kind=note L3.
   for (const [key, text] of Object.entries(snapshot.memories ?? {})) {
+    // Ключ памяти `bd remember` префикса beads не несёт вовсе: одинаковый ключ
+    // в двух beads экосистемы — самое вероятное столкновение из всех, и без
+    // разбора чужая память молча считалась бы «уже ввезённой».
     const ref = `bd-remember:${key}`;
+    if (skipForeign(ref, "memory")) continue;
     if (existing.has(ref)) {
       data.memories_existing++;
       continue;
@@ -1518,6 +1884,16 @@ function renderImportBeadsHuman(raw: unknown): string {
       (d.sections_removed > 0 ? `, removed ${d.sections_removed}` : ""),
     ...(d.facts_updated > 0
       ? [`source    dates and author written on ${d.facts_updated} existing ${d.facts_updated === 1 ? "task" : "tasks"}`]
+      : []),
+    // Сопоставленный статус — решение, а не беда, но число и имена обязаны
+    // быть на виду: иначе «ввезено 105» скрыло бы, что две из них в myc
+    // называются иначе, чем в beads.
+    ...(d.statuses_mapped.length > 0
+      ? [
+          `status    no myc name, kept in attrs.external_status and as a tag ` +
+            `(${d.statuses_mapped.length}): ${d.statuses_mapped.slice(0, 5).join(", ")}` +
+            (d.statuses_mapped.length > 5 ? "…" : ""),
+        ]
       : []),
     `edges     new ${d.edges_created}, existing ${d.edges_existing}` +
       (d.edges_removed > 0 ? `, removed ${d.edges_removed}` : ""),
@@ -1578,7 +1954,9 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
       "myc-qie.7 inside descriptions are NOT rewritten. Acceptance criteria and design go into the " +
       "task body as sections between <!-- beads:<field> --> markers, so show, ready and search " +
       "see them; source dates and author go to attrs.external_* (created_at/updated_at of the node " +
-      "stay the time of the write). Re-running is a sync, not just " +
+      "stay the time of the write). A beads status myc has no name for (deferred, or any unknown one) " +
+      "is imported as blocked — out of ready, still holding what it blocks — with the beads status kept " +
+      "in attrs.external_status and as a tag. Re-running is a sync, not just " +
       "deduplication: fields changed in beads (status, priority, labels, close reason, parent, " +
       "blockers) are applied through normal graph mutations. Local myc edits are never silently " +
       "overwritten: one-sided local changes are kept and named in kept_local, two-sided changes " +
@@ -1606,6 +1984,14 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
         try {
           snapshot = collectBeadsSnapshot(cwd);
         } catch (e) {
+          if (e instanceof BeadsJsonlOnly) {
+            return failure(
+              e.code,
+              e.code === "precond.bd" ? `could not build the snapshot via bd: ${e.message}` : e.message,
+              ExitCode.PRECOND,
+              `myc import-beads ${e.jsonlPath}`,
+            );
+          }
           return failure(
             "precond.bd",
             `could not build the snapshot via bd: ${e instanceof Error ? e.message : String(e)}`,
@@ -1651,6 +2037,32 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
           ctx.warn(
             "import.unknown_fields",
             `beads task fields the import does not read and did not import anywhere: ${list}`,
+          );
+        }
+        // Незнакомый статус ввезён в безопасный blocked, но это ДОГАДКА о чужом
+        // слове: человек обязан узнать, какие именно задачи и с каким словом
+        // легли не на своё место (deferred — решение, он в WARN не попадает).
+        const unknownStatuses = snapshot.unknownStatuses;
+        if (unknownStatuses !== undefined) {
+          const list = Object.entries(unknownStatuses)
+            .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+            .map(([s, ids]) => `${s}×${ids.length} (${ids.slice(0, 5).join(", ")}${ids.length > 5 ? ", …" : ""})`)
+            .join("; ");
+          ctx.warn(
+            "import.unknown_statuses",
+            `statuses myc does not know were imported as ${STATUS_FALLBACK} — out of ready, still holding ` +
+              `what they block; the beads status is kept in attrs.external_status and as a tag: ${list}`,
+          );
+        }
+        // Висячая зависимость — дыра в данных beads, а не повод отменить
+        // ввоз; но и не молчание: ребро не ввезено, и это названо поимённо.
+        const dangling = snapshot.danglingDeps;
+        if (dangling !== undefined && dangling.length > 0) {
+          ctx.warn(
+            "import.dangling_deps",
+            `${dangling.length} ${dangling.length === 1 ? "dependency has" : "dependencies have"} an empty target ` +
+              `in beads and ${dangling.length === 1 ? "was" : "were"} not imported: ` +
+              `${dangling.slice(0, 5).join(", ")}${dangling.length > 5 ? "…" : ""}`,
           );
         }
         const clamped = snapshot.clampedPriorities;
