@@ -458,17 +458,11 @@ window.MYC_DATA = {
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
         "status": "open",
-        "done": 6,
+        "done": 7,
         "total": 10,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          {
-            "id": "memory-5wq6pdexn2wz",
-            "status": "open",
-            "priority": 1,
-            "title": "Адаптер graft: только вне горячего пути"
-          },
           {
             "id": "memory-apq1h7wra93w",
             "status": "open",
@@ -1398,11 +1392,6 @@ window.MYC_DATA = {
             "ru": "Приёмка: от символа к решениям и обратно на реальном репозитории — и корректно после рефакторинга."
           },
           {
-            "id": "memory-5wq6pdexn2wz",
-            "en": "An optional graft adapter, off the hot path only: with graft installed no hot path slows down, without it nothing fails.",
-            "ru": "Необязательный адаптер graft, только вне горячего пути: с graft ни один горячий путь не замедляется, без него ничего не падает."
-          },
-          {
             "id": "memory-5c03r9t5n472",
             "en": "Re-attach anchors after a refactor by finding the moved code, with a confidence threshold and an explicit list of what stayed unresolved.",
             "ru": "Перепривязка якорей после рефакторинга: поиск переехавшего кода с порогом уверенности и явным списком неразрешённого."
@@ -1659,5 +1648,5 @@ window.MYC_DATA = {
     "myc": "0.3.6"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-11T20:31:39.449Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-09-11T21:16:29.681Z", assertions: 77 };
 window.MYC_DATA.release = "0.3.6";
