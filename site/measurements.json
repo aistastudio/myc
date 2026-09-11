@@ -317,7 +317,7 @@
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 3.38,
-    "unpacked_mb": 12.47,
+    "unpacked_mb": 12.48,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -327,7 +327,7 @@
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.4"
+    "version": "0.3.5"
   },
   "roadmap": {
     "command": "myc show <epic-id>",
@@ -408,12 +408,12 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 3316,
+    "pass": 3332,
     "fail": 0,
     "skip": 16,
-    "files": 215,
-    "assertions": 33687,
-    "seconds": 279.5,
-    "sources": "5e90fcb59f63cbc1"
+    "files": 217,
+    "assertions": 33739,
+    "seconds": 278.5,
+    "sources": "9a0c19671ddac1a1"
   }
 }
