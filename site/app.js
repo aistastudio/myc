@@ -167,9 +167,10 @@
   // ── 02 бюджеты латентности ─────────────────────────────────────────────────
   (function () {
     var L = D.latency;
+    var LE = L.env || D.env; // задержки переснимаются отдельно — у них свои условия
     document.getElementById("lat-sub").appendChild(bi(
-      L.corpus_en + ". The track is the budget; the fill is the measured p99 — taken " + D.env.date + " on myc " + D.env.myc + ", on " + D.env.machine + ", and not re-taken since.",
-      L.corpus_ru + ". Дорожка — бюджет, заливка — измеренный p99, снятый " + D.env.date + " на myc " + D.env.myc + ", машина " + D.env.machine + ", и с тех пор не переснимавшийся."));
+      L.corpus_en + ". The track is the budget; the fill is the measured p99 — taken " + LE.date + " on myc " + LE.myc + ", on " + LE.machine + ", and not re-taken since.",
+      L.corpus_ru + ". Дорожка — бюджет, заливка — измеренный p99, снятый " + LE.date + " на myc " + LE.myc + ", машина " + LE.machine + ", и с тех пор не переснимавшийся."));
 
     var host = document.getElementById("lat-chart");
     L.rows.forEach(function (r) {
@@ -199,9 +200,9 @@
         return [bi(r.label_en, r.label_ru), num(r.p50, 3), num(r.p95, 3), num(r.p99, 3), String(r.budget), String(r.n)];
       }), 1));
     how.appendChild(bi(
-      "Conditions travel with the number: " + L.corpus_en + ", machine " + D.env.machine +
+      "Conditions travel with the number: " + L.corpus_en + ", machine " + (D.latency.env || D.env).machine +
         ". A percentage taken on other hardware would mean nothing, so the baseline file is split per machine.",
-      "Условия едут вместе с числом: " + L.corpus_ru + ", машина " + D.env.machine +
+      "Условия едут вместе с числом: " + L.corpus_ru + ", машина " + (D.latency.env || D.env).machine +
         ". Процент, снятый на другом железе, не значит ничего, поэтому файл линии разложен по машинам.", "p"));
   })();
 

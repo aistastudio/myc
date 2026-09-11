@@ -596,7 +596,9 @@ if (m.tests.myc !== undefined && m.tests.myc !== release) {
         re: en
           ? /on (\d{4}-\d{2}-\d{2}), ([a-z0-9-]+), myc (\d+\.\d+\.\d+), not re-measured since/g
           : /(\d{4}-\d{2}-\d{2}), ([a-z0-9-]+), myc (\d+\.\d+\.\d+), с тех пор не переснимался/g,
-        want: [m.env.date, m.latency.check.section, m.env.myc],
+        // У задержек свои условия (latency.env): их переснимают отдельно от
+        // остальных чисел, и общая дата страницы им не указ.
+        want: [(m.latency.env ?? m.env).date, m.latency.check.section, (m.latency.env ?? m.env).myc],
       },
       {
         what: "бусты: MRR@10 до → после",

@@ -304,17 +304,17 @@ CI checks the first two. The absolute budgets and the 15% p95 regression line
 are calibrated on darwin-arm64-14 and bind there; CI and the nightly run use
 GitHub's 4-core runners, which are not that machine and are declared
 uncalibrated (`MYC_BENCH_ABSOLUTE=0`), so there the absolute numbers are printed
-and logged, not enforced. Measured on 100 000 nodes on 2026-09-07,
-darwin-arm64-14, myc 0.1.1, not re-measured since
+and logged, not enforced. Measured on 100 000 nodes on 2026-09-11,
+darwin-arm64-14, myc 0.3.6, not re-measured since
 (`bun run scripts/bench-latency.ts`):
 
 | operation | p99 | budget |
 |---|---|---|
-| `prime` (session context) | 0.755 ms | 30 ms |
-| read | 0.012 ms | 3 ms |
-| search | 10.354 ms | 25 ms |
-| write | 0.460 ms | 5 ms |
-| cold start | 23.820 ms | 60 ms |
+| `prime` (session context) | 0.608 ms | 30 ms |
+| read | 0.010 ms | 3 ms |
+| search | 8.215 ms | 25 ms |
+| write | 0.327 ms | 5 ms |
+| cold start | 21.337 ms | 60 ms |
 
 **Ranking is measured, not asserted.** Two labelled corpora with graded
 relevance, each containing a *control group that gets worse* when the feature
