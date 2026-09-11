@@ -1,18 +1,20 @@
 /**
- * `myc viz` — просмотрщик графа и статистики (§3.20, §10).
+ * `myc viz` — локальный веб-интерфейс воркспейса (§3.20, §10, веха M7).
  *
- * Ранняя урезанная версия того, что в M4 станет полноценной визуализацией:
- * четыре экрана (граф, очередь ready с раскрытием слагаемых S21, таймлайн
- * оплога, здоровье) и ничего сверх них.
+ * Экраны — ровно те, что во вкладках клиента (TABS в @myc/web client/app.ts):
+ * справка собирается из VIZ_SCREENS, а viz.test.ts сверяет этот список с
+ * клиентом. Раньше справка обещала «четыре экрана» и «только чтение», когда
+ * их было десять и появилась запись, — текст отстал от кода на целую веху.
  *
  * Команда долгоживущая, и это единственное её отличие от остальных: баннер
  * печатается сразу (иначе сервер молча висит), а рамка CLI получает конверт
  * с итогом уже на остановке. Останов — SIGINT/SIGTERM.
  *
- * База открывается ТОЛЬКО НА ЧТЕНИЕ (см. @myc/web db.ts): просмотрщик может
- * висеть часами, и он обязан не мешать CLI писать. Мутирующих маршрутов на
- * сервере не существует вовсе — прятать кнопки было бы удобством, а не
- * запретом.
+ * Чтение идёт своим соединением, открытым ТОЛЬКО НА ЧТЕНИЕ (см. @myc/web
+ * db.ts): просмотрщик может висеть часами и не мешает CLI писать. Правки
+ * из интерфейса сервер сам не пишет: каждая уходит в тот же движок команд,
+ * что обслуживает терминал (@myc/web mutate.ts) — оплог, ACL, часы полей.
+ * read_only в итоге — то, что сервер сказал о себе (VizServer.writable).
  */
 
 import { existsSync } from "node:fs";
@@ -111,17 +113,43 @@ interface VizStopped {
   errors: number;
   uptime_ms: number;
   signal: string;
-  read_only: true;
+  /** Сервер отказывал в записи (POST → 405). По умолчанию запись включена. */
+  read_only: boolean;
 }
 
+/**
+ * Экраны интерфейса в порядке вкладок: [id вкладки в клиенте, как её назвать
+ * в справке]. Новая вкладка без строки здесь роняет viz.test.ts.
+ */
+export const VIZ_SCREENS: readonly (readonly [tab: string, help: string])[] = [
+  ["graph", "graph (Canvas2D, layout in a Web Worker)"],
+  ["ready", "ready queue with the S21 score terms"],
+  ["board", "board"],
+  ["kb", "knowledge base"],
+  ["timeline", "oplog timeline"],
+  ["search", "search"],
+  ["routing", "model routing"],
+  ["decisions", "decisions"],
+  ["bootstrap", "bootstrap blocks"],
+  ["health", "health and degradations"],
+];
+
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+
 export function createVizCommand(deps: VizDeps = realVizDeps): Command {
+  const count = NUMBER_WORDS[VIZ_SCREENS.length] ?? String(VIZ_SCREENS.length);
   return {
     name: "viz",
-    summary: "read-only web viewer: graph, ready queue, oplog, health",
+    summary: "local web interface: graph, queue, board, cards, search, health — edits go through the CLI",
     help:
-      "Starts a local server and opens the database READ-ONLY: the CLI can keep writing " +
-      "while the viewer is open. Four screens — graph (Canvas2D, layout in a Web Worker), " +
-      "ready queue with the S21 score terms, oplog timeline, health and degradations. " +
+      `Starts a local server (127.0.0.1 unless --host) with the web interface. ` +
+      `${count[0]!.toUpperCase()}${count.slice(1)} screens — ${VIZ_SCREENS.map(([, h]) => h).join(", ")}; ` +
+      "a task opens as a card with its thread. " +
+      "Reads go through a connection opened READ-ONLY, so the CLI keeps writing while the page is open. " +
+      "Edits from the page — create a task or a note, change its fields, claim, release, close, reopen, assign, " +
+      "priority, extend, cancel, set or remove a bootstrap block — are not written by the server itself: " +
+      "each runs through the same command engine as the terminal (oplog, ACL, field clocks), and an edit " +
+      "made against a stale copy is refused, not merged. " +
       "The UI is embedded in the binary: zero external requests.",
     flags: [
       { name: "port", short: "p", value: "number", description: "port (default 7788)" },
@@ -201,7 +229,8 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
         const kb = (server.assetBytes / 1024).toFixed(0);
         deps.write(
           `myc viz · ws=${server.workspace.slug} · ${boot.nodes} nodes / ${boot.edges} edges\n` +
-            `db ${dbPath} · opened read-only (the CLI can still write)\n` +
+            `db ${dbPath} · read-only connection for reads (the CLI can still write)` +
+            `${server.writable ? "; edits go through the CLI's write path" : "; edits are off"}\n` +
             `UI ${kb} KB embedded in the binary · zero external requests\n` +
             `${server.url}${ctx.flags["open"] === true ? "  (opened in the browser)" : ""}\n` +
             `Ctrl-C to stop\n`,
@@ -223,7 +252,7 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
         errors: server.stats.errors,
         uptime_ms: Date.now() - t0,
         signal,
-        read_only: true,
+        read_only: !server.writable,
       };
       return { ok: true, data, meta: { requests: data.requests, uptime_ms: data.uptime_ms } };
     },

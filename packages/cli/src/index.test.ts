@@ -266,12 +266,29 @@ describe("cli run: degradation — one source, two renderings", () => {
     );
   });
 
-  test("human: --strict turns degradation into exit 7, WARN still printed", async () => {
+  test("human: --strict turns degradation into exit 6 (DEGRADED), WARN still printed", async () => {
     const result = await run(["scan", "--strict"], {
       registry: makeRegistry(warnCmd),
     });
     expect(result.code).toBe(ExitCode.DEGRADED);
+    expect(result.code).toBe(6);
     expect(result.stdout).toContain("WARN index.partial");
+  });
+
+  test("--help names the exit code --strict actually produces, and says the WARN stays", async () => {
+    // Справка говорила «exit code 7» (это NOWS), а процесс выходил с 6: число
+    // берётся из строки справки и сверяется с кодом настоящего прогона.
+    const registry = makeRegistry(warnCmd);
+    const help = await run(["--help"], { registry });
+    const line = String(help.stdout).split("\n").find((l) => /^\s+--strict\s/.test(l));
+    expect(line).toBeDefined();
+    const codes = [...line!.matchAll(/\bcode (\d+)\b/g)].map((m) => Number(m[1]));
+    const strict = await run(["scan", "--strict"], { registry });
+    expect(codes).toEqual([strict.code]);
+    expect(codes).not.toContain(ExitCode.NOWS);
+    // «instead of a WARN line» было второй неправдой: WARN печатается и с --strict.
+    expect(line).not.toMatch(/instead of a WARN/i);
+    expect(line).toMatch(/WARN line still prints/);
   });
 
   test("json: warn[] and meta.degraded[] from the same source", async () => {

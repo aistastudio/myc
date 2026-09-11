@@ -1661,7 +1661,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
           if ("ok" in applied) {
             // Задача УЖЕ закрыта: отдать ошибку значило бы сказать, что не
             // произошло ничего. Громкая деградация (И2): закрытие состоялось,
-            // исход — нет, причина названа. Под --strict это код выхода 7.
+            // исход — нет, причина названа. Под --strict это код выхода 6.
             ctx.warn("attribution.failed", `outcome not recorded: ${applied.msg}`);
             attribution = { recorded: false, skipped: applied.msg };
           } else {

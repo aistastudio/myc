@@ -38,14 +38,15 @@ if (process.platform === "win32") {
     ]),
   );
 } else if (typeof process.versions.bun !== "string" && !bunOnPath()) {
+  // По-английски, как весь вывод CLI (эпик memory-rc2s0m1e9kpz).
   process.stderr.write(
-    frame("@aistastudio/myc установлен, но запускаться пока не будет", [
-      "myc работает только на Bun (хранилище на bun:sqlite).",
-      "Bun в системе не найден.",
+    frame("@aistastudio/myc is installed, but it will not start yet", [
+      "myc runs only on Bun (its storage is bun:sqlite).",
+      "Bun was not found on this system.",
       "",
       "  curl -fsSL https://bun.sh/install | bash",
       "",
-      "После этого: myc --version",
+      "Then: myc --version",
     ]),
   );
 }

@@ -251,31 +251,6 @@ if (m.package?.version !== release) {
     checks.push(`tests: ${m.tests.pass} pass / ${m.tests.fail} fail / ${m.tests.skip} skip${m.tests.fail ? ` — падение названо: «${m.tests.failing_test}»` : ""}`);
   }
 
-  // README — тоже поверхность с числами, и приёмка вехи M2 требует, чтобы их
-  // защищала сборка. Иначе цепочка обрывается на последнем звене: артефакты
-  // сверены с measurements.json, а README живёт своей жизнью и тихо
-  // устаревает. Проверяем ровно таблицу бюджетов: она и есть те «три числа
-  // из бенчмарка», ради которых веха заводилась.
-  const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
-  for (const row of m.latency.rows) {
-    // Имя операции в README пишется человеку («cold start»), в замере — кодом
-    // («cold_start»). Сверяем смысл, а не написание.
-    const name = String(row.op).replace(/_/g, "[ _]");
-    const re = new RegExp(`\\|\\s*\`?${name}\`?[^|]*\\|\\s*([0-9.]+)\\s*ms\\s*\\|\\s*([0-9.]+)\\s*ms`, "i");
-    const hit = re.exec(readme);
-    if (hit === null) {
-      problems.push({ where: `README/${row.op}`, expected: "строка таблицы бюджетов", actual: "не найдена" });
-      continue;
-    }
-    if (Number(hit[1]) !== row.p99) {
-      problems.push({ where: `README/${row.op} p99`, expected: String(row.p99), actual: hit[1]! });
-    }
-    if (Number(hit[2]) !== row.budget) {
-      problems.push({ where: `README/${row.op} бюджет`, expected: String(row.budget), actual: hit[2]! });
-    }
-  }
-  checks.push(`README: таблица бюджетов сверена, ${m.latency.rows.length} строк`);
-
   const notDone = m.roadmap.rows.filter((r: any) => r.done === 0);
   checks.push(`roadmap: ${m.roadmap.rows.length} вех, из них ${notDone.length} не начаты (${notDone.map((r: any) => r.key).join(", ")})`);
 }
@@ -517,6 +492,18 @@ if (m.tests.myc !== undefined && m.tests.myc !== release) {
     const inner = decode(c[2]!.replace(/<span class="c">[\s\S]*?<\/span>/g, "").replace(/<[^>]+>/g, ""));
     for (const line of inner.split("\n")) addLine(line.replace(/\s+#.*$/, ""), "index.html", false);
   }
+  // Оба README советуют те же команды, что страница, и ещё свои (import-beads,
+  // run, doctor --hooks): блоки ```…``` построчно и `…` в тексте — перенос
+  // строки внутри `…` склеивается пробелом. Раздел дорожной карты не
+  // проверяется, как и «запланировано» на странице: он про то, чего ещё нет
+  // (`myc serve`).
+  for (const file of ["README.md", "docs/README.ru.md"]) {
+    const md = readFileSync(join(repoRoot, file), "utf8").replace(/^## (?:Roadmap|Дорожная карта)\n[\s\S]*?(?=^## )/m, "");
+    for (const b of md.matchAll(/```[a-z]*\n([\s\S]*?)```/g)) {
+      for (const line of b[1]!.split("\n")) addLine(line.replace(/\s+#.*$/, ""), file, false);
+    }
+    for (const c of md.replace(/```[\s\S]*?```/g, "").matchAll(/`([^`]+)`/g)) addLine(c[1]!.replace(/\s+/g, " "), file, false);
+  }
 
   const distinct = [...new Set(uses.map((u) => u.path).filter((p): p is string => p !== null))];
   const helps = new Map<string, { code: number; flags: Set<string> }>();
@@ -546,6 +533,153 @@ if (m.tests.myc !== undefined && m.tests.myc !== release) {
     if (!existsSync(join(repoRoot, r.file))) problems.push({ where: `commands/${r.where}`, expected: "файл в репозитории", actual: r.file });
   }
   checks.push(`commands: ${uses.length} вызовов myc (${distinct.length} разных команд) и ${flagCount} флагов есть в справке этой сборки; ${fileRefs.length} файлов из bun run/test на месте`);
+}
+
+// ── README: числа двух README — те же, что на сайте ──────────────────────────
+// README — тоже поверхность с числами, и приёмка вехи M2 требует, чтобы их
+// защищала сборка. Иначе цепочка обрывается на последнем звене: артефакты
+// сверены с measurements.json, а README живёт своей жизнью и тихо устаревает.
+// Так и вышло: до 0.3.6 оба README писали «3.20 MB, 10 files», когда пакет
+// весил 3.39 МБ в 13 файлах, — сверялась одна таблица бюджетов.
+//
+// Сверяется КАЖДОЕ число README, у которого есть запись в measurements.json:
+// размеры пакета, строка `myc --version` (с выводом CLI этой сборки), модель,
+// снимок тестов, таблица бюджетов с датой и машиной замера, MRR, кеш, импорт
+// из beads. Образец обязан найтись хотя бы раз, и каждое его вхождение обязано
+// совпасть: переписали фразу — поправьте образец здесь же, осознанно, а не
+// потеряйте сверку молча. Абзацы сравниваются со схлопнутыми пробелами: перенос
+// строки внутри фразы — не повод для расхождения.
+{
+  const mainTs = join(repoRoot, "packages", "cli", "src", "main.ts");
+  const ver = Bun.spawnSync([process.execPath, mainTs, "--version"], {
+    cwd: repoRoot,
+    env: { ...process.env, NO_COLOR: "1", MYC_UPDATE_CHECK: "0" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const cliVersion = new TextDecoder().decode(ver.stdout).trim();
+  if (ver.exitCode !== 0 || !cliVersion.startsWith(`myc ${release} `)) {
+    problems.push({ where: "README/cli", expected: `myc --version из исходников: myc ${release} …`, actual: `код ${ver.exitCode}: ${cliVersion}` });
+  }
+
+  /** Число из README: пробелы разрядов («27 000», «100 000») и запятые не в счёт. */
+  const num = (s: string): number => Number(s.replace(/[\s  ,]/g, ""));
+  const hop2 = m.graph.groups.find((g: any) => g.key === "hop2");
+  const search = m.cache.rows.find((r: any) => r.key === "search");
+  const embed = m.cache.rows.find((r: any) => r.key === "embed");
+  const imp = Object.fromEntries(m.import.rows.map((r: any) => [r.key, r.n]));
+
+  type Claim = { what: string; re: RegExp; want: readonly (string | number)[]; raw?: true };
+  const claims = (lang: "en" | "ru"): Claim[] => {
+    const en = lang === "en";
+    return [
+      {
+        what: "пакет: сжатый МБ, распакованный МБ, файлов",
+        re: en
+          ? /@aistastudio\/myc\s+#\s*([\d.]+) MB compressed, ([\d.]+) MB unpacked, (\d+) files/g
+          : /@aistastudio\/myc\s+#\s*([\d.]+) МБ сжатый, ([\d.]+) МБ распакованный, (\d+) файл/g,
+        want: [m.package.compressed_mb, m.package.unpacked_mb, m.package.files],
+      },
+      { what: "строка `myc --version`", re: /^myc --version\s+#\s*(.+?)\s*$/gm, want: [cliVersion], raw: true },
+      {
+        what: "модель: МБ, секунд",
+        re: en ? /`myc models fetch` \((\d+) MB, ~(\d+) s\)/g : /`myc models fetch` \((\d+) МБ, ~(\d+) с\)/g,
+        want: [Math.round(m.package.model.mb), Math.round(m.package.model.seconds)],
+      },
+      {
+        what: "тесты: pass / fail / skip",
+        re: /(\d[\d   ,]*) pass \/ (\d+) fail \/ (\d+) skip/g,
+        want: [m.tests.pass, m.tests.fail, m.tests.skip],
+      },
+      {
+        what: "замер задержек: дата, машина, версия",
+        re: en
+          ? /on (\d{4}-\d{2}-\d{2}), ([a-z0-9-]+), myc (\d+\.\d+\.\d+), not re-measured since/g
+          : /(\d{4}-\d{2}-\d{2}), ([a-z0-9-]+), myc (\d+\.\d+\.\d+), с тех пор не переснимался/g,
+        want: [m.env.date, m.latency.check.section, m.env.myc],
+      },
+      {
+        what: "бусты: MRR@10 до → после",
+        re: /MRR@10 \*\*([\d.]+) → ([\d.]+)\*\* \(`bench\/boost-eval\.ts`\)/g,
+        want: [m.boost.overall.off.mrr, m.boost.overall.on.mrr],
+      },
+      {
+        what: "граф: MRR@10 до → 2 хопа",
+        re: /MRR@10 \*\*([\d.]+) → ([\d.]+)\*\* \(`bench\/graph-eval\.ts`\)/g,
+        want: [m.graph.overall.off.mrr, m.graph.overall.hop2.mrr],
+      },
+      {
+        what: "граф: группа «ответ в двух хопах»",
+        re: en ? /unreachable in one hop goes ([\d.]+) → ([\d.]+)/g : /недостижимая за один хоп, идёт ([\d.]+) → ([\d.]+)/g,
+        want: [hop2.off, hop2.hop2],
+      },
+      {
+        what: "ранжирование: дата замера",
+        re: en ? /both re-measured (\d{4}-\d{2}-\d{2})/g : /оба перемерены (\d{4}-\d{2}-\d{2})/g,
+        want: [m.boost.date === m.graph.date ? m.boost.date : `${m.boost.date} / ${m.graph.date}`],
+      },
+      {
+        what: "кеш: ×поиск, дата, ≈×эмбеддинги (до тысяч)",
+        re: en
+          ? /(\d[\d   ]*)× in the run of (\d{4}-\d{2}-\d{2}), ≈(\d[\d   ]*)× for embeddings/g
+          : /(\d[\d   ]*)× в прогоне (\d{4}-\d{2}-\d{2}), ≈(\d[\d   ]*)× для эмбеддингов/g,
+        want: [search.ratio, m.env.date, Math.round(embed.ratio / 1000) * 1000],
+      },
+      {
+        what: "импорт из beads: мс, задачи, зависимости, заметки, память",
+        re: en
+          ? /(\d+) ms: (\d+) tasks, (\d+) dependencies, (\d+) notes, (\d+) memories/g
+          : /(\d+) мс: (\d+) задач, (\d+) зависимост\S*, (\d+) замет\S*, (\d+) памят/g,
+        want: [m.import.ms, imp.tasks, imp.edges, imp.notes, imp.memories],
+      },
+      {
+        what: "импорт из beads: обе очереди ready",
+        re: en ? /both ready queues now return the same (\d+) tasks/g : /обе очереди готовых задач теперь дают одни и те же (\d+) задач/g,
+        want: [m.import.ready_gap.diff === 0 ? m.import.ready_gap.myc : `myc ${m.import.ready_gap.myc} ≠ bd ${m.import.ready_gap.bd}`],
+      },
+    ];
+  };
+
+  for (const [file, lang, unit] of [["README.md", "en", "ms"], ["docs/README.ru.md", "ru", "мс"]] as const) {
+    const text = readFileSync(join(repoRoot, file), "utf8");
+    const flat = text.replace(/\s+/g, " ");
+    let matched = 0;
+    for (const c of claims(lang)) {
+      const hits = [...(c.raw ? text : flat).matchAll(c.re)];
+      if (hits.length === 0) {
+        problems.push({ where: `${file}: ${c.what}`, expected: `фраза по образцу ${c.re.source}`, actual: "не найдена" });
+        continue;
+      }
+      for (const h of hits) {
+        const got = h.slice(1).map((g, i) => (typeof c.want[i] === "number" ? num(g!) : g));
+        if (got.some((g, i) => g !== c.want[i])) {
+          problems.push({ where: `${file}: ${c.what}`, expected: c.want.join(" / "), actual: `${got.join(" / ")} («${h[0]}»)` });
+        } else {
+          matched++;
+        }
+      }
+    }
+
+    // Таблица бюджетов. Имя операции в README пишется человеку («cold start»),
+    // в замере — кодом («cold_start»); русская таблица ведёт код операции первым
+    // словом. Сверяем смысл, а не написание.
+    for (const row of m.latency.rows) {
+      const name = String(row.op).replace(/_/g, "[ _]");
+      const re = new RegExp(`\\|\\s*\`?${name}\`?[^|]*\\|\\s*([0-9.]+)\\s*${unit}\\s*\\|\\s*([0-9.]+)\\s*${unit}`, "i");
+      const hit = re.exec(text);
+      if (hit === null) {
+        problems.push({ where: `${file}: бюджет ${row.op}`, expected: "строка таблицы бюджетов", actual: "не найдена" });
+        continue;
+      }
+      if (Number(hit[1]) !== row.p99) problems.push({ where: `${file}: ${row.op} p99`, expected: String(row.p99), actual: hit[1]! });
+      if (Number(hit[2]) !== row.budget) problems.push({ where: `${file}: ${row.op} бюджет`, expected: String(row.budget), actual: hit[2]! });
+    }
+    const pkg = `${m.package.compressed_mb}/${m.package.unpacked_mb} МБ, ${m.package.files} файлов`;
+    checks.push(
+      `${file}: ${matched} вхождений ${claims(lang).length} образцов = measurements.json (пакет ${pkg}; «${cliVersion}»; ` +
+        `тесты ${m.tests.pass}/${m.tests.fail}/${m.tests.skip}); таблица бюджетов, ${m.latency.rows.length} строк`,
+    );
+  }
 }
 
 // ── Итог ──────────────────────────────────────────────────────────────────────

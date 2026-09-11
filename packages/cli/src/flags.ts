@@ -1,3 +1,5 @@
+import { ExitCode } from "./exit.ts";
+
 export type FlagValue = string | number | boolean;
 
 export type FlagSpec = {
@@ -23,7 +25,9 @@ export const GLOBAL_FLAGS: readonly FlagSpec[] = [
   },
   {
     name: "strict",
-    description: "degradation becomes exit code 7 instead of a WARN line",
+    // Код берётся из ExitCode, а не пишется цифрой: текст говорил «7» (это
+    // NOWS), а процесс выходил с 6 — справка разошлась с контрактом §2.2.
+    description: `a degraded result exits with code ${ExitCode.DEGRADED} instead of 0; the WARN line still prints`,
   },
   {
     name: "db",

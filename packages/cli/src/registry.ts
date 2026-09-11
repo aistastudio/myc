@@ -22,7 +22,7 @@ export type CommandContext = {
   flags: Readonly<Record<string, FlagValue>>;
   globals: Readonly<Globals>;
   /** сообщить о деградации: WARN-строка в человеческом выводе,
-   *  warn[] и meta.degraded[] в конверте; при --strict — код выхода 7 */
+   *  warn[] и meta.degraded[] в конверте; при --strict — код выхода 6 (DEGRADED) */
   warn(code: string, msg: string): void;
   diagnostics: Diagnostics;
 };

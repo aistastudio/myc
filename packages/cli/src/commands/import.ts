@@ -17,7 +17,7 @@
  * расхождения разрешает CRDT в applyOps — LWW, OR-Set, G-counter. Повторный
  * вызов ничего не находит и ничего не меняет. Отложенные и коллизионные
  * операции — громкая деградация (И2): WARN в человеческом выводе,
- * meta.degraded[] в конверте, при --strict код 7.
+ * meta.degraded[] в конверте, при --strict код 6 (DEGRADED).
  */
 
 import { existsSync } from "node:fs";

@@ -1071,8 +1071,8 @@
           {
             "since": "0.3.2",
             "cmd": "myc --help",
-            "en": "Everything the CLI and the MCP server print is English; Russian notes and transcripts are still understood. One exception left: the two messages shown when Bun is missing — npm's postinstall and the launcher started under Node — are still Russian.",
-            "ru": "Всё, что печатают CLI и MCP-сервер, — на английском; русские заметки и транскрипты по-прежнему понимаются. Одно исключение осталось: два сообщения на случай, когда нет Bun, — postinstall npm и лаунчер, запущенный под Node, — всё ещё по-русски."
+            "en": "Everything the CLI and the MCP server print is English, the messages shown when Bun is missing included; Russian notes and transcripts are still understood.",
+            "ru": "Всё, что печатают CLI и MCP-сервер, — на английском, включая сообщения на случай, когда нет Bun; русские заметки и транскрипты по-прежнему понимаются."
           }
         ]
       }
@@ -1394,13 +1394,13 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 3381,
+    "pass": 3438,
     "fail": 0,
     "skip": 16,
-    "files": 220,
-    "assertions": 34017,
-    "seconds": 300.9,
-    "sources": "2549335c34487a4a",
+    "files": 225,
+    "assertions": 34244,
+    "seconds": 315.5,
+    "sources": "3c881153bf04d961",
     "date": "2026-09-11",
     "myc": "0.3.6"
   }

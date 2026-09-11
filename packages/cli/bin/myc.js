@@ -28,7 +28,8 @@
  * после интерпретатора ОДНИМ аргументом. -S есть в GNU coreutils ≥ 8.30 и в
  * env macOS/BSD. На Windows такой shebang не исполним: шим `bun add -g` берёт
  * `-S` за программу, а cmd-shim npm -S понимает, но Bun на Windows не
- * открывает /dev/null — myc там только через WSL (говорит preflight.js).
+ * открывает /dev/null — myc там только через WSL (говорят preflight.js и
+ * refusal() ниже, если этот файл всё же запустили под Node).
  * Запуск МИМО shebang (`bun …/myc.js`) флагов не получает; второй рубеж для
  * `myc run` — callerEnv в src/commands/run.ts.
  */
@@ -82,31 +83,44 @@ function resolveVec0() {
   }
 }
 
+/**
+ * Текст отказа — по-английски, как весь вывод CLI (эпик memory-rc2s0m1e9kpz).
+ * На Windows совет «поставьте Bun» был бы ложным: shebang там не исполним и с
+ * Bun (см. шапку и preflight.js), поэтому совет там один — WSL, тем же текстом,
+ * что в рамке preflight.js.
+ */
 function refusal() {
   const node = process.versions.node;
   const lines = [
     "",
     "  myc requires Bun — it cannot run on Node.",
     "",
-    `  myc запущен под Node ${node}, а он работает только на Bun: хранилище`,
-    "  построено на встроенном в Bun `bun:sqlite`, которого в Node нет.",
+    `  This is Node ${node}, and myc runs only on Bun: its storage is built`,
+    "  on Bun's built-in `bun:sqlite`, which Node does not have.",
     "",
   ];
-  if (bunOnPath()) {
+  if (process.platform === "win32") {
     lines.push(
-      "  Bun у вас установлен — запускайте через него:",
-      "      bun x myc <команда>",
-      "  либо переустановите пакет средствами bun:",
+      "  myc runs on macOS and Linux; on Windows use WSL.",
+      "  The `myc` launcher will not start in cmd or PowerShell, with or without Bun.",
+      "      wsl --install",
+      "  Then, inside WSL: install Bun and @aistastudio/myc there.",
+      "",
+    );
+  } else if (bunOnPath()) {
+    lines.push(
+      "  Bun is installed — run myc through it:",
+      "      bun x myc <command>",
+      "  or reinstall the package with bun:",
       "      bun add -g @aistastudio/myc",
       "",
     );
   } else {
     lines.push(
-      "  Установите Bun (>= 1.3.0) и повторите:",
+      "  Install Bun (>= 1.3.0) and try again:",
       "      curl -fsSL https://bun.sh/install | bash        # macOS, Linux, WSL",
-      '      powershell -c "irm bun.sh/install.ps1 | iex"    # Windows',
       "",
-      "  После установки: myc --version",
+      "  Then: myc --version",
       "",
     );
   }

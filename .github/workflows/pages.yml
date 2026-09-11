@@ -28,6 +28,10 @@ on:
       - "packages/cli/package.json"
       # сборка сверяет каждую команду myc на странице с --help этой сборки
       - "packages/cli/src/**"
+      # сборка сверяет числа и команды обоих README
+      - "README.md"
+      - "docs/README.ru.md"
+      - "packages/cli/bin/**"
       - "bench/boost-eval.json"
       - "bench/graph-eval.json"
       - "bench/baseline.json"

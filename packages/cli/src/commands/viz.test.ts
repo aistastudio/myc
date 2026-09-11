@@ -5,16 +5,16 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { migrate, migrations } from "@myc/store-sqlite";
-import { startVizServer, type VizServer } from "@myc/web";
+import { startVizServer, WRITE_OPS, type VizServer } from "@myc/web";
 import { ExitCode } from "../exit.ts";
 import { run } from "../index.ts";
 import { Registry } from "../registry.ts";
-import { createVizCommand, type VizDeps } from "./viz.ts";
+import { createVizCommand, VIZ_SCREENS, type VizDeps } from "./viz.ts";
 
 let dir: string;
 let db: string;
@@ -70,7 +70,7 @@ describe("myc viz", () => {
     expect(text(res.stdout)).toContain("viz stopped (SIGINT)");
   });
 
-  test("--json отдаёт конверт с итогом и read_only", async () => {
+  test("--json отдаёт конверт с итогом; read_only — то, что сказал сервер (запись включена)", async () => {
     const res = await run(["--directory", dir, "--json", "viz"], { registry });
     expect(res.code).toBe(ExitCode.OK);
     const env = JSON.parse(text(res.stdout)) as {
@@ -78,10 +78,33 @@ describe("myc viz", () => {
       data: { read_only: boolean; requests: number; signal: string };
     };
     expect(env.ok).toBe(true);
-    expect(env.data.read_only).toBe(true);
+    // Раньше здесь стояла константа true при сервере, принимающем POST.
+    expect(started?.writable).toBe(true);
+    expect(env.data.read_only).toBe(false);
     expect(env.data.signal).toBe("SIGINT");
     // Баннер в машинном режиме не печатается — конверт должен быть один.
     expect(written.join("")).toBe("");
+  });
+
+  test("сервер без записи: read_only true, баннер говорит, что правки выключены", async () => {
+    const deps = makeDeps();
+    deps.start = (o) => {
+      started = startVizServer({ ...o, port: 0, readOnly: true });
+      return started;
+    };
+    const r2 = new Registry();
+    r2.register(createVizCommand(deps));
+    const json = await run(["--directory", dir, "--json", "viz"], { registry: r2 });
+    expect((JSON.parse(text(json.stdout)) as { data: { read_only: boolean } }).data.read_only).toBe(true);
+    await run(["--directory", dir, "viz"], { registry: r2 });
+    expect(written.join("")).toContain("edits are off");
+  });
+
+  test("баннер по умолчанию: чтение своим read-only соединением, правки — через запись CLI", async () => {
+    await run(["--directory", dir, "viz"], { registry });
+    const banner = written.join("");
+    expect(banner).toContain("read-only connection for reads");
+    expect(banner).toContain("edits go through the CLI's write path");
   });
 
   test("без воркспейса — код 7 и подсказка myc init", async () => {
@@ -133,5 +156,49 @@ describe("myc viz", () => {
     const res = await run(["--directory", dir, "viz"], { registry: r2 });
     expect(res.code).toBe(ExitCode.OK);
     expect(wrote).toBe(1);
+  });
+});
+
+describe("myc viz --help описывает интерфейс, который есть", () => {
+  /** Вкладки клиента — `const TABS = [...] as const` в @myc/web client/app.ts. */
+  function clientTabs(): string[] {
+    const src = readFileSync(join(import.meta.dir, "..", "..", "..", "web", "src", "client", "app.ts"), "utf8");
+    const body = /const TABS = \[([\s\S]*?)\] as const;/.exec(src);
+    if (body === null) throw new Error("в client/app.ts не найден const TABS = [...] as const");
+    return [...body[1]!.matchAll(/"([a-z]+)"/g)].map((m) => m[1]!);
+  }
+
+  async function help(): Promise<string> {
+    const res = await run(["viz", "--help"], { registry });
+    expect(res.code).toBe(ExitCode.OK);
+    return text(res.stdout);
+  }
+
+  test("VIZ_SCREENS — ровно вкладки клиента, в том же порядке", () => {
+    // Справка обещала четыре экрана, когда вкладок было десять: новая вкладка
+    // без строки в VIZ_SCREENS обязана ронять этот тест.
+    const tabs = clientTabs();
+    expect(tabs.length).toBeGreaterThanOrEqual(10);
+    expect(VIZ_SCREENS.map(([tab]) => tab)).toEqual(tabs);
+  });
+
+  test("справка называет число экранов и каждый из них", async () => {
+    const out = await help();
+    const words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+    expect(out).toContain(`${words[VIZ_SCREENS.length]!.replace(/^./, (c) => c.toUpperCase())} screens — `);
+    for (const [, name] of VIZ_SCREENS) expect(out).toContain(name);
+    expect(out).not.toMatch(/four screens/i);
+  });
+
+  test("справка не называет интерфейс «только на чтение» и перечисляет каждую операцию записи", async () => {
+    const out = await help();
+    expect(out).not.toMatch(/read-only (web )?viewer/i);
+    expect(out).toContain("same command engine as the terminal");
+    for (const op of WRITE_OPS) expect(out).toContain(op);
+    // Сводка в `myc --help` тоже не про «read-only».
+    const top = text((await run(["--help"], { registry })).stdout);
+    const line = top.split("\n").find((l) => /^\s+viz\s/.test(l));
+    expect(line).toBeDefined();
+    expect(line!).not.toMatch(/read-only/i);
   });
 });
