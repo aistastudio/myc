@@ -250,8 +250,12 @@ in git.** There is no server, no ACL and no team mode. Those are designed
 (`docs/design/03…`, `04…`, `05…`) and tracked, not implemented.
 
 Code intelligence is built in, and it is the same engine the alternatives use:
-tree-sitter, with grammars fetched on demand rather than shipped (all 36 weigh
-49 MB against a 12 MB package). `myc code index` builds it — on this repository,
+tree-sitter, with grammars fetched on demand rather than shipped. Symbols,
+callers and code search work for TypeScript, TSX, JavaScript (js, jsx, mjs,
+cjs) and Python — the languages myc has definition rules for. The grammar
+package holds 36; a language is added as a pair, a rule and a catalog entry,
+so a grammar that would yield no symbols is never offered. Every other file
+still gets `code grep`, anchors and staleness. `myc code index` builds it — on this repository,
 826 files and 3 949 symbols in 904 ms — and four commands read it:
 
 ```
