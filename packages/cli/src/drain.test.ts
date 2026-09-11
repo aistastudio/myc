@@ -195,13 +195,19 @@ describe("бюджет дренажа", () => {
     const TOTAL = 30;
     for (let i = 0; i < TOTAL; i++) seedJob(dbPath, "absorb", `n${i}`);
 
+    // 350 мс при 50 мс на работу — несколько работ, но точно не вся очередь
+    // (30 × 50 мс = 1.5 с). Прежде стояло 35 мс при 5 мс: то же отношение, но
+    // бюджет того же порядка, что подготовка дренажа (открыть базу, захват), и
+    // при растяжении машиной ×13 (2026-09-11) она одна съедала бы 35 мс — «≥ 2
+    // выполнено» падало бы, ничего не сказав о бюджете. Масштаб ×10 оставляет
+    // подготовке 250 мс, а мутация 1 (разбирать до конца очереди) по-прежнему
+    // выполняет все 30 и краснеет на «< TOTAL».
     const r = await drainQueueTail({
       dbPath,
-      budgetMs: 35,
-      env: { MYC_DRAIN_FAKE: "1", MYC_DRAIN_FAKE_LOG: log, MYC_DRAIN_FAKE_DELAY_MS: "5" },
+      budgetMs: 350,
+      env: { MYC_DRAIN_FAKE: "1", MYC_DRAIN_FAKE_LOG: log, MYC_DRAIN_FAKE_DELAY_MS: "50" },
     });
 
-    // 35 мс при 5 мс на работу — несколько работ, но точно не вся очередь.
     expect(r.completed).toBeGreaterThanOrEqual(2);
     expect(r.completed).toBeLessThan(TOTAL);
     expect(r.claimed).toBe(r.completed);

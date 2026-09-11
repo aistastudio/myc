@@ -22,7 +22,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expectWithinBudget, measure, report, type Measured } from "@myc/bench";
+import { expectMsWithinBudget, expectWithinBudget, measure, report, type Measured } from "@myc/bench";
 import { digestCacheQueries } from "@myc/core";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { primeQueries } from "./prime.ts";
@@ -131,7 +131,9 @@ beforeAll(async () => {
   }
   db.exec("COMMIT");
   db.exec("ANALYZE");
-});
+  // Лимит хука — потолок «зациклилось», а не бюджет: стенд под нагрузкой
+  // строится секунды, лимит по умолчанию (5 с) ронял бы хук, измерив соседей.
+}, 240_000);
 
 afterAll(() => {
   db.close();
@@ -209,7 +211,11 @@ describe("цена кеша дайджеста", () => {
     expectWithinBudget(hit.m);
     // p50 попадания держится и под нагрузкой (30.8 мкс при 20 занятых ядрах
     // против 200 потолка): медиана не хвост, её сосед по процессору не двигает.
-    expect(hit.p50).toBeLessThan(HIT_P50_BUDGET_US);
+    // Но это всё равно АБСОЛЮТ, и потому с гейтами пункта 3: калибровка (не
+    // MYC_BENCH_ABSOLUTE=0) и годность условий (проба дрожания). Не `m.quiet`:
+    // тот включает шумный хвост (p99/p50), а хвост попадания шумит сборкой
+    // мусора от JSON.parse (см. HIT_P99_BUDGET_US) — медиане он не помеха.
+    expectMsWithinBudget(hit.p50 / 1000, HIT_P50_BUDGET_US / 1000, "digest_cache: попадание целиком, p50");
 
     // ОТНОСИТЕЛЬНЫЕ утверждения — обязательные при любой загрузке.
     expect(miss.p50 / hit.p50).toBeGreaterThan(MIN_SPEEDUP);

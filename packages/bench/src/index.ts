@@ -47,13 +47,14 @@
  *      загрузки, — и потому единственное, что здесь ослаблено: оно роняет
  *      сборку, только если дрожание эталона уложилось в JITTER_MAX, то есть
  *      если условия замера годны. Иначе печатается `НЕДОСТОВЕРНО` вместе с
- *      причиной (И2: не молчать и не врать). В ночном прогоне
- *      (MYC_BENCH_STRICT=1) абсолют обязателен безусловно — там машина
- *      незагружена по построению, и ослабление было бы дырой.
+ *      причиной (И2: не молчать и не врать). В строгом режиме
+ *      (MYC_BENCH_STRICT=1) абсолют обязателен безусловно — его ставит
+ *      ночной прогон, когда машина И свободна (измерено), И откалибрована
+ *      (не объявлено MYC_BENCH_ABSOLUTE=0), и ослабление там было бы дырой.
  *
  * Пропущенный из-за нагрузки абсолют — не потерянная проверка: регрессия,
  * ради которой бюджет и заводился, ловится пунктом 2 в том же прогоне, а
- * пункт 3 добирается ночью на чистой машине.
+ * пункт 3 добирается на свободной откалиброванной машине.
  *
  * КУДА ИДЁТ РЕЗУЛЬТАТ. Каждый замер печатает одну строку с числами И
  * условиями и, если задан MYC_BENCH_LOG, дописывает JSON-строку в этот файл
@@ -198,6 +199,49 @@ export const TAIL_MAX = 2.0;
 
 export function isStrict(): boolean {
   return process.env.MYC_BENCH_STRICT === "1";
+}
+
+export interface JitterProbe {
+  /** худшее ref.p99/ref.p50 по длительностям пробы */
+  readonly jitter: number;
+  /** «0.3 ms → ×1.19, …» — для строки отчёта (зона A печатает по-английски) */
+  readonly detail: string;
+}
+
+/**
+ * Дрожание эталона ПРЯМО СЕЙЧАС, без полезной операции рядом: чисто
+ * процессорный цикл на трёх длительностях (0.3, 1, 5 мс) по 120 замеров,
+ * наружу — худшее p99/p50. 120, а не 60: p99 по nearest-rank при n < 100 —
+ * это максимум, то есть один сосед по процессору решал бы за всю пробу.
+ *
+ * Два потребителя. Проверка готовности ночного прогона (scripts/bench-nightly.ts)
+ * — до всякой работы: занята ли машина уже. И абсолют, снятый БЕЗ `measure`
+ * (`expectMsWithinBudget`): у одиночного замера нет эталона, измеренного
+ * чередуясь, и годность условий иначе не узнать. Проба там снимается сразу
+ * после замера — слабее чередования (короткий всплеск нагрузки она может не
+ * застать), но устойчивую нагрузку видит, а ради неё она и заводится: полный
+ * прогон рядом с агентами на всех ядрах (load1 15–21) давал отрисовку строки
+ * статуса 123 мс при бюджете 70, и абсолют ронял набор, измерив соседей.
+ */
+export function probeJitter(): JitterProbe {
+  const ns = unitCostNs();
+  const rows: string[] = [];
+  let worst = 0;
+  for (const target of [0.3, 1, 5]) {
+    const units = Math.max(64, Math.round((target * 1e6) / ns));
+    spin(units);
+    const samples: number[] = [];
+    for (let i = 0; i < 120; i++) {
+      const t0 = performance.now();
+      spin(units);
+      samples.push(performance.now() - t0);
+    }
+    const s = summarize(samples);
+    const j = s.p50 > 0 ? s.p99 / s.p50 : 1;
+    if (j > worst) worst = j;
+    rows.push(`${target} ms → ×${j.toFixed(2)}`);
+  }
+  return { jitter: worst, detail: rows.join(", ") };
 }
 
 /**
@@ -575,8 +619,21 @@ function verdictWord(m: Measured): string {
  * Это не замена методике: у замера без соперника нет относительной части, то
  * есть на неоткалиброванной машине он не проверяет ничего. Такие места стоит
  * переводить на `measure` с соперником — а до тех пор пусть хотя бы не лгут.
+ *
+ * Годность условий — вторая половина пункта 3, как у `measure`: на
+ * откалиброванной, но занятой машине число вне бюджета говорит о соседях.
+ * Эталона, измеренного чередуясь, у одиночного замера нет, поэтому, когда
+ * число вышло за бюджет, снимается `probeJitter` (≈0.8 с, только в этом
+ * случае): дрожание выше JITTER_MAX — НЕДОСТОВЕРНО, печать без падения. В
+ * строгом режиме проба не снимается — там абсолют обязателен при любых
+ * условиях. `probe` — шов для тестов самой методики.
  */
-export function expectMsWithinBudget(actualMs: number, budgetMs: number, label: string): void {
+export function expectMsWithinBudget(
+  actualMs: number,
+  budgetMs: number,
+  label: string,
+  probe: () => JitterProbe = probeJitter,
+): void {
   const m = machine();
   const where = `${label}: ${actualMs.toFixed(2)}ms with budget ${budgetMs}ms ` +
     `(load1 ${m.load1} on ${m.cpus} cores)`;
@@ -590,7 +647,19 @@ export function expectMsWithinBudget(actualMs: number, budgetMs: number, label: 
     );
     return;
   }
-  throw new Error(`budget exceeded: ${where}`);
+  if (isStrict()) throw new Error(`budget exceeded: ${where} (strict mode)`);
+  const p = probe();
+  if (p.jitter > JITTER_MAX) {
+    console.log(
+      `[bench] ${where} → UNRELIABLE (machine busy: reference jitter ×${p.jitter.toFixed(2)} > ${JITTER_MAX} ` +
+        `measured right after — ${p.detail}; absolute not checked)`,
+    );
+    return;
+  }
+  throw new Error(
+    `budget exceeded: ${where}; conditions are valid: reference jitter ×${p.jitter.toFixed(2)} <= ${JITTER_MAX} ` +
+      `(${p.detail}) — this is a regression, not machine load`,
+  );
 }
 
 export function expectWithinBudget(m: Measured): void {

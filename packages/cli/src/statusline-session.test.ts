@@ -17,6 +17,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { expectMsWithinBudget } from "@myc/bench";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { run } from "./index.ts";
 import { Registry } from "./registry.ts";
@@ -478,10 +479,17 @@ describe("транскрипт читается с курсора, а не за�
     }
     const firstMs = rounds.reduce((s, r) => s + r.ms, 0);
     const idleMax = Math.max(...times);
+    const idleMedian = [...times].sort((a, b) => a - b)[Math.floor(times.length / 2)]!;
     // Число в лог: сколько стоил первый проход и сколько — отрисовка потом.
     console.log(`20 МБ: первый проход ${rounds.length} порции, ${firstMs.toFixed(1)} мс; потом отрисовка ≤ ${idleMax.toFixed(2)} мс`);
-    expect(idleMax).toBeLessThan(5);
-    expect(idleMax * 20).toBeLessThan(firstMs);
+    // «Не перечитывает» доказано структурой выше (readBytes 0 на каждой из
+    // двадцати). Отношение — по МЕДИАНЕ: максимум двадцати замеров — это один
+    // сосед по процессору или одна сборка мусора после 20 МБ строк, и
+    // отношение по нему мерило бы их, а не чтение (nearest-rank при n < 100).
+    expect(idleMedian * 20).toBeLessThan(firstMs);
+    // Потолок каждой отрисовки — абсолют: только на откалиброванной и
+    // свободной машине.
+    expectMsWithinBudget(idleMax, 5, "статус сессии: отрисовка без новых байт, максимум 20");
   });
 });
 

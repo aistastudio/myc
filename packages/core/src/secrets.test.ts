@@ -358,13 +358,55 @@ describe("redactSecrets — бюджет времени", () => {
     // (`PGPASSWORD`) удвоило проход — замер 0.434 -> 0.940 мс на 97 КБ прозы.
     // Запас к бюджету остаётся пятикратным, а без второго правила пароль
     // уходил в память открытым текстом.
-    const calibrated =
-      process.env["MYC_BENCH_ABSOLUTE"] !== "0" || process.env["MYC_BENCH_STRICT"] === "1";
+    //
+    // И вторая половина того же правила — годность условий: на
+    // откалиброванной, но занятой машине (полный прогон рядом с агентами на
+    // всех ядрах) среднее растягивается кратно, и число вне бюджета говорит о
+    // соседях. Проба дрожания — копия `probeJitter` из @myc/bench по той же
+    // причине, что и выключатель; снимается, только когда число вышло за
+    // бюджет, в строгом режиме — не снимается.
+    const strict = process.env["MYC_BENCH_STRICT"] === "1";
+    const calibrated = process.env["MYC_BENCH_ABSOLUTE"] !== "0" || strict;
     if (elapsedMs >= 5 && !calibrated) {
       // eslint-disable-next-line no-console
       console.log(`[secrets] бюджет 5 мс НЕ ПРОВЕРЯЕТСЯ: машина не откалибрована`);
+    } else if (elapsedMs >= 5 && !strict && referenceJitter() > JITTER_MAX) {
+      // eslint-disable-next-line no-console
+      console.log(`[secrets] бюджет 5 мс НЕДОСТОВЕРНО: машина занята (дрожание эталона выше ${JITTER_MAX})`);
     } else {
       expect(elapsedMs).toBeLessThan(5);
     }
   });
 });
+
+/** Порог дрожания эталона — копия `JITTER_MAX` из @myc/bench. */
+const JITTER_MAX = 2.5;
+
+/** Копия `probeJitter` из @myc/bench: процессорный цикл 0.3/1/5 мс × 120, худшее p99/p50. */
+function referenceJitter(): number {
+  let x = 1;
+  const spin = (units: number): void => {
+    for (let i = 0; i < units; i++) x = (x * 1103515245 + 12345) % 2147483648;
+  };
+  let t0 = performance.now();
+  spin(200_000);
+  const nsPerUnit = Math.max(1e-3, ((performance.now() - t0) * 1e6) / 200_000);
+  const pick = (s: readonly number[], p: number): number =>
+    s[Math.max(0, Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1))]!;
+  let worst = 0;
+  for (const targetMs of [0.3, 1, 5]) {
+    const units = Math.max(64, Math.round((targetMs * 1e6) / nsPerUnit));
+    const s: number[] = [];
+    for (let i = 0; i < 120; i++) {
+      t0 = performance.now();
+      spin(units);
+      s.push(performance.now() - t0);
+    }
+    s.sort((a, b) => a - b);
+    const p50 = pick(s, 50);
+    if (p50 > 0) worst = Math.max(worst, pick(s, 99) / p50);
+  }
+  // eslint-disable-next-line no-console
+  if (x === -1) console.log(x); // копилка результата: без неё JIT вправе выбросить цикл
+  return worst;
+}

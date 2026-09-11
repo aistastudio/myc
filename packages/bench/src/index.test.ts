@@ -11,10 +11,13 @@ import {
   JITTER_MAX,
   expectAheadOfRival,
   expectCostAtMost,
+  expectMsWithinBudget,
   expectWithinBudget,
   measure,
   percentile,
+  probeJitter,
   summarize,
+  type JitterProbe,
   type Measured,
   type Stats,
 } from "./index.ts";
@@ -182,6 +185,70 @@ describe("measure — чередование и условия", () => {
     const m = measure("проба", () => {}, { warmup: 1, iters: 5 });
     expect(m.verdict).toBe("none");
     expect(() => expectWithinBudget(m)).not.toThrow();
+  });
+});
+
+/**
+ * Абсолют без `measure` — одиночный замер или медиана своих прогонов. Те же
+ * два вопроса, что у `measure`: откалибрована ли машина (объявлено) и годны
+ * ли условия (измерено пробой сразу после замера). Окружение задаётся явно:
+ * в CI весь набор идёт с MYC_BENCH_ABSOLUTE=0.
+ */
+describe("абсолют без measure — expectMsWithinBudget", () => {
+  const saved = { abs: process.env.MYC_BENCH_ABSOLUTE, strict: process.env.MYC_BENCH_STRICT };
+  const restore = (key: "MYC_BENCH_ABSOLUTE" | "MYC_BENCH_STRICT", v: string | undefined): void => {
+    if (v === undefined) delete process.env[key];
+    else process.env[key] = v;
+  };
+  afterEach(() => {
+    restore("MYC_BENCH_ABSOLUTE", saved.abs);
+    restore("MYC_BENCH_STRICT", saved.strict);
+  });
+  const env = (abs: string | undefined, strict: string | undefined): void => {
+    restore("MYC_BENCH_ABSOLUTE", abs);
+    restore("MYC_BENCH_STRICT", strict);
+  };
+  let probes = 0;
+  const quiet = (): JitterProbe => (probes++, { jitter: 1.1, detail: "проба: покой" });
+  const busy = (): JitterProbe => (probes++, { jitter: JITTER_MAX * 4, detail: "проба: соседи" });
+
+  test("в бюджете — молчит и пробу не снимает", () => {
+    env(undefined, undefined);
+    probes = 0;
+    expect(() => expectMsWithinBudget(10, 70, "проба", busy)).not.toThrow();
+    expect(probes).toBe(0);
+  });
+
+  test("нарушен на откалиброванной свободной машине — падает и называет условия", () => {
+    env(undefined, undefined);
+    expect(() => expectMsWithinBudget(123, 70, "проба", quiet)).toThrow(/this is a regression, not machine load/);
+  });
+
+  /** Случай 2026-09-11: 123 мс при бюджете 70 рядом с агентами на всех ядрах. */
+  test("нарушен на откалиброванной ЗАНЯТОЙ машине — НЕ падает", () => {
+    env(undefined, undefined);
+    expect(() => expectMsWithinBudget(123, 70, "проба", busy)).not.toThrow();
+  });
+
+  test("неоткалиброванная машина (MYC_BENCH_ABSOLUTE=0) — не проверяет и пробу не снимает", () => {
+    env("0", undefined);
+    probes = 0;
+    expect(() => expectMsWithinBudget(123, 70, "проба", quiet)).not.toThrow();
+    expect(probes).toBe(0);
+  });
+
+  test("строгий режим обязателен при любых условиях — даже при занятой машине", () => {
+    env(undefined, "1");
+    probes = 0;
+    expect(() => expectMsWithinBudget(123, 70, "проба", busy)).toThrow(/strict mode/);
+    expect(probes).toBe(0);
+  });
+
+  test("проба дрожания: три длительности, конечное число не меньше единицы", () => {
+    const p = probeJitter();
+    expect(Number.isFinite(p.jitter)).toBe(true);
+    expect(p.jitter).toBeGreaterThanOrEqual(1);
+    expect(p.detail).toMatch(/^0\.3 ms → ×[\d.]+, 1 ms → ×[\d.]+, 5 ms → ×[\d.]+$/);
   });
 });
 

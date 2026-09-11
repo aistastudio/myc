@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { expectMsWithinBudget } from "@myc/bench";
 import { generateId, type DbDriver } from "@myc/core";
 import { migration001Init, openSqlite, type SqliteDriver } from "@myc/store-sqlite";
 import { ftsSearch, prepareFtsQuery, type FtsCaller } from "./fts.ts";
@@ -416,8 +417,12 @@ describe("ftsSearch perf @ 100k nodes", () => {
     console.log(`[fts perf @ 100k] p50=${p50.toFixed(3)}ms p95=${p95.toFixed(3)}ms`);
 
     // Бюджет спеки — 2-4мс. Не подгоняем: если больше, тест явно упадёт
-    // с фактическими числами в выводе выше, а не молча зазеленеет.
-    expect(p95).toBeLessThan(4);
+    // с фактическими числами в выводе выше, а не молча зазеленеет — на
+    // откалиброванной (не MYC_BENCH_ABSOLUTE=0) и свободной машине. Прежде
+    // граница стояла голой: под yes × 14 (load1 30) p95 вырос с 0.38 до
+    // 2.07 мс при неизменном коде, запас к 4 мс — вдвое; раннер CI (4 ядра
+    // x86) медленнее этой машины на тех же операциях в 1.2–2 раза.
+    expectMsWithinBudget(p95, 4, "fts @100k, p95");
 
     db.close();
   }, 60_000);

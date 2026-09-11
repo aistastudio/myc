@@ -19,9 +19,11 @@
  *      `MYC_ANCHOR_INLINE_MAX_BYTES=off`, то есть буквально с поведением до
  *      S66. Оба меряются чередуясь, в одном процессе, на одном файле;
  *      загрузка машины растягивает обоих и из отношения уходит.
- *   3. АБСОЛЮТНОЕ: p99 записи < 5 мс — единственное, что зависит от загрузки,
- *      и потому утверждается только при годных условиях (JITTER_MAX), а в
- *      ночном прогоне (MYC_BENCH_STRICT=1) — безусловно.
+ *   3. АБСОЛЮТНОЕ: запись < 5 мс по p50 (почему не по p99 — у замера) —
+ *      единственное, что зависит от загрузки и железа, и потому утверждается
+ *      только на откалиброванной машине (не MYC_BENCH_ABSOLUTE=0) при годных
+ *      условиях (JITTER_MAX), а в строгом режиме (MYC_BENCH_STRICT=1) —
+ *      безусловно.
  *
  * СТЕНД У КАЖДОГО ЗАМЕРА СВОЙ, и это выяснилось замером, а не рассуждением.
  * Первый вариант файла гонял все замеры по одной базе подряд: к третьему в
@@ -43,6 +45,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  absoluteEnabled,
   expectAheadOfRival,
   expectCostAtMost,
   JITTER_MAX,
@@ -133,18 +136,36 @@ const SMALL_BYTES = Buffer.byteLength(SMALL_SRC);
  * ночном строгом прогоне (MYC_BENCH_STRICT=1) выполняется безусловно.
  */
 function unreliable(m: Measured, what: string): boolean {
-  if (m.quiet || m.strict) return false;
+  // Оба утверждения за этим гейтом — по p50, и годность условий для них — только
+  // занятость машины (дрожание эталона), а не `m.quiet`: тот включает ещё и
+  // шумный хвост замера (TAIL_MAX в @myc/bench), который стережёт p99. Хвост
+  // записи шумит чекпойнтом WAL всегда (p99/p50 ×2.8–3.2 на свободной машине,
+  // 2026-09-11), и через `m.quiet` бюджет по p50 пропускался почти в каждом
+  // прогоне: бюджет, суженный до 1 мс, проходил зелёным «НЕДОСТОВЕРНО».
+  if (m.jitter <= JITTER_MAX || m.strict) return false;
   console.log(
-    `[bench] ${m.label}: ${what} — НЕДОСТОВЕРНО, абсолютное утверждение пропущено: ` +
+    `[bench] ${m.label}: ${what} — НЕДОСТОВЕРНО, утверждение пропущено: ` +
       `дрожание эталона ×${m.jitter.toFixed(2)} > ${JITTER_MAX}, ` +
       `load1 ${m.machine.load1} на ${m.machine.cpus} ядрах`,
   );
   return true;
 }
 
-/** Типичная (p50) цена в бюджете — см. комментарий у замера, почему p50. */
+/**
+ * Типичная (p50) цена в бюджете — см. комментарий у замера, почему p50.
+ * Абсолют, поэтому оба гейта пункта 3: машина откалибрована (не
+ * MYC_BENCH_ABSOLUTE=0 — на раннере 4 ядра x86 тот же код честно медленнее)
+ * и условия годны (`unreliable`).
+ */
 function expectTypicalWithin(m: Measured, budgetMs: number): void {
   if (m.stats.p50 <= budgetMs) return;
+  if (!absoluteEnabled() && !m.strict) {
+    console.log(
+      `[bench] ${m.label}: p50=${m.stats.p50.toFixed(3)}мс > ${budgetMs}мс — NOT CHECKED ` +
+        "(MYC_BENCH_ABSOLUTE=0: бюджет откалиброван под другое железо; относительные утверждения проверены)",
+    );
+    return;
+  }
   if (unreliable(m, `p50=${m.stats.p50.toFixed(3)}мс > ${budgetMs}мс`)) return;
   throw new Error(
     `бюджет нарушен по типичной записи: ${m.label} p50=${m.stats.p50.toFixed(3)}мс > ${budgetMs}мс ` +
@@ -394,12 +415,19 @@ test(
       {
         warmup: 10,
         iters: 60,
-        budgetMs: WRITE_BUDGET_MS,
+        // budgetMs НЕ передаётся: он объявил бы бюджет по p99, которого этот
+        // тест не утверждает (почему — ниже), и отчёт печатал бы «EXCEEDED» на
+        // хвосте записи — так ночной лог 2026-09-11 показал p99 28.9 мс при
+        // p95 3.9 и зелёном тесте. Бюджет записи утверждается по p50.
         rival: () => timed(s, "src/big.ts", BIG_LINES, "off"),
         rivalLabel: "порога нет: нормализация 140 КБ на записи (поведение до S66)",
       },
     );
-    report(m, `файл ${Math.round(BIG_BYTES / 1024)} КБ, порог ${ANCHOR_INLINE_MAX_BYTES / 1024} КБ`);
+    report(
+      m,
+      `файл ${Math.round(BIG_BYTES / 1024)} КБ, порог ${ANCHOR_INLINE_MAX_BYTES / 1024} КБ, ` +
+        `бюджет записи ${WRITE_BUDGET_MS} мс — по p50`,
+    );
     // ГЛАВНОЕ УТВЕРЖДЕНИЕ — относительное: оно и ловит регрессию, и от
     // загрузки машины не зависит.
     expectAheadOfRival(m, BIG_MIN_SLOWDOWN);

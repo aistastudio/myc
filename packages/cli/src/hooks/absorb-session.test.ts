@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { expectMsWithinBudget } from "@myc/bench";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,7 +179,11 @@ describe("бюджеты", () => {
       bytes = data["raw_bytes"] as number;
     }
     const best = Math.min(...samples);
-    expect(best).toBeLessThanOrEqual(episodeBudgetMs(bytes));
+    // Бюджет эпизода — абсолют, снятый на рабочей машине: проверяется только
+    // на откалиброванной (не MYC_BENCH_ABSOLUTE=0) и свободной машине. Минимум
+    // пяти убирает выброс, но не устойчивую нагрузку: под ней растянуты все
+    // пять. Замер 2026-09-11 — 0.61–0.63 мс при бюджете 12.1.
+    expectMsWithinBudget(best, episodeBudgetMs(bytes), "absorb-session: сырой эпизод, минимум 5");
     // Стенограмма теста крошечная, поэтому здесь бюджет по сути постоянный —
     // и постоянная часть обязана остаться жёсткой: иначе размерная поправка
     // превратилась бы в способ ничего не проверять.

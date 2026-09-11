@@ -856,9 +856,54 @@ describe("бюджет записи", () => {
     }
     samples.sort((a, b) => a - b);
     const p99 = samples[Math.floor(samples.length * 0.99)]!;
-    expect(p99).toBeLessThan(5);
+    // Абсолют И1 — только на откалиброванной (не MYC_BENCH_ABSOLUTE=0) и
+    // свободной машине: тот же выключатель и та же проба, что в @myc/bench
+    // (`expectMsWithinBudget`), повторённые, потому что store-sqlite по
+    // архитектуре зависит только от @myc/core (scripts/deps-check.ts). Прежде
+    // граница стояла голой, а замер 2026-09-11 на свободной машине давал p99
+    // 0.91 / 1.09 / 3.49 мс в трёх прогонах подряд (max 6–9 мс — хвост
+    // fsync/checkpoint, см. тест выше) — запас к 5 мс до ×1.4.
+    const line = `[bench] запись на маленькой базе: p50 ${samples[250]!.toFixed(3)} мс, p99 ${p99.toFixed(3)} мс при бюджете 5 мс`;
+    const strict = process.env["MYC_BENCH_STRICT"] === "1";
+    if (p99 < 5) {
+      console.log(`${line} → в бюджете`);
+    } else if (process.env["MYC_BENCH_ABSOLUTE"] === "0" && !strict) {
+      console.log(`${line} → НЕ ПРОВЕРЯЕТСЯ (MYC_BENCH_ABSOLUTE=0: бюджет под другое железо)`);
+    } else if (!strict && referenceJitter() > 2.5) {
+      console.log(`${line} → НЕДОСТОВЕРНО (машина занята: дрожание эталона выше 2.5)`);
+    } else {
+      expect(p99).toBeLessThan(5);
+    }
   });
 });
+
+/** Копия `probeJitter` из @myc/bench (почему копия — у бюджета записи выше). */
+function referenceJitter(): number {
+  let x = 1;
+  const spin = (units: number): void => {
+    for (let i = 0; i < units; i++) x = (x * 1103515245 + 12345) % 2147483648;
+  };
+  let t0 = performance.now();
+  spin(200_000);
+  const nsPerUnit = Math.max(1e-3, ((performance.now() - t0) * 1e6) / 200_000);
+  const pick = (s: readonly number[], p: number): number =>
+    s[Math.max(0, Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1))]!;
+  let worst = 0;
+  for (const targetMs of [0.3, 1, 5]) {
+    const units = Math.max(64, Math.round((targetMs * 1e6) / nsPerUnit));
+    const s: number[] = [];
+    for (let i = 0; i < 120; i++) {
+      t0 = performance.now();
+      spin(units);
+      s.push(performance.now() - t0);
+    }
+    s.sort((a, b) => a - b);
+    const p50 = pick(s, 50);
+    if (p50 > 0) worst = Math.max(worst, pick(s, 99) / p50);
+  }
+  if (x === -1) console.log(x); // копилка результата: без неё JIT вправе выбросить цикл
+  return worst;
+}
 
 // ---------------------------------------------------------------------------
 // parent_closure: интеграция с addEdge/removeEdge (myc-qie.3)

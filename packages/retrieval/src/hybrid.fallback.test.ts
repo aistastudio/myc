@@ -796,16 +796,26 @@ describe("S44 при 100k узлов: цена второго прохода и 
         const perQuery: { q: string; ms: number; op: string; stages: number; pool: number }[] = [];
         for (const c of CASES) {
           if (c.kind !== kind) continue;
-          const t0 = performance.now();
-          const res = hybridSearch(db, {
-            text: c.q,
-            scopes: ["s1"],
-            caller: ANON,
-            limit: 10,
-            vectorMode: "never",
-            config: configFor(mode),
-          });
-          const ms = performance.now() - t0;
+          // Цена запроса — медиана ТРЁХ замеров, а не один. «p95» ниже берётся
+          // по 20 запросам, то есть это самый дорогой запрос набора, и при
+          // одном замере на запрос его решал любой сосед по процессору на
+          // любом из двадцати (nearest-rank при n < 100 — максимум). Медиана
+          // трёх оставляет хвост НАБОРА запросов и убирает шум замера.
+          const once = (): { res: ReturnType<typeof hybridSearch>; ms: number } => {
+            const t0 = performance.now();
+            const res = hybridSearch(db, {
+              text: c.q,
+              scopes: ["s1"],
+              caller: ANON,
+              limit: 10,
+              vectorMode: "never",
+              config: configFor(mode),
+            });
+            return { res, ms: performance.now() - t0 };
+          };
+          const runs = [once(), once(), once()];
+          const res = runs[0]!.res;
+          const ms = runs.map((r) => r.ms).sort((x, y) => x - y)[1]!;
           samples.push(ms);
           perQuery.push({
             q: c.q,

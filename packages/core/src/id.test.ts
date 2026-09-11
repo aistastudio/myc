@@ -21,23 +21,46 @@ describe("generateId", () => {
     expect(id.startsWith("acme-")).toBe(true);
   });
 
-  test("1,000,000 generated IDs: zero collisions", () => {
-    const n = 1_000_000;
-    const seen = new Set<string>();
-    const start = performance.now();
-    for (let i = 0; i < n; i++) {
-      seen.add(generateId());
-    }
-    const elapsedMs = performance.now() - start;
-    // eslint-disable-next-line no-console
-    console.log(
-      `generateId: ${n} ids in ${elapsedMs.toFixed(1)}ms (${(
-        (elapsedMs * 1000) /
-        n
-      ).toFixed(3)} us/id)`,
-    );
-    expect(seen.size).toBe(n);
-  });
+  /**
+   * N = 1e6 — сила утверждения, а не круглое число. Тело id — 60 бит, и по
+   * формуле дней рождения P(коллизия) ≈ 1 − exp(−N²/2^(k+1)) для k бит
+   * энтропии:
+   *
+   *   N     | ложная тревога (k=60) | ловит k=32 | ловит k=36
+   *   ------|------------------------|------------|-----------
+   *   1e5   | 4.3e-9                 | 69 %       | 7 %
+   *   1e6   | 4.3e-7                 | 100 %      | 99.9 %
+   *
+   * То есть миллион ловит генератор, потерявший энтропию до 36 бит, почти
+   * всегда, а сто тысяч пропускают даже 32-битный в трёх случаях из десяти.
+   * Уменьшать N ради времени — ослаблять тест.
+   *
+   * Лимит 120 с — потолок «зациклилось», а НЕ бюджет скорости: скорость здесь
+   * не утверждается, только печатается. Обычно 1.1 с; в полном прогоне при
+   * load1 15–21 (2026-09-11) — 14.7 с, и лимит по умолчанию 5 с ронял тест,
+   * в котором коллизий не было.
+   */
+  test(
+    "1,000,000 generated IDs: zero collisions",
+    () => {
+      const n = 1_000_000;
+      const seen = new Set<string>();
+      const start = performance.now();
+      for (let i = 0; i < n; i++) {
+        seen.add(generateId());
+      }
+      const elapsedMs = performance.now() - start;
+      // eslint-disable-next-line no-console
+      console.log(
+        `generateId: ${n} ids in ${elapsedMs.toFixed(1)}ms (${(
+          (elapsedMs * 1000) /
+          n
+        ).toFixed(3)} us/id)`,
+      );
+      expect(seen.size).toBe(n);
+    },
+    120_000,
+  );
 });
 
 describe("parseId", () => {

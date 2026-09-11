@@ -21,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { expectMsWithinBudget } from "@myc/bench";
 import { defaultModelsDir } from "@myc/embed";
 import { ExitCode } from "../exit.ts";
 import { CLI_VERSION, run, type RunResult } from "../index.ts";
@@ -801,14 +802,11 @@ describe("бюджет 30 мс", () => {
     const cold = await data("bootstrap", "--refresh");
     const warm = await data("bootstrap");
     expect(warm["cache"]).toBe("hit");
-    expect({ phase: "cold", ok: (cold["took_ms"] as number) <= 30 }).toEqual({
-      phase: "cold",
-      ok: true,
-    });
-    expect({ phase: "warm", ok: (warm["took_ms"] as number) <= 30 }).toEqual({
-      phase: "warm",
-      ok: true,
-    });
+    // Бюджет 30 мс — абсолют, снятый на рабочей машине: проверяется только на
+    // откалиброванной (не MYC_BENCH_ABSOLUTE=0) и свободной машине. Прежде
+    // граница стояла голой; замер 2026-09-11 — 1 мс в обеих фазах.
+    expectMsWithinBudget(cold["took_ms"] as number, 30, "bootstrap: холодный вызов");
+    expectMsWithinBudget(warm["took_ms"] as number, 30, "bootstrap: вызов с кешем");
   });
 
   test("отпечаток окружения считается за микросекунды", () => {

@@ -43,6 +43,18 @@ const WRITE_BUDGET_MS = 5;
  * оставляет записи 5× запаса до её собственного бюджета.
  */
 const PROBE_BUDGET_MS = 1;
+/**
+ * ОТНОСИТЕЛЬНОЕ утверждение (пункт 2 методики): отказ на хабе против обхода
+ * цепочки, p50 к p50. Бюджет посещённых делает хаб (20 000 достижимых) лишь
+ * немного дороже цепочки (40 достижимых); снимите или раздуйте бюджет — и
+ * отношение взлетает, а структурный отказ `closure.depth` при этом цел.
+ * Замер 2026-09-11 на этом стенде: MAX_BLOCKS_REACH 512 — ×1.29
+ * (0.097 / 0.075 мс), 4096 — ×84 (5.96 / 0.071 мс). Потолок 5 лежит между
+ * ними и от машины не зависит: обе половины — одна и та же операция, и
+ * загрузка растягивает их одинаково. Прежде этот случай ловил только абсолют,
+ * а он на CI выключен (MYC_BENCH_ABSOLUTE=0).
+ */
+const HUB_MAX_RATIO = 5;
 
 /**
  * Абсолютный бюджет проверяется только там, где он откалиброван.
@@ -54,10 +66,17 @@ const PROBE_BUDGET_MS = 1;
  * импортировано: `store-sqlite` по архитектуре зависит только от `@myc/core`,
  * и тянуть ради двух строк ещё один пакет дороже, чем повторить их с этой
  * ссылкой. Число печатается всегда — оно и есть предмет наблюдения.
+ *
+ * И только при годных условиях — вторая половина того же пункта, повторённая
+ * по той же причине (источник — `probeJitter` и `JITTER_MAX` в @myc/bench):
+ * на откалиброванной, но занятой машине число вне бюджета говорит о соседях.
+ * 2026-09-11, полный прогон под yes × 14 (load1 30+): цепочка p99 1.78 мс
+ * при бюджете 1 — и набор падал. Проба снимается только когда число вышло за
+ * бюджет; в строгом режиме — не снимается вовсе.
  */
 function budgetCheck(actualMs: number, budgetMs: number, label: string): void {
-  const calibrated =
-    process.env["MYC_BENCH_ABSOLUTE"] !== "0" || process.env["MYC_BENCH_STRICT"] === "1";
+  const strict = process.env["MYC_BENCH_STRICT"] === "1";
+  const calibrated = process.env["MYC_BENCH_ABSOLUTE"] !== "0" || strict;
   const line = `[bench] ${label}: ${actualMs.toFixed(3)}мс при бюджете ${budgetMs}мс`;
   if (actualMs < budgetMs) {
     console.log(`${line} → в бюджете`);
@@ -67,7 +86,43 @@ function budgetCheck(actualMs: number, budgetMs: number, label: string): void {
     console.log(`${line} → НЕ ПРОВЕРЯЕТСЯ (MYC_BENCH_ABSOLUTE=0: бюджет под другое железо)`);
     return;
   }
+  if (!strict) {
+    const jitter = referenceJitter();
+    if (jitter > JITTER_MAX) {
+      console.log(`${line} → НЕДОСТОВЕРНО (машина занята: дрожание эталона ×${jitter.toFixed(2)} > ${JITTER_MAX})`);
+      return;
+    }
+  }
   throw new Error(`бюджет нарушен: ${line}`);
+}
+
+/** Порог дрожания эталона — копия `JITTER_MAX` из @myc/bench (см. выше, почему копия). */
+const JITTER_MAX = 2.5;
+
+/** Копия `probeJitter` из @myc/bench: чисто процессорный цикл 0.3/1/5 мс × 120, худшее p99/p50. */
+function referenceJitter(): number {
+  let x = 1;
+  const spin = (units: number): void => {
+    for (let i = 0; i < units; i++) x = (x * 1103515245 + 12345) % 2147483648;
+  };
+  let t0 = performance.now();
+  spin(200_000);
+  const nsPerUnit = Math.max(1e-3, ((performance.now() - t0) * 1e6) / 200_000);
+  let worst = 0;
+  for (const targetMs of [0.3, 1, 5]) {
+    const units = Math.max(64, Math.round((targetMs * 1e6) / nsPerUnit));
+    const s: number[] = [];
+    for (let i = 0; i < 120; i++) {
+      t0 = performance.now();
+      spin(units);
+      s.push(performance.now() - t0);
+    }
+    s.sort((a, b) => a - b);
+    const p50 = percentile(s, 50);
+    if (p50 > 0) worst = Math.max(worst, percentile(s, 99) / p50);
+  }
+  if (x === -1) console.log(x); // копилка результата: без неё JIT вправе выбросить цикл
+  return worst;
 }
 
 let dir: string;
@@ -119,7 +174,10 @@ beforeAll(async () => {
   db.exec("COMMIT");
   db.exec("ANALYZE");
   for (let i = 0; i < N; i += CHAIN) heads.push(`n${i}`);
-});
+  // Лимит хука — потолок «зациклилось», а не бюджет: стенд на 100 000 узлов
+  // и ~200 000 рёбер под нагрузкой строится секунды, лимит по умолчанию 5 с
+  // ронял бы хук, измерив соседей (тот же класс, что ready.inherit-latency).
+}, 240_000);
 
 afterAll(() => {
   try {
@@ -193,10 +251,14 @@ test(`проверка ацикличности на графе ${N} узлов 
       `p50=${percentile(hub, 50).toFixed(3)}ms p99=${percentile(hub, 99).toFixed(3)}ms, отказ=${hubRefusal}`,
   );
 
-  budgetCheck(percentile(chainSamples, 99), PROBE_BUDGET_MS, "цикл: цепочка, p99");
   // Широкий узел упирается в бюджет обхода — это отказ, а не молчаливый
-  // пропуск, и он тоже обязан быть дешёвым.
+  // пропуск, и он тоже обязан быть дешёвым: структура и отношение — на любой
+  // машине, абсолюты ниже — на откалиброванной и свободной.
   expect(hubRefusal).toBe("closure.depth");
+  const hubRatio = percentile(hub, 50) / percentile(chainSamples, 50);
+  console.log(`[bench] цикл: хаб против цепочки, p50: ×${hubRatio.toFixed(2)} (потолок ×${HUB_MAX_RATIO})`);
+  expect(hubRatio).toBeLessThan(HUB_MAX_RATIO);
+  budgetCheck(percentile(chainSamples, 99), PROBE_BUDGET_MS, "цикл: цепочка, p99");
   budgetCheck(percentile(hub, 99), PROBE_BUDGET_MS, "цикл: хаб, p99");
   budgetCheck(percentile(hub, 99), WRITE_BUDGET_MS, "цикл: хаб против бюджета записи, p99");
 });

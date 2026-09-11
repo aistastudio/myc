@@ -23,11 +23,19 @@
  * в prime/ready/recall/show/list/search, — красит и (2), и (3).
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { cliTestEnv } from "@myc/core";
+
+/**
+ * Лимит теста — 30 с, потолок «зациклилось», а не бюджет: тесты здесь гоняют
+ * по 4–6 настоящих процессов `bun main.ts` подряд (spawnSync), весь файл —
+ * ~2 с, и при растяжении машиной ×13 (2026-09-11, load1 15–21) отдельный
+ * тест уже не укладывался бы в лимит по умолчанию (5 с).
+ */
+setDefaultTimeout(30_000);
 
 const CLI_SRC = import.meta.dir;
 const REPO = resolve(CLI_SRC, "..", "..", "..");

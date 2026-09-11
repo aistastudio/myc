@@ -16,7 +16,7 @@
  * погашенным фоном.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
   chmodSync,
@@ -31,11 +31,20 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
+import { expectMsWithinBudget } from "@myc/bench";
 import { cliTestEnv } from "@myc/core";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { isOurStatusLineCommand } from "../statusline-config.ts";
 import { MAX_SCAN_BYTES } from "../statusline-session.ts";
 import type { StatuslineData } from "./statusline.ts";
+
+/**
+ * Лимит каждого теста файла — 30 с, потолок «зациклилось», а не бюджет. Здесь
+ * настоящие процессы и настоящие сны подделки (до 3 с), а ожидания `waitFor`
+ * стоят до 6 с — БОЛЬШЕ лимита по умолчанию (5 с): не дождавшись файла, тест
+ * падал бы по лимиту раньше, чем назвал бы, чего не дождался.
+ */
+setDefaultTimeout(30_000);
 
 const MAIN = resolve(import.meta.dir, "..", "main.ts");
 const BUN = process.execPath;
@@ -184,24 +193,28 @@ describe("чужая строка (orca) получает те же байты �
    * доходит до конца ПОСЛЕ нас и получает побайтно тот же stdin. Мутация
    * «снова ждать окно у молчащей» роняет этот тест по времени.
    */
-  test("молчащая медленная (sleep 1): отрисовка её не ждёт, orca дошла до конца с тем же stdin", async () => {
+  test("молчащая медленная (sleep 3): отрисовка её не ждёт, orca дошла до конца с тем же stdin", async () => {
     const out = fakeOut();
     const input = payload(session());
-    const r = await render(input, { env: { FAKE_OUT: out, FAKE_SLEEP: "1" } });
+    // Сон чужой — 3 с, граница полного времени процесса ниже — 1 с: регрессия
+    // «ждать чужую» дала бы ≥ 3 с, здоровая отрисовка — десятки мс (под
+    // yes × 14 — до сотен). При прежнем сне в 1 с граница совпадала со сном, и
+    // различение держалось на миллисекундах в обе стороны.
+    const r = await render(input, { env: { FAKE_OUT: out, FAKE_SLEEP: "3" } });
     expect(r.code).toBe(0);
-    expect(r.data?.foreign).toMatchObject({ source: "user", started: true, finished: false, from: null, shown: false });
-    // На любом железе: секундный sleep чужой не ждали — ни наша отрисовка, ни
+    // Структура «не ждали», от машины не зависящая: окна нет (window_ms 0),
+    // текущий запуск не слушали (finished false). Мутация PASS_WINDOW_MS=100
+    // роняет это сравнение на любом железе и при любой нагрузке.
+    expect(r.data?.foreign).toMatchObject({ source: "user", started: true, finished: false, from: null, shown: false, window_ms: 0 });
+    // На любом железе: трёхсекундный sleep чужой не ждали — ни наша отрисовка, ни
     // ожидание обёртки не подходят к нему (окна у молчащей нет: window_ms 0).
     expect(r.data!.foreign.waited_ms).toBeLessThan(500);
     expect(r.ms).toBeLessThan(1000);
-    // Абсолютные бюджеты — только на железе, под которое они калиброваны
-    // (CI: MYC_BENCH_ABSOLUTE=0, раннер 4 ядра x86). В CI 0.3.2 took_ms был
-    // 99.6 при границе 70 — медленный раннер, а не ожидание чужой.
-    const absolute = process.env["MYC_BENCH_ABSOLUTE"] !== "0" || process.env["MYC_BENCH_STRICT"] === "1";
-    if (absolute) {
-      expect(r.data!.foreign.waited_ms).toBeLessThan(25);
-      expect(r.data!.took_ms).toBeLessThan(70);
-    }
+    // Абсолютные бюджеты — только на откалиброванной (не MYC_BENCH_ABSOLUTE=0:
+    // в CI 0.3.2 took_ms был 99.6 при границе 70 — медленный раннер) и
+    // свободной машине (полный прогон рядом с агентами, load1 15–21: 123 мс).
+    expectMsWithinBudget(r.data!.foreign.waited_ms, 25, "statusline: ожидание молчащей чужой");
+    expectMsWithinBudget(r.data!.took_ms, 70, "statusline: отрисовка при молчащей чужой");
     // Мы вышли, а orca ещё спит: не дождались и не убили.
     expect(existsSync(`${out}.done`)).toBe(false);
     expect(await waitFor(`${out}.done`, 6000)).toBe(true);
@@ -222,9 +235,18 @@ describe("чужая строка (orca) получает те же байты �
     await Bun.sleep(200); // обёртка кладёт итог после выхода чужой
 
     const r2 = await render(payload(sess), { env: { FAKE_OUT: fakeOut(), FAKE_SLEEP: "0.4", FAKE_PRINT: "orca 43%" } });
-    expect(r2.data?.foreign).toMatchObject({ from: "previous", rc: 0, shown: true });
+    // Вывод прошлого запуска показан БЕЗ ожидания текущего — это структура:
+    // окна нет, текущий не слушали, показан «previous». Прежде это стерегла
+    // только граница took_ms < 70 без всякого гейта, и она роняла полный
+    // прогон при load1 15–21 (123 мс), ничего не сказав о коде.
+    expect(r2.data?.foreign).toMatchObject({ from: "previous", rc: 0, shown: true, finished: false, window_ms: 0 });
     expect(r2.data?.lines).toEqual(["orca 42%", r2.data!.line]);
-    expect(r2.data!.took_ms).toBeLessThan(70);
+    // Цена самой отрисовки — абсолют: относительного здесь нет, и это
+    // проверено (memory-r98gw9etktzc): передача чужой — ДОБАВКА (запуск
+    // обёртки: dash на Linux, bash на macOS), а не множитель, и отношение к
+    // отрисовке без чужой мерило бы платформу. Поэтому — только на
+    // откалиброванной свободной машине.
+    expectMsWithinBudget(r2.data!.took_ms, 70, "statusline: вывод прошлого запуска чужой");
 
     // Третья отрисовка печатает то же, что вторая: на быстром Linux (обёртка на
     // dash) чужая с FAKE_SLEEP 0 успевает завершиться, пока myc делает свою
@@ -477,8 +499,11 @@ describe("транскрипт на 20 МБ не перечитывается о
       `20 МБ через процессы: ${renders} отрисовки на догон (последняя ${firstMs} мс транскрипта), ` +
         `потом ${next.data!.session!.took_ms} мс и ${idle.data!.session!.took_ms} мс; вся отрисовка ${idle.data!.took_ms} мс`,
     );
-    expect(idle.data!.session!.took_ms).toBeLessThan(5);
-    expect(next.data!.session!.took_ms).toBeLessThan(5);
+    // «Не перечитывает» доказано выше структурой (read_bytes: ровно дописанное,
+    // потом ноль) — на любой машине. Цена чтения — абсолют, только на
+    // откалиброванной свободной машине.
+    expectMsWithinBudget(idle.data!.session!.took_ms, 5, "statusline: транскрипт без новых байт");
+    expectMsWithinBudget(next.data!.session!.took_ms, 5, "statusline: транскрипт, дописан один вызов");
   });
 });
 

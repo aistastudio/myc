@@ -18,6 +18,17 @@ import {
 
 const ANON: FtsCaller = { ownerId: "", teamId: "", agentId: "", principals: [] };
 
+/**
+ * Часы, которые стоят. Тесты с ними — про потолок, ленивость, веса,
+ * дедупликацию и сломанного соседа, а не про дедлайн; на настоящих часах
+ * каждый из них утверждал бы заодно «первые источники в памяти успевают за
+ * DEFAULT_DEADLINE_MS (18 мс)». Под нагрузкой (yes × 14, load1 31,
+ * 2026-09-11) не успевали: тест потолка открыл меньше DEFAULT_MAX_SOURCES
+ * источников и упал, ничего не сказав о потолке. Дедлайн проверяется
+ * отдельно — на фальшивых часах, которые идут с известной скоростью (ниже).
+ */
+const STILL = (): number => 0;
+
 function freshDb(): SqliteDriver {
   const driver = openSqlite(":memory:");
   driver.database.exec(migration001Init.sql);
@@ -106,6 +117,7 @@ describe("federatedSearch: факт из личного яруса виден в
     const result = await federatedSearch({
       text: "pnpm вместо npm",
       caller: ANON,
+      clock: STILL,
       sources: [
         source("project", "project", projectB, "projB"),
         source("me", "personal", personal, "me"),
@@ -131,6 +143,7 @@ describe("federatedSearch: факт из личного яруса виден в
     const result = await federatedSearch({
       text: "конфигурация graft",
       caller: ANON,
+      clock: STILL,
       sources: [
         source("project", "project", project, "projA"),
         source("me", "personal", personal, "me"),
@@ -153,6 +166,7 @@ describe("federatedSearch: факт из личного яруса виден в
     const result = await federatedSearch({
       text: "ретро",
       caller: ANON,
+      clock: STILL,
       sources: [
         source("project", "project", project, "projA"),
         source("me", "personal", personal, "me"),
@@ -209,6 +223,7 @@ describe("R3: список источников вместо двух имено
     const result = await federatedSearch({
       text: "ретрай очереди",
       caller: ANON,
+      clock: STILL,
       limit: 20,
       sources: eco.sources,
     });
@@ -234,6 +249,7 @@ describe("R3: список источников вместо двух имено
     const heavy = await federatedSearch({
       text: "инвалидация кеша",
       caller: ANON,
+      clock: STILL,
       sources: [source("mine", "project", mine, "a", { weight: 1.0 }), source("theirs", "repo", theirs, "b", { weight: 0.8 })],
     });
     expect(heavy.hits[0]!.id).toBe(mineId);
@@ -243,6 +259,7 @@ describe("R3: список источников вместо двух имено
     const flipped = await federatedSearch({
       text: "инвалидация кеша",
       caller: ANON,
+      clock: STILL,
       sources: [source("mine", "project", mine, "a", { weight: 0.5 }), source("theirs", "repo", theirs, "b", { weight: 1.0 })],
     });
     expect(flipped.hits[0]!.id).toBe(theirsId);
@@ -270,6 +287,7 @@ describe("R3: вес — тайбрейк, а не вытеснение", () => 
     const tiebreak = await federatedSearch({
       text: "дедлайн опроса",
       caller: ANON,
+      clock: STILL,
       limit: 6,
       sources: [
         source("mine", "project", mine, "a", { weight: 1.0 }),
@@ -288,6 +306,7 @@ describe("R3: вес — тайбрейк, а не вытеснение", () => 
     const crowded = await federatedSearch({
       text: "дедлайн опроса",
       caller: ANON,
+      clock: STILL,
       limit: 6,
       sources: [
         source("mine", "project", mine, "a", { weight: 1.0 }),
@@ -307,6 +326,7 @@ describe("R3: ленивость — не прошедший отбор не о�
     const result = await federatedSearch({
       text: "ретрай очереди",
       caller: ANON,
+      clock: STILL,
       sources: eco.sources,
       maxSources: 3,
     });
@@ -337,6 +357,7 @@ describe("R3: ленивость — не прошедший отбор не о�
     const result = await federatedSearch({
       text: "ретрай очереди",
       caller: ANON,
+      clock: STILL,
       sources: eco.sources,
     });
     expect(result.mode_used.cap).toBe(DEFAULT_MAX_SOURCES);
@@ -352,6 +373,7 @@ describe("R3: пропуск НАЗВАН, а не умолчан (И2)", () => 
     const result = await federatedSearch({
       text: "ретрай очереди",
       caller: ANON,
+      clock: STILL,
       sources: eco.sources,
       maxSources: 2,
     });
@@ -424,6 +446,7 @@ describe("R3: сломанный сосед не роняет чтение св�
     const result = await federatedSearch({
       text: "аренда клейма",
       caller: ANON,
+      clock: STILL,
       sources: [
         source("project", "project", project, "a"),
         {

@@ -302,7 +302,9 @@ describe("(d) цена: лёгкая команда не запускает JS",
 
       const m = await measureAsync(`queue hook, light command (${HOST_SHELL})`, () => once(hookCommand, light), {
         warmup: 5,
-        iters: 60,
+        // 100 — см. ниже про p99 и nearest-rank: комментарий это обещал, а
+        // стояло 60, то есть p99 лёгкой команды оставался максимумом прогона.
+        iters: 100,
         budgetMs: 30,
         rival: () => once(rivalCommand, light),
         rivalLabel: "the same hook with no prefilter (bun/node on every call)",

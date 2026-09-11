@@ -22,11 +22,12 @@
  *   «вне воркспейса — полная строка» — падает «три места: вне воркспейса».
  */
 
-import { beforeEach, afterEach, describe, expect, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
+import { expectMsWithinBudget } from "@myc/bench";
 import { cliTestEnv } from "@myc/core";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { run, type RunResult } from "../index.ts";
@@ -35,6 +36,15 @@ import { registerAll } from "../register.ts";
 import { isOurStatusLineCommand } from "../statusline-config.ts";
 import type { StatuslineData } from "./statusline.ts";
 import { createUnwireCommand, createWireCommand, readUserJournal } from "./wire.ts";
+
+/**
+ * Лимит теста по умолчанию для файла — 30 с, потолок «зациклилось», а не
+ * бюджет: здесь настоящие процессы, сны подделки (до 4 с) и ожидания
+ * `waitFor` до 8 с — больше лимита bun по умолчанию (5 с), и не дождавшись
+ * файла, тест падал бы по лимиту раньше, чем назвал бы, чего не дождался.
+ * Тесты со своим лимитом (30–60 с) его сохраняют.
+ */
+setDefaultTimeout(30_000);
 
 const MAIN = join(import.meta.dir, "..", "main.ts");
 const BUN = process.execPath;
@@ -549,10 +559,14 @@ describe("отрисовка строки пользовательского с�
 
     const out = fakeOut();
     const input = payload(ws);
-    const r = await hostRender(ws, input, { FAKE_OUT: out, FAKE_SLEEP: "2" });
+    // Сон прежней — 4 с, граница полного времени (sh -c, старт bun,
+    // отрисовка) — 1.5 с: регрессия «ждать прежнюю» дала бы ≥ 4 с, здоровая —
+    // сотню мс. При прежнем сне в 2 с граница лежала в 1.33 раза ниже сна, и
+    // растяжение машиной ×13 (наблюдалось 2026-09-11) закрыло бы этот зазор.
+    const r = await hostRender(ws, input, { FAKE_OUT: out, FAKE_SLEEP: "4" });
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/^myc │ ctx 3% │ \d+ ready · \d+ blocked │ /);
-    // Двухсекундный сон прежней не ждали — ни на каком железе.
+    // Четырёхсекундный сон прежней не ждали — ни на каком железе.
     expect(r.ms).toBeLessThan(1500);
     expect(existsSync(`${out}.done`)).toBe(false);
     expect(await waitFor(`${out}.done`, 8000)).toBe(true);
@@ -567,15 +581,16 @@ describe("отрисовка строки пользовательского с�
     for (let i = 0; i < 5; i++) runs.push(await hostData(ws, payload(ws, sess), { FAKE_OUT: fakeOut(), FAKE_SLEEP: "2" }));
     for (const d of runs) {
       expect(d.scope).toBe("user");
-      expect(d.foreign).toMatchObject({ source: "user-previous", started: true, finished: false });
+      // Структура «не ждали» (окна нет, текущий не слушали) — на любом железе.
+      expect(d.foreign).toMatchObject({ source: "user-previous", started: true, finished: false, window_ms: 0 });
       expect(d.foreign.waited_ms).toBeLessThan(500);
     }
     const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
-    const absolute = process.env["MYC_BENCH_ABSOLUTE"] !== "0" || process.env["MYC_BENCH_STRICT"] === "1";
-    if (absolute) {
-      expect(median(runs.map((d) => d.foreign.waited_ms))).toBeLessThan(25);
-      expect(median(runs.map((d) => d.took_ms))).toBeLessThan(70);
-    }
+    // Абсолюты — только на откалиброванной машине (не MYC_BENCH_ABSOLUTE=0) и
+    // при годных условиях: медиана пяти не спасает, когда заняты все ядра
+    // (тогда растянуты все пять), — это решает проба дрожания эталона.
+    expectMsWithinBudget(median(runs.map((d) => d.foreign.waited_ms)), 25, "statusline (user): ожидание прежней, медиана 5");
+    expectMsWithinBudget(median(runs.map((d) => d.took_ms)), 70, "statusline (user): отрисовка, медиана 5");
   }, 60_000);
 
   describe("три места", () => {
