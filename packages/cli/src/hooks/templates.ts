@@ -32,7 +32,7 @@ export interface HookSpec {
   readonly event: HookEvent;
   readonly claudeEvent: ClaudeEvent;
   readonly matcher?: string;
-  /** Таймаут, который видит хост. */
+  /** Таймаут, который видит хост, в мс; в конфиг хоста уходит секундами (все три хоста считают в секундах). */
   readonly timeoutMs: number;
   /** Таймаут внутри helper'а — на 500 мс меньше хостового (§6.4). */
   readonly innerMs: number;
@@ -198,9 +198,10 @@ process.exit(0);
  *    PermissionRequest, PostToolUse, PreCompact, PostCompact, SessionStart,
  *    SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop, Stop,
  *    Interrupt`. `timeout` — СЕКУНДЫ (внутри это `hook.timeout_sec`, а
- *    app-server отдаёт его как `timeoutSec`; у Claude Code то же поле в
- *    миллисекундах, и перепутать значит получить хук, живущий в 1000 раз
- *    дольше или короче задуманного). Команда исполняется ЧЕРЕЗ SHELL и с
+ *    app-server отдаёт его как `timeoutSec`; у Claude Code 2.1.267 то же
+ *    поле тоже в секундах — прежде здесь стояло «в миллисекундах», и wire
+ *    писал Claude Code хуки с таймаутом в 1000 раз длиннее задуманного,
+ *    см. hostTimeoutSeconds в commands/wire.ts). Команда исполняется ЧЕРЕЗ SHELL и с
  *    cwd = каталог проекта — проверено живьём (`cwd=<проект>` в хуке при
  *    относительной команде `node .codex/myc-hooks.mjs`). Подстановка
  *    `\${…}` в команде для SessionStart НЕ работает («hook input placeholder
@@ -596,7 +597,7 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
  *    (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop,
  *    PreCompact, …), необязательный `matcher` — РЕГУЛЯРКА по строке события,
  *    `command` — строка, запускаемая через shell, `timeout` — целые СЕКУНДЫ
- *    1..600 (у Claude Code миллисекунды; перепутать — значит получить хук,
+ *    1..600 (как у Claude Code и Codex; перепутать с миллисекундами — значит получить хук,
  *    который живёт в 1000 раз дольше или короче задуманного).
  * 3. Вход хука — JSON на stdin, ключи snake_case (`toHookInputData`
  *    приводит camelCase к snake_case на ВЕРХНЕМ уровне): `hook_event_name`,
@@ -769,6 +770,9 @@ One graph: tasks with dependencies, project memory, links to code.
 - A contradiction does not overwrite the old note: \`myc link A supersedes B --reason "..."\`.
 - A \`WARN degraded.*\` line in a response means part of the index is not working
   and the search is incomplete — don't treat an empty answer as proof of absence.
+- Heavy commands (the full test suite, a build) go through \`myc run -- <cmd>\`:
+  agents on one machine take turns instead of fighting for the cores; \`myc queue\` shows who is ahead.
+  \`myc run\` runs what it is given, so Claude Code asks about it unless your rules allow the command itself.
 
 ## Context compaction
 
@@ -788,6 +792,7 @@ export function agentsBlock(): string {
 
 \`myc_*\` tools (MCP) or the \`myc\` CLI. Order: \`myc prime\` → \`myc ready --claim\`
 → \`myc recall\` before a decision → \`myc remember\` after a finding → \`myc close --reason\`.
+Heavy commands (the full test suite, a build): \`myc run -- <cmd>\`, one machine-wide queue.
 Full instructions: \`myc --help\`, \`.claude/skills/myc/SKILL.md\`.
 ${AGENTS_END}`;
 }

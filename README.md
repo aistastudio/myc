@@ -65,6 +65,63 @@ writing a config that silently won't start.
 
 Full command list: `./dist/myc --help`.
 
+## Heavy commands take turns
+
+Several agents on one machine — in one tree or in neighbouring projects — each
+run the heavy things: the full test suite, builds, benchmarks. Run at once, they
+get in each other's way: full runs take twice as long, and latency budgets fail
+because of the neighbour, not the code. `myc run` puts such a command into one
+queue shared by every repository of the machine user (`~/.myc/queue.db`), waits
+for a free slot (first come, first served) and then runs it with the terminal
+and the exit code left alone:
+
+```bash
+myc run -- bun test              # waits its turn (--max-wait 5m by default), then runs
+myc run --max-wait 15m -- make   # a longer wait for a longer tool timeout
+myc queue                        # who is running, who is waiting, for how long
+```
+
+```
+$ myc queue
+heavy · slots 1 · 1 running · 1 waiting · ~/.myc/queue.db
+  running #1      4s  bun test  ~/src/api  session 6468c59d · orca term_efe4850f · pid 44815 · command pid 44827
+  waiting #2      3s  bun run build  ~/src/web  session 6468c59d · orca term_efe4850f · pid 44850 (#1 in line)
+```
+
+A waiting command says on stderr whom it waits for; past `--max-wait` it gives
+up with exit code 9 and names what is ahead:
+
+```
+myc run: waiting for a 'heavy' slot (1/1 busy, 1 waiting ahead), waited 0.0s of max 3s — held by 'bun test' in ~/src/api, session 6468c59d, orca term_efe4850f, pid 44815, running 13s
+```
+
+A holder that dies — even by `SIGKILL` — frees its slot; a `myc run` nested
+inside another one runs at once, in its parent's slot. One slot per lane by
+default, `MYC_HEAVY_SLOTS=2` for two.
+
+**Agents don't have to remember it.** `myc wire --queue-hook` installs a Claude
+Code `PreToolUse` hook that rewrites a heavy Bash command into
+`myc run -- <the same command>` before it runs. Heavy means a full test run or a
+build: `bun test` with no paths, `bun run build` / `typecheck`, `npm` / `pnpm` /
+`yarn` `test` and `build`, `cargo test` / `build`, `go test ./...`, `pytest`
+with no paths, `make`. A targeted `bun test path/file.test.ts`, a command already
+under `myc run`, a background one and a nested one pass untouched.
+`MYC_QUEUE_HEAVY` replaces the list (`+…` adds to it, `off` turns the hook off).
+It is opt-in: `wire` without the flag writes no such hook, and `unwire` removes
+it. It is cheap, because it runs on every Bash call: a command that is not heavy
+is let through by the host's own shell without starting bun or node — 3.4 ms at
+the median and 4.3 ms at p99 in the run of 2026-09-11, against 30 ms for the
+prime hook (`bun test packages/cli/src/hooks/queue-hook.multiprocess.test.ts`).
+
+**`myc run` is not a way around permissions.** It runs whatever it is given, so
+a queued command goes through without a question only when your own rules would
+let the original command through — `Bash(bun test:*)` keeps `bun test` silent
+under the queue as well. Otherwise Claude Code asks, and the question shows the
+whole command; a deny or ask rule on the original command still holds. The same
+goes for a `myc run -- <cmd>` an agent types itself. For the same reason `wire`
+no longer writes the broad `Bash(myc:*)`: it allows myc's subcommands one by
+one, and `run`, `statusline --then`, `wire` and `unwire` ask.
+
 ## What makes it different
 
 **Speed is a constraint, not an optimisation.** Every hot path has a budget

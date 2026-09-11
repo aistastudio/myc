@@ -292,6 +292,16 @@ prj  project note: jitter…       prj  project note: jitter…</code></pre>
       <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: заполненность контекста, очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают.</p>
       <pre class="code"><code>myc │ ctx 42% │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls</code></pre>
     </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">Heavy commands take turns</h3>
+      <h3 lang="ru">Тяжёлые команды — по очереди</h3>
+      <p class="sub" lang="en">Several agents on one machine run the full test suite and builds at once and slow each other down. <code>myc run -- &lt;command&gt;</code> puts the command into one queue shared by every repository of the machine, waits for a free slot and runs it with its own terminal and exit code; <code>myc queue</code> shows who is running and who is waiting. A waiting command says whom it waits for, and a holder that dies frees its slot. Agents don't have to remember any of it: <code>myc wire --queue-hook</code> adds a Claude Code hook that sends a full test run or a build through the queue by itself and lets everything else through untouched — a command that is not heavy never starts bun or node. Opt-in. And <code>myc run</code> is not a way around permissions: a queued command goes through without a question only when your own rules would let the original command through; otherwise Claude Code asks and shows the whole command, and <code>wire</code> allows myc's subcommands one by one instead of all of them.</p>
+      <p class="sub" lang="ru">Несколько агентов на одной машине одновременно гоняют полный прогон тестов и сборки и мешают друг другу. <code>myc run -- &lt;команда&gt;</code> ставит команду в общую для всех репозиториев машины очередь, ждёт свободный слот и выполняет её с её же терминалом и кодом выхода; <code>myc queue</code> показывает, кто выполняется и кто ждёт. Ждущая команда говорит, кого ждёт, а упавший держатель освобождает слот. Помнить об этом агенту не нужно: <code>myc wire --queue-hook</code> ставит Claude Code хук, который сам отправляет полный прогон тестов или сборку через очередь, а всё остальное пропускает нетронутым — лёгкая команда не запускает ни bun, ни node. Только по флагу. И обходом прав <code>myc run</code> не служит: команда в очереди проходит без вопроса, только если ваши правила пропустили бы исходную; иначе Claude Code спрашивает и показывает всю команду, а <code>wire</code> разрешает подкоманды myc по одной, а не все сразу.</p>
+      <pre class="code"><code>myc run -- bun test
+myc queue
+myc wire --queue-hook</code></pre>
+    </div>
   </div>
 </section>
 

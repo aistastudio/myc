@@ -14,6 +14,7 @@
  * 4. `CLAUDE.md` не трогается никогда; `AGENTS.md` — только блок между
  *    маркерами и только с `--agents-md`. `statusLine` — только с
  *    `--status-line`, и прежняя строка продолжает получать тот же ввод.
+ *    Хук очереди (PreToolUse на Bash) — только с `--queue-hook`.
  * 5. Повторный `wire` идемпотентен: те же файлы, байт в байт.
  *
  * Всё записанное попадает в журнал `.myc/wire.json` вместе с хешем файла на
@@ -58,11 +59,58 @@ import {
   type HookEvent,
   type HookSpec,
 } from "../hooks/templates.ts";
+import { QUEUE_ENV, QUEUE_HELPER_MARK, QUEUE_HELPER_REL, queueHelper, queueHookEntry } from "../hooks/queue-hook.ts";
 
 export const WIRE_JOURNAL = "wire.json";
 const BAK_SUFFIX = ".myc.bak";
 const HELPER_MARK = "myc-hooks.mjs";
-const MYC_PERMISSION = "Bash(myc:*)";
+/**
+ * ПРАВА. Прежде wire писал одно правило — `Bash(myc:*)`, и оно было обходом
+ * системы разрешений: `myc run -- X` исполняет ПРОИЗВОЛЬНУЮ команду X, а
+ * Claude Code сверяет правило с текстом всей команды, то есть `myc run -- rm
+ * -rf …` проходил без вопроса человеку. Порядок проверки в 2.1.267 (прочитано в
+ * бинаре, функция разрешений рядом с `Permission to use ${e.name} has been
+ * denied.`): deny-правило целиком на инструмент → deny-правила по содержимому →
+ * ask целиком на инструмент → проверка самого Bash (allow-правила по префиксу,
+ * по подкомандам) → ask-правила по содержимому → режим bypassPermissions →
+ * allow целиком на инструмент → иначе вопрос. Префиксное `X:*` совпадает с
+ * командой `X` или `X …`, обёрток вроде `myc run` Claude Code не снимает
+ * (снимает только time/nohup/timeout/nice/stdbuf/env/command/xargs/sudo…).
+ *
+ * Поэтому теперь: разрешение на КАЖДУЮ подкоманду из реестра, кроме тех, что
+ * исполняют переданную им команду или переписывают права и хуки самого агента
+ * (ASK_SUBCOMMANDS), — их Claude Code спрашивает, и в вопросе видна вся
+ * команда. Прежнее широкое правило в файле, который ведёт наш журнал, wire
+ * снимает сам (миграция); в чужом — не трогает, но говорит о нём вслух.
+ */
+const LEGACY_PERMISSION = "Bash(myc:*)";
+
+/**
+ * Подкоманды, на которые wire разрешения не даёт. Список исключений, а не
+ * второй список команд: разрешённые берутся из реестра (mycPermissions), и
+ * новая команда получает разрешение сама, если её нет здесь. Каждая строка —
+ * с причиной; сторож — wire.permissions.test.ts (имя обязано быть в реестре).
+ */
+export const ASK_SUBCOMMANDS: ReadonlyMap<string, string> = new Map([
+  ["run", "executes the command given to it"],
+  ["statusline", "--then executes a shell command"],
+  ["wire", "rewrites the agent's own hooks and permissions"],
+  ["unwire", "rewrites the agent's own hooks and permissions"],
+]);
+
+/** `Bash(myc <команда>:*)` на каждую команду реестра, кроме ASK_SUBCOMMANDS, по алфавиту. */
+export function mycPermissions(registry: Registry): string[] {
+  return registry.top
+    .map((c) => c.name)
+    .filter((name) => !ASK_SUBCOMMANDS.has(name))
+    .sort()
+    .map((name) => `Bash(myc ${name}:*)`);
+}
+
+/** Наше ли правило: разрешение на подкоманду myc или прежнее широкое. */
+function isOurPermission(rule: unknown): boolean {
+  return typeof rule === "string" && (rule === LEGACY_PERMISSION || /^Bash\(myc [a-z][a-z0-9-]*:\*\)$/.test(rule));
+}
 const TOML_NOTIFY_START = "# myc:notify:start";
 const TOML_NOTIFY_END = "# myc:notify:end";
 const CODEX_HOOKS_REL = ".codex/hooks.json";
@@ -232,13 +280,34 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * Наша ли команда хука — по имени helper-файла в ней. Helper'ов два: общий
+ * (`myc-hooks.mjs`) и хука очереди (`myc-queue.mjs`, только с `--queue-hook`).
+ */
+function isOurCommand(cmd: string): boolean {
+  return cmd.includes(HELPER_MARK) || cmd.includes(QUEUE_HELPER_MARK);
+}
+
 /** Наша ли это запись хука — узнаём по имени helper-файла в команде. */
 function isOurHookEntry(entry: unknown): boolean {
   const hooks = asArray(asRecord(entry)["hooks"]);
   return hooks.some((h) => {
     const cmd = asRecord(h)["command"];
-    return typeof cmd === "string" && cmd.includes(HELPER_MARK);
+    return typeof cmd === "string" && isOurCommand(cmd);
   });
+}
+
+/** Наша запись хука очереди в `hooks.PreToolUse`, как лежит в файле, или null. */
+function ourQueueEntry(value: Record<string, unknown>): Record<string, unknown> | null {
+  for (const entry of asArray(asRecord(value["hooks"])["PreToolUse"])) {
+    const hooks = asArray(asRecord(entry)["hooks"]);
+    const ours = hooks.some((h) => {
+      const cmd = asRecord(h)["command"];
+      return typeof cmd === "string" && cmd.includes(QUEUE_HELPER_MARK);
+    });
+    if (ours) return asRecord(entry);
+  }
+  return null;
 }
 
 function foreignCommand(entry: unknown): string | null {
@@ -256,7 +325,7 @@ function foreignCommands(entry: unknown): string[] {
   const out: string[] = [];
   for (const h of hooks) {
     const cmd = asRecord(h)["command"];
-    if (typeof cmd === "string" && !cmd.includes(HELPER_MARK)) out.push(cmd);
+    if (typeof cmd === "string" && !isOurCommand(cmd)) out.push(cmd);
   }
   return out;
 }
@@ -267,20 +336,34 @@ function entryMatcher(entry: unknown): string | undefined {
   return typeof m === "string" && m.length > 0 ? m : undefined;
 }
 
+/**
+ * Таймаут записи хука для хоста — В СЕКУНДАХ, и у Claude Code, и у Codex.
+ *
+ * У Claude Code это прочитано в бинаре 2.1.267: схема записи —
+ * `timeout:A().positive().optional().describe("Timeout in seconds for this
+ * specific command")`, исполнитель — `yn=e.timeout?e.timeout*1000:Yf`.
+ * До этой правки сюда шли миллисекунды (`spec.timeoutMs`), то есть 3000 у
+ * session-start значило 50 минут, а 8000 у pre-compact — больше двух часов:
+ * хост не оборвал бы зависший хук никогда. Спасал только внутренний LIMIT
+ * helper'а. Повторный wire переписывает наши записи целиком (mergeHookNodes),
+ * так что старые значения уходят сами, а чужие записи не трогаются.
+ */
+function hostTimeoutSeconds(spec: HookSpec): number {
+  return Math.max(1, Math.ceil(spec.timeoutMs / 1000));
+}
+
 function claudeHookEntry(spec: HookSpec): Record<string, unknown> {
   const command = `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/myc-hooks.mjs" ${spec.event}`;
   const entry: Record<string, unknown> = {
     ...(spec.matcher !== undefined ? { matcher: spec.matcher } : {}),
-    hooks: [{ type: "command", command, timeout: spec.timeoutMs }],
+    hooks: [{ type: "command", command, timeout: hostTimeoutSeconds(spec) }],
   };
   return entry;
 }
 
 /**
- * Запись хука для `.codex/hooks.json`. Форма та же, что у Claude Code, а
- * `timeout` — В СЕКУНДАХ (`hook.timeout_sec` внутри codex). Одно и то же поле
- * с разной единицей в двух конфигах — ровно тот случай, где молчаливая
- * подстановка миллисекунд дала бы хук с таймаутом в 8000 секунд.
+ * Запись хука для `.codex/hooks.json`. Форма та же, что у Claude Code, и
+ * `timeout` там тоже в СЕКУНДАХ (`hook.timeout_sec` внутри codex).
  */
 function codexHookEntry(spec: HookSpec): Record<string, unknown> {
   return {
@@ -289,7 +372,7 @@ function codexHookEntry(spec: HookSpec): Record<string, unknown> {
       {
         type: "command",
         command: codexHookCommand(spec.event),
-        timeout: Math.max(1, Math.ceil(spec.timeoutMs / 1000)),
+        timeout: hostTimeoutSeconds(spec),
       },
     ],
   };
@@ -307,19 +390,24 @@ interface SettingsPlan {
   readonly statusLine?: StatusLineRecord;
 }
 
+/** Что и куда ставим: событие хоста и наша запись для него. */
+interface Placement {
+  readonly event: string;
+  readonly entry: Record<string, unknown>;
+}
+
 /**
  * Точечный merge массивов `hooks.<Event>` в чужом JSON-конфиге. Общий для
  * Claude Code (`.claude/settings.json`) и Codex (`.codex/hooks.json`): форма
  * записи у них одна, различаются только команда и единица таймаута, и обе
- * приходят параметром `entry`. Две копии этой функции разъехались бы молча —
- * а вытеснение чужих хуков считается самым дорогим, что здесь происходит.
+ * уже в `placements`. Две копии этой функции разъехались бы молча — а
+ * вытеснение чужих хуков считается самым дорогим, что здесь происходит.
  */
 function mergeHookNodes(
   source: JsonSource,
-  specs: readonly HookSpec[],
+  placements: readonly Placement[],
   mode: HookMode | undefined,
   relPath: string,
-  entry: (spec: HookSpec) => Record<string, unknown>,
 ): SettingsPlan {
   const value: Record<string, unknown> = { ...source.value };
   const hooks = asRecord(value["hooks"]);
@@ -328,8 +416,7 @@ function mergeHookNodes(
   const evicted: Evicted[] = [];
   const notes: string[] = [];
 
-  for (const spec of specs) {
-    const event = spec.claudeEvent;
+  for (const { event, entry: ours } of placements) {
     const existing = asArray(hooks[event]);
     const foreign = existing.filter((e) => !isOurHookEntry(e));
     const node = `hooks.${event}`;
@@ -364,7 +451,7 @@ function mergeHookNodes(
     }
 
     const kept = mode === "replace" ? [] : foreign;
-    hooks[event] = [...kept, entry(spec)];
+    hooks[event] = [...kept, ours];
     nodes.push(node);
   }
 
@@ -373,30 +460,63 @@ function mergeHookNodes(
   return { nodes, conflicts, evicted, notes, value };
 }
 
+/** Что `.claude/settings.json` получает в `permissions.allow` (см. LEGACY_PERMISSION). */
+interface PermissionPlan {
+  /** `Bash(myc <команда>:*)` — из реестра, без ASK_SUBCOMMANDS. */
+  readonly rules: readonly string[];
+  /** Файл ведёт наш журнал: прежнее `Bash(myc:*)` в нём поставил wire, и wire его снимает. */
+  readonly legacyOurs: boolean;
+}
+
 /**
  * `.claude/settings.json`: те же узлы `hooks.<Event>` плюс `permissions.allow`.
- * Всё остальное — включая `statusLine` — не читается и не пишется.
+ * Всё остальное — включая `statusLine` — не читается и не пишется. `extra` —
+ * записи не из HOOK_SPECS (хук очереди на PreToolUse): они не зовут команду
+ * myc, и таблица событий §6.1 им не место.
  */
 function mergeClaudeSettings(
   source: JsonSource,
   specs: readonly HookSpec[],
   mode: HookMode | undefined,
   relPath: string,
+  extra: readonly Placement[],
+  perms: PermissionPlan,
 ): SettingsPlan {
-  const base = mergeHookNodes(source, specs, mode, relPath, claudeHookEntry);
+  const placements = [...specs.map((s) => ({ event: s.claudeEvent, entry: claudeHookEntry(s) })), ...extra];
+  const base = mergeHookNodes(source, placements, mode, relPath);
   if (base.conflicts.length > 0) return base;
   const value = { ...base.value };
   const nodes = [...base.nodes];
+  const notes = [...(base.notes ?? [])];
 
   const permissions = asRecord(value["permissions"]);
-  const allow = asArray(permissions["allow"]);
-  if (!allow.some((a) => a === MYC_PERMISSION)) {
-    permissions["allow"] = [...allow, MYC_PERMISSION];
+  let allow = asArray(permissions["allow"]);
+  let changed = false;
+  if (allow.includes(LEGACY_PERMISSION)) {
+    if (perms.legacyOurs) {
+      allow = allow.filter((a) => a !== LEGACY_PERMISSION);
+      changed = true;
+      notes.push(
+        `${relPath}: removed the old permissions.allow[${LEGACY_PERMISSION}] — it let \`myc run -- <any command>\` ` +
+          `run without asking; myc subcommands are now allowed one by one, and ${[...ASK_SUBCOMMANDS.keys()].join(", ")} ask`,
+      );
+    } else {
+      notes.push(
+        `${relPath}: permissions.allow has ${LEGACY_PERMISSION}, which lets \`myc run -- <any command>\` run without ` +
+          "asking — wire did not write it and leaves it alone; remove it by hand",
+      );
+    }
+  }
+  const added = perms.rules.filter((r) => !allow.includes(r));
+  if (added.length > 0 || changed) {
+    permissions["allow"] = [...allow, ...added];
     value["permissions"] = permissions;
-    nodes.push(`permissions.allow[${MYC_PERMISSION}]`);
+  }
+  if (added.length > 0) {
+    nodes.push(`permissions.allow[${added.length === 1 ? added[0] : `Bash(myc <command>:*) ×${added.length}`}]`);
   }
 
-  return { ...base, nodes, value };
+  return { ...base, nodes, notes, value };
 }
 
 /** `.codex/hooks.json`: только узлы `hooks.<Event>`, без permissions. */
@@ -406,7 +526,7 @@ function mergeCodexHooks(
   mode: HookMode | undefined,
   relPath: string,
 ): SettingsPlan {
-  return mergeHookNodes(source, specs, mode, relPath, codexHookEntry);
+  return mergeHookNodes(source, specs.map((s) => ({ event: s.claudeEvent, entry: codexHookEntry(s) })), mode, relPath);
 }
 
 function planJsonMerge(
@@ -483,7 +603,7 @@ function preexistingContainers(value: Record<string, unknown>): string[] {
   const permissions = value["permissions"];
   if (isPlainObject(permissions)) {
     const allow = permissions["allow"];
-    const has = Array.isArray(allow) && allow.includes(MYC_PERMISSION);
+    const has = Array.isArray(allow) && allow.some(isOurPermission);
     if (Array.isArray(allow) && !has) out.push("permissions.allow");
     if (!has) out.push("permissions");
   }
@@ -537,6 +657,13 @@ interface WireOptions {
   readonly mycBin: MycBinChoice;
   /** `--status-line`: поставить нашу строку статуса Claude Code. */
   readonly statusLine: boolean;
+  /**
+   * `--queue-hook`: myc, проверенный на `run`, — его команду получит хук
+   * очереди. null — флага нет (стоящий хук сохраняется как есть).
+   */
+  readonly queueBin: QueueBinChoice | null;
+  /** `Bash(myc <команда>:*)` для `.claude/settings.json` — из реестра (mycPermissions). */
+  readonly permissions: readonly string[];
   /** Журнал прошлого wire: в нём прежняя строка статуса, если мы её заменили. */
   readonly previousJournal: Journal | null;
   /** Откуда читать пользовательские настройки Claude Code (HOME, CLAUDE_CONFIG_DIR). */
@@ -610,10 +737,27 @@ function planClaude(plan: Plan, o: WireOptions): void {
   const settings = ".claude/settings.json";
   planOwnFile(plan, o.root, ".claude/helpers/myc-hooks.mjs", claudeHelper({ events: o.events, hookOutput: o.hookOutput }));
   planOwnFile(plan, o.root, ".claude/skills/myc/SKILL.md", skillMd());
+  const queue = planQueueHook(plan, o, settings);
+  const perms: PermissionPlan = {
+    rules: o.permissions,
+    legacyOurs: o.previousJournal?.entries.some((e) => e.path === settings) ?? false,
+  };
   planJsonMerge(plan, o.root, settings, (source) => {
-    const base = mergeClaudeSettings(source, specs, o.mode, settings);
+    const extra = queue === null ? [] : [{ event: "PreToolUse", entry: queue }];
+    const base = mergeClaudeSettings(source, specs, o.mode, settings, extra, perms);
     return base.conflicts.length > 0 ? base : withStatusLine(base, o, settings);
   });
+  // Пользовательский слой wire не пишет (D10), но широкое правило там —
+  // тот же обход, что было наше прежнее, и молчать о нём нельзя.
+  const userPath = userSettingsPath(o.env);
+  const userAllow = asArray(asRecord(readJsonSource(userPath).value["permissions"])["allow"]);
+  const broad = userAllow.find((r) => r === LEGACY_PERMISSION || r === "Bash(myc run:*)");
+  if (broad !== undefined) {
+    plan.notes.push(
+      `${userPath}: permissions.allow has ${String(broad)}, so \`myc run -- <any command>\` runs without asking in ` +
+        "every project; with --queue-hook the hook asks instead, otherwise remove it by hand (wire does not write there)",
+    );
+  }
   planJsonMerge(plan, o.root, ".mcp.json", (source) => {
     const value = { ...source.value };
     const servers = asRecord(value["mcpServers"]);
@@ -627,6 +771,34 @@ function planClaude(plan: Plan, o: WireOptions): void {
   } else if (plan.statusLine === undefined) {
     plan.untouched.push(`${settings}:statusLine (needs --status-line)`);
   }
+}
+
+/**
+ * Хук очереди (`--queue-hook`, hooks/queue-hook.ts): PreToolUse на Bash,
+ * который отправляет тяжёлую команду агента через `myc run`.
+ *
+ * Как у строки статуса: без флага не ставится, но стоящий — наш, от прежнего
+ * `wire --queue-hook` — сохраняется как лежит: иначе обычный `wire`, которым
+ * обновляют helper'ы, молча снимал бы выбор человека. Снимает его `unwire`.
+ * Helper при этом переписывается под нынешнюю сборку — он от выбора не зависит.
+ */
+function planQueueHook(plan: Plan, o: WireOptions, settings: string): Record<string, unknown> | null {
+  let entry = ourQueueEntry(readJsonSource(join(o.root, settings)).value);
+  if (o.queueBin !== null) {
+    entry = queueHookEntry(o.queueBin.command);
+    plan.notes.push(
+      `${settings}: hooks.PreToolUse[Bash] — a heavy command (a full test run, a build) goes through ` +
+        `\`myc run -- …\` with ${o.queueBin.command} (${o.queueBin.source}); it is approved without asking only ` +
+        "when your own rules allow the original command (e.g. Bash(bun test:*)), otherwise Claude Code asks and " +
+        `shows the whole command; the built-in patterns can be replaced with ${QUEUE_ENV}`,
+    );
+  }
+  if (entry === null) {
+    plan.untouched.push(`${settings}:hooks.PreToolUse (needs --queue-hook)`);
+    return null;
+  }
+  planOwnFile(plan, o.root, QUEUE_HELPER_REL, queueHelper());
+  return entry;
 }
 
 /** Команда для заметки: целиком не печатаем — у orca она на две тысячи знаков. */
@@ -1027,6 +1199,10 @@ export function generatedFiles(
     agentsMd: false,
     mycBin: { command: "myc", source: "none" },
     statusLine: false,
+    // Helper очереди от выбранного myc не зависит (тот едет в settings.json
+    // аргументом), поэтому свежесть стоящего сверяется и без проверки бинаря.
+    queueBin: { command: "myc", source: "path" },
+    permissions: [],
     previousJournal: null,
     env: {},
     platform: process.platform,
@@ -1140,6 +1316,11 @@ const WIRE_FLAGS: readonly FlagSpec[] = [
     description:
       "also put myc's line into Claude Code's statusLine; the line that was there keeps getting the same input (opt-in)",
   },
+  {
+    name: "queue-hook",
+    description:
+      "also install a Claude Code PreToolUse hook that runs heavy Bash commands (full test runs, builds) through `myc run` (opt-in)",
+  },
 ];
 
 /**
@@ -1171,8 +1352,76 @@ export const probeStatusLineBin: StatusLineProbe = (root, bin) => {
   }
 };
 
+/**
+ * Каким myc хук очереди будет оборачивать команды. Выбирается при wire и
+ * ПРОВЕРЯЕТСЯ запуском `<myc> run --help`, а не угадывается в каждом вызове
+ * хука: myc без `run` превратил бы каждый `bun test` агента в «unknown
+ * command 'run'» — тяжёлая команда не выполнилась бы вовсе. В этом
+ * репозитории так и есть: `node_modules/.bin/myc` — опубликованный 0.1.0, а
+ * `myc` в PATH — 0.3.0, и `run` нет ни у того, ни у другого.
+ *
+ * Порядок: MYC_BIN (явный выбор человека), затем `myc` из PATH — слово `myc`
+ * в начале команды покрывает правило `Bash(myc:*)`, которое ставит сам wire,
+ * и команда проходит проверку разрешений так же, как если бы агент набрал её
+ * сам; затем сборки в проекте и ~/.myc/bin. Путь в проекте пишется
+ * относительным (helper достраивает его от CLAUDE_PROJECT_DIR): settings.json
+ * общий для команды, домашнему пути одного разработчика там не место.
+ */
+export interface QueueBinChoice {
+  /** Что получит хук: `myc` (ищется в PATH), путь от корня проекта или абсолютный. */
+  readonly command: string;
+  readonly source: "env" | "path" | "repo" | "home";
+}
+
+export type QueueProbe = (
+  root: string,
+  env: NodeJS.ProcessEnv,
+) => { readonly ok: true; readonly bin: QueueBinChoice } | { readonly ok: false; readonly why: string };
+
+export const probeQueueBin: QueueProbe = (root, env) => {
+  const candidates: { command: string; exe: string; source: QueueBinChoice["source"] }[] = [];
+  const own = env.MYC_BIN;
+  if (own !== undefined && own.length > 0) candidates.push({ command: resolve(root, own), exe: resolve(root, own), source: "env" });
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (dir.length > 0 && existsSync(join(dir, "myc"))) {
+      candidates.push({ command: "myc", exe: join(dir, "myc"), source: "path" });
+      break;
+    }
+  }
+  for (const rel of ["node_modules/.bin/myc", "dist/myc", ".myc/bin/myc"]) {
+    candidates.push({ command: rel, exe: join(root, rel), source: "repo" });
+  }
+  if (env.HOME !== undefined && env.HOME.length > 0) {
+    const home = join(env.HOME, ".myc/bin/myc");
+    candidates.push({ command: home, exe: home, source: "home" });
+  }
+  const tried: string[] = [];
+  for (const c of candidates) {
+    if (!existsSync(c.exe)) {
+      if (c.source === "env") tried.push(`MYC_BIN=${c.command} (no such file)`);
+      continue;
+    }
+    try {
+      const r = Bun.spawnSync([c.exe, "run", "--help"], { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+      if (r.exitCode === 0 && r.stdout.toString().includes("myc run")) return { ok: true, bin: { command: c.command, source: c.source } };
+      const err = r.stderr.toString().trim().split("\n")[0] ?? "";
+      tried.push(`${c.command} run --help: exit ${r.exitCode}${err.length > 0 ? ` (${err})` : ""}`);
+    } catch (e) {
+      tried.push(`${c.command} does not start: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return {
+    ok: false,
+    why:
+      tried.length > 0
+        ? `no myc here knows \`run\` — ${tried.join("; ")}`
+        : "no myc executable found in MYC_BIN, PATH, node_modules/.bin, dist, .myc/bin or ~/.myc/bin",
+  };
+};
+
 export interface WireDeps {
   readonly probeStatusLine: StatusLineProbe;
+  readonly probeQueue: QueueProbe;
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
 }
@@ -1211,6 +1460,7 @@ function parseAgents(raw: string | undefined): Harness[] | null {
 export function createWireCommand(registry: Registry, overrides: Partial<WireDeps> = {}): Command {
   const deps: WireDeps = {
     probeStatusLine: probeStatusLineBin,
+    probeQueue: probeQueueBin,
     env: process.env,
     platform: process.platform,
     ...overrides,
@@ -1225,7 +1475,10 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       "--agents-md. A foreign hook on the same event is a conflict: nothing is written until " +
       "--hook-mode says what to do. Running wire twice changes nothing. statusLine is left alone " +
       "unless --status-line is given; then the line that was there (project, else user) keeps " +
-      "receiving the same stdin, and unwire puts it back byte for byte.",
+      "receiving the same stdin, and unwire puts it back byte for byte. --queue-hook adds a " +
+      "PreToolUse hook on Bash that rewrites a heavy command (a full test run, a build) into " +
+      "`myc run -- <the same command>`, so agents on one machine take turns; without the flag no " +
+      "such hook is written, and unwire removes it.",
     handler: (ctx) => {
       // Фоновая проверка обновлений: no-op по умолчанию, при
       // MYC_UPDATE_CHECK=1 — отсоединённый процесс, которого wire не ждёт.
@@ -1267,6 +1520,34 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
 
       const mycBin = resolveMycBin(root);
       const statusLine = ctx.flags["status-line"] === true;
+
+      // Хук очереди — только Claude Code и только на myc, который знает `run`
+      // (проверяется запуском): хук на myc без `run` превращал бы каждую
+      // тяжёлую команду агента в ошибку. Ничего не записано, пока не выяснено.
+      const queueNotes: string[] = [];
+      let queueBin: QueueBinChoice | null = null;
+      if (ctx.flags["queue-hook"] === true) {
+        if (!agents.includes("claude")) {
+          queueNotes.push("the queue hook is installed only for Claude Code, which is not in --agents — hooks.PreToolUse left alone");
+        } else if (deps.platform === "win32") {
+          queueNotes.push(
+            "queue hook not installed: its command is a POSIX shell snippet and myc run was not checked on Windows",
+          );
+        } else {
+          const probe = deps.probeQueue(root, deps.env);
+          if (!probe.ok) {
+            return failure(
+              "precond.queue_bin",
+              `nowhere to queue heavy commands through: ${probe.why}. A hook on a myc without \`run\` would turn ` +
+                "every heavy command into an error — nothing written",
+              ExitCode.PRECOND,
+              "MYC_BIN=<path to a fresh myc> myc wire --queue-hook",
+            );
+          }
+          queueBin = probe.bin;
+        }
+      }
+
       const options: WireOptions = {
         root,
         events: available,
@@ -1275,6 +1556,8 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         agentsMd: ctx.flags["agents-md"] === true,
         mycBin,
         statusLine,
+        queueBin,
+        permissions: mycPermissions(registry),
         previousJournal: readWireJournal(journalPath(root, ctx)),
         env: deps.env,
         platform: deps.platform,
@@ -1303,6 +1586,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       if (statusLine && !agents.includes("claude")) {
         plan.notes.push("the status line is installed only for Claude Code, which is not in --agents — statusLine left alone");
       }
+      plan.notes.push(...queueNotes);
 
       const slConflicts = plan.conflicts.filter((c) => c.node === "statusLine");
       if (slConflicts.length > 0) {
@@ -1478,7 +1762,7 @@ function stripJsonNodes(
   }
   const permissions = asRecord(out["permissions"]);
   if (Array.isArray(permissions["allow"])) {
-    const allow = (permissions["allow"] as unknown[]).filter((a) => a !== MYC_PERMISSION);
+    const allow = (permissions["allow"] as unknown[]).filter((a) => !isOurPermission(a));
     if (allow.length === 0 && !keep.has("permissions.allow")) delete permissions["allow"];
     else permissions["allow"] = allow;
     if (Object.keys(permissions).length === 0 && !keep.has("permissions")) delete out["permissions"];

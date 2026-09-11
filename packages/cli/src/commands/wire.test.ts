@@ -85,19 +85,20 @@ describe("Codex: хуки в .codex/hooks.json", () => {
   }
 
   /**
-   * ЕДИНИЦА ТАЙМАУТА — РАЗНАЯ У ДВУХ ХОСТОВ, и это единственная разница между
-   * иначе одинаковыми записями. У Claude Code `timeout` в миллисекундах, у
-   * Codex — в секундах (`hook.timeout_sec` внутри). Перепутать значит получить
-   * хук, живущий в 1000 раз дольше задуманного; мутация «взять timeoutMs как
-   * есть» роняет этот тест.
+   * ЕДИНИЦА ТАЙМАУТА — СЕКУНДЫ У ОБОИХ ХОСТОВ. У Codex это `hook.timeout_sec`,
+   * у Claude Code 2.1.267 — «Timeout in seconds for this specific command»
+   * (прочитано в бинаре). Прежде этот тест утверждал «у Claude Code —
+   * миллисекунды» и закреплял ошибку: 3000 у session-start значило 50 минут.
+   * Мутация «взять timeoutMs как есть» роняет этот тест; миграция старых
+   * записей — в wire.permissions.test.ts.
    */
-  test("таймаут в записи Codex — секунды, у Claude Code — миллисекунды", async () => {
+  test("таймаут в записи и Codex, и Claude Code — секунды", async () => {
     await myc("wire", "--agents", "claude,codex");
     const codex = codexHooks()["hooks"];
     expect(codex["SessionStart"][0].hooks[0].timeout).toBe(3);
     expect(codex["PreCompact"][0].hooks[0].timeout).toBe(8);
     const claude = (JSON.parse(read(".claude/settings.json")) as Record<string, any>)["hooks"];
-    expect(claude["SessionStart"][0].hooks[0].timeout).toBe(3000);
+    expect(claude["SessionStart"][0].hooks[0].timeout).toBe(3);
   });
 
   test("команда относительная и защищена проверкой существования helper'а", async () => {
@@ -262,12 +263,12 @@ describe("чистая установка", () => {
     expect(has("AGENTS.md")).toBe(false);
   });
 
-  test("PreCompact стоит с таймаутом 8000 и матчером manual|auto", async () => {
+  test("PreCompact стоит с таймаутом 8 с и матчером manual|auto", async () => {
     await myc("wire");
     const settings = JSON.parse(read(".claude/settings.json"));
     const pre = settings.hooks.PreCompact[0];
     expect(pre.matcher).toBe("manual|auto");
-    expect(pre.hooks[0].timeout).toBe(8000);
+    expect(pre.hooks[0].timeout).toBe(8);
     expect(pre.hooks[0].command).toContain("myc-hooks.mjs\" pre-compact");
   });
 
@@ -725,7 +726,7 @@ describe("kimi", () => {
     const note = data.notes.join("\n");
     expect(note).toContain("~/.kimi-code/config.toml");
     expect(note).toContain("[[hooks]]");
-    // Таймаут у Kimi в СЕКУНДАХ (1..600), у Claude Code — в миллисекундах.
+    // Таймаут у Kimi в СЕКУНДАХ (1..600) — как у Claude Code и Codex.
     expect(note).toContain("timeout = 8");
     expect(note).not.toContain("timeout = 8000");
     expect(data.untouched.join(" ")).toContain("~/.kimi-code/config.toml");
