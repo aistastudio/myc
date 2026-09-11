@@ -13,6 +13,12 @@
  *   «.gitignore не соблюдается»        — ключи попадают в перечень;
  *   «вложенный репозиторий не обходится» — его файлы пропадают;
  *   «git упал → пустота без обхода»     — перечень пуст и без предупреждения.
+ *
+ * И четвёртая (memory-9s21yc2kshma): «worktree не пропускается» — worktree
+ * `wt` вложенного репозитория, лежащий в корне, снова даёт вторую копию
+ * файлов `nested/` под путём `wt/` и пропадает из `worktreesSkipped`.
+ * Подмодуль `sub` (у него `.git` — тоже файл, но без `commondir`) и
+ * вложенные репозитории обязаны остаться — это проверяет тот же EXPECTED.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -130,6 +136,7 @@ function buildFixture(): void {
   git(root, "commit", "-qm", "sub");
 
   // Worktree вложенного репозитория, лежащий внутри корня: `.git` — файл.
+  // Его файлы — вторая копия `nested/`, и в перечень он не входит.
   git(nested, "worktree", "add", "-q", join(root, "wt"));
 
   // Репозиторий второго уровня: его называет ответ git корня, а не первая волна.
@@ -154,11 +161,10 @@ const EXPECTED = [
   "plain/p.txt",
   "src/a.ts",
   "sub/s.ts",
-  "wt/.gitignore",
-  "wt/graft/card2.md",
-  "wt/n.ts",
-  "wt/secrets/README.md",
 ];
+
+/** worktree `wt` — копия `nested`: пропущен и назван. */
+const SKIPPED_WT = [{ dir: "wt", main: "nested" }];
 
 describe("перечень git-дерева", () => {
   beforeEach(buildFixture);
@@ -167,8 +173,9 @@ describe("перечень git-дерева", () => {
   test("ровно ожидаемый набор: без игнорируемого, со всеми вложенными репозиториями", async () => {
     const l = await listFiles(root);
     expect([...l.files]).toEqual(EXPECTED);
-    expect([...l.gitRepos].sort()).toEqual([".", "libs/inner", "nested", "sub", "wt"]);
+    expect([...l.gitRepos].sort()).toEqual([".", "libs/inner", "nested", "sub"]);
     expect(l.unignored).toEqual([]);
+    expect(l.worktreesSkipped).toEqual(SKIPPED_WT);
   });
 
   test("игнорируемое корнем не просачивается ни одним путём", async () => {
@@ -210,7 +217,10 @@ describe("перечень git-дерева", () => {
     expect(l.files).toContain("src/a.ts");
     expect(l.files).toContain("keys/worker-1.json");
     // Вложенные репозитории исправны — их перечисляет их git и дальше.
-    expect([...l.gitRepos].sort()).toEqual(["libs/inner", "nested", "sub", "wt"]);
+    // worktree обход узнаёт по файлу `.git` и не отдаёт git'у вовсе.
+    expect([...l.gitRepos].sort()).toEqual(["libs/inner", "nested", "sub"]);
+    expect(l.worktreesSkipped).toEqual(SKIPPED_WT);
+    expect(l.files.some((p) => p.startsWith("wt/"))).toBe(false);
     expect(l.files).toContain("nested/n.ts");
     expect(l.files).not.toContain("nested/secrets/deploy.pem");
     // Симлинки и SKIP_DIRS обход не берёт так же, как не брал.
@@ -230,6 +240,52 @@ describe("перечень git-дерева", () => {
     expect(l.secretSkipped).toBe(1);
     expect(l.files).toContain("keys/worker-1.json");
     expect(l.files).not.toContain("nested/.git");
+    // Без git worktree узнаётся по файлам — и не обходится как ещё одна копия.
+    expect(l.worktreesSkipped).toEqual(SKIPPED_WT);
+    expect(l.files).not.toContain("wt/n.ts");
+    expect(l.files).toContain("nested/n.ts");
+  });
+});
+
+describe("worktree внутри дерева (memory-9s21yc2kshma)", () => {
+  beforeEach(buildFixture);
+  afterEach(() => rmSync(work, { recursive: true, force: true }));
+
+  test("worktree корня в .claude/worktrees и worktree внутри вложенного репозитория — пропущены и названы", async () => {
+    git(root, "worktree", "add", "-q", join(root, ".claude", "worktrees", "r1"));
+    git(join(root, "nested"), "worktree", "add", "-q", join(root, "nested", ".worktrees", "w2"));
+    const l = await listFiles(root);
+    expect([...l.files]).toEqual(EXPECTED);
+    expect(l.worktreesSkipped).toEqual([
+      { dir: ".claude/worktrees/r1", main: "." },
+      { dir: "nested/.worktrees/w2", main: "nested" },
+      ...SKIPPED_WT,
+    ]);
+    expect(listFilesSync(root)).toEqual(l);
+  });
+
+  test("worktree ЧУЖОГО репозитория (основное дерево вне корня) — не дубль и остаётся", async () => {
+    git(join(work, "subsrc"), "worktree", "add", "-q", join(root, "ext"));
+    const l = await listFiles(root);
+    expect(l.files).toContain("ext/s.ts");
+    expect(l.gitRepos).toContain("ext");
+    expect(l.worktreesSkipped).toEqual(SKIPPED_WT);
+  });
+
+  test("перечень части с корнем дерева: worktree чужого репозитория дерева в части пропущен так же", async () => {
+    // worktree `nested`, лежащий ВНУТРИ libs/inner: перечень части libs/inner
+    // без корня дерева принял бы его за чужой (основное дерево вне части),
+    // а перечень корня — выбросил: строки мигали бы от прогона к прогону.
+    git(join(root, "nested"), "worktree", "add", "-q", join(root, "libs", "inner", "nwt"));
+    const inner = join(root, "libs", "inner");
+    const part = await listFiles(inner, { treeRoot: root });
+    expect([...part.files]).toEqual(["i.ts"]);
+    expect(part.worktreesSkipped).toEqual([{ dir: "nwt", main: "nested" }]);
+    const whole = await listFiles(root);
+    expect(whole.files.filter((p) => p.startsWith("libs/inner/"))).toEqual(["libs/inner/i.ts"]);
+    // Без корня дерева — ровно та разница, ради которой параметр заведён.
+    const alone = await listFiles(inner);
+    expect(alone.files).toContain("nwt/n.ts");
   });
 });
 

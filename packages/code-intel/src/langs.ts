@@ -10,8 +10,8 @@
  * будет никогда (§5, уровень L0).
  */
 
-import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isSecretName, isSecretPath } from "./secret-paths.ts";
 
 /**
@@ -106,11 +106,34 @@ export interface FileListing {
    * числом, без имён: имя секрета в выводе команды тоже лишнее.
    */
   readonly secretSkipped: number;
+  /**
+   * git worktree репозиториев ЭТОГО ЖЕ дерева, не взятые в перечень, — по
+   * возрастанию каталога. Такой worktree — вторая копия файлов, основное
+   * дерево которых перечислено и так (memory-9s21yc2kshma), и с ним каждый
+   * файл лёг бы в индекс дважды. Названы, а не выброшены молча (И2).
+   */
+  readonly worktreesSkipped: readonly SkippedWorktree[];
+}
+
+/** worktree, не взятый в перечень: его файлы уже есть под основным деревом. */
+export interface SkippedWorktree {
+  /** Каталог worktree — путём от корня перечня, как у файлов. */
+  readonly dir: string;
+  /** Основное дерево того же репозитория — путём от корня дерева; "." — сам корень. */
+  readonly main: string;
 }
 
 export interface ListOptions {
   /** Бинарь git. Подмена — для проверки «git недоступен». */
   readonly git?: string;
+  /**
+   * Корень дерева, чьи репозитории попадают в индекс; worktree, основное
+   * дерево которого лежит под ним, — дубль. По умолчанию — сам корень
+   * перечня. Часть индекса (`subtree`) передаёт корень воркспейса: иначе
+   * worktree ЧУЖОГО репозитория, лежащий в этой части, выбрасывал бы перечень
+   * корня и возвращал бы перечень части — строки мигали бы от прогона к прогону.
+   */
+  readonly treeRoot?: string;
 }
 
 /**
@@ -216,6 +239,63 @@ function joinRel(dir: string, name: string): string {
   return dir.length === 0 ? name : `${dir}/${name}`;
 }
 
+/** realpath с откатом на resolve: на macOS /tmp и /private/tmp — один каталог. */
+function realOrResolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Основное дерево git worktree — путём от `realTree` ("." — сам корень), —
+ * если `<absDir>/.git` это файл-указатель worktree, а основное дерево лежит
+ * под `realTree`. Иначе null, и каталог остаётся в перечне:
+ *
+ *   `.git` — каталог         самостоятельный репозиторий (вложенный, как в cherry);
+ *   нет `commondir`          подмодуль (`gitdir: …/.git/modules/<имя>`) или
+ *                            worktree, чьё основное дерево унесли вместе со
+ *                            служебным каталогом, — копия единственная;
+ *   общий каталог не `.git`  worktree голого репозитория: основной копии нет;
+ *   основное дерево вне      worktree чужого репозитория: его файлов в
+ *   `realTree`               перечне нет, это не дубль.
+ *
+ * Правило связи — то же, что `readWorktreeLink` в cli (wsfind.ts): общий
+ * каталог берётся из `commondir`, а не из формы пути, — пакет cli здесь
+ * недоступен, а ошибиться в сторону «выбросить подмодуль» дороже, чем в
+ * сторону «оставить дубль».
+ */
+export function worktreeMainIn(absDir: string, realTree: string): string | null {
+  const dotGit = join(absDir, ".git");
+  let text: string;
+  try {
+    if (!statSync(dotGit).isFile()) return null;
+    text = readFileSync(dotGit, "utf8");
+  } catch {
+    return null;
+  }
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(text);
+  if (m === null) return null;
+  const gitDir = resolve(absDir, m[1]!);
+  let commonDir: string;
+  try {
+    commonDir = resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim());
+  } catch {
+    return null;
+  }
+  if (basename(commonDir) !== ".git") return null;
+  let main: string;
+  try {
+    main = realpathSync(dirname(commonDir));
+  } catch {
+    return null;
+  }
+  const rel = relative(realTree, main);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return rel.length === 0 ? "." : rel.split(sep).join("/");
+}
+
 /**
  * Сам перечень — генератор, который ОТДАЁТ наружу каталоги для `git ls-files`
  * и получает обратно их ответы. Алгоритм один, а исполнителей два:
@@ -242,12 +322,34 @@ function joinRel(dir: string, name: string): string {
  * не входят тоже, и на обеих ветках: чужой .gitignore их может не закрывать,
  * а отслеживаемый `.env` от этого не перестаёт быть секретом. Считаются
  * числом (`secretSkipped`), чтобы запрет был виден, а не молчалив.
+ *
+ * git worktree репозитория этого же дерева (`.claude/worktrees/x`,
+ * `<репозиторий>/.worktrees/y`, соседний `wt-collector`) не входит ни на
+ * одной ветке: для git корня это такой же `?? x/` с собственным `.git`, как
+ * настоящий вложенный репозиторий, и без проверки каждый файл основного
+ * дерева лёг бы в индекс второй раз, под другим путём. Отличается он ТОЛЬКО
+ * файлом `.git` со ссылкой `commondir` на основное дерево (`worktreeMainIn`);
+ * вложенный репозиторий (каталог `.git`) и подмодуль (файл без `commondir`)
+ * идут прежним путём. Пропущенные названы в `worktreesSkipped` (И2).
  */
-function* listing(root: string, absent: string | null): Generator<string[], FileListing, GitRun[]> {
+function* listing(
+  root: string,
+  absent: string | null,
+  treeRoot: string,
+): Generator<string[], FileListing, GitRun[]> {
   const files: string[] = [];
   const gitRepos: string[] = [];
   const unignored: UnignoredDir[] = [];
+  const worktreesSkipped: SkippedWorktree[] = [];
   let secretSkipped = 0;
+  const realTree = realOrResolved(treeRoot);
+  /** Каталог — worktree репозитория дерева: записать в пропущенные и не брать. */
+  const duplicateWorktree = (rel: string): boolean => {
+    const main = worktreeMainIn(join(root, rel), realTree);
+    if (main === null) return false;
+    worktreesSkipped.push({ dir: rel, main });
+    return true;
+  };
   // Бинаря git нет — спрашивать его о каждом вложенном репозитории незачем.
   let noGit: string | null = absent;
   let wave: Array<{ rel: string; how: "git" | "walk" }> = [{ rel: "", how: "git" }];
@@ -262,9 +364,14 @@ function* listing(root: string, absent: string | null): Generator<string[], File
       } catch {
         continue; // каталог исчез до обхода — не наша гонка
       }
-      if (dir !== start && noGit === null && entries.some((e) => e.name === ".git")) {
-        next.push({ rel: dir, how: "git" });
-        continue;
+      if (dir !== start && entries.some((e) => e.name === ".git")) {
+        // worktree узнаётся по файлам, без git: и при отсутствующем git обход
+        // не обязан переписывать основное дерево второй раз.
+        if (duplicateWorktree(dir)) continue;
+        if (noGit === null) {
+          next.push({ rel: dir, how: "git" });
+          continue;
+        }
       }
       for (const e of entries) {
         // `.git` — каталог репозитория или файл-указатель worktree; не код.
@@ -294,7 +401,7 @@ function* listing(root: string, absent: string | null): Generator<string[], File
     const ask = viaGit.filter((t) => !early.has(t.rel)).map((t) => t.rel);
     if (first) {
       first = false;
-      for (const rel of childRepos(root)) if (!ask.includes(rel)) ask.push(rel);
+      for (const rel of childRepos(root, realTree)) if (!ask.includes(rel)) ask.push(rel);
     }
     if (ask.length > 0) {
       const gone = noGit;
@@ -327,9 +434,11 @@ function* listing(root: string, absent: string | null): Generator<string[], File
       gitRepos.push(t.rel.length === 0 ? "." : t.rel);
       for (const entry of run.entries) {
         if (entry.endsWith("/")) {
-          // Неотслеживаемый каталог с собственным .git — независимый репозиторий.
+          // Неотслеживаемый каталог с собственным .git — независимый
+          // репозиторий. Или worktree репозитория дерева: git корня их не
+          // различает, различает файл `.git`.
           const sub = joinRel(t.rel, entry.slice(0, -1));
-          if (!underSkipDir(sub, true)) next.push({ rel: sub, how: "git" });
+          if (!underSkipDir(sub, true) && !duplicateWorktree(sub)) next.push({ rel: sub, how: "git" });
           continue;
         }
         const path = joinRel(t.rel, entry);
@@ -347,7 +456,7 @@ function* listing(root: string, absent: string | null): Generator<string[], File
           // gitlink в индексе — подмодуль (или вложенный репозиторий, добавленный
           // `git add`): его файлы перечисляет его git. Не извлечённый подмодуль
           // (пустой каталог без .git) перечислять нечем — и нечего.
-          if (!underSkipDir(path, true)) next.push({ rel: path, how: "git" });
+          if (!underSkipDir(path, true) && !duplicateWorktree(path)) next.push({ rel: path, how: "git" });
         }
       }
     }
@@ -356,11 +465,18 @@ function* listing(root: string, absent: string | null): Generator<string[], File
   }
 
   files.sort();
-  return { files, gitRepos, unignored, secretSkipped };
+  worktreesSkipped.sort((a, b) => (a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0));
+  return { files, gitRepos, unignored, secretSkipped, worktreesSkipped };
 }
 
-/** Каталоги первого уровня со своим `.git` — кандидаты в первую волну. */
-function childRepos(root: string): string[] {
+/**
+ * Каталоги первого уровня со своим `.git` — кандидаты в первую волну.
+ * worktree репозитория дерева git'у не отдаётся вовсе: его ответ всё равно
+ * был бы выброшен, а процесс git стоит ~5 мс. Пропуск СЧИТАЕТ не эта
+ * функция, а место, где каталог назвал ответ git корня (иначе один worktree
+ * попал бы в счёт дважды).
+ */
+function childRepos(root: string, realTree: string): string[] {
   let entries;
   try {
     entries = readdirSync(root, { withFileTypes: true });
@@ -370,7 +486,8 @@ function childRepos(root: string): string[] {
   const out: string[] = [];
   for (const e of entries) {
     if (!e.isDirectory() || e.name === ".git" || SKIP_DIRS.has(e.name)) continue;
-    if (existsSync(join(root, e.name, ".git"))) out.push(e.name);
+    const dir = join(root, e.name);
+    if (existsSync(join(dir, ".git")) && worktreeMainIn(dir, realTree) === null) out.push(e.name);
   }
   return out;
 }
@@ -445,7 +562,7 @@ export function gitSpawn(): { readonly git: string; readonly env: Record<string,
 export async function listFiles(root: string, opts: ListOptions = {}): Promise<FileListing> {
   const { git, absent } = gitBinary(opts);
   const env = gitEnv();
-  const gen = listing(root, absent);
+  const gen = listing(root, absent, opts.treeRoot ?? root);
   let step = gen.next();
   while (!step.done) {
     step = gen.next(await Promise.all(step.value.map((cwd) => runGit(git, cwd, env))));
@@ -457,7 +574,7 @@ export async function listFiles(root: string, opts: ListOptions = {}): Promise<F
 export function listFilesSync(root: string, opts: ListOptions = {}): FileListing {
   const { git, absent } = gitBinary(opts);
   const env = gitEnv();
-  const gen = listing(root, absent);
+  const gen = listing(root, absent, opts.treeRoot ?? root);
   let step = gen.next();
   while (!step.done) {
     step = gen.next(step.value.map((cwd) => runGitSync(git, cwd, env)));

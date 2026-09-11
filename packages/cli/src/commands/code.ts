@@ -447,6 +447,10 @@ interface CodeIndexData {
     unignored: { dir: string; reason: string }[];
     /** Не взято в перечень по секретному имени (.env, ключи, учётные данные) — числом, без имён. */
     secret_skipped: number;
+    /** git worktree репозиториев этого дерева, не взятые в перечень: вторая копия файлов основного дерева. */
+    worktrees_skipped: number;
+    /** Они же по каталогам: `dir` — путь от корня индекса, `main` — основное дерево того же репозитория. */
+    skipped_worktrees: { dir: string; main: string }[];
     unchanged: number;
     touched: number;
     dirty: number;
@@ -596,6 +600,8 @@ function buildCodeIndex(deps: StoreDeps): Command {
             git_repos: [...scan.gitRepos],
             unignored: scan.unignored.map((u) => ({ dir: u.dir, reason: u.reason })),
             secret_skipped: scan.secretSkipped,
+            worktrees_skipped: scan.worktreesSkipped.length,
+            skipped_worktrees: scan.worktreesSkipped.map((w) => ({ dir: w.dir, main: w.main })),
             unchanged: scan.unchanged,
             touched: scan.touched,
             dirty: scan.dirty,
@@ -730,8 +736,14 @@ function buildCodeIndex(deps: StoreDeps): Command {
             : ""),
         `scan      files ${d.scan.files}, unchanged ${d.scan.unchanged}, touched ${d.scan.touched}, ` +
           `queued ${d.scan.enqueued}, removed ${d.scan.removed}, ` +
-          `secret-named skipped ${d.scan.secret_skipped}  ${d.scan.scan_ms} ms` +
+          `secret-named skipped ${d.scan.secret_skipped}, worktrees skipped ${d.scan.worktrees_skipped}  ${d.scan.scan_ms} ms` +
           `${d.scan.git_repos.length > 0 ? `  [git: ${count(d.scan.git_repos.length, "repo")}]` : ""}`,
+        ...(d.scan.skipped_worktrees.length > 0
+          ? [
+              `worktrees ${d.scan.skipped_worktrees.map((w) => `${w.dir} → ${w.main}`).join(", ")}  ` +
+                `(not indexed: a second copy of a repo already in this index)`,
+            ]
+          : []),
         `parse     claimed ${d.drain.claimed}, parsed ${d.drain.parsed} (pool ${d.drain.pooled}), ` +
           `written ${d.drain.written}, skipped ${d.drain.skipped}, failed ${d.drain.failed}  ` +
           `${d.drain.drain_ms} ms`,

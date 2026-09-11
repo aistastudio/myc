@@ -22,9 +22,9 @@ import { Database } from "bun:sqlite";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expectAheadOfRival, expectWithinBudget, measure, report } from "@myc/bench";
+import { expectAheadOfRival, expectCostAtMost, expectWithinBudget, measure, report } from "@myc/bench";
 import { jobs, migrate, migrations } from "@myc/store-sqlite";
-import { queryAnchorsAt, SQL_OF_LINE } from "./anchor.ts";
+import { queryAnchorsAt, queryAnchorsOfFile, SQL_OF_LINE, SQL_SWEEP_DIRTY } from "./anchor.ts";
 
 const N = 50_000;
 const FILES = 2_000;
@@ -175,6 +175,70 @@ test(
   },
   180_000,
 );
+
+/**
+ * Во сколько раз чтение файла по ОБОИМ его ключам (memory-9s21yc2kshma:
+ * якорь из корня и якорь из вложенного репозитория — один файл) имеет право
+ * стоить дороже чтения по одному. Это два индексных поиска вместо одного —
+ * ожидание ×2 и сортировка поверх; потолок 3 ловит скан или поиск на каждый
+ * ключ по всей таблице и не ловит дрожание пары чередующихся замеров.
+ */
+const OF_BOTH_KEYS_MAX_RATIO = 3;
+
+test(
+  `запрос по file:line по ОБОИМ ключам файла — два индексных поиска, < ${OF_BUDGET_MS} мс`,
+  () => {
+    const wsPath = `${REPO}/${PATH}`;
+    // Структурное: ответ тот же, что у одного ключа, — на этом стенде якоря
+    // файла лежат под ключом репозитория, а под ключом корня их нет.
+    const both = queryAnchorsOfFile(db, wsPath, LINE).map((r) => r.node_id);
+    expect(both.length).toBeGreaterThan(0);
+    expect(both).toEqual(queryAnchorsAt(db, REPO, PATH, LINE).map((r) => r.node_id));
+
+    const m = measure(
+      `anchor of ${wsPath}:${LINE} по двум ключам @${N} якорей`,
+      () => void queryAnchorsOfFile(db, wsPath, LINE),
+      {
+        warmup: 50,
+        iters: 300,
+        budgetMs: OF_BUDGET_MS,
+        rival: () => void queryAnchorsAt(db, REPO, PATH, LINE),
+        rivalLabel: "один ключ — прежний запрос",
+      },
+    );
+    report(m);
+    expectCostAtMost(m, OF_BOTH_KEYS_MAX_RATIO);
+    expectWithinBudget(m);
+  },
+  180_000,
+);
+
+/**
+ * Грязная половина батча `check`/фона — поиск по парам ключей, а не скан
+ * (memory-9s21yc2kshma). Замер на этом стенде: скан с `path IN (…)` — 4.9 мс,
+ * скан со сравнением пути от корня воркспейса выражением — 7.2 мс, по ключам —
+ * 0.035 мс; фоновому прогону целиком отпущено 20 мс. Утверждение
+ * структурное: план обязан начинаться с `json_each` и искать строку по
+ * `ix_anchors_file`, иначе на 50 000 якорей каждый прогон платит скан.
+ * МУТАЦИЯ «JOIN anchors AS a NOT INDEXED» роняет этот тест (проверено).
+ */
+test("пометка журнала ищет якоря по обоим ключам файла через ix_anchors_file, а не сканом", () => {
+  const keys = JSON.stringify([
+    ["", `${REPO}/${PATH}`],
+    [REPO, PATH],
+  ]);
+  for (const repo of ["", REPO]) {
+    const plan = (
+      db.query<{ detail: string }, [string, string, string, number]>(`EXPLAIN QUERY PLAN ${SQL_SWEEP_DIRTY}`)
+        .all(repo, "", keys, 256)
+    ).map((r) => r.detail);
+    expect(plan.join(" | ")).toMatch(/SEARCH a USING INDEX ix_anchors_file \(repo_id=\? AND path=\?\)/);
+    expect(plan.filter((d) => /SCAN a\b/.test(d))).toEqual([]);
+    const rows = db.query(SQL_SWEEP_DIRTY).all(repo, "", keys, 256) as Array<{ repo_id: string; path: string }>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.repo_id === REPO ? r.path : r.path.slice(REPO.length + 1)).toBe(PATH);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Цена хука

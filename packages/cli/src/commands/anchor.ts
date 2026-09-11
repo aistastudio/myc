@@ -31,7 +31,7 @@
  * сходством», и ставить его без меры сходства значило бы врать числом.
  */
 
-import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import type {
@@ -44,7 +44,13 @@ import type {
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
-import { findWorkspaceDb, mapIntoMain, mapIntoWorktree, type WorktreeLink } from "./wsfind.ts";
+import {
+  findWorkspaceDb,
+  mapIntoMain,
+  mapIntoWorktree,
+  readWorktreeLink,
+  type WorktreeLink,
+} from "./wsfind.ts";
 import { markHookCall } from "../hooks/counters.ts";
 import type { StoreDeps, StoreHandle } from "./store.ts";
 
@@ -171,6 +177,17 @@ export function anchorRepo(h: StoreHandle): { repoId: string; repoRoot: string }
  * два, потому что охват S59 — корень или ПЕРВЫЙ сегмент под ним (`deriveRepo`):
  * другого `repo_id` у якоря на этот файл быть не может. Переписывать уже
  * записанные якоря под общий ключ не нужно — поиск сходится сам.
+ *
+ * ПОЧЕМУ ДВА КЛЮЧА, А НЕ ОДИН (memory-9s21yc2kshma). Один общий ключ на запись
+ * не отменил бы чтения обоих: у cherry уже лежат якоря под обоими, и без
+ * миграции базы старые остались бы невидимы. Выбрать же ключ «как у индекса»
+ * нельзя в принципе — у индекса его тоже два: корень берёт вложенный
+ * репозиторий, только если git корня его не игнорирует, иначе у репозитория
+ * свой индекс под своим `repo_id` (`coveringIndex`). Ключи в базе поэтому не
+ * меняются нигде — ни у индекса (view.ts), ни у якорей, — а каждый читатель
+ * якорей ПО ФАЙЛУ спрашивает оба: `queryAnchorsOfFile` (of), `wsPathOfKey`
+ * (rm), `SQL_SWEEP_DIRTY` (check и фон), `code symbol`. Цена — второй
+ * индексный поиск, единицы микросекунд.
  */
 export function anchorKeysFor(wsPath: string): Array<{ readonly repoId: string; readonly path: string }> {
   const keys = [{ repoId: "", path: wsPath }];
@@ -179,11 +196,78 @@ export function anchorKeysFor(wsPath: string): Array<{ readonly repoId: string; 
   return keys;
 }
 
-/** Путь в базе — всегда относительный от корня репозитория и POSIX-слэшами. */
-export function repoRelative(repoRoot: string, input: string, cwd: string): string {
-  const abs = isAbsolute(input) ? input : resolve(cwd, input);
-  const rel = relative(repoRoot, abs);
-  return rel.split(sep).join("/");
+/**
+ * Обратное к `anchorKeysFor`: путь файла от корня воркспейса по ключу якоря.
+ * `('', 'a/x.ts')` и `('a', 'x.ts')` — один `a/x.ts`: это и есть личность
+ * файла, одна на оба его ключа.
+ */
+export function wsPathOfKey(repoId: string, path: string): string {
+  return repoId.length === 0 ? path : `${repoId}/${path}`;
+}
+
+/**
+ * `wsPathOfKey` выражением SQL — для префикса `check --path`, который
+ * сравнивается по всей выборке батча, а не точечным поиском по индексу.
+ */
+function sqlWsPath(t: string): string {
+  return `(CASE WHEN ${t}.repo_id = '' THEN ${t}.path ELSE ${t}.repo_id || '/' || ${t}.path END)`;
+}
+
+/** Путь лежит за корнем (`../…`) — ключа якоря у него нет. */
+function outsideRoot(rel: string): boolean {
+  return rel === ".." || rel.startsWith("../") || isAbsolute(rel);
+}
+
+/** `dir` под `root` или совпадает — по строке, а при симлинках (/tmp ↔ /private/tmp) по realpath. */
+function inside(root: string, dir: string): boolean {
+  const within = (a: string, b: string): boolean => {
+    const rel = relative(a, b);
+    return rel.length === 0 || !outsideRoot(rel.split(sep).join("/"));
+  };
+  if (within(root, dir)) return true;
+  try {
+    return within(realpathSync(root), realpathSync(dir));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * git worktree ВНУТРИ дерева воркспейса, в котором лежит `dir`:
+ * `.claude/worktrees/x`, `<репозиторий>/.worktrees/y`, соседний `wt-collector`.
+ * Такой worktree поиск воркспейса находит обычным подъёмом, без ссылки, и
+ * `h.worktree` у него пуст — а путь файла в нём обязан считаться в основном
+ * дереве точно так же, как у worktree вне дерева (`mapIntoMain`). Иначе
+ * якорь из него ложится ключом `('', '.claude/worktrees/x/src/a.ts')` — путём,
+ * который не совпадёт ни с одним настоящим.
+ *
+ * Подъём от `dir` до корня воркспейса (сам корень не проверяется: worktree
+ * всего воркспейса находит поиск) до ПЕРВОГО `.git`: каталог — это
+ * самостоятельный репозиторий, и worktree здесь нет; файл со ссылкой на
+ * основное дерево ВНУТРИ воркспейса — worktree. worktree чужого репозитория
+ * (основное дерево вне воркспейса) не отображается: его файлы в воркспейсе
+ * единственные, и перечень индекса оставляет их себе (`worktreeMainIn`).
+ *
+ * Цена — по одному stat на уровень между `dir` и ближайшим `.git`: из
+ * вложенного репозитория это 1–3 вызова, из корня — ни одного, из хука — ни
+ * одного (журнал отображает потребитель, `wsPathOfFile`).
+ */
+function inTreeWorktree(wsDir: string, dir: string): WorktreeLink | undefined {
+  const root = resolve(wsDir);
+  let cur = resolve(dir);
+  if (!cur.startsWith(root + sep)) return undefined;
+  while (cur !== root) {
+    const st = statSync(join(cur, ".git"), { throwIfNoEntry: false });
+    if (st !== undefined) {
+      if (!st.isFile()) return undefined;
+      const link = readWorktreeLink(cur);
+      return link !== undefined && inside(root, link.mainRoot) ? link : undefined;
+    }
+    const up = dirname(cur);
+    if (up === cur) return undefined;
+    cur = up;
+  }
+  return undefined;
 }
 
 /**
@@ -195,24 +279,62 @@ export function repoRelative(repoRoot: string, input: string, cwd: string): stri
  * одним настоящим), а читать надо файл, который агент правит прямо сейчас, —
  * он лежит в worktree и на другой ветке отличается по содержимому.
  *
- * Отсюда две функции: `mainCwd` для вычисления пути, `localFile` для чтения.
- * Вне worktree обе — тождество, ни одного лишнего вызова.
+ * Отсюда две функции: `fileOf` для вычисления пути, `localFile` для чтения.
+ * Вне worktree обе — тождество: ни одного отображения, а поиск worktree
+ * внутри дерева стоит stat до ближайшего `.git`.
+ *
+ * Путь-вопрос бывает и относительным (от каталога вызова), и абсолютным (хук
+ * отдаёт `tool_input.file_path`): отображается ФАЙЛ, а не каталог вызова,
+ * поэтому и абсолютный путь внутри worktree приезжает в основное дерево.
+ * Ссылка — из хендла (worktree вне дерева, его нашёл поиск воркспейса) или по
+ * `.git` над файлом (worktree внутри дерева, `inTreeWorktree`).
  */
-export function mainCwdOf(h: StoreHandle, cwd: string): string {
-  return h.worktree === undefined ? cwd : mapIntoMain(h.worktree, resolve(cwd));
+function fileOf(h: StoreHandle, input: string, cwd: string): { main: string; link: WorktreeLink | undefined } {
+  const abs = resolve(cwd, input);
+  const link = h.worktree ?? inTreeWorktree(h.wsDir, dirname(abs));
+  return { main: link === undefined ? abs : mapIntoMain(link, abs), link };
 }
 
-function mainCwd(h: StoreHandle, ctx: CommandContext): string {
-  return mainCwdOf(h, ctx.globals.directory ?? process.cwd());
-}
-
-function localFile(h: StoreHandle, absInMain: string): string {
-  if (h.worktree === undefined) return absInMain;
+function localFile(link: WorktreeLink | undefined, absInMain: string): string {
+  if (link === undefined) return absInMain;
   // Копия из worktree сильнее — это то, что агент правит. Но если её нет
   // (файл не приехал на эту ветку), берётся копия основного дерева, а не
   // выдаётся «файла нет»: путь-то в репозитории существует.
-  const local = mapIntoWorktree(h.worktree, absInMain);
+  const local = mapIntoWorktree(link, absInMain);
   return existsSync(local) ? local : absInMain;
+}
+
+/** Путь в базе — всегда относительный (от корня репозитория или воркспейса) и POSIX-слэшами. */
+function posixRel(root: string, abs: string): string {
+  return relative(root, abs).split(sep).join("/");
+}
+
+/**
+ * Абсолютный путь файла (журнал хука, подсказка очереди) → путь от корня
+ * воркспейса В ОСНОВНОМ ДЕРЕВЕ; null — файл вне воркспейса. Хук пишет путь
+ * как есть и базу не открывает, поэтому worktree внутри дерева (у него
+ * `h.worktree` пуст) приходит путём worktree — и отображается здесь, у
+ * потребителя, а не в горячем пути хука. `links` — кеш по каталогу на один
+ * прогон: сотня правок одного каталога стоит один подъём.
+ */
+export function wsPathOfFile(
+  wsDir: string,
+  abs: string,
+  links: Map<string, WorktreeLink | undefined> = new Map(),
+): string | null {
+  const dir = dirname(abs);
+  let link = links.get(dir);
+  if (!links.has(dir)) {
+    link = inTreeWorktree(wsDir, dir);
+    links.set(dir, link);
+  }
+  const rel = posixRel(wsDir, link === undefined ? abs : mapIntoMain(link, abs));
+  return rel.length === 0 || outsideRoot(rel) ? null : rel;
+}
+
+/** Каталог вызова команды — тот, от которого считаются относительные пути. */
+function callerCwd(ctx: CommandContext): string {
+  return ctx.globals.directory ?? process.cwd();
 }
 
 export interface AnchorTarget {
@@ -568,22 +690,26 @@ export async function bindAnchorAt(
     readonly inlineMaxBytes?: number;
   } = {},
 ): Promise<BindResult> {
+  // Ключ записи — того места, откуда поставили (`anchorRepo`), как и был:
+  // читатели по файлу спрашивают оба ключа (`anchorKeysFor`), и сводить
+  // запись к одному ключу незачем — см. там же, почему.
   const { repoId, repoRoot } = anchorRepo(h);
-  const path = repoRelative(repoRoot, target.path, mainCwdOf(h, cwd));
+  const file = fileOf(h, target.path, cwd);
+  const path = posixRel(repoRoot, file.main);
   // ПУТЬ ОБЯЗАН ЛЕЖАТЬ В КОРНЕ. Иначе в `anchors` уезжает строка вида
   // `../demo/src/fuse.ts` — она резолвится только на этой машине и только из
   // этого каталога, а `anchor of` по ней не найдётся никогда (запрос идёт по
   // паре repo_id+path). Ловится это в первую очередь личным ярусом: `myc
   // remember --global --anchor` открывает воркспейс ~/.myc, у которого код
   // репозитория не лежит нигде.
-  if (path.startsWith("../")) {
+  if (outsideRoot(path)) {
     return {
       ok: false,
       code: "outside.repo",
       msg: `file outside the root ${repoRoot}: ${path} — an anchor cannot be bound to such a path`,
     };
   }
-  const abs = localFile(h, join(repoRoot, path));
+  const abs = localFile(file.link, file.main);
   // Один stat вместо existsSync + statSync: строке якоря он нужен всё равно,
   // а его `size` — то единственное, что требуется знать ДО чтения файла.
   let st: StatLike;
@@ -661,7 +787,10 @@ export async function bindAnchorAt(
         jobs.enqueue(h.driver.database, "anchor_check", {
           entityId: anchorNode.id,
           scope: h.scope,
-          payload: { path },
+          // Путь от корня ВОРКСПЕЙСА, а не от репозитория записи: фон
+          // выводит из подсказки оба ключа файла (`anchorKeysFor`), и `x.ts`
+          // из вложенного репозитория иначе значил бы файл `x.ts` в корне.
+          payload: { path: wsPathOfKey(repoId, path) },
           now,
           runAfter: Math.max(now, Math.floor(st.mtimeMs) + ANCHOR_DEBOUNCE_MS),
         });
@@ -917,28 +1046,35 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
         if (!resolved.ok) return resolved.failure;
         const node = resolved.node;
         const { repoRoot } = anchorRepo(h);
-        const wantPath =
-          target === undefined ? undefined : repoRelative(repoRoot, target.path, mainCwd(h, ctx));
+        // Файл сравнивается ЛИЧНОСТЬЮ — путём от корня воркспейса, — а не
+        // строкой `path` одного ключа: якорь, поставленный из корня, лежит
+        // как `alpha/x.ts`, из alpha — как `x.ts`, и `rm` из alpha обязан
+        // снимать оба. Прежнее сравнение одной строки ещё и путало файлы:
+        // `x.ts` из alpha совпадал с якорем на `x.ts` в корне.
+        const wantWs =
+          target === undefined ? undefined : posixRel(h.wsDir, fileOf(h, target.path, callerCwd(ctx)).main);
 
         const db = h.driver.database;
         const rows = db
           .query(
-            `SELECT a.node_id AS node_id, a.path AS path, a.span_start AS s, a.span_end AS e
+            `SELECT a.node_id AS node_id, a.repo_id AS repo_id, a.path AS path, a.span_start AS s, a.span_end AS e
                FROM edges g JOIN anchors a ON a.node_id = g.dst
               WHERE g.src = ?1 AND g.type = 'touches' AND g.deleted_at IS NULL`,
           )
-          .all(node.id) as Array<{ node_id: string; path: string; s: number; e: number }>;
+          .all(node.id) as Array<{ node_id: string; repo_id: string; path: string; s: number; e: number }>;
 
         const removed: string[] = [];
         for (const r of rows) {
-          if (wantPath !== undefined && r.path !== wantPath) continue;
+          const ws = wsPathOfKey(r.repo_id, r.path);
+          if (wantWs !== undefined && ws !== wantWs) continue;
           if (target !== undefined && !target.whole && (r.s !== target.start || r.e !== target.end)) {
             continue;
           }
           h.store.removeEdge(node.id, "touches", r.node_id);
           h.store.deleteNode(r.node_id);
           db.query("DELETE FROM anchors WHERE node_id = ?1").run(r.node_id);
-          removed.push(`${r.path}:${spanLabel(r.s, r.e)}`);
+          // Путь — в терминах спросившего, какой бы ключ ни лежал в строке.
+          removed.push(`${posixRel(repoRoot, join(h.wsDir, ws))}:${spanLabel(r.s, r.e)}`);
         }
         if (removed.length === 0) {
           return failure("notfound.anchor", `${node.id} has no such anchor`, ExitCode.NOTFOUND);
@@ -1026,25 +1162,40 @@ export interface OfData {
   took_ms: number;
 }
 
-export function queryAnchorsAt(
-  db: Database,
-  repoId: string,
-  path: string,
-  line: number | null,
-): Array<{ node_id: string; path: string; s: number; e: number; state: string; drift: number; symbol: string }> {
+export interface AnchorAtRow {
+  node_id: string;
+  path: string;
+  s: number;
+  e: number;
+  state: string;
+  drift: number;
+  symbol: string;
+}
+
+/** Якоря ОДНОГО ключа `(repo_id, path)` — один индексный поиск. */
+export function queryAnchorsAt(db: Database, repoId: string, path: string, line: number | null): AnchorAtRow[] {
   return (
     line === null
       ? db.query(SQL_OF_FILE).all(repoId, path)
       : db.query(SQL_OF_LINE).all(repoId, path, line)
-  ) as Array<{
-    node_id: string;
-    path: string;
-    s: number;
-    e: number;
-    state: string;
-    drift: number;
-    symbol: string;
-  }>;
+  ) as AnchorAtRow[];
+}
+
+/**
+ * Якоря ФАЙЛА — под обоими его ключами (`anchorKeysFor`), откуда бы их ни
+ * поставили: из корня, из вложенного репозитория, из worktree. `wsPath` — путь
+ * от корня воркспейса. Два индексных поиска вместо одного, и порядок тот же,
+ * что у одного запроса: по строке — самый тесный спан первым, по файлу — по
+ * началу спана. Сортировка устойчива: при одном ключе порядок прежний.
+ */
+export function queryAnchorsOfFile(db: Database, wsPath: string, line: number | null): AnchorAtRow[] {
+  if (wsPath.length === 0 || outsideRoot(wsPath)) return [];
+  const rows: AnchorAtRow[] = [];
+  for (const k of anchorKeysFor(wsPath)) rows.push(...queryAnchorsAt(db, k.repoId, k.path, line));
+  rows.sort(
+    line === null ? (a, b) => a.s - b.s || a.e - b.e : (a, b) => a.e - a.s - (b.e - b.s) || a.s - b.s,
+  );
+  return rows;
 }
 
 function buildAnchorOf(deps: StoreDeps | undefined): Command {
@@ -1071,12 +1222,15 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
       const h = opened.handle;
       try {
         const { repoId, repoRoot } = anchorRepo(h);
-        const path = repoRelative(repoRoot, target.path, mainCwd(h, ctx));
+        const main = fileOf(h, target.path, callerCwd(ctx)).main;
+        // Путь в выдаче — от репозитория спросившего; поиск — по пути от
+        // корня воркспейса, то есть по обоим ключам файла.
+        const path = posixRel(repoRoot, main);
         const line = target.whole ? null : target.start;
 
         const db = h.driver.database;
         const q0 = performance.now();
-        const rows = queryAnchorsAt(db, repoId, path, line);
+        const rows = queryAnchorsOfFile(db, posixRel(h.wsDir, main), line);
         const queryMs = performance.now() - q0;
 
         const owners = db.query(SQL_OF_OWNERS);
@@ -1086,7 +1240,8 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
           nodes += list.length;
           return {
             anchor_id: r.node_id,
-            path: r.path,
+            // Строка под другим ключом хранит путь в ЕГО терминах; файл тот же.
+            path,
             start: r.s,
             end: r.e,
             state: r.state,
@@ -1312,13 +1467,23 @@ function applyCheck(
  * путями и считаются раздельно — `bound` против `checked`.
  */
 export interface SweepOptions {
-  /** Охват одного репозитория; пусто — все репозитории воркспейса (фон). */
+  /**
+   * Охват одного репозитория; пусто — все репозитории воркспейса (фон).
+   * Охват — это ФАЙЛЫ репозитория, а не строки его ключа: якорь на его файл,
+   * поставленный из корня, лежит под `repo_id = ''` и в охват входит.
+   */
   readonly repoId?: string;
-  /** Корень для строк со старым пустым `repo_root`. */
-  readonly repoRoot: string;
+  /**
+   * Корень репозитория вызова. Строке якоря больше не нужен: корень строки
+   * со старым пустым `repo_root` выводится из её же ключа (`wsDir` +
+   * `repo_id`) — корень вызова для строки ЧУЖОГО ключа давал чужой файл.
+   * Остался ради совместимости вызова фона (drain.ts).
+   */
+  readonly repoRoot?: string;
   /** Корень воркспейса — там лежит `.myc/anchor-dirty.log`. */
   readonly wsDir: string;
   readonly limit?: number;
+  /** Префикс пути — от корня репозитория `repoId`, как его видит спросивший. */
   readonly pathPrefix?: string;
   readonly dryRun?: boolean;
   readonly maxLevel?: MaxLevel;
@@ -1326,23 +1491,50 @@ export interface SweepOptions {
   readonly debounceMs?: number;
   /** Потолок времени на прогон; 0 — без потолка (ручной вызов). */
   readonly budgetMs?: number;
-  /** Пути-подсказки поверх журнала: payload работ `anchor_check`. */
+  /**
+   * Пути-подсказки поверх журнала: payload работ `anchor_check`.
+   * Абсолютный — файл (так пишет absorb-session), относительный — путь от
+   * корня воркспейса (так пишет `bindAnchorAt`).
+   */
   readonly hintPaths?: readonly string[];
   readonly now?: number;
 }
 
 /**
- * Один запрос на обе половины батча. `?3 = 1` — только грязные пути,
- * `?3 = 0` — все; фильтры репозитория и префикса выключаются пустой строкой,
- * чтобы у ручного и фонового вызова был ОДИН план, а не два похожих.
+ * Две половины батча — два запроса, и оба одинаковы у ручного и фонового
+ * вызова: фильтры репозитория и префикса выключаются пустой строкой, чтобы
+ * план был ОДИН, а не два похожих.
+ *
+ * ГРЯЗНАЯ ПОЛОВИНА — точечно по КЛЮЧАМ (memory-9s21yc2kshma). Пометка
+ * называет файл, а у файла два ключа (`anchorKeysFor`): якорь на
+ * `alpha/x.ts`, поставленный из корня, и якорь на `x.ts`, поставленный из
+ * alpha, — один файл, и правка его обязана пометить оба. Пары ключей
+ * приходят JSON-массивом, и каждая — поиск по `ix_anchors_file`. Прежний
+ * `path IN (…)` сравнивал строку одного ключа и сканировал таблицу: замер на
+ * 50 000 якорей — 4.9 мс против 0.035 мс по ключам, а сравнение по пути от
+ * корня воркспейса выражением (без индекса) стоило 7.2 мс — при бюджете
+ * всего фонового прогона 20 мс. `json_each` здесь обязан быть внешним
+ * циклом; план проверяет anchor.latency.test.ts.
+ *
+ * ОХВАТ РЕПОЗИТОРИЯ `R` — его ФАЙЛЫ, а не строки его ключа: строки `repo_id = R`
+ * плюс строки корня под `R/` (отрезок ключа `path >= 'R/' AND path < 'R0'`,
+ * как у вида индекса, view.ts).
  */
-export const SQL_SWEEP_BATCH = `SELECT * FROM anchors
- WHERE state <> 'lost'
-   AND (?1 = '' OR repo_id = ?1)
-   AND (?2 = '' OR path LIKE ?2)
-   AND (?3 = 0 OR path IN (SELECT value FROM json_each(?4)))
- ORDER BY checked_at ASC, node_id ASC
- LIMIT ?5`;
+export const SQL_SWEEP_DIRTY = `SELECT a.* FROM json_each(?3) AS j
+  JOIN anchors AS a ON a.repo_id = json_extract(j.value, '$[0]') AND a.path = json_extract(j.value, '$[1]')
+ WHERE a.state <> 'lost'
+   AND (?1 = '' OR a.repo_id = ?1 OR (a.repo_id = '' AND a.path >= (?1 || '/') AND a.path < (?1 || '0')))
+   AND (?2 = '' OR ${sqlWsPath("a")} LIKE ?2)
+ ORDER BY a.checked_at ASC, a.node_id ASC
+ LIMIT ?4`;
+
+/** Остальная половина: порядок §7.5, `checked_at ASC` среди `state <> 'lost'`. */
+export const SQL_SWEEP_BATCH = `SELECT * FROM anchors AS a
+ WHERE a.state <> 'lost'
+   AND (?1 = '' OR a.repo_id = ?1 OR (a.repo_id = '' AND a.path >= (?1 || '/') AND a.path < (?1 || '0')))
+   AND (?2 = '' OR ${sqlWsPath("a")} LIKE ?2)
+ ORDER BY a.checked_at ASC, a.node_id ASC
+ LIMIT ?3`;
 
 export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<CheckData> {
   const t0 = performance.now();
@@ -1350,7 +1542,7 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
   const db = h.driver.database;
   const limit = opts.limit ?? ANCHOR_CHECK_BATCH_DEFAULT;
   const repoId = opts.repoId ?? "";
-  const like = opts.pathPrefix === undefined ? "" : `${opts.pathPrefix}%`;
+  const like = opts.pathPrefix === undefined ? "" : `${wsPathOfKey(repoId, opts.pathPrefix)}%`;
   const debounceMs = opts.debounceMs ?? 0;
   const budgetMs = opts.budgetMs ?? 0;
   const now = opts.now ?? Date.now();
@@ -1358,24 +1550,31 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
   const maxLevel = opts.maxLevel ?? 3;
 
   // Журнал грязных файлов — подсказка «сюда раньше», не источник истины:
-  // потеряв его целиком, система теряет очерёдность и ничего больше.
-  const dirty = new Set(
-    drainDirtyLog(opts.wsDir).map((abs) => repoRelative(opts.repoRoot, abs, opts.repoRoot)),
-  );
-  for (const p of opts.hintPaths ?? []) if (p.length > 0) dirty.add(p);
-  const dirtyJson = JSON.stringify([...dirty]);
+  // потеряв его целиком, система теряет очерёдность и ничего больше. Пути —
+  // от корня воркспейса в основном дереве: из такого пути выводятся оба
+  // ключа файла (`anchorKeysFor`), и так же туда приезжает пометка из
+  // worktree внутри дерева, которую хук записал как есть.
+  const links = new Map<string, WorktreeLink | undefined>();
+  const dirty = new Set<string>();
+  const mark = (p: string): void => {
+    const ws = isAbsolute(p) ? wsPathOfFile(opts.wsDir, p, links) : p;
+    if (ws !== null && ws.length > 0 && !outsideRoot(ws)) dirty.add(ws);
+  };
+  for (const abs of drainDirtyLog(opts.wsDir)) mark(abs);
+  for (const p of opts.hintPaths ?? []) mark(p);
+  const dirtyKeys: Array<[string, string]> = [];
+  for (const p of dirty) for (const k of anchorKeysFor(p)) dirtyKeys.push([k.repoId, k.path]);
 
-  const q = db.query(SQL_SWEEP_BATCH);
   const batch: AnchorRow[] = [];
   const taken = new Set<string>();
-  if (dirty.size > 0) {
-    for (const r of q.all(repoId, like, 1, dirtyJson, limit) as AnchorRow[]) {
+  if (dirtyKeys.length > 0) {
+    for (const r of db.query(SQL_SWEEP_DIRTY).all(repoId, like, JSON.stringify(dirtyKeys), limit) as AnchorRow[]) {
       batch.push(r);
       taken.add(r.node_id);
     }
   }
   if (batch.length < limit) {
-    for (const r of q.all(repoId, like, 0, "[]", limit) as AnchorRow[]) {
+    for (const r of db.query(SQL_SWEEP_BATCH).all(repoId, like, limit) as AnchorRow[]) {
       if (taken.has(r.node_id)) continue;
       batch.push(r);
       if (batch.length >= limit) break;
@@ -1389,7 +1588,7 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
     stale: 0,
     lost: 0,
     moved: 0,
-    from_dirty: batch.filter((r) => dirty.has(r.path)).length,
+    from_dirty: batch.filter((r) => dirty.has(wsPathOfKey(r.repo_id, r.path))).length,
     by_level: { "0": 0, "1": 0, "2": 0, "3": 0 },
     skipped_debounce: 0,
     bound: 0,
@@ -1404,7 +1603,11 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
       data.budget_hit = true;
       break;
     }
-    const root = row.repo_root.length > 0 ? row.repo_root : opts.repoRoot;
+    // Корень строки — её собственный: записанный, а у старой строки без
+    // него — выведенный из её ключа. Корень ВЫЗОВА тут не годится: из alpha
+    // строка корня `alpha/x.ts` дала бы `alpha/alpha/x.ts`.
+    const root =
+      row.repo_root.length > 0 ? row.repo_root : row.repo_id.length > 0 ? join(opts.wsDir, row.repo_id) : opts.wsDir;
     const abs = join(root, row.path);
     // Дебаунс: файл, изменённый только что, честнее не трогать вовсе, чем
     // объявить `stale` по недописанному тексту. Один stat — та же цена, что

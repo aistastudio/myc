@@ -44,7 +44,7 @@ import {
 } from "./symbols.ts";
 import { listDefsAndRefs, type ParsedFile, type Ref } from "./refs.ts";
 import { PARSE_WORKER_IN_BINARY } from "./parse_worker_entry.ts";
-import { type FileListing, L1_LANGS, langOf, listFiles, type UnignoredDir } from "./langs.ts";
+import { type FileListing, L1_LANGS, langOf, listFiles, type SkippedWorktree, type UnignoredDir } from "./langs.ts";
 import { prefixEnd, REFS_VIEW_SEP } from "./view.ts";
 import { isSecretPath } from "./secret-paths.ts";
 import { GRAMMAR_BY_LANG, type MissingGrammar, missingGrammars } from "./grammars.ts";
@@ -59,6 +59,7 @@ export {
   listFiles,
   walkFiles,
   type FileListing,
+  type SkippedWorktree,
   type UnignoredDir,
 } from "./langs.ts";
 
@@ -145,6 +146,12 @@ export interface ScanStats {
    * уходят в `removed` этого же прогона.
    */
   readonly secretSkipped: number;
+  /**
+   * git worktree репозиториев этого же дерева, не взятые в перечень: их файлы
+   * уже есть под основным деревом (memory-9s21yc2kshma). Команда называет
+   * их числом и каталогами — пропуск не молчалив (И2).
+   */
+  readonly worktreesSkipped: readonly SkippedWorktree[];
   readonly unchanged: number;
   /** mtime/size изменились, хеш — нет: разбора не было, mtime записан. */
   readonly touched: number;
@@ -496,7 +503,9 @@ export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write 
   // считается лишь то, что лежало В ЭТОЙ части.
   const sub = (opts.subtree ?? "").replace(/^\/+|\/+$/g, "");
   const prefix = sub.length === 0 ? "" : `${sub}/`;
-  const listing = listFiles(prefix.length === 0 ? opts.root : join(opts.root, sub));
+  // Корень дерева — ВСЕГДА корень индекса, и у части тоже: worktree чужого
+  // репозитория внутри части — такой же дубль, как в перечне корня.
+  const listing = listFiles(prefix.length === 0 ? opts.root : join(opts.root, sub), { treeRoot: opts.root });
   const ledger = loadLedger(db, opts.repoId, prefix);
   const raw = await listing;
   const listed: FileListing =
@@ -507,6 +516,7 @@ export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write 
           gitRepos: raw.gitRepos.map((d) => (d === "." ? sub : prefix + d)),
           unignored: raw.unignored.map((u) => ({ dir: u.dir === "." ? sub : prefix + u.dir, reason: u.reason })),
           secretSkipped: raw.secretSkipped,
+          worktreesSkipped: raw.worktreesSkipped.map((w) => ({ dir: prefix + w.dir, main: w.main })),
         };
   const paths = listed.files;
   const dirtyL1: Array<{ path: string; lang: string }> = [];
@@ -639,6 +649,7 @@ export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write 
     gitRepos: listed.gitRepos,
     unignored: listed.unignored,
     secretSkipped: listed.secretSkipped,
+    worktreesSkipped: listed.worktreesSkipped,
     unchanged,
     touched: touched.length,
     relabeled: relabel.length,
