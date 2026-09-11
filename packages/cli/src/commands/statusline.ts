@@ -124,8 +124,20 @@ export interface CodeStats {
   readonly symbols: number;
   /** Когда индекс последний раз записал файл; 0 — никогда. */
   readonly indexed_at: number;
-  /** Давность той записи коротко (fmtAge: 38m, 6h, 2d). */
+  /**
+   * Когда индекс последний раз был СВЕРЕН с деревом целиком — завершённый
+   * прогон (`code_indexed_at`); у базы без отметки — последняя запись. Не то
+   * же, что `indexed_at`: прогон, не нашедший изменений, ничего не пишет, и
+   * «9h ago» по записи значило бы «9 часов никто не менял основные копии», а
+   * читалось бы как «индексу 9 часов» (memory-es8qwd555cjt).
+   */
+  readonly refreshed_at: number;
+  /** Давность сверки коротко (fmtAge: 38m, 6h, 2d). */
   readonly age: string;
+  /** Старше порога фонового обновления (15m, MYC_CODE_INDEX_PERIOD_MS). */
+  readonly stale: boolean;
+  /** Фоновое обновление: идёт, ждёт, ждёт повтора, бросило; null — строки нет. */
+  readonly refresh: "running" | "queued" | "retry" | "failed" | null;
   readonly queued: number;
 }
 
@@ -405,13 +417,32 @@ function count(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
+/**
+ * Код-индекс: счётчики, давность СВЕРКИ и, громко (И2), что с обновлением —
+ * `refreshing` (фон сверяет прямо сейчас), `refresh queued`, `refresh
+ * retrying` (прошлая попытка упала), `refresh failed` (фон бросил — сам не
+ * возьмётся), `stale` (старше порога, а обновления нет вовсе). Свежий —
+ * только давность, как было.
+ */
 function codePart(c: CodeStats | null): string {
   if (c === null) return "code: ?";
   if (c.state === "none") return "no code index";
   const counts = `${count(c.files, "file")} · ${count(c.symbols, "symbol")}`;
   if (c.state === "indexing") return `${counts} · indexing`;
   if (c.state === "queued") return `${counts} · ${count(c.queued, "file")} queued`;
-  return `${counts} · ${c.age} ago`;
+  const tail =
+    c.refresh === "running"
+      ? " · refreshing"
+      : c.refresh === "queued"
+        ? " · refresh queued"
+        : c.refresh === "retry"
+          ? " · refresh retrying"
+          : c.refresh === "failed"
+            ? " · refresh failed"
+            : c.stale
+              ? " · stale"
+              : "";
+  return `${counts} · ${c.age} ago${tail}`;
 }
 
 function sessionPartText(s: SessionPart | null): string {
@@ -865,13 +896,23 @@ async function ownPart(
       };
       cache.code = code;
     }
+    // Давность сверки и фоновое обновление — КАЖДУЮ отрисовку, мимо кеша: это
+    // два поиска по ключу, а «refreshing» из минутного кеша висел бы после
+    // того, как обновление давно кончилось. Та же функция и тот же порог, что
+    // у WARN код-команд: строка и ответ не могут разойтись в «свежий/устарел».
+    const { indexFreshness, refreshAfterMs } = await import("@myc/code-intel/refresh");
+    const fresh = code.files > 0 ? indexFreshness(h.driver.database, now, refreshAfterMs(deps.env)) : null;
+    const refreshedAt = fresh !== null && fresh.refreshedAt > 0 ? fresh.refreshedAt : code.indexed_at;
     const codeStats: CodeStats = {
       state:
         jobs.leased > 0 ? "indexing" : jobs.queued > 0 ? "queued" : code.files === 0 ? "none" : "ok",
       files: code.files,
       symbols: code.symbols,
       indexed_at: code.indexed_at,
-      age: fmtAge(now - code.indexed_at),
+      refreshed_at: refreshedAt,
+      age: fmtAge(now - refreshedAt),
+      stale: fresh?.stale ?? false,
+      refresh: fresh?.job?.state ?? null,
       queued: jobs.queued,
     };
 

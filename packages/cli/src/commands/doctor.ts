@@ -470,7 +470,14 @@ export interface GeneratedReport {
 }
 
 export interface HooksSection {
+  /** Журнал проектной проводки (`.myc/wire.json` рабочего дерева) есть. */
   readonly journal: boolean;
+  /**
+   * `user` — проектной проводки здесь нет, а пользовательский слой исправен:
+   * «поставлен ли хук» ответил он (worktree, вложенный репозиторий). Поля нет —
+   * ответ проектного журнала (или «не знаю», если нет и его).
+   */
+  readonly layer?: "user";
   readonly hooks: readonly HookReport[];
   /** Сгенерированные нами файлы: устарел / подменён / актуален. */
   readonly generated: readonly GeneratedReport[];
@@ -496,6 +503,14 @@ export interface UserLayerSection {
   /** Журнал `~/.myc/wire-user.json`; null — его нет (слой не проведён, или журнал не здесь). */
   readonly journal: string | null;
   readonly checks: readonly Check[];
+  /**
+   * События Claude Code, на которые пользовательский слой поставил наш хук, и
+   * когда журнал записан. Нужны проектной сверке там, где проектной проводки
+   * нет (worktree, вложенный репозиторий): «поставлен ли хук ЗДЕСЬ» там
+   * отвечает этот слой.
+   */
+  readonly events?: readonly string[];
+  readonly writtenAt?: number;
 }
 
 interface WireJournal {
@@ -703,7 +718,25 @@ function checkHooks(
   now: number = Date.now(),
 ): HooksSection {
   const journal = readWireJournal(join(journalDir, WIRE_JOURNAL));
-  const wired = wiredEvents(journal);
+  const user = checkUserLayer(env, registry);
+  // ПРОЕКТНОЙ ПРОВОДКИ ЗДЕСЬ НЕТ, ПОЛЬЗОВАТЕЛЬСКИЙ СЛОЙ ИСПРАВЕН
+  // (memory-qya8z12f3yae). Так выглядит каждый worktree orca и каждый
+  // вложенный репозиторий: `.claude` там командный, myc в нём не проведён, и
+  // хуки ставит пользовательский слой (`myc wire --scope user`) — ради этого
+  // он и существует. Прежде doctor печатал здесь «unknown: журнала wire.json
+  // нет» и WARN doctor.unknown, то есть тревогу на норме. Теперь «поставлен
+  // ли хук здесь» отвечает пользовательский слой, а проектный — одной строкой
+  // `project layer: not wired here (user layer: ok)`. Неисправный слой (хоть
+  // один DRIFT/unknown) — прежнее «не знаю»: тогда ставит ли кто-то хуки
+  // здесь, действительно не видно.
+  const viaUser =
+    journal === null &&
+    user.journal !== null &&
+    user.events !== undefined &&
+    user.checks.every((c) => c.verdict === "ok" || c.verdict === "n/a");
+  const wired =
+    wiredEvents(journal) ??
+    (viaUser ? { events: new Set(user.events ?? []), writtenAt: user.writtenAt ?? Number.NaN } : null);
   const counters = readCounters(countersDir).hooks;
   const reports: HookReport[] = [];
   // Те же события, что поставил бы `myc wire` из этой сборки: сверять
@@ -776,7 +809,9 @@ function checkHooks(
         command: spec.command,
         installed: false,
         verdict: "drift",
-        detail: "not installed: the event is not in the `myc wire` journal",
+        detail: viaUser
+          ? "not installed: no project wiring here, and the user layer (`myc wire --scope user`) did not put this event in"
+          : "not installed: the event is not in the `myc wire` journal",
       });
       continue;
     }
@@ -802,8 +837,19 @@ function checkHooks(
     });
   }
 
-  const generated = checkGenerated(dirname(journalDir), journalDir, journal, buildEvents);
-  const user = checkUserLayer(env, registry);
+  // Сверять сгенерированные файлы проекта здесь не с чем: их здесь нет по
+  // устройству, и это не «не знаю», а «проектный слой не проведён».
+  const generated: GeneratedReport[] = viaUser
+    ? [
+        {
+          path: "project layer",
+          verdict: "n/a",
+          detail:
+            `not wired here (user layer: ok) — no ${join(journalDir, WIRE_JOURNAL)}, and none is needed: ` +
+            `Claude Code runs myc's hooks from the user layer (${user.journal}) in this tree`,
+        },
+      ]
+    : checkGenerated(dirname(journalDir), journalDir, journal, buildEvents);
 
   const checks: Check[] = [
     ...reports.map((r) => ({ name: r.event, verdict: r.verdict, detail: r.detail })),
@@ -816,13 +862,17 @@ function checkHooks(
   const split =
     countersDir === journalDir
       ? undefined
-      : `counter from ${countersDir} (it belongs to the database), install journal from ` +
-        `${journalDir} (it belongs to the working tree)`;
+      : viaUser
+        ? `counter from ${countersDir} (it belongs to the database), installation from the user layer ` +
+          `${user.journal} (this working tree ${dirname(journalDir)} has no project wiring)`
+        : `counter from ${countersDir} (it belongs to the database), install journal from ` +
+          `${journalDir} (it belongs to the working tree)`;
   if (split !== undefined) {
     checks.unshift({ name: "sources", verdict: "ok", detail: split });
   }
   return {
-    journal: wired !== null,
+    journal: journal !== null,
+    ...(viaUser ? { layer: "user" as const } : {}),
     hooks: reports,
     generated,
     checks,
@@ -987,7 +1037,8 @@ export function checkUserLayer(env: NodeJS.ProcessEnv, registry: Registry): User
   // --- MCP ----------------------------------------------------------------------
   checks.push(checkUserMcp(paths, j, show));
 
-  return { journal: paths.journal, checks };
+  const events = j.events ?? HOOK_SPECS.filter((s) => registry.hasTop(s.command)).map((s) => s.claudeEvent);
+  return { journal: paths.journal, checks, events, writtenAt: j.written_at };
 }
 
 function checkUserFiles(

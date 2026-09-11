@@ -205,6 +205,74 @@ describe("что показывает строка", () => {
 });
 
 /**
+ * Возраст индекса и фоновое обновление (memory-es8qwd555cjt). В cherry
+ * строка говорила «9h ago» — давность ПОСЛЕДНЕЙ ЗАПИСИ файла в реестр, и не
+ * говорила ничего о том, обновляется ли индекс вообще. Теперь давность —
+ * последней сверки с деревом, а состояние фона названо словом.
+ */
+describe("код-индекс: давность сверки и фоновое обновление", () => {
+  const HOUR = 3_600_000;
+
+  function sql(text: string, ...params: Array<string | number>): void {
+    const db = new Database(join(ws, ".myc", "myc.db"));
+    try {
+      db.prepare(text).run(...params);
+    } finally {
+      db.close();
+    }
+  }
+  const stamp = (at: number): void =>
+    sql("INSERT INTO myc_meta (key, value) VALUES ('code_indexed_at', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(at));
+  const refreshRow = (lease: number, attempts = 0): void =>
+    sql(
+      "INSERT INTO jobs(kind, entity_id, run_after, attempts, lease_holder, lease_expires, created_at) VALUES ('code_refresh', '.', 0, ?1, ?2, ?3, 0)",
+      attempts,
+      lease > 0 ? "code-refresh-1" : "",
+      lease,
+    );
+
+  beforeEach(async () => {
+    writeFileSync(join(ws, "a.ts"), "export function alpha(): number { return 1; }\n");
+    await myc("code", "index");
+  });
+
+  test("старше порога и обновления нет — «stale»", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    const d = await line();
+    expect(d.code).toMatchObject({ stale: true, refresh: null });
+    expect(d.line).toContain("· 9h ago · stale");
+  });
+
+  test("обновление стоит в очереди / идёт / бросило — сказано словом", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    refreshRow(0);
+    expect((await line()).line).toContain("· 9h ago · refresh queued");
+
+    sql("DELETE FROM jobs WHERE kind = 'code_refresh'");
+    refreshRow(Date.now() + 60_000);
+    const running = await line();
+    expect(running.code?.refresh).toBe("running");
+    expect(running.line).toContain("· 9h ago · refreshing");
+
+    sql("DELETE FROM jobs WHERE kind = 'code_refresh'");
+    refreshRow(0, 5);
+    // Мёртвую строку маркер ⚠ назовёт «1 failed job», когда истечёт кеш
+    // счётчиков (30 с); сегмент кода говорит это сразу — он мимо кеша.
+    expect((await line()).line).toContain("· 9h ago · refresh failed");
+  });
+
+  test("давность — сверки, а не последней записи: прогон без изменений ничего не пишет", async () => {
+    // Реестр писался 9 часов назад, сверка была минуту назад — индекс свежий.
+    sql("UPDATE code_files SET indexed_at = ?1", Date.now() - 9 * HOUR);
+    stamp(Date.now() - 60_000);
+    const d = await line();
+    expect(d.code).toMatchObject({ stale: false, refresh: null });
+    expect(d.line).toContain("· 1m ago │");
+    expect(d.code!.indexed_at).toBeLessThan(Date.now() - 8 * HOUR);
+  });
+});
+
+/**
  * Заполнение контекста — число ХОСТА: `context_window.used_percentage` (схема
  * из бинаря Claude Code 2.1.267: целое 0..100 или null до первого ответа).
  * Сегмент стоит сразу после `myc` и его маркера. Нет числа — нет сегмента:
@@ -293,7 +361,7 @@ describe("ctx: заполнение окна контекста от хоста"
       workspace: "/ws",
       repo: "",
       queue: { ready: 61, in_progress: 0, blocked: 34, blocked_by_ancestor: 0 },
-      code: { state: "ok", files: 612, symbols: 4268, indexed_at: 1, age: "1h", queued: 0 },
+      code: { state: "ok", files: 612, symbols: 4268, indexed_at: 1, refreshed_at: 1, age: "1h", stale: false, refresh: null, queued: 0 },
       memory: 101,
       degraded: [],
       session: {

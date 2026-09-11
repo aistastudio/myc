@@ -17,6 +17,7 @@
     "./grep": "./src/grep.ts",
     "./map": "./src/map.ts",
     "./view": "./src/view.ts",
+    "./refresh": "./src/refresh.ts",
     "./worktree": "./src/worktree.ts"
   },
   "dependencies": {

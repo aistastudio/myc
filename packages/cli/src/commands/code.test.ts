@@ -422,3 +422,128 @@ describe("myc code map — ориентация в незнакомом дере
     expect(r.stderr).toContain("myc code index");
   });
 });
+
+/**
+ * Возраст индекса в ответе (memory-es8qwd555cjt, И2): строка статуса говорит
+ * «9h ago» — ровно так же обязан говорить и ответ, собранный по этому
+ * индексу. Один вход (`warnWorktree` → `warnFreshness`) у всех читателей:
+ * symbol, search, grep, map здесь; skeleton и callers зовут тот же вход.
+ */
+describe("возраст индекса в ответе код-команд", () => {
+  const HOUR = 3_600_000;
+
+  function sql(text: string, ...params: Array<string | number>): void {
+    const d = db();
+    try {
+      d.prepare(text).run(...params);
+    } finally {
+      d.close();
+    }
+  }
+  const stamp = (at: number): void =>
+    sql("INSERT INTO myc_meta (key, value) VALUES ('code_indexed_at', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(at));
+  /** Строка фонового обновления; возвращает её id. */
+  const refreshRow = (o: { lease?: number; attempts?: number; runAfter?: number; error?: string } = {}): number => {
+    const d = db();
+    try {
+      const row = d
+        .query(
+          `INSERT INTO jobs(kind, entity_id, run_after, attempts, lease_holder, lease_expires, last_error, created_at)
+           VALUES ('code_refresh', '.', ?1, ?2, ?3, ?4, ?5, 0) RETURNING id`,
+        )
+        .get(o.runAfter ?? 0, o.attempts ?? 0, (o.lease ?? 0) > 0 ? "code-refresh-1" : "", o.lease ?? 0, o.error ?? null) as { id: number };
+      return row.id;
+    } finally {
+      d.close();
+    }
+  };
+
+  async function warns(...args: string[]): Promise<Array<{ code: string; msg: string }>> {
+    const r = await myc(...args, "--json");
+    return ((JSON.parse(r.stdout as string) as { warn?: Array<{ code: string; msg: string }> }).warn ?? []).filter((w) =>
+      w.code.startsWith("code_index.") && (w.code.endsWith("stale") || w.code.endsWith("refreshing")),
+    );
+  }
+
+  beforeEach(async () => {
+    await data("code", "index");
+  });
+
+  test("свежий индекс — ни слова о возрасте", async () => {
+    expect(await warns("code", "symbol", "fuseRRF")).toEqual([]);
+    expect(await warns("code", "search", "fuse")).toEqual([]);
+  });
+
+  test("старше порога и обновления нет — WARN code_index.stale у каждого читателя, с давностью и советом", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    for (const args of [
+      ["code", "symbol", "fuseRRF"],
+      ["code", "search", "fuse"],
+      ["code", "grep", "fuseRRF"],
+      ["code", "map"],
+    ]) {
+      const w = await warns(...args);
+      expect({ args, codes: w.map((x) => x.code) }).toEqual({ args, codes: ["code_index.stale"] });
+      expect(w[0]!.msg).toContain("last refreshed 9h ago");
+      expect(w[0]!.msg).toContain("older than 15m");
+      expect(w[0]!.msg).toContain("no refresh is queued yet");
+      expect(w[0]!.msg).toContain("`myc code index` refreshes it now");
+    }
+  });
+
+  test("обновление в очереди, идёт, ждёт повтора, бросило — сказано, что именно", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    refreshRow();
+    expect((await warns("code", "symbol", "fuseRRF"))[0]!.msg).toContain("a refresh is queued");
+
+    sql("DELETE FROM jobs WHERE kind = 'code_refresh'");
+    refreshRow({ lease: Date.now() + 60_000 });
+    const running = await warns("code", "symbol", "fuseRRF");
+    expect(running.map((x) => x.code)).toEqual(["code_index.refreshing"]);
+    expect(running[0]!.msg).toContain("being refreshed in the background right now");
+
+    sql("DELETE FROM jobs WHERE kind = 'code_refresh'");
+    refreshRow({ attempts: 2, runAfter: Date.now() + 60_000, error: "disk full" });
+    expect((await warns("code", "symbol", "fuseRRF"))[0]!.msg).toContain("failed 2 times and retries at");
+
+    sql("DELETE FROM jobs WHERE kind = 'code_refresh'");
+    refreshRow({ attempts: 5, error: "disk full" });
+    const dead = (await warns("code", "symbol", "fuseRRF"))[0]!.msg;
+    expect(dead).toContain("gave up after 5 attempts (last error: disk full)");
+    expect(dead).toContain("`myc code index` shows why and restarts it");
+  });
+
+  test("ручной `myc code index` не говорит о возрасте, ставит отметку и снимает брошенную работу фона", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    refreshRow({ attempts: 5, error: "disk full" });
+    const r = await myc("code", "index", "--json");
+    const env = JSON.parse(r.stdout as string) as { warn?: Array<{ code: string }> };
+    expect((env.warn ?? []).map((w) => w.code)).not.toContain("code_index.stale");
+    expect(count("jobs")).toBe(0);
+    expect(await warns("code", "symbol", "fuseRRF")).toEqual([]);
+  });
+
+  test("`--job` чужой или снятой работы дерево не читает и выходит", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    const id = refreshRow({ lease: Date.now() + 60_000 });
+    const d = await data("code", "index", "--job", String(id), "--holder", "не-тот");
+    expect(d["taken"]).toBe(false);
+    expect(String(d["reason"])).toContain("not under this holder's live lease");
+    // Работа на месте, отметка прежняя: этот процесс ничего не делал.
+    expect(count("jobs")).toBe(1);
+    expect((await warns("code", "symbol", "fuseRRF")).map((x) => x.code)).toEqual(["code_index.refreshing"]);
+  });
+
+  test("`--job` своей работы: индекс сверен, отметка поставлена, работа снята", async () => {
+    stamp(Date.now() - 9 * HOUR);
+    const id = refreshRow({ lease: Date.now() + 60_000 });
+    writeFileSync(join(dir, "src", "late.ts"), "export function lateArrival(): number {\n  return 3;\n}\n");
+    const d = await data("code", "index", "--job", String(id), "--holder", "code-refresh-1");
+    expect(d["taken"]).toBe(true);
+    expect((d["runs"] as unknown[]).length).toBe(1);
+    expect(count("jobs")).toBe(0);
+    const sym = await data("code", "symbol", "lateArrival");
+    expect(JSON.stringify(sym)).toContain("src/late.ts");
+    expect(await warns("code", "symbol", "lateArrival")).toEqual([]);
+  });
+});

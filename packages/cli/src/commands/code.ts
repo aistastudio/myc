@@ -38,6 +38,16 @@ import type { Database } from "bun:sqlite";
 // динамическим `import()`.
 import { L1_LANGS_LABEL } from "@myc/code-intel/langs";
 import { type CodeView, coveringAncestor, coveringIndex, SQL_HAS_ROWS } from "@myc/code-intel/view";
+// Порог, отметка и состояние фонового обновления — один лёгкий модуль на
+// команду, дренаж и строку статуса (он не импортирует ничего, кроме типов).
+import {
+  CODE_INDEXED_AT_KEY,
+  CODE_REFRESH_JOB_KIND,
+  type IndexFreshness,
+  indexFreshness,
+  indexRepos,
+  refreshAfterMs,
+} from "@myc/code-intel/refresh";
 // Ближайший индекс живёт в view.ts: его спрашивает и строка статуса, которой
 // тянуть весь этот модуль на каждой перерисовке незачем.
 export { coveringAncestor, coveringIndex };
@@ -48,6 +58,7 @@ import {
   flagBool,
   flagNum,
   flagStr,
+  fmtAge,
   realStoreDeps,
   type StoreDeps,
   type StoreHandle,
@@ -55,12 +66,12 @@ import {
 import { mapIntoWorktree, readWorktreeLink, type WorktreeLink } from "./wsfind.ts";
 
 /**
- * Ключ отметки последнего прогона код-индекса в `myc_meta`. Живёт здесь, у
- * команды, которая её обновляет; фоновый шаг дренажа читает ЭТУ константу, а
- * не свою копию строки — разъехавшиеся копии означали бы период, действующий
- * в одну сторону и не действующий в другую.
+ * Ключ отметки последнего ЗАВЕРШЁННОГО прогона код-индекса в `myc_meta`.
+ * Определение — в @myc/code-intel/refresh: его читают ещё дренаж и строка
+ * статуса, а разъехавшиеся копии означали бы период, действующий в одну
+ * сторону и не действующий в другую. Здесь — реэкспорт для прежних импортов.
  */
-export const CODE_INDEXED_AT_KEY = "code_indexed_at";
+export { CODE_INDEXED_AT_KEY };
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
   return { ok: false, code, msg, exit, hint };
@@ -182,6 +193,11 @@ export interface CodeTarget {
   readonly worktree?: CodeWorktree;
   /** Корень воркспейса — для подсказки «строить отсюда». */
   readonly wsDir: string;
+  /**
+   * Возраст индекса и фоновое обновление (memory-es8qwd555cjt). Нет поля —
+   * индекса нет или его только что строят (сам `code index`).
+   */
+  readonly freshness?: IndexFreshness;
 }
 
 /** `dir` лежит под `root` (или совпадает) — по строке, а при симлинках по realpath. */
@@ -231,10 +247,17 @@ export async function codeTarget(
   h: StoreHandle,
   explicit: string | undefined,
   cwd: string,
+  opts: { readonly freshness?: boolean } = {},
 ): Promise<CodeTarget> {
   const { repoId, repoRoot } = await codeRepo(h, explicit);
   const cover = coveringIndex(h.driver.database, repoId);
   const view: CodeView = cover ?? { repoId, prefix: "" };
+  // Возраст — только у читателя существующего индекса: два поиска по ключу
+  // (`myc_meta`, `jobs`), и тот же ответ, что у строки статуса.
+  const freshness =
+    cover !== null && opts.freshness !== false
+      ? indexFreshness(h.driver.database, Date.now(), refreshAfterMs(process.env))
+      : undefined;
   const base = {
     repoId,
     repoRoot,
@@ -242,6 +265,7 @@ export async function codeTarget(
     borrowed: cover !== null && (cover.repoId !== repoId || cover.prefix.length > 0),
     missing: cover === null,
     wsDir: h.wsDir,
+    ...(freshness !== undefined ? { freshness } : {}),
   };
   const link = worktreeOf(h, cwd, repoId, repoRoot);
   if (link === undefined) return { ...base, fileRoot: repoRoot };
@@ -340,12 +364,68 @@ export function sourceLines(s: SourceData | undefined): string[] {
   return out;
 }
 
+/** `14:05Z` — время повтора/истечения аренды коротко, как у аренды задач. */
+function clock(ms: number): string {
+  return `${new Date(ms).toISOString().slice(11, 16)}Z`;
+}
+
 /**
- * WARN расхождения worktree с основной копией (И2). Один текст на все
- * читатели: из какой копии и ветки ответ, где стоит агент, и что может не
- * совпасть.
+ * WARN о возрасте индекса (memory-es8qwd555cjt, И2). Строка статуса говорит
+ * «9h ago» — ровно так же обязан говорить и ответ, собранный по этому
+ * индексу: иначе агент видит символы и спаны утра и принимает их за нынешние.
+ *
+ *   refreshing — фон прямо сейчас сверяет индекс с деревом: ответ — из
+ *                прежнего, свежий будет через секунды;
+ *   stale      — старше порога, и сказано, что с обновлением: стоит в
+ *                очереди, ждёт повтора после сбоя, бросил после N попыток
+ *                (с причиной), или ещё не поставлено.
+ * Свежий индекс — ни слова: WARN здесь значит «ответ может не совпасть с
+ * файлами», а не «индекс существует».
+ */
+export function warnFreshness(ctx: CommandContext, t: CodeTarget): void {
+  const f = t.freshness;
+  if (f === undefined) return;
+  const age =
+    f.source === "none"
+      ? "never refreshed"
+      : `last ${f.source === "run" ? "refreshed" : "written"} ${fmtAge(f.ageMs)} ago`;
+  const job = f.job;
+  if (job !== null && job.state === "running") {
+    ctx.warn(
+      "code_index.refreshing",
+      `the code index is being refreshed in the background right now (${age}) — this answer comes from the index ` +
+        "as it was before the refresh: files changed since may be missing or have moved; ask again in a few seconds",
+    );
+    return;
+  }
+  if (!f.stale) return;
+  const every = `refreshed in the background once older than ${fmtAge(f.thresholdMs)}`;
+  const now = "`myc code index` refreshes it now (incremental)";
+  const tail =
+    job === null
+      ? `no refresh is queued yet — the background drain queues one when a myc command here finishes; ${now}`
+      : job.state === "queued"
+        ? `a refresh is queued; ${now}`
+        : job.state === "retry"
+          ? `the background refresh failed ${count(job.attempts, "time")} and retries at ${clock(job.until)} ` +
+            `(last error: ${job.lastError ?? "none recorded"}); ${now}`
+          : `the background refresh gave up after ${count(job.attempts, "attempt")} ` +
+            `(last error: ${job.lastError ?? "none recorded — the worker died without a word"}) — ` +
+            "`myc code index` shows why and restarts it";
+  ctx.warn(
+    "code_index.stale",
+    `the code index is ${age} (${every}): this answer may miss changes made since — ${tail}`,
+  );
+}
+
+/**
+ * WARN о происхождении ответа (И2) — один вход на все читатели: возраст
+ * индекса (`warnFreshness`) и расхождение worktree с основной копией — из
+ * какой копии и ветки ответ, где стоит агент, и что может не совпасть. Оба
+ * говорят одно: «строки и спаны могут не совпасть с твоими файлами».
  */
 export function warnWorktree(ctx: CommandContext, t: CodeTarget, reads?: string): void {
+  warnFreshness(ctx, t);
   const w = t.worktree;
   if (w === undefined || !w.divergent) return;
   const why = !w.sameCommit
@@ -503,11 +583,217 @@ interface CodeIndexData {
   took_ms: number;
 }
 
+/** Фоновый прогон (`--job`): какие индексы обновлены и чем кончилось. */
+interface RefreshJobData {
+  job: number;
+  /** false — работа уже не наша (сделана соседом, аренду забрали): дерево не читалось. */
+  taken: boolean;
+  reason?: string;
+  /** По прогону на каждый индекс воркспейса (корень и собственные индексы вложенных). */
+  runs: CodeIndexData[];
+  took_ms: number;
+}
+
 const INDEX_FLAGS: readonly FlagSpec[] = [
   { name: "dry-run", description: "count what would be indexed, write nothing" },
   { name: "batch", value: "number", description: "jobs per claim/transaction (default 256)" },
   { name: "repo", value: "string", description: "repo id to index (default: derived from cwd)" },
+  {
+    name: "job",
+    value: "number",
+    description:
+      "background refresh: the jobs row (kind='code_refresh') the drain claimed for this process — every code index " +
+      "of the workspace is refreshed and the row completed; a row no longer under --holder's lease is left alone",
+  },
+  { name: "holder", value: "string", description: "with --job: the lease holder the drain claimed the row under" },
 ];
+
+type ScanResult = Awaited<ReturnType<(typeof import("@myc/code-intel/code-index"))["scanCodeIndex"]>>;
+type DrainResult = Awaited<ReturnType<(typeof import("@myc/code-intel/code-index"))["drainCodeIndex"]>>;
+type SearchResult = ReturnType<(typeof import("@myc/code-intel/search"))["buildSearchUnits"]>;
+
+/** Один проход индекса: скан, разбор изменённого, корпус поиска. */
+interface IndexPass {
+  readonly scan: ScanResult;
+  readonly drain: Pick<
+    DrainResult,
+    "claimed" | "parsed" | "written" | "cleaned" | "failed" | "batches" | "pooled" | "skipped" | "missing" | "parseMs" | "drainMs"
+  >;
+  readonly search: Pick<SearchResult, "rebuilt" | "reused" | "removed" | "units" | "bytes" | "tookMs">;
+}
+
+/**
+ * Проход, общий для ручного `myc code index` и фонового `--job`: одна
+ * последовательность, иначе фон обновлял бы индекс не так, как команда (корпус
+ * поиска — ровно тот случай: без него `code search` отвечал бы про удалённый).
+ */
+async function indexPass(
+  db: Database,
+  opts: { readonly repoId: string; readonly root: string; readonly subtree?: string },
+  part: string,
+  dryRun: boolean,
+  batch?: number,
+): Promise<IndexPass> {
+  const { scanCodeIndex, drainCodeIndex } = await import("@myc/code-intel/code-index");
+  const scan = await scanCodeIndex(db, opts, !dryRun);
+  const drain = dryRun
+    ? { claimed: 0, parsed: 0, written: 0, cleaned: 0, failed: 0, batches: 0, pooled: 0, skipped: 0, missing: [], parseMs: 0, drainMs: 0 }
+    : await drainCodeIndex(db, opts, {
+        holder: `code-index-${process.pid}`,
+        ...(batch !== undefined && batch > 0 ? { batch: Math.floor(batch) } : {}),
+      });
+  // Корпус поиска — после разбора и в том же прогоне: см. поле `search`.
+  const { buildSearchUnits } = await import("@myc/code-intel/search");
+  const search = dryRun
+    ? { rebuilt: 0, reused: 0, removed: 0, units: 0, bytes: 0, tookMs: 0 }
+    : buildSearchUnits(db, opts.repoId, opts.root, part);
+  return { scan, drain, search };
+}
+
+function indexData(
+  repo: string,
+  root: string,
+  into: CodeIndexData["into"],
+  dryRun: boolean,
+  { scan, drain, search }: IndexPass,
+  scope: { files: number; defs: number; langs: readonly { lang: string; files: number }[] },
+  t0: number,
+): CodeIndexData {
+  return {
+    repo,
+    root,
+    ...(into !== undefined ? { into } : {}),
+    dry_run: dryRun,
+    scan: {
+      files: scan.files,
+      git_repos: [...scan.gitRepos],
+      unignored: scan.unignored.map((u) => ({ dir: u.dir, reason: u.reason })),
+      secret_skipped: scan.secretSkipped,
+      worktrees_skipped: scan.worktreesSkipped.length,
+      skipped_worktrees: scan.worktreesSkipped.map((w) => ({ dir: w.dir, main: w.main })),
+      unchanged: scan.unchanged,
+      touched: scan.touched,
+      dirty: scan.dirty,
+      enqueued: scan.enqueued,
+      removed: scan.removed,
+      excluded: scan.excluded,
+      scan_ms: Math.round(scan.scanMs),
+    },
+    drain: {
+      claimed: drain.claimed,
+      parsed: drain.parsed,
+      written: drain.written,
+      cleaned: drain.cleaned,
+      failed: drain.failed,
+      batches: drain.batches,
+      pooled: drain.pooled,
+      skipped: drain.skipped,
+      parse_ms: Math.round(drain.parseMs),
+      drain_ms: Math.round(drain.drainMs),
+    },
+    missing_grammars: drain.missing.map((m) => ({
+      grammar: m.grammar,
+      langs: [...m.langs],
+      bytes: m.bytes,
+      files: m.files,
+      fetch: `myc code fetch ${m.langs[0] ?? m.grammar}`,
+    })),
+    search: {
+      rebuilt: search.rebuilt,
+      reused: search.reused,
+      removed: search.removed,
+      units: search.units,
+      bytes: search.bytes,
+      took_ms: Math.round(search.tookMs),
+    },
+    files: scope.files,
+    defs: scope.defs,
+    langs: scope.langs.slice(0, 8).map((l) => ({ lang: l.lang, files: l.files })),
+    took_ms: Math.round(performance.now() - t0),
+  };
+}
+
+/**
+ * Индекс сверен с деревом целиком: отметка времени и — раз работа сделана —
+ * строки фонового обновления, которые никто не держит (стоящая в очереди,
+ * ждущая повтора, бросившая после N попыток). Живую чужую аренду не трогаем:
+ * её снимет свой воркер. Так ручной `myc code index` после починки причины
+ * заодно возвращает фон к жизни. Не записалось — фон просто прогонит снова.
+ */
+async function markRefreshed(h: StoreHandle): Promise<void> {
+  const now = Date.now();
+  try {
+    const { Q } = await import("@myc/store-sqlite");
+    h.driver.run(Q.meta_set, [CODE_INDEXED_AT_KEY, String(now)]);
+    h.driver.database.query("DELETE FROM jobs WHERE kind = ?1 AND lease_expires <= ?2").run(CODE_REFRESH_JOB_KIND, now);
+  } catch {
+    // см. выше
+  }
+}
+
+/**
+ * ФОНОВЫЙ ИСПОЛНИТЕЛЬ (memory-es8qwd555cjt). Работу `code_refresh` уже
+ * захватил дренаж — сюда приходят её id и держатель. Своя ли она ещё,
+ * проверяется ДО чтения дерева: работу, которую сделал сосед или чью аренду
+ * забрали, этот процесс не трогает и выходит сразу.
+ *
+ * Что обновляется: КАЖДЫЙ индекс воркспейса (корень и собственные индексы
+ * вложенных репозиториев, которые git корня игнорирует), каждый — от своего
+ * корня в ОСНОВНОЙ копии; worktree отдельно не индексируются (e514fcc).
+ * Индекса нет вовсе (фон поднят якорем, §4.3) — корень воркспейса: одна
+ * команда на корень и все вложенные, та же, что советует `noIndexFailure`.
+ *
+ * Приоритет — `nice 10`. В машинную очередь `myc run` прогон не встаёт: он
+ * почти всегда доли секунды ввода-вывода (обход перечня, разбор единиц
+ * изменённых файлов), и ждать за чужим четырёхминутным `bun test` значило бы
+ * держать индекс устаревшим ровно тогда, когда агенты работают. Уступать
+ * ядра ему это не мешает: пониженный приоритет наследуют и потоки пула
+ * разбора (он заводится только от 64 изменённых файлов).
+ */
+async function runRefreshJob(h: StoreHandle, jobId: number, holder: string, t0: number): Promise<CommandResult> {
+  const db = h.driver.database;
+  const { jobs } = await import("@myc/store-sqlite");
+  const row = jobs.get(db, jobId);
+  const now = Date.now();
+  const skip = (reason: string): CommandResult => ({
+    ok: true,
+    data: { job: jobId, taken: false, reason, runs: [], took_ms: Math.round(performance.now() - t0) } satisfies RefreshJobData,
+  });
+  if (row === undefined) return skip("the job is gone: someone else finished it");
+  if (row.kind !== CODE_REFRESH_JOB_KIND) return skip(`job ${jobId} is not a code refresh (${row.kind})`);
+  if (holder.length === 0 || row.lease_holder !== holder || row.lease_expires <= now) {
+    return skip("the job is not under this holder's live lease any more: another worker has it");
+  }
+  try {
+    const { setPriority } = await import("node:os");
+    setPriority(10);
+  } catch {
+    // не дали — прогон всё равно нужен
+  }
+  const { indexScope } = await import("@myc/code-intel/read");
+  const repos = indexRepos(db);
+  const runs: CodeIndexData[] = [];
+  try {
+    for (const repoId of repos.length > 0 ? repos : [""]) {
+      const root = repoId.length === 0 ? h.wsDir : join(h.wsDir, repoId);
+      const started = performance.now();
+      const pass = await indexPass(db, { repoId, root }, "", false);
+      runs.push(indexData(repoId, root, undefined, false, pass, indexScope(db, repoId), started));
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Попытка засчитана, откат до повтора — дело jobs.fail; строка остаётся
+    // с причиной, её показывают строка статуса и WARN код-команд.
+    jobs.fail(db, jobId, msg.slice(0, 500), { holder });
+    return failure("code_index.refresh_failed", `background refresh of the code index failed: ${msg}`, ExitCode.ERR);
+  }
+  await markRefreshed(h);
+  jobs.complete(db, jobId, holder);
+  return {
+    ok: true,
+    data: { job: jobId, taken: true, runs, took_ms: Math.round(performance.now() - t0) } satisfies RefreshJobData,
+  };
+}
 
 function buildCodeIndex(deps: StoreDeps): Command {
   return {
@@ -540,7 +826,11 @@ function buildCodeIndex(deps: StoreDeps): Command {
         // прогон из каталога, где работает агент, — отказ там значил бы, что
         // индекс корня не освежается никогда, пока все сидят во вложенных
         // репозиториях и worktree.
-        let t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
+        const jobId = flagNum(ctx, "job");
+        if (jobId !== undefined) return await runRefreshJob(h, Math.floor(jobId), flagStr(ctx, "holder") ?? "", t0);
+
+        // Возраст индекса самому прогону не нужен: он его и обновляет.
+        let t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd(), { freshness: false });
         const { repoId, repoRoot } = t;
         const db = h.driver.database;
         if (t.missing && repoId.length > 0 && !repoId.includes("/")) {
@@ -555,7 +845,6 @@ function buildCodeIndex(deps: StoreDeps): Command {
             t = { ...t, view: { repoId: "", prefix: `${repoId}/` }, borrowed: true, missing: false };
           }
         }
-        const { scanCodeIndex, drainCodeIndex } = await import("@myc/code-intel/code-index");
         const { indexScope } = await import("@myc/code-intel/read");
         const part = t.borrowed ? t.view.prefix : "";
         const indexRoot = t.view.repoId.length === 0 ? h.wsDir : join(h.wsDir, t.view.repoId);
@@ -563,16 +852,10 @@ function buildCodeIndex(deps: StoreDeps): Command {
           ? { repoId: t.view.repoId, root: indexRoot, subtree: part.slice(0, -1) }
           : { repoId, root: repoRoot };
         const dryRun = flagBool(ctx, "dry-run");
-        const scan = await scanCodeIndex(db, opts, !dryRun);
         const batchRaw = flagNum(ctx, "batch");
-        let drain;
+        let pass: IndexPass;
         try {
-          drain = dryRun
-            ? { claimed: 0, parsed: 0, written: 0, cleaned: 0, failed: 0, batches: 0, pooled: 0, skipped: 0, missing: [], parseMs: 0, drainMs: 0 }
-            : await drainCodeIndex(db, opts, {
-                holder: `code-index-${process.pid}`,
-                ...(batchRaw !== undefined && batchRaw > 0 ? { batch: Math.floor(batchRaw) } : {}),
-              });
+          pass = await indexPass(db, opts, part, dryRun, batchRaw);
         } catch (e) {
           // Нехватка РЕСУРСА — не сбой программы. Раньше рантайм, которого нет
           // в опубликованном пакете, доезжал сюда голым Error и печатался как
@@ -584,74 +867,22 @@ function buildCodeIndex(deps: StoreDeps): Command {
           }
           throw e;
         }
-        // Корпус поиска — после разбора и в том же прогоне: см. поле `search`.
-        const { buildSearchUnits } = await import("@myc/code-intel/search");
-        const search = dryRun
-          ? { rebuilt: 0, reused: 0, removed: 0, units: 0, bytes: 0, tookMs: 0, missing: 0 }
-          : buildSearchUnits(db, opts.repoId, opts.root, part);
+        const { scan, drain } = pass;
         const scope = indexScope(db, t.borrowed ? t.view : repoId);
-        const data: CodeIndexData = {
-          repo: repoId,
-          root: repoRoot,
-          ...(t.borrowed ? { into: { repo: t.view.repoId, prefix: part, root: indexRoot } } : {}),
-          dry_run: dryRun,
-          scan: {
-            files: scan.files,
-            git_repos: [...scan.gitRepos],
-            unignored: scan.unignored.map((u) => ({ dir: u.dir, reason: u.reason })),
-            secret_skipped: scan.secretSkipped,
-            worktrees_skipped: scan.worktreesSkipped.length,
-            skipped_worktrees: scan.worktreesSkipped.map((w) => ({ dir: w.dir, main: w.main })),
-            unchanged: scan.unchanged,
-            touched: scan.touched,
-            dirty: scan.dirty,
-            enqueued: scan.enqueued,
-            removed: scan.removed,
-            excluded: scan.excluded,
-            scan_ms: Math.round(scan.scanMs),
-          },
-          drain: {
-            claimed: drain.claimed,
-            parsed: drain.parsed,
-            written: drain.written,
-            cleaned: drain.cleaned,
-            failed: drain.failed,
-            batches: drain.batches,
-            pooled: drain.pooled,
-            skipped: drain.skipped,
-            parse_ms: Math.round(drain.parseMs),
-            drain_ms: Math.round(drain.drainMs),
-          },
-          missing_grammars: drain.missing.map((m) => ({
-            grammar: m.grammar,
-            langs: [...m.langs],
-            bytes: m.bytes,
-            files: m.files,
-            fetch: `myc code fetch ${m.langs[0] ?? m.grammar}`,
-          })),
-          search: {
-            rebuilt: search.rebuilt,
-            reused: search.reused,
-            removed: search.removed,
-            units: search.units,
-            bytes: search.bytes,
-            took_ms: Math.round(search.tookMs),
-          },
-          files: scope.files,
-          defs: scope.defs,
-          langs: scope.langs.slice(0, 8).map((l) => ({ lang: l.lang, files: l.files })),
-          took_ms: Math.round(performance.now() - t0),
-        };
-        // Отметка «индекс этого воркспейса свежий» — её же читает фоновый шаг
-        // дренажа, чтобы не поднимать воркер чаще периода.
-        if (!dryRun) {
-          try {
-            const { Q } = await import("@myc/store-sqlite");
-            h.driver.run(Q.meta_set, [CODE_INDEXED_AT_KEY, String(Date.now())]);
-          } catch {
-            // Отметка не записалась — фон просто прогонит снова.
-          }
-        }
+        const data = indexData(
+          repoId,
+          repoRoot,
+          t.borrowed ? { repo: t.view.repoId, prefix: part, root: indexRoot } : undefined,
+          dryRun,
+          pass,
+          scope,
+          t0,
+        );
+        // Отметка «индекс воркспейса сверен с деревом» — её читают дренаж
+        // (пора ли обновлять), строка статуса и WARN код-команд (сколько ему).
+        // Только прогон по индексу ЦЕЛИКОМ: часть вложенного репозитория не
+        // сверяла остальное, и её отметка скрыла бы от фона остальные части.
+        if (!dryRun && !t.borrowed) await markRefreshed(h);
         if (drain.failed > 0) {
           ctx.warn("code_index.failed", `files not parsed: ${drain.failed} (see jobs.last_error)`);
         }
@@ -727,7 +958,19 @@ function buildCodeIndex(deps: StoreDeps): Command {
       }
     },
     renderHuman: (data) => {
-      const d = data as CodeIndexData;
+      const r = data as CodeIndexData | RefreshJobData;
+      if ("runs" in r) {
+        const head = r.taken
+          ? `job       #${r.job} background refresh: ${count(r.runs.length, "index", "indexes")} refreshed  ${r.took_ms} ms`
+          : `job       #${r.job} not taken: ${r.reason ?? "not ours"}`;
+        const each = r.runs.map(
+          (d) =>
+            `index     ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}: files ${d.scan.files}, ` +
+            `unchanged ${d.scan.unchanged}, parsed ${d.drain.parsed}, removed ${d.scan.removed}  ${d.took_ms} ms`,
+        );
+        return `${[head, ...each].join("\n")}\n`;
+      }
+      const d = r;
       const langs = d.langs.map((l) => `${l.lang} ${l.files}`).join(", ");
       const lines = [
         `repo      ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}` +

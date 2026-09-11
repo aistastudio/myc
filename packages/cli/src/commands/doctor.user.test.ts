@@ -262,3 +262,109 @@ describe("myc doctor --hooks: пользовательский слой", () => 
     expect(line).toContain("myc wire --scope user");
   });
 });
+
+/**
+ * Каталог без проектной проводки при исправном пользовательском слое
+ * (memory-qya8z12f3yae). Так выглядит каждый worktree orca и каждый вложенный
+ * репозиторий: `.claude` там командный, и хуки myc ставит пользовательский
+ * слой. Прежде doctor печатал «unknown: журнала wire.json нет» и WARN
+ * doctor.unknown — тревогу на норме. Проверяется на НАСТОЯЩЕМ `git worktree
+ * add`, а не на подделанных путях.
+ */
+describe("myc doctor --hooks: проектной проводки здесь нет, пользовательский слой исправен", () => {
+  function git(cwd: string, ...args: string[]): void {
+    const r = Bun.spawnSync(["git", ...args], {
+      cwd,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+    });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+  }
+
+  /** Хуки срабатывали: счётчик лежит у базы (он общий для всех деревьев воркспейса). */
+  function fired(): void {
+    const at = Date.now() - 60_000;
+    const c = (count: number) => ({ count, last_at: at, last_ms: 5, last_status: "ok" });
+    writeJson(join(ws, ".myc", "hooks.json"), {
+      v: 1,
+      hooks: { "claude:session-start": c(43), "claude:post-edit": c(507), "claude:pre-compact": c(1) },
+    });
+  }
+
+  async function doctorAt(dir: string): Promise<{ code: number; env: Envelope & { warn?: Array<{ code: string; msg: string }> } }> {
+    const res = await run(["-C", dir, "doctor", "--hooks", "--json"], { registry, env: { MYC_ACTOR: "tester", MYC_DRAIN: "0" } });
+    return { code: res.code, env: JSON.parse(String(res.stdout)) as Envelope & { warn?: Array<{ code: string; msg: string }> } };
+  }
+
+  function worktree(): string {
+    writeFileSync(join(ws, "README.md"), "ws\n");
+    git(ws, "init", "-q", "-b", "main");
+    git(ws, "add", "README.md");
+    git(ws, "commit", "-q", "-m", "init");
+    const wt = join(root, "wt-feature");
+    git(ws, "worktree", "add", "-q", "-b", "feature", wt);
+    return wt;
+  }
+
+  test("git worktree с одной пользовательской проводкой: ни одного WARN, строка project layer", async () => {
+    await wireUser("--status-line");
+    fired();
+    const wt = worktree();
+
+    const { code, env: e } = await doctorAt(wt);
+
+    expect(code).toBe(ExitCode.OK);
+    expect(e.warn ?? []).toEqual([]);
+    const checks = e.data!.hooks!.checks;
+    const project = checks.find((c) => c.name === "project layer");
+    expect(project).toBeDefined();
+    expect(project!.verdict).toBe("n/a");
+    expect(project!.detail).toStartWith("not wired here (user layer: ok)");
+    expect(checks.some((c) => c.name === "wire.json")).toBe(false);
+    expect(e.data!.hooks!.layer).toBe("user");
+    // Источник назван: счётчик — у базы основного дерева, установка — слой пользователя.
+    expect(checks.find((c) => c.name === "sources")?.detail).toContain("installation from the user layer");
+    for (const h of e.data!.hooks!.hooks) expect({ event: h.event, verdict: h.verdict }).toMatchObject({ verdict: expect.stringMatching(/^(ok|n\/a)$/) });
+  });
+
+  test("вложенный репозиторий без проводки — то же самое", async () => {
+    await wireUser();
+    fired();
+    const nested = join(ws, "nested");
+    mkdirSync(nested, { recursive: true });
+    git(nested, "init", "-q", "-b", "main");
+
+    const { code, env: e } = await doctorAt(nested);
+
+    expect(code).toBe(ExitCode.OK);
+    expect(e.warn ?? []).toEqual([]);
+    expect(e.data!.hooks!.checks.find((c) => c.name === "project layer")?.detail).toContain("not wired here (user layer: ok)");
+  });
+
+  test("пользовательский слой неисправен — прежнее «не знаю», а не «not wired here»", async () => {
+    await wireUser();
+    fired();
+    const s = readJson(settingsPath());
+    delete s["hooks"]["PreCompact"];
+    writeJson(settingsPath(), s);
+    const wt = worktree();
+
+    const { env: e } = await doctorAt(wt);
+    const all = [...(e.warn ?? []).map((w) => w.msg), e.error?.msg ?? ""].join("\n");
+
+    expect(all).toContain("wire.json");
+    expect(all).not.toContain("not wired here (user layer: ok)");
+  });
+
+  test("пользовательского слоя нет вовсе — прежнее «не знаю»", async () => {
+    fired();
+    const wt = worktree();
+
+    const { code, env: e } = await doctorAt(wt);
+
+    expect(code).toBe(ExitCode.OK);
+    expect((e.warn ?? []).map((w) => w.code)).toContain("doctor.unknown");
+    expect(e.data!.hooks!.layer).toBeUndefined();
+  });
+});

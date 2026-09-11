@@ -63,17 +63,31 @@
  * бюджет; MYC_DRAIN_FAKE=1 — исполнитель-заглушка (та же механика, что
  * MYC_EMBED_FAKE в reindex.ts): работа не выполняется, а пишется строкой в
  * MYC_DRAIN_FAKE_LOG, чтобы многопроцессный тест считал выполнения по
- * процессам; MYC_DRAIN_FAKE_DELAY_MS — пауза на работу (замер бюджета).
+ * процессам (у код-индекса вместо воркера — строка о нём, а работа остаётся
+ * в очереди под арендой); MYC_DRAIN_FAKE_DELAY_MS — пауза на работу (замер
+ * бюджета); MYC_CODE_INDEX_PERIOD_MS — порог возраста код-индекса.
  */
 
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   DEFAULT_ABSORB_THRESHOLDS,
   generateId,
   HlcClock,
   unpackHlc,
 } from "@myc/core";
+import {
+  CODE_REFRESH_AFTER_MS,
+  CODE_REFRESH_ENTITY,
+  CODE_REFRESH_JOB_KIND,
+  CODE_REFRESH_LEASE_MS,
+  CODE_REFRESH_PRIORITY,
+  attemptsOf,
+  refreshAfterMs,
+  refreshStateOf,
+} from "@myc/code-intel/refresh";
 import {
   Claims,
   driverMeta,
@@ -92,6 +106,7 @@ import { absorbOne, type Session } from "./commands/absorb.ts";
 // store.ts, уже здесь), тяжёлое он тянет динамически внутри обработчиков.
 import { CODE_INDEXED_AT_KEY } from "./commands/code.ts";
 import { modelLikelyPresent } from "./commands/retrieve.ts";
+import { findWorkspaceDb, workspaceDirOfDb } from "./commands/wsfind.ts";
 import {
   DEFAULT_READY_WEIGHTS,
   openDriver,
@@ -162,9 +177,11 @@ export const ANCHOR_SWEPT_AT_KEY = "anchor_swept_at";
  * репозитории: 803 файла, 60 мс только скан с попаданием во все хеши, 0,3 с
  * полная сборка с разбором). Чаще — значит платить обходом дерева за каждый
  * второй вызов CLI ради символов, которые меняются от правки файла, а не от
- * времени.
+ * времени. Число живёт в @myc/code-intel/refresh — его же читают строка
+ * статуса и WARN код-команд («устарел» там и «пора обновить» здесь — один
+ * порог).
  */
-export const CODE_INDEX_PERIOD_MS = 900_000;
+export const CODE_INDEX_PERIOD_MS = CODE_REFRESH_AFTER_MS;
 
 /**
  * Включён ли фоновый код-индекс. Выключатель свой, а не общий с MYC_DRAIN:
@@ -228,6 +245,22 @@ function fakeExecutorFromEnv(
   };
 }
 
+/**
+ * Та же заглушка для воркера код-индекса: вместо процесса — строка в
+ * MYC_DRAIN_FAKE_LOG. Постановка и захват при этом НАСТОЯЩИЕ, поэтому
+ * многопроцессный тест считает, сколько работ стоит и сколько воркеров было
+ * бы поднято, а работа остаётся в очереди под арендой — видимой.
+ */
+function fakeCodeIndexSpawnFromEnv(env: NodeJS.ProcessEnv): ((dbPath: string, job: ClaimedJob) => void) | null {
+  if (env.MYC_DRAIN_FAKE !== "1") return null;
+  const logPath = env.MYC_DRAIN_FAKE_LOG;
+  return (dbPath: string, job: ClaimedJob): void => {
+    if (logPath !== undefined && logPath.length > 0) {
+      appendFileSync(logPath, `${JSON.stringify({ kind: CODE_REFRESH_JOB_KIND, id: job.id, holder: job.holder, db: dbPath, pid: process.pid })}\n`);
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Отсоединённый воркер для дорогого класса embed
 // ---------------------------------------------------------------------------
@@ -255,21 +288,66 @@ export function spawnReindexWorker(dbPath: string): void {
  * в очереди (наблюдаемо через stats), следующий вызов попробует снова;
  * падать здесь нечему.
  */
-function spawnDetachedCommand(args: readonly string[]): void {
+function spawnDetachedCommand(
+  args: readonly string[],
+  opts: { readonly cwd?: string; readonly stderrPath?: string } = {},
+): void {
   try {
     const entry = process.argv[1];
     const fromSource = typeof entry === "string" && /\.(ts|js|mjs)$/.test(entry);
-    const argv = [process.execPath, ...(fromSource ? [entry] : []), ...args];
-    const child = Bun.spawn(argv, {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      detached: true,
-    });
-    child.unref();
+    // Через bun со скриптом — те же флаги, что в shebang лаунчера
+    // (bin/myc.js): без них bun ДО первой строки myc грузит .env и
+    // ./bunfig.toml каталога, из которого его подняли, то есть чужого
+    // проекта (preload его тестов исполнялся бы внутри воркера). Бинарю
+    // (`dist/myc`) они не нужны — он собран без автозагрузки — и не по
+    // карману: он принял бы их за свои флаги.
+    const viaBun = fromSource && /^bun/.test(basename(process.execPath));
+    const argv = [
+      process.execPath,
+      ...(fromSource ? [...(viaBun ? ["--no-env-file", "--config=/dev/null"] : []), entry] : []),
+      ...args,
+    ];
+    let stderr: number | "ignore" = "ignore";
+    if (opts.stderrPath !== undefined) {
+      try {
+        stderr = openSync(opts.stderrPath, "w");
+      } catch {
+        stderr = "ignore";
+      }
+    }
+    try {
+      const child = Bun.spawn(argv, {
+        ...(opts.cwd !== undefined && existsSync(opts.cwd) ? { cwd: opts.cwd } : {}),
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr,
+        detached: true,
+      });
+      child.unref();
+    } finally {
+      // Дескриптор файла у ребёнка свой (дубль); наш закрываем сразу.
+      if (typeof stderr === "number") closeSync(stderr);
+    }
   } catch {
     // см. шапку: отказ спавна — не отказ команды и не потеря работы
   }
+}
+
+/** Работа, захваченная дренажом для воркера: её id и держатель аренды. */
+export interface ClaimedJob {
+  readonly id: number;
+  readonly holder: string;
+}
+
+/**
+ * Куда воркер обновления пишет stderr: файл на базу во временном каталоге,
+ * перезаписывается каждым запуском. Не в `.myc/`: там каждый новый файл —
+ * строка в `git status` проекта. Упавший воркер сам кладёт причину в
+ * `jobs.last_error`; этот файл — для того, что умерло раньше, чем успело.
+ */
+export function codeRefreshLogPath(dbPath: string): string {
+  const id = createHash("sha256").update(resolve(dbPath)).digest("hex").slice(0, 16);
+  return join(tmpdir(), `myc-code-refresh-${id}.log`);
 }
 
 /**
@@ -277,9 +355,24 @@ function spawnDetachedCommand(args: readonly string[]): void {
  * СЕКУНДЫ на большом дереве (замер: 803 файла этого репозитория — 0,3 с
  * полный, 0,08 с повторный), а бюджет дренажа — 50 мс. Инлайн он не пойдёт
  * никогда (И1); ровно тот же расклад, что у класса `embed`.
+ *
+ * Воркер получает УЖЕ ЗАХВАЧЕННУЮ работу (`--job`/`--holder`) и стоит в корне
+ * воркспейса (`-C`): обновляется индекс воркспейса целиком, а не часть,
+ * в которой случайно стоял агент, чья команда подняла воркер.
  */
-export function spawnCodeIndexWorker(dbPath: string): void {
-  spawnDetachedCommand(["code", "index", "--db", dbPath]);
+export function spawnCodeIndexWorker(dbPath: string, job?: ClaimedJob): void {
+  const ws = workspaceDirOfDb(dbPath);
+  spawnDetachedCommand(
+    [
+      ...(ws !== undefined ? ["-C", ws] : []),
+      "code",
+      "index",
+      "--db",
+      dbPath,
+      ...(job !== undefined ? ["--job", String(job.id), "--holder", job.holder] : []),
+    ],
+    { ...(ws !== undefined ? { cwd: ws } : {}), stderrPath: codeRefreshLogPath(dbPath) },
+  );
 }
 
 const SQL_EMBED_READY = `SELECT 1 AS x FROM jobs
@@ -400,8 +493,8 @@ export interface DrainOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Подмена спавна воркера (тесты). */
   readonly spawnWorker?: (dbPath: string) => void;
-  /** Подмена спавна воркера код-индекса (тесты). */
-  readonly spawnCodeIndex?: (dbPath: string) => void;
+  /** Подмена спавна воркера код-индекса (тесты): получает базу и захваченную работу. */
+  readonly spawnCodeIndex?: (dbPath: string, job: ClaimedJob) => void;
   readonly now?: () => number;
 }
 
@@ -425,13 +518,20 @@ export interface AnchorStepReport {
 
 /** Что сделал шаг код-индекса за этот вызов. `null` — не запускался. */
 export interface CodeIndexStepReport {
-  /** Что позвало: наступивший период или строки `code_index` в очереди. */
+  /**
+   * Что позвало: индекс старше порога (`period`, с последнего ЗАВЕРШЁННОГО
+   * прогона) или брошенные строки `code_index` в очереди.
+   */
   readonly triggered: "period" | "jobs";
   /** Поднят ли отсоединённый воркер. false — повод был, но условие не сошлось. */
   readonly spawned: boolean;
-  /** Почему не поднят: чужая аренда, нет якорей. Пусто — поднят. */
+  /** Строка `code_refresh` поставлена ЭТИМ вызовом (false — уже стояла: дедупликация). */
+  readonly queued: boolean;
+  /** id строки `code_refresh`; null — до постановки не дошло. */
+  readonly job: number | null;
+  /** Почему не поднят: уже обновляется, откат после сбоя, попытки исчерпаны, нет индекса и якорей. Пусто — поднят. */
   readonly reason: string;
-  /** Якорей в базе: индекс строится только там, где к коду привязано знание. */
+  /** Якорей в базе: без индекса он строится только там, где к коду привязано знание. */
   readonly anchors: number;
 }
 
@@ -580,15 +680,23 @@ const SQL_CODE_JOB_LEASED = `SELECT 1 AS x FROM jobs
  * инлайн — НИКОГДА (обход дерева стоит сотни миллисекунд при бюджете 50 мс),
  * работа уходит отсоединённому `myc code index`.
  *
- * УСЛОВИЕ ИЗ §4.3, а не «всегда»: индекс строится только для репозиториев,
- * где есть хотя бы один якорь. Воркспейс без якорей кодом не занимается вовсе
- * — обходить ради него чужое дерево не за чем, а `myc code index` руками
- * никто не отменял.
+ * ПОВОД (memory-es8qwd555cjt): индекс старше порога с последнего ЗАВЕРШЁННОГО
+ * прогона (`code_indexed_at`, её пишет только сам прогон), или брошенные
+ * строки `code_index` в очереди. Нет повода — шаг стоит поиск по ключу в
+ * `myc_meta` и один по индексу jobs, как и прежде.
  *
- * ЦЕНА, КОГДА ПОВОДА НЕТ: один SELECT из `myc_meta` — как у шага якорей.
- * Отметка ставится ДО работы: воркер живёт своей жизнью и может умереть, и
- * второй такой же, поднимаемый следующим вызовом CLI через секунду, не нужен
- * никому. Свою отметку воркер обновит сам, когда закончит.
+ * УСЛОВИЕ ИЗ §4.3 — расширено индексом. Код воркспейсу важен, если к коду
+ * привязано знание (якорь) ИЛИ индекс уже построен: человек, однажды
+ * позвавший `myc code index`, хочет, чтобы индекс не отставал. Нет ни того ни
+ * другого — чужое дерево не обходится.
+ *
+ * ОДНА РАБОТА И ОДИН ИСПОЛНИТЕЛЬ НА ВОРКСПЕЙС, сколько бы агентов ни звали
+ * дренаж. Работа — строка `code_refresh` с сущностью `.`: вторая постановка
+ * упирается в `ux_jobs_dedup` и возвращает ту же строку. Исполнитель — тот,
+ * чей `jobs.claim` (один стейтмент) взял аренду: только он поднимает воркер и
+ * передаёт ему id и держателя. Пока аренда жива, следующие дренажи видят
+ * «уже обновляется» и уходят; умер воркер — аренда истечёт, строку заберёт
+ * следующий дренаж, и попытка засчитается (после пяти — `failed`, громко).
  */
 function runCodeIndexStep(
   driver: CliDriver,
@@ -596,43 +704,77 @@ function runCodeIndexStep(
     readonly dbPath: string;
     readonly env: NodeJS.ProcessEnv;
     readonly now: number;
-    readonly spawn: (dbPath: string) => void;
+    readonly spawn: (dbPath: string, job: ClaimedJob) => void;
   },
 ): CodeIndexStepReport | null {
   const db = driver.database;
-  const periodMs = numFromEnv(opts.env.MYC_CODE_INDEX_PERIOD_MS, CODE_INDEX_PERIOD_MS);
+  const periodMs = refreshAfterMs(opts.env);
   const stampRaw = driver.one<{ value: string }>(Q.meta_get, [CODE_INDEXED_AT_KEY])?.value;
   const stamp = Number(stampRaw ?? 0);
-  const periodDue = !Number.isFinite(stamp) || opts.now - stamp >= periodMs;
+  const periodDue = !Number.isFinite(stamp) || stamp <= 0 || opts.now - stamp >= periodMs;
   const jobsReady = db.query(SQL_CODE_JOB_READY).get(opts.now) !== null;
   if (!periodDue && !jobsReady) return null;
 
   const triggered: CodeIndexStepReport["triggered"] = jobsReady ? "jobs" : "period";
-  // Якоря — признак «этому воркспейсу код важен» (§4.3). Считаем не COUNT(*)
-  // по таблице, а наличие первой строки: разница на 50k якорей — два порядка.
+  // Якоря и индекс — признак «этому воркспейсу код важен» (§4.3). Наличие
+  // первой строки, а не COUNT(*): на 50k строк разница — два порядка.
   const anchors = db.query("SELECT 1 AS x FROM anchors LIMIT 1").get() === null ? 0 : 1;
-  if (anchors === 0) {
-    // Отметку ставим и здесь: иначе каждый вызов CLI в воркспейсе без якорей
-    // платил бы этим же SELECT'ом заново, а ответ не изменится до якоря.
-    try {
-      driver.run(Q.meta_set, [CODE_INDEXED_AT_KEY, String(opts.now)]);
-    } catch {
-      // не записалась — следующий вызов просто спросит снова
-    }
-    return { triggered, spawned: false, reason: "no anchors in the database (§4.3)", anchors: 0 };
+  const indexed = db.query("SELECT 1 AS x FROM code_files LIMIT 1").get() !== null;
+  const report = (spawned: boolean, queued: boolean, job: number | null, reason: string): CodeIndexStepReport => ({
+    triggered,
+    spawned,
+    queued,
+    job,
+    reason,
+    anchors,
+  });
+  if (anchors === 0 && !indexed) {
+    return report(false, false, null, "no code index and no anchors in the database (§4.3): nothing asks for one");
   }
   if (db.query(SQL_CODE_JOB_LEASED).get(opts.now) !== null) {
-    return { triggered, spawned: false, reason: "jobs are under someone else's lease: a neighbor is draining them", anchors };
+    return report(false, false, null, "code_index jobs are under someone else's lease: a `myc code index` is running");
   }
 
-  try {
-    driver.run(Q.meta_set, [CODE_INDEXED_AT_KEY, String(opts.now)]);
-  } catch {
-    // Отметка не записалась — следующий вызов поднимет воркер ещё раз;
-    // гонка двух воркеров безвредна (захват работ атомарен, jobs.claim).
+  // ДЕДУПЛИКАЦИЯ — здесь: сущность задана, значит строка на воркспейс одна.
+  const put = jobs.enqueue(db, CODE_REFRESH_JOB_KIND, {
+    entityId: CODE_REFRESH_ENTITY,
+    priority: CODE_REFRESH_PRIORITY,
+    payload: { reason: triggered, stamp: stamp > 0 ? stamp : null },
+    now: opts.now,
+  });
+  const row = put.row;
+  const state = refreshStateOf(row, opts.now);
+  if (state === "failed") {
+    return report(
+      false,
+      put.inserted,
+      row.id,
+      `the background refresh gave up after ${attemptsOf(row, opts.now)} attempts (${row.last_error ?? "the worker died without a word"}) — ` +
+        "`myc code index` shows why and clears it",
+    );
   }
-  opts.spawn(opts.dbPath);
-  return { triggered, spawned: true, reason: "", anchors };
+  if (state !== "queued") {
+    return report(
+      false,
+      put.inserted,
+      row.id,
+      state === "running"
+        ? "a refresh is already running: the job is under a live lease"
+        : "the refresh waits out its backoff after a failed attempt",
+    );
+  }
+  const holder = `code-refresh-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const claimed = jobs.claim(db, [CODE_REFRESH_JOB_KIND], holder, {
+    leaseMs: CODE_REFRESH_LEASE_MS,
+    now: opts.now,
+  });
+  const mine = claimed[0];
+  if (mine === undefined) {
+    // Сосед захватил между постановкой и захватом — он и поднимет воркер.
+    return report(false, put.inserted, row.id, "a neighbor claimed the job first: it starts the worker");
+  }
+  opts.spawn(opts.dbPath, { id: mine.id, holder });
+  return report(true, put.inserted, mine.id, "");
 }
 
 /**
@@ -723,15 +865,15 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
       }
     }
 
-    // Код-индекс — только постановка воркера, ни одного прочитанного файла в
-    // этом процессе. Стоит один SELECT, когда период не наступил.
+    // Код-индекс — только постановка работы и воркера, ни одного прочитанного
+    // файла в этом процессе. Стоит два поиска по ключу, когда повода нет.
     if (codeIndexEnabled(env)) {
       try {
         report.codeIndex = runCodeIndexStep(driver, {
           dbPath: opts.dbPath,
           env,
           now: now(),
-          spawn: opts.spawnCodeIndex ?? spawnCodeIndexWorker,
+          spawn: opts.spawnCodeIndex ?? fakeCodeIndexSpawnFromEnv(env) ?? spawnCodeIndexWorker,
         });
       } catch (e) {
         report.errors.push(`code_index: ${e instanceof Error ? e.message : String(e)}`);
@@ -808,8 +950,17 @@ export async function drainAfterCommand(
   // CLI-процесс (включая spawned в тестах дренажа) такого NODE_ENV не имеет.
   if (process.env.NODE_ENV === "test") return;
   if (!queueDrainEnabled(env)) return;
-  const dir = resolve(globals.directory ?? process.cwd());
-  const dbPath = globals.db ?? join(dir, ".myc", "myc.db");
+  // База — та же, что открыла команда: подъём к первому `.myc/myc.db`, из git
+  // worktree — через основное дерево. Прежде здесь стоял `<cwd>/.myc/myc.db`,
+  // и дренаж молча не случался нигде, кроме самого корня воркспейса: агенты
+  // во вложенных репозиториях и в worktree orca (cherry — почти все) не
+  // разбирали очередь и не поднимали фон вовсе.
+  let dbPath = globals.db;
+  if (dbPath === undefined) {
+    const found = findWorkspaceDb(resolve(globals.directory ?? process.cwd()));
+    if (!("dbPath" in found)) return;
+    dbPath = found.dbPath;
+  }
   try {
     await drainQueueTail({ dbPath, env });
   } catch {
