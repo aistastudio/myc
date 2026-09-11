@@ -421,12 +421,11 @@
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
         "status": "open",
-        "done": 6,
+        "done": 7,
         "total": 10,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-5wq6pdexn2wz", "status": "open", "priority": 1, "title": "Адаптер graft: только вне горячего пути" },
           { "id": "memory-apq1h7wra93w", "status": "open", "priority": 1, "title": "Приёмка M3: связь код ↔ знание в обе стороны" },
           { "id": "memory-5c03r9t5n472", "status": "open", "priority": 2, "title": "Ре-привязка якорей после рефакторинга" },
           { "id": "memory-g79mpkt53yn3", "status": "open", "priority": 2, "title": "Фоновый расчёт fan_in символа" }
