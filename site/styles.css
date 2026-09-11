@@ -153,8 +153,10 @@ header.top {
 }
 .brand .ver { font-size: .72rem; color: var(--ink-muted); font-weight: 400; }
 
+/* Одиннадцать разделов по-русски занимают ~900px: ниже 1200px навигация
+   вылезала бы за шапку, поэтому там её нет, как и на телефоне. */
 nav.sections { display: none; margin-left: auto; gap: .15rem; }
-@media (min-width: 1000px) { nav.sections { display: flex; } }
+@media (min-width: 1200px) { nav.sections { display: flex; } }
 nav.sections a {
   color: var(--ink-2); text-decoration: none; font-size: .82rem;
   padding: .3rem .55rem; border-radius: var(--radius);
@@ -162,7 +164,7 @@ nav.sections a {
 nav.sections a:hover { color: var(--ink); background: var(--surface-sunken); }
 
 .controls { display: flex; gap: .4rem; margin-left: auto; }
-@media (min-width: 1000px) { .controls { margin-left: .75rem; } }
+@media (min-width: 1200px) { .controls { margin-left: .75rem; } }
 
 .seg { display: inline-flex; border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden; }
 .seg button {
@@ -239,12 +241,14 @@ nav.sections a:hover { color: var(--ink); background: var(--surface-sunken); }
 .copy:hover { color: var(--ink); border-color: var(--axis); }
 .copy[data-done="1"] { color: var(--good-ink); border-color: var(--good-ink); }
 
-pre.block {
+/* pre.code (образцы вывода в карточках) стилей не имел вовсе и на 1000px
+   распирал страницу вбок — теперь он оформлен и прокручивается, как pre.block. */
+pre.block, pre.code {
   background: var(--surface); border: 1px solid var(--grid); border-radius: var(--radius);
   padding: .9rem 1rem; overflow-x: auto; font-size: .84rem; line-height: 1.65;
   margin: 0 0 1rem;
 }
-pre.block .c { color: var(--ink-muted); }
+pre.block .c, pre.code .c { color: var(--ink-muted); }
 
 /* ── секции ───────────────────────────────────────────────────────────────── */
 section { padding: clamp(3rem, 7vw, 5rem) 0; border-top: 1px solid var(--grid); }
@@ -259,6 +263,9 @@ section { padding: clamp(3rem, 7vw, 5rem) 0; border-top: 1px solid var(--grid); 
 .grid-2 { display: grid; gap: 1.25rem; grid-template-columns: 1fr; }
 @media (min-width: 860px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
 .grid-3 { display: grid; gap: 1.25rem; grid-template-columns: 1fr; }
+/* Ячейка сетки по умолчанию не уже своего содержимого: длинная строка в
+   <pre> распирала карточку за край страницы вместо своей прокрутки. */
+.grid-2 > *, .grid-3 > * { min-width: 0; }
 @media (min-width: 700px) { .grid-3 { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 1000px) { .grid-3 { grid-template-columns: repeat(3, 1fr); } }
 
@@ -376,6 +383,53 @@ details.how .body > * + * { margin-top: .7rem; }
 .milestone .mrest { font-size: .8rem; color: var(--ink); margin-top: .3rem; }
 .milestone .mrest strong { font-weight: 620; font-variant-numeric: tabular-nums; }
 .milestone .mn .all { color: var(--good-ink); }
+/* под-эпик: строка своя, но видно, чей он */
+.milestone.sub .mk { padding-left: .75rem; color: var(--ink-2); font-weight: 500; }
+
+/* ── что умеет: релиз у каждой строки ─────────────────────────────────────── */
+.since {
+  display: inline-block; font-family: var(--mono); font-size: .7rem; line-height: 1.5;
+  padding: 0 .35rem; border: 1px solid var(--grid); border-radius: 3px;
+  background: var(--surface-sunken); color: var(--ink-2); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.present-list li .since { margin-right: .35rem; }
+.releases { margin-bottom: 1.5rem; }
+.releases p { color: var(--ink-2); font-size: .9rem; margin-bottom: .6rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.chip {
+  display: inline-flex; align-items: center; gap: .35rem;
+  font-size: .78rem; color: var(--ink-2);
+  border: 1px solid var(--grid); border-radius: 999px; padding: .12rem .55rem .12rem .2rem;
+  background: var(--surface);
+}
+/* Колонки, а не сетка: группы разной длины, и сетка оставила бы дыры под короткими. */
+.feature-groups, .planned-grid { columns: 2 28rem; column-gap: 1.25rem; }
+.planned-grid { margin-top: 1.25rem; }
+.fgroup, .pepic { break-inside: avoid; margin-bottom: 1.25rem; }
+.fgroup > h3, .pepic h3 { font-size: 1.02rem; }
+.flist, .plist { list-style: none; padding: 0; margin: .6rem 0 0; }
+.flist li { display: grid; grid-template-columns: 3.3rem 1fr; gap: .6rem; padding: .55rem 0; border-top: 1px solid var(--grid); }
+.flist li:first-child { border-top: 0; }
+.flist li > .since { justify-self: start; align-self: start; margin-top: .15rem; }
+.fbody { font-size: .88rem; line-height: 1.5; min-width: 0; }
+.fcmd {
+  display: block; width: fit-content; max-width: 100%; margin-top: .3rem;
+  font-size: .76rem; color: var(--ink-2); background: var(--surface-sunken);
+  padding: .1rem .4rem; border-radius: 3px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ── планы ────────────────────────────────────────────────────────────────── */
+.phead { display: flex; gap: .65rem; align-items: baseline; }
+.phead .mk { font-family: var(--mono); font-weight: 600; font-size: .88rem; flex: none; }
+.pstate { font-size: .8rem; color: var(--ink-2); margin: .3rem 0 .7rem; font-variant-numeric: tabular-nums; }
+.pstate.none { color: var(--ink); font-weight: 550; }
+.pepic > p { font-size: .86rem; color: var(--ink-2); margin-bottom: .4rem; }
+.plist li { display: grid; grid-template-columns: 2.1rem 1fr; gap: .5rem; padding: .5rem 0; border-top: 1px solid var(--grid); font-size: .86rem; line-height: 1.5; }
+.plist li > div { min-width: 0; }
+.prio { font-family: var(--mono); font-size: .72rem; color: var(--ink-muted); padding-top: .12rem; }
+.pmeta { font-size: .74rem; color: var(--ink-muted); margin-top: .15rem; }
+.pmeta code { font-size: .95em; }
 
 /* ── подвал ───────────────────────────────────────────────────────────────── */
 footer { padding: 3rem 0 4rem; border-top: 1px solid var(--grid); color: var(--ink-muted); font-size: .86rem; }

@@ -39,6 +39,13 @@
   function num(x, d) { return Number(x).toFixed(d == null ? 3 : d); }
   function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
   function pct(x) { return (x * 100).toFixed(1) + "%"; }
+  /** Текст из трекера вставляется как текст, а не как разметка. */
+  function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function cmpVer(a, b) {
+    var x = a.split(".").map(Number), y = b.split(".").map(Number);
+    for (var i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return 0;
+  }
 
   var SERIES = "var(--series-1)";
   var STEP = ["var(--ord-1)", "var(--ord-2)", "var(--ord-3)"];
@@ -94,13 +101,24 @@
   // ── шапка и подвал ─────────────────────────────────────────────────────────
   // Шапка — текущий релиз (packages/cli/package.json, сверено site/build.ts);
   // env.myc — версия, на которой сняты замеры, она остаётся в подвале.
-  document.getElementById("brand-ver").textContent = D.release || D.package.version;
+  // Подвал называет дату КАЖДОГО замера: одна общая дата на странице, где
+  // задержки сняты на 0.1.1, а пакет и тесты — на текущем релизе, выдавала бы
+  // старые числа за новые или новые за старые.
+  var release = D.release || D.package.version;
+  document.getElementById("brand-ver").textContent = release;
+  document.querySelectorAll(".js-release").forEach(function (n) { n.textContent = release; });
   put("footer-env", bi(
     "Measured " + D.env.date + " on " + D.env.machine + " — Bun " + D.env.bun +
       ", myc " + D.env.myc + ", beads " + D.env.beads + ". " + D.env.note_en +
+      " Ranking re-run " + D.boost.date + "; the two ready queues " + D.import.ready_gap.date +
+      "; package " + D.package.version + " measured " + D.package.date + "; tests on myc " + D.tests.myc + ", " + D.tests.date +
+      "; milestones counted from myc " + D.roadmap.as_of + "." +
       " Site data verified by site/build.ts: " + D.verified.assertions + " assertions.",
     "Измерено " + D.env.date + " на " + D.env.machine + " — Bun " + D.env.bun +
       ", myc " + D.env.myc + ", beads " + D.env.beads + ". " + D.env.note_ru +
+      " Ранжирование перемерено " + D.boost.date + "; две очереди готовых задач — " + D.import.ready_gap.date +
+      "; пакет " + D.package.version + " померен " + D.package.date + "; тесты — на myc " + D.tests.myc + ", " + D.tests.date +
+      "; вехи посчитаны из myc " + D.roadmap.as_of + "." +
       " Данные сайта сверены site/build.ts: " + D.verified.assertions + " утверждений."));
 
   // ── герой ──────────────────────────────────────────────────────────────────
@@ -112,7 +130,7 @@
           "бюджет " + prime.budget + " мс — запас ×" + Math.round(prime.budget / prime.p99)),
         cmd: D.latency.command },
       { node: statTile(num(D.boost.overall.on.mrr, 3), "MRR@10", "with boosts, up from " + num(D.boost.overall.off.mrr, 3), "с бустами, было " + num(D.boost.overall.off.mrr, 3),
-          "25 labelled queries, control group drops", "25 размеченных запросов, контрольная группа падает"),
+          D.boost.corpus.queries + " labelled queries, control group drops", D.boost.corpus.queries + " размеченных запросов, контрольная группа падает"),
         cmd: D.boost.command },
       { node: statTile(String(D.package.compressed_mb), "MB", D.package.files + " files, no models pulled at install", D.package.files + " файлов, модели при установке не качаются",
           "unpacked " + D.package.unpacked_mb + " MB", "распакованный " + D.package.unpacked_mb + " МБ"),
@@ -150,8 +168,8 @@
   (function () {
     var L = D.latency;
     document.getElementById("lat-sub").appendChild(bi(
-      L.corpus_en + ". The track is the budget; the fill is the measured p99.",
-      L.corpus_ru + ". Дорожка — бюджет, заливка — измеренный p99."));
+      L.corpus_en + ". The track is the budget; the fill is the measured p99 — taken " + D.env.date + " on myc " + D.env.myc + ", on " + D.env.machine + ", and not re-taken since.",
+      L.corpus_ru + ". Дорожка — бюджет, заливка — измеренный p99, снятый " + D.env.date + " на myc " + D.env.myc + ", машина " + D.env.machine + ", и с тех пор не переснимавшийся."));
 
     var host = document.getElementById("lat-chart");
     L.rows.forEach(function (r) {
@@ -241,8 +259,8 @@
           el("span", { class: d < 0 ? "lose" : "", text: (d >= 0 ? "+" : "") + num(d, 3) })];
       }).concat([[bi("<strong>overall</strong>", "<strong>в целом</strong>"), num(B.overall.off.mrr, 3), num(B.overall.on.mrr, 3),
         "+" + num(B.overall.on.mrr - B.overall.off.mrr, 3)]]), 1));
-    how.appendChild(bi("P@1 moves " + num(B.overall.off.p1, 3) + " → " + num(B.overall.on.p1, 3) + " over the same 25 queries.",
-      "P@1 меняется " + num(B.overall.off.p1, 3) + " → " + num(B.overall.on.p1, 3) + " на тех же 25 запросах.", "p"));
+    how.appendChild(bi("P@1 moves " + num(B.overall.off.p1, 3) + " → " + num(B.overall.on.p1, 3) + " over the same " + B.corpus.queries + " queries.",
+      "P@1 меняется " + num(B.overall.off.p1, 3) + " → " + num(B.overall.on.p1, 3) + " на тех же " + B.corpus.queries + " запросах.", "p"));
   })();
 
   (function () {
@@ -374,7 +392,7 @@
     });
     put("import-stats", el("div", { class: "card" }, statTile(group(I.ms), "ms",
       "total, into an empty workspace", "всего, в пустой воркспейс",
-      "wall clock of one run", "стенное время одного прогона")));
+      "wall clock of one run, " + D.env.date + ", myc " + D.env.myc, "стенное время одного прогона, " + D.env.date + ", myc " + D.env.myc)));
     put("import-stats", el("div", { class: "card" }, statTile("0", null,
       "dependencies with a missing target", "зависимостей без цели",
       "and 0 rows refused", "и 0 строк не ввезено")));
@@ -396,31 +414,103 @@
     how.appendChild(cmd(I.command));
     how.appendChild(bi("Target: " + I.target_en + ".", "Цель: " + I.target_ru + ".", "p"));
 
+    // Текст следует данным: пока очереди расходились, здесь честно стояло
+    // «не закрыто», и после исправления (0.2.0) оно простояло на сайте до 0.3.6.
     var g = I.ready_gap;
     var rg = document.getElementById("ready-gap");
-    rg.appendChild(bi(
-      "On the very graph imported above, <code>myc ready</code> offers <strong>" + g.myc + "</strong> tasks and <code>bd ready</code> offers <strong>" + g.bd + "</strong>. The difference is one-sided: every task beads offers, myc offers too — never the other way round. The extra <strong>" + g.diff + "</strong> are children of epics whose blocker hangs on an ancestor, and <em>beads is right about them</em>: myc does not yet inherit blockers down the parent chain. Tracked as <code>" + g.issue + "</code>, unresolved.",
-      "На том же ввезённом графе <code>myc ready</code> предлагает <strong>" + g.myc + "</strong> задач, а <code>bd ready</code> — <strong>" + g.bd + "</strong>. Расхождение одностороннее: всё, что предлагает beads, предлагает и myc, в обратную сторону — ничего. Лишние <strong>" + g.diff + "</strong> — потомки эпиков, у которых блокер висит на предке, и <em>beads прав насчёт них</em>: myc пока не наследует блокеры вниз по parent. Заведено как <code>" + g.issue + "</code>, не закрыто.", "p"));
+    if (g.diff === 0 && g.issue_closed) {
+      rg.appendChild(bi(
+        "On the very graph imported above <code>myc ready</code> offers <strong>" + g.myc + "</strong> tasks and <code>bd ready</code> offers <strong>" + g.bd + "</strong>: <strong>the queues agree now, and did not always.</strong> Beads inherits blockers down the parent chain, and myc used to look only at a task's own — so there <em>beads was right</em>. Fixed in 0.2.0 (<code>" + g.issue_closed + "</code>). " + g.note_en,
+        "На том же ввезённом графе <code>myc ready</code> предлагает <strong>" + g.myc + "</strong> задач, а <code>bd ready</code> — <strong>" + g.bd + "</strong>: <strong>очереди совпадают — но совпадали не всегда.</strong> Beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, — и там <em>прав был beads</em>. Исправлено в 0.2.0 (<code>" + g.issue_closed + "</code>). " + g.note_ru, "p"));
+    } else {
+      rg.appendChild(bi(
+        "On the very graph imported above, <code>myc ready</code> offers <strong>" + g.myc + "</strong> tasks and <code>bd ready</code> offers <strong>" + g.bd + "</strong> — a difference of <strong>" + g.diff + "</strong>. Tracked as <code>" + g.issue + "</code>, unresolved.",
+        "На том же ввезённом графе <code>myc ready</code> предлагает <strong>" + g.myc + "</strong> задач, а <code>bd ready</code> — <strong>" + g.bd + "</strong>: расхождение <strong>" + g.diff + "</strong>. Заведено как <code>" + g.issue + "</code>, не закрыто.", "p"));
+    }
     var pair = el("div", { class: "grid-2", style: "margin-top:1rem" });
     pair.appendChild(el("div", null, cmd(g.myc_command), el("div", { class: "muted", style: "font-size:.78rem;margin-top:.3rem", text: "ready: " + g.myc })));
     pair.appendChild(el("div", null, cmd(g.bd_command), el("div", { class: "muted", style: "font-size:.78rem;margin-top:.3rem", text: "ready: " + g.bd })));
     rg.appendChild(pair);
   })();
 
-  // ── 07 дорожная карта ──────────────────────────────────────────────────────
+  // ── 02 что умеет ───────────────────────────────────────────────────────────
+  (function () {
+    var F = D.features;
+    var counts = {}, order = [], total = 0;
+    F.groups.forEach(function (g) {
+      g.items.forEach(function (it) {
+        if (!(it.since in counts)) { counts[it.since] = 0; order.push(it.since); }
+        counts[it.since]++;
+        total++;
+      });
+    });
+    order.sort(cmpVer);
+    var strip = document.getElementById("feature-releases");
+    strip.appendChild(bi(
+      total + " lines in " + F.groups.length + " groups; how many arrived in each release:",
+      total + " строк в " + F.groups.length + " группах; сколько пришло в каждом релизе:", "p"));
+    var chips = el("div", { class: "chips" });
+    order.forEach(function (v) {
+      chips.appendChild(el("span", { class: "chip", "data-tip": v + ": " + counts[v] },
+        el("span", { class: "since", text: v }), el("span", { class: "tnum", text: "×" + counts[v] })));
+    });
+    strip.appendChild(chips);
+
+    var host = document.getElementById("feature-groups");
+    F.groups.forEach(function (g) {
+      var card = el("div", { class: "card fgroup", id: "f-" + g.key });
+      card.appendChild(el("h3")).appendChild(bi(g.title_en, g.title_ru));
+      var ul = el("ul", { class: "flist" });
+      g.items.forEach(function (it) {
+        var body = el("div", { class: "fbody" });
+        body.appendChild(bi(it.en, it.ru, "div"));
+        body.appendChild(el("code", { class: "fcmd", text: it.cmd }));
+        ul.appendChild(el("li", null, el("span", { class: "since", text: it.since }), body));
+      });
+      card.appendChild(ul);
+      host.appendChild(card);
+    });
+  })();
+
+  // ── 09 чего нет: числа вех — из того же снимка, что и дорожная карта ──────
+  // Раньше здесь стояло «M3 стоит на 5 из 10» текстом, пока дорожная карта
+  // уже показывала 6 из 10: два места для одного числа расходятся молча.
+  (function () {
+    var byKey = {};
+    D.roadmap.rows.forEach(function (r) { byKey[r.key] = r; });
+    var m3 = byKey.M3, m5 = byKey.M5, m6 = byKey.M6;
+    if (m3) put("absent-code", bi(
+      "No LLM pass over the code: no concept map, no per-symbol prose. The index is mechanical — definitions, references, spans. M3 stands at " + m3.done + " of " + m3.total + ".",
+      "Нет прохода модели по коду: ни концептуальной карты, ни выжимок по символам. Индекс механический — определения, ссылки, спаны. M3 стоит на " + m3.done + " из " + m3.total + "."));
+    if (m5 && m6) {
+      var none = m5.done === 0 && m6.done === 0;
+      put("absent-swarm", bi(
+        "No routing by cost and outcome, and no distillation: M5 stands at " + m5.done + " of " + m5.total + ", M6 at " + m6.done + " of " + m6.total + (none ? " — neither has started" : "") + ". Attempts and model prices are recorded; nothing picks a model for you.",
+        "Нет роутинга по цене и результату и нет дистилляции: M5 стоит на " + m5.done + " из " + m5.total + ", M6 — на " + m6.done + " из " + m6.total + (none ? ", не начата ни одна" : "") + ". Попытки и цены моделей записываются; модель за вас не выбирает ничто."));
+    }
+  })();
+
+  // ── 10 дорожная карта и планы ──────────────────────────────────────────────
   (function () {
     var R = D.roadmap;
+    var byId = {};
+    R.rows.forEach(function (r) { byId[r.id] = r; });
     var started = R.rows.filter(function (r) { return r.done > 0; }).length;
+    var src = String(R.source).split(" · ")[0];
     document.getElementById("roadmap-sub").appendChild(bi(
-      "Closed subtasks per milestone, " + D.env.date + ". " + (R.rows.length - started) + " of " + R.rows.length + " milestones have not started at all.",
-      "Закрытые подзадачи по вехам на " + D.env.date + ". " + (R.rows.length - started) + " вехи из " + R.rows.length + " не начаты вовсе."));
+      "Closed tasks per epic, counted from myc on " + R.as_of + " (" + src + ") — the figure <code>myc show &lt;epic&gt;</code> prints. " + (R.rows.length - started) + " of " + R.rows.length + " have not started at all. A sub-epic counts as one task of its parent and has its own row.",
+      "Закрытые задачи по эпикам, посчитанные из myc на " + R.as_of + " (" + src + "), — то число, что печатает <code>myc show &lt;эпик&gt;</code>. " + (R.rows.length - started) + " из " + R.rows.length + " не начаты вовсе. Под-эпик считается у родителя одной задачей и получает свою строку."));
 
     var host = document.getElementById("roadmap");
     R.rows.forEach(function (r) {
       var share = r.total ? r.done / r.total : 0;
-      var m = el("div", { class: "milestone" }, el("div", { class: "mk", text: r.key }));
+      var parent = r.parent ? byId[r.parent] : null;
+      var m = el("div", { class: "milestone" + (parent ? " sub" : "") }, el("div", { class: "mk", text: r.key }));
       var right = el("div");
-      var t = el("div", { class: "mt" }); t.appendChild(bi(r.title_en, r.title_ru)); right.appendChild(t);
+      var t = el("div", { class: "mt" });
+      t.appendChild(bi(r.title_en + (parent ? " <span class=\"muted\">· part of " + parent.key + "</span>" : ""),
+        r.title_ru + (parent ? " <span class=\"muted\">· часть " + parent.key + "</span>" : "")));
+      right.appendChild(t);
       var rest = r.total - r.done;
       var mn = el("div", { class: "mn" });
       mn.appendChild(el("span", { class: rest === 0 ? "all" : "", text: String(r.done) }));
@@ -437,6 +527,10 @@
         left.appendChild(document.createTextNode(" "));
         left.appendChild(bi("not done", "не сделано"));
       }
+      if (r.in_progress > 0) left.appendChild(bi(" · " + r.in_progress + " in progress", " · в работе: " + r.in_progress));
+      // Эпик и его задачи закрываются отдельно — и сайт говорит, какое из двух.
+      if (r.status === "closed" && rest > 0) left.appendChild(bi(" · the epic itself is closed", " · сам эпик закрыт"));
+      if (r.status !== "closed" && rest === 0) left.appendChild(bi(" · the epic itself is still open", " · сам эпик ещё открыт"));
       left.appendChild(el("span", { class: "muted", style: "font-family:var(--mono);font-weight:400", text: "  ·  " + r.id }));
       right.appendChild(left);
       m.appendChild(right);
@@ -444,11 +538,61 @@
     });
 
     var how = document.getElementById("roadmap-how");
+    how.appendChild(bi("All rows at once, rewritten into <code>site/measurements.json</code> — run before a release, like the benchmarks:",
+      "Все строки разом, с перезаписью <code>site/measurements.json</code>, — запускается перед релизом, как бенчмарки:", "p"));
+    how.appendChild(cmd(R.command));
     how.appendChild(bi("Each row is one command against the live workspace:", "Каждая строка — одна команда к живому воркспейсу:", "p"));
     R.rows.forEach(function (r) { how.appendChild(cmd("myc show " + r.id)); });
+
+    // Планы: КАЖДАЯ незакрытая задача снимка. Описание на сайте есть не у всех
+    // обязательно — у кого нет, та показана заголовком из трекера, но показана:
+    // прятать открытую работу нельзя. Обратное (описание уже закрытой задачи)
+    // не пропускает site/build.ts.
+    var desc = {}, epicNote = {};
+    D.planned.epics.forEach(function (e) {
+      epicNote[e.id] = e;
+      e.items.forEach(function (it) { desc[it.id] = it; });
+    });
+    var ph = document.getElementById("planned-epics");
+    R.rows.forEach(function (r) {
+      if (r.open.length === 0) return;
+      var parent = r.parent ? byId[r.parent] : null;
+      var card = el("div", { class: "card pepic", id: "plan-" + r.key });
+      var head = el("div", { class: "phead" }, el("span", { class: "mk", text: r.key }));
+      head.appendChild(el("h3")).appendChild(bi(r.title_en, r.title_ru));
+      card.appendChild(head);
+      var state = el("div", { class: "pstate" });
+      if (r.status === "closed") {
+        state.appendChild(bi("epic closed · " + r.done + " of " + r.total + " tasks closed", "эпик закрыт · закрыто " + r.done + " из " + r.total));
+      } else if (r.done === 0 && r.in_progress === 0) {
+        state.appendChild(bi("not started · 0 of " + r.total + " closed", "не начато · закрыто 0 из " + r.total));
+        state.className += " none";
+      } else {
+        state.appendChild(bi(r.done + " of " + r.total + " closed · " + (r.in_progress > 0 ? r.in_progress + " in progress" : "nothing in progress right now"),
+          "закрыто " + r.done + " из " + r.total + " · " + (r.in_progress > 0 ? "в работе: " + r.in_progress : "сейчас в работе ничего")));
+      }
+      if (parent) state.appendChild(bi(" · part of " + parent.key, " · часть " + parent.key));
+      card.appendChild(state);
+      var note = epicNote[r.id];
+      if (note && note.en) card.appendChild(bi(note.en, note.ru, "p"));
+      var ul = el("ul", { class: "plist" });
+      r.open.forEach(function (c) {
+        var body = el("div");
+        var d = desc[c.id];
+        if (d) body.appendChild(bi(d.en, d.ru, "div"));
+        else body.appendChild(bi(esc(c.title) + " <span class=\"muted\">(title as in the tracker)</span>", esc(c.title) + " <span class=\"muted\">(заголовок из трекера)</span>", "div"));
+        var meta = el("div", { class: "pmeta" }, el("code", { text: c.id }), document.createTextNode(" · "));
+        meta.appendChild(c.status === "in_progress" ? bi("in progress", "в работе") : bi("open, not taken", "открыта, никем не взята"));
+        body.appendChild(meta);
+        ul.appendChild(el("li", null, el("span", { class: "prio", text: "P" + c.priority }), body));
+      });
+      card.appendChild(ul);
+      card.appendChild(el("div", { style: "margin-top:.9rem" }, cmd("myc show " + r.id)));
+      ph.appendChild(card);
+    });
   })();
 
-  // ── 08 повторить ───────────────────────────────────────────────────────────
+  // ── 11 повторить ───────────────────────────────────────────────────────────
   (function () {
     var list = [
       { en: "latency budgets on 100 000 nodes", ru: "бюджеты латентности на 100 000 узлов", c: D.latency.command },
@@ -459,7 +603,7 @@
       { en: "snapshot out of a beads project", ru: "снимок из проекта на beads", c: D.import.prep_command },
       { en: "import it", ru: "ввезти его", c: D.import.command },
       { en: "the two ready queues, side by side", ru: "две очереди готовых задач рядом", c: D.import.ready_gap.myc_command + "   #   " + D.import.ready_gap.bd_command },
-      { en: "milestone counts", ru: "счёт по вехам", c: D.roadmap.command },
+      { en: "milestone counts and open tasks, from myc (needs this repository's workspace)", ru: "счёт по вехам и открытые задачи — из myc (нужен воркспейс этого репозитория)", c: D.roadmap.command },
       { en: "the whole test suite", ru: "весь прогон тестов", c: D.tests.command },
       { en: "re-verify this page against the repository", ru: "пересверить эту страницу с репозиторием", c: "bun run site/build.ts" }
     ];
@@ -477,13 +621,22 @@
     var th = document.getElementById("tests");
     var row = el("div", { class: "grid-3", style: "margin-bottom:1.2rem" });
     row.appendChild(el("div", null, statTile(group(T.pass), null, "tests pass", "тестов проходит", T.assertions ? group(T.assertions) + " assertions, " + T.files + " files" : null, group(T.assertions) + " проверок, " + T.files + " файлов")));
-    row.appendChild(el("div", null, statTile(String(T.fail), null, "test fails", "тест падает", "named below", "назван ниже")));
+    row.appendChild(el("div", null, statTile(String(T.fail), null, T.fail === 1 ? "test fails" : "tests fail", T.fail === 1 ? "тест падает" : "тестов падает",
+      T.fail > 0 ? "named below" : "myc " + T.myc + ", " + T.date, T.fail > 0 ? "назван ниже" : "myc " + T.myc + ", " + T.date)));
     row.appendChild(el("div", null, statTile(String(T.skip), null, "skipped", "пропущено", T.seconds + " s wall clock", T.seconds + " с стенного времени")));
     th.appendChild(row);
     th.appendChild(cmd(T.command));
-    var note = el("div", { style: "margin-top:1rem;border-left:2px solid var(--critical);padding-left:1rem" });
-    note.appendChild(el("code", { text: T.failing_test, style: "display:block;margin-bottom:.5rem" }));
-    note.appendChild(bi(T.failing_note_en, T.failing_note_ru, "p"));
+    // Падение называется по имени; без падения красной плашки нет. Раньше она
+    // рисовалась всегда — и при нуле падений показывала «undefined».
+    var note = el("div", { style: "margin-top:1rem;border-left:2px solid var(" + (T.fail > 0 ? "--critical" : "--good") + ");padding-left:1rem" });
+    if (T.fail > 0) {
+      note.appendChild(el("code", { text: T.failing_test, style: "display:block;margin-bottom:.5rem" }));
+      note.appendChild(bi(T.failing_note_en, T.failing_note_ru, "p"));
+    } else {
+      note.appendChild(bi(
+        "The snapshot carries a fingerprint of the sources it ran on (<code>" + T.sources + "</code>), and <code>site/build.ts</code> refuses it as soon as the code changes — the count cannot quietly outlive the code it describes.",
+        "Снимок несёт отпечаток исходников, на которых снят (<code>" + T.sources + "</code>), и <code>site/build.ts</code> отказывает ему, как только код изменился, — число не может тихо пережить код, о котором оно.", "p"));
+    }
     th.appendChild(note);
   })();
 

@@ -12,7 +12,7 @@
  *   bun run site/build.ts --check  только сверить, ничего не писать
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -181,7 +181,7 @@ if (m.package?.version !== release) {
 
 // ── Числа без артефакта: обязаны нести команду ────────────────────────────────
 {
-  const needCommand = ["cache", "import", "package", "roadmap", "latency", "boost", "graph", "tests"];
+  const needCommand = ["cache", "import", "package", "roadmap", "latency", "boost", "graph", "tests", "features", "planned"];
   for (const key of needCommand) {
     if (typeof m[key]?.command !== "string" || m[key].command.length === 0) {
       problems.push({ where: `${key}/command`, expected: "команда воспроизведения", actual: "нет" });
@@ -278,6 +278,274 @@ if (m.package?.version !== release) {
 
   const notDone = m.roadmap.rows.filter((r: any) => r.done === 0);
   checks.push(`roadmap: ${m.roadmap.rows.length} вех, из них ${notDone.length} не начаты (${notDone.map((r: any) => r.key).join(", ")})`);
+}
+
+// ── Даты замеров: у ранжирования — дата самого артефакта ──────────────────────
+// Подвал говорит, когда снято каждое число. Для ранжирования дату пишет сам
+// замер (generated_at в bench/*.json), и сайт не имеет права назвать другую:
+// иначе «перемерено тогда-то» снова стало бы словами.
+for (const key of ["boost", "graph"] as const) {
+  const stamped = String(readJson(m[key].check.file).generated_at ?? "").slice(0, 10);
+  if (m[key].date !== stamped) {
+    problems.push({ where: `${key}/date`, expected: m[key].date, actual: stamped || "нет generated_at" });
+  } else {
+    checks.push(`${key}: дата ${stamped} = generated_at в ${m[key].check.file}`);
+  }
+}
+if (m.tests.myc !== undefined && m.tests.myc !== release) {
+  problems.push({ where: "tests/myc", expected: release, actual: `${m.tests.myc} — прогон снят на другой версии` });
+}
+
+// ── Вехи: снимок site/roadmap.ts, внутренне согласованный ────────────
+// Сами done/total сборка пересчитать не может: базы myc в CI нет, их снимает
+// site/roadmap.ts перед релизом (как bench). Здесь проверяется, что
+// снимок сделан этим скриптом и согласован сам с собой — иначе число снова
+// можно вписать рукой, как было до скрипта, и его сторожило бы только
+// `0 ≤ done ≤ total`.
+{
+  const R = m.roadmap;
+  if (R.command !== "bun run site/roadmap.ts") {
+    problems.push({ where: "roadmap/command", expected: "bun run site/roadmap.ts", actual: R.command });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(R.as_of))) {
+    problems.push({ where: "roadmap/as_of", expected: "дата снимка YYYY-MM-DD", actual: R.as_of });
+  }
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  for (const r of R.rows) {
+    const where = `roadmap/${r.key}`;
+    if (ids.has(r.id) || keys.has(r.key)) problems.push({ where, expected: "уникальные id и ключ", actual: `${r.id} ${r.key}` });
+    ids.add(r.id);
+    keys.add(r.key);
+    if (!Array.isArray(r.open)) {
+      problems.push({ where: `${where}/open`, expected: "список незакрытых детей из site/roadmap.ts", actual: "нет" });
+      continue;
+    }
+    const ints = [r.done, r.total, r.cancelled, r.in_progress].every((x) => Number.isInteger(x) && x >= 0);
+    if (!ints || r.total - r.done - r.cancelled !== r.open.length) {
+      problems.push({ where: `${where}/counts`, expected: `total − done − cancelled = незакрытых детей (${r.open.length})`, actual: `${r.total} − ${r.done} − ${r.cancelled}` });
+    }
+    const taken = r.open.filter((c: any) => c.status === "in_progress").length;
+    if (taken !== r.in_progress) problems.push({ where: `${where}/in_progress`, expected: taken, actual: r.in_progress });
+  }
+  for (const r of R.rows) {
+    if (r.parent !== undefined && !ids.has(r.parent)) {
+      problems.push({ where: `roadmap/${r.key}/parent`, expected: "родитель — веха из того же снимка", actual: r.parent });
+    }
+  }
+  checks.push(`roadmap: снимок ${R.as_of} (${R.source}), ${R.rows.length} вех, total − done − cancelled = незакрытых у каждой`);
+}
+
+// ── Возможности: релиз не из будущего ─────────────────────────────────────────
+{
+  const cmp = (a: string, b: string): number => {
+    const x = a.split(".").map(Number);
+    const y = b.split(".").map(Number);
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+    return 0;
+  };
+  const groupKeys = new Set<string>();
+  let n = 0;
+  for (const g of m.features.groups) {
+    if (groupKeys.has(g.key) || !g.title_en || !g.title_ru || !(g.items?.length > 0)) {
+      problems.push({ where: `features/${g.key}`, expected: "уникальный ключ, заголовки en/ru и пункты", actual: JSON.stringify(g).slice(0, 80) });
+    }
+    groupKeys.add(g.key);
+    for (const it of g.items ?? []) {
+      n++;
+      const where = `features/${g.key}#${n}`;
+      if (!it.en || !it.ru || !it.cmd) problems.push({ where, expected: "en, ru и cmd", actual: JSON.stringify(it).slice(0, 80) });
+      if (!/^\d+\.\d+\.\d+$/.test(String(it.since)) || cmp(it.since, release) > 0) {
+        problems.push({ where: `${where}/since`, expected: `релиз x.y.z не новее ${release}`, actual: it.since });
+      }
+    }
+  }
+  checks.push(`features: ${n} возможностей в ${m.features.groups.length} группах, релиз каждой ≤ ${release}`);
+}
+
+// ── Запланированное: только то, что в снимке вех действительно открыто ────────
+// Описание задачи, которую уже закрыли, — это обещание уже сделанного под
+// видом будущего, и наоборот, прятать открытую нечестно. Второе закрыто
+// отрисовкой: задача без описания показывается заголовком из myc. Первое
+// ловится здесь.
+{
+  const rows = new Map<string, any>(m.roadmap.rows.map((r: any) => [r.id, r]));
+  const seen = new Set<string>();
+  let described = 0;
+  for (const e of m.planned.epics) {
+    const row = rows.get(e.id);
+    if (row === undefined) {
+      problems.push({ where: `planned/${e.id}`, expected: "эпик из снимка вех", actual: "нет в roadmap" });
+      continue;
+    }
+    const open = new Set<string>(row.open.map((c: any) => c.id));
+    for (const it of e.items) {
+      const where = `planned/${row.key}/${it.id}`;
+      if (seen.has(it.id)) problems.push({ where, expected: "одно описание на задачу", actual: "повтор" });
+      seen.add(it.id);
+      if (!it.en || !it.ru) problems.push({ where, expected: "en и ru", actual: "нет" });
+      if (!open.has(it.id)) {
+        problems.push({ where, expected: `задача, открытая в снимке вех ${m.roadmap.as_of}`, actual: "не открыта — закрыта, отменена или ушла из эпика: уберите описание" });
+      } else {
+        described++;
+      }
+    }
+  }
+  const openTotal = m.roadmap.rows.reduce((s: number, r: any) => s + r.open.length, 0);
+  checks.push(`planned: ${described} из ${openTotal} открытых задач описаны, остальные показаны заголовком из myc`);
+}
+
+// ── Команды на странице — команды ЭТОЙ сборки ────────────────────────────────
+// Страница советует команды: у каждой возможности своя, в установке, в
+// примерах. Совет с командой или флагом, которых нет, — тот же сломанный
+// обещанный путь, что ловит advised-commands.test.ts в самом CLI. Поэтому
+// каждая `myc …` со страницы спрашивается у CLI из исходников: `<команда>
+// [подкоманда] --help` обязан ответить 0, а каждый флаг — стоять в его справке
+// или среди глобальных. Команда из будущего (`myc serve`) помечается в
+// разметке data-future; раздел «запланировано» не проверяется вовсе — он по
+// определению про то, чего ещё нет. Для `bun run|test <файл>` проверяется, что
+// файл есть.
+{
+  const mainTs = join(repoRoot, "packages", "cli", "src", "main.ts");
+  const cliEnv = { ...process.env, NO_COLOR: "1", MYC_UPDATE_CHECK: "0" };
+  const helpOf = (out: string, section: string): string[] => {
+    const at = out.indexOf(`\n${section}:\n`);
+    if (at < 0) return [];
+    const body = out.slice(at + section.length + 3);
+    const end = body.search(/\n\s*\n/);
+    return (end < 0 ? body : body.slice(0, end)).split("\n");
+  };
+  const flagsIn = (lines: string[]): string[] =>
+    lines.flatMap((l) => {
+      const f = /^\s+(?:(-[A-Za-z]),\s+)?(--[a-z][a-z-]*)/.exec(l);
+      return f === null ? [] : [f[2]!, ...(f[1] !== undefined ? [f[1]] : [])];
+    });
+
+  const top = Bun.spawnSync([process.execPath, mainTs, "--help"], { cwd: repoRoot, env: cliEnv, stdout: "pipe", stderr: "pipe" });
+  const topOut = new TextDecoder().decode(top.stdout);
+  const paths = new Set<string>(
+    helpOf(topOut, "Commands").flatMap((l) => {
+      const c = /^  ([a-z][a-z-]*(?: [a-z][a-z-]*)?)\s{2,}\S/.exec(l);
+      return c === null ? [] : [c[1]!];
+    }),
+  );
+  const globals = new Set(flagsIn(helpOf(topOut, "Globals")));
+  if (top.exitCode !== 0 || paths.size === 0 || globals.size === 0) {
+    problems.push({ where: "commands/cli", expected: "myc --help из исходников: команды и глобальные флаги", actual: `код ${top.exitCode}, команд ${paths.size}` });
+  }
+
+  const tokenize = (line: string): string[] => {
+    const out: string[] = [];
+    let cur = "";
+    let quote: string | null = null;
+    let open = false;
+    for (const ch of line) {
+      if (quote !== null) { if (ch === quote) quote = null; else cur += ch; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; open = true; continue; }
+      if (/\s/.test(ch)) { if (open) out.push(cur); cur = ""; open = false; continue; }
+      cur += ch;
+      open = true;
+    }
+    if (open) out.push(cur);
+    return out;
+  };
+
+  type Use = { where: string; text: string; path: string | null; flags: string[] };
+  const uses: Use[] = [];
+  const fileRefs: { where: string; file: string }[] = [];
+  /** strict: строка из поля команды — «myc» с не-командой после него это ошибка, а не пропуск. */
+  const addLine = (raw: string, where: string, strict: boolean): void => {
+    for (const segment of raw.split(/\s*(?:&&|;|\|)\s*/)) {
+      const line = segment.trim().replace(/^\$\s+/, "");
+      const t = tokenize(line);
+      while (t.length > 0 && /^[A-Z_][A-Z0-9_]*=/.test(t[0]!)) t.shift();
+      if (t[0] === "bun" && (t[1] === "run" || t[1] === "test")) {
+        for (const a of t.slice(2)) if (a.includes("/") || /\.(ts|js)$/.test(a)) fileRefs.push({ where, file: a });
+        continue;
+      }
+      if (t[0] !== "myc") continue;
+      const rest = t.slice(1);
+      if (rest.length > 0 && !rest[0]!.startsWith("-") && !/^[a-z][a-z-]*$/.test(rest[0]!)) {
+        if (strict) uses.push({ where, text: line, path: rest[0]!, flags: [] });
+        continue; // «myc │ ctx 42% …» — образец строки статуса, а не команда
+      }
+      let i = 0;
+      const flags: string[] = [];
+      while (i < rest.length && rest[i]!.startsWith("-")) {
+        flags.push(rest[i]!.split("=")[0]!);
+        if (["--db", "-C", "--directory"].includes(rest[i]!)) i++;
+        i++;
+      }
+      let path: string | null = null;
+      if (i < rest.length) {
+        path = rest[i++]!;
+        if (i < rest.length && paths.has(`${path} ${rest[i]}`)) path = `${path} ${rest[i++]}`;
+      }
+      for (; i < rest.length && rest[i] !== "--"; i++) {
+        if (/^--?[A-Za-z]/.test(rest[i]!)) flags.push(rest[i]!.split("=")[0]!);
+      }
+      uses.push({ where, text: line, path, flags });
+    }
+  };
+
+  // Поля команд в measurements.json — кроме planned.
+  const walk = (v: any, where: string): void => {
+    if (Array.isArray(v)) return v.forEach((x, i) => walk(x, `${where}[${i}]`));
+    if (v === null || typeof v !== "object") return;
+    for (const [k, x] of Object.entries(v)) {
+      if (where === "" && k === "planned") continue;
+      const here = where === "" ? k : `${where}.${k}`;
+      if (typeof x === "string" && (k === "command" || k === "cmd" || k.endsWith("_command"))) addLine(x, here, true);
+      else walk(x, here);
+    }
+  };
+  walk(m, "");
+  // <code>myc …</code> в текстах возможностей.
+  m.features.groups.forEach((g: any) =>
+    g.items.forEach((it: any, i: number) => {
+      for (const txt of [it.en, it.ru]) {
+        for (const c of String(txt).matchAll(/<code>([\s\S]*?)<\/code>/g)) addLine(c[1]!, `features.${g.key}[${i}]`, false);
+      }
+    }),
+  );
+  // <code> и <pre><code> в разметке страницы; пояснения (# …) отрезаются.
+  const html = readFileSync(join(siteDir, "index.html"), "utf8");
+  const decode = (s: string) =>
+    s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+  for (const c of html.matchAll(/<code(\s[^>]*)?>([\s\S]*?)<\/code>/g)) {
+    if ((c[1] ?? "").includes("data-future")) continue;
+    const inner = decode(c[2]!.replace(/<span class="c">[\s\S]*?<\/span>/g, "").replace(/<[^>]+>/g, ""));
+    for (const line of inner.split("\n")) addLine(line.replace(/\s+#.*$/, ""), "index.html", false);
+  }
+
+  const distinct = [...new Set(uses.map((u) => u.path).filter((p): p is string => p !== null))];
+  const helps = new Map<string, { code: number; flags: Set<string> }>();
+  await Promise.all(
+    distinct.map(async (p) => {
+      const proc = Bun.spawn([process.execPath, mainTs, ...p.split(" "), "--help"], { cwd: repoRoot, env: cliEnv, stdout: "pipe", stderr: "pipe" });
+      const out = await new Response(proc.stdout).text();
+      const code = await proc.exited;
+      helps.set(p, { code, flags: new Set(flagsIn(helpOf(out, "Flags"))) });
+    }),
+  );
+  let flagCount = 0;
+  for (const u of uses) {
+    const h = u.path === null ? { code: 0, flags: new Set<string>() } : helps.get(u.path)!;
+    if (h.code !== 0 || (u.path !== null && !paths.has(u.path) && !paths.has(u.path.split(" ")[0]!))) {
+      problems.push({ where: `commands/${u.where}`, expected: "команда этой сборки", actual: `${u.text} — «myc ${u.path} --help» ответил ${h.code}` });
+      continue;
+    }
+    for (const f of u.flags) {
+      flagCount++;
+      if (!h.flags.has(f) && !globals.has(f)) {
+        problems.push({ where: `commands/${u.where}`, expected: `флаг из «myc ${u.path ?? ""} --help»`, actual: `${f} в «${u.text}»` });
+      }
+    }
+  }
+  for (const r of fileRefs) {
+    if (!existsSync(join(repoRoot, r.file))) problems.push({ where: `commands/${r.where}`, expected: "файл в репозитории", actual: r.file });
+  }
+  checks.push(`commands: ${uses.length} вызовов myc (${distinct.length} разных команд) и ${flagCount} флагов есть в справке этой сборки; ${fileRefs.length} файлов из bun run/test на месте`);
 }
 
 // ── Итог ──────────────────────────────────────────────────────────────────────

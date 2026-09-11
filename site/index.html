@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>myc — a local task-and-memory layer for coding agents</title>
-<meta name="description" content="myc: a local task queue, an oplog of decisions and hybrid search over a project's memory for coding agents. Every number on this page is measured and reproducible by a command from the repository.">
+<meta name="description" content="myc: a local task queue, an oplog of decisions, hybrid search over a project's memory and a built-in code index for coding agents. Every number on this page is measured and reproducible by a command from the repository.">
 <meta property="og:title" content="myc — a local task-and-memory layer for coding agents">
 <meta property="og:description" content="Every number on this page is measured, and the command that reproduces it stands next to it.">
 <meta property="og:type" content="website">
@@ -33,6 +33,7 @@
     <a class="brand" href="#top">myc<span class="ver" id="brand-ver"></span></a>
     <nav class="sections" aria-label="Sections">
       <a href="#install"><span lang="en">Install</span><span lang="ru">Установка</span></a>
+      <a href="#features"><span lang="en">Features</span><span lang="ru">Возможности</span></a>
       <a href="#speed"><span lang="en">Speed</span><span lang="ru">Скорость</span></a>
       <a href="#ranking"><span lang="en">Ranking</span><span lang="ru">Ранжирование</span></a>
       <a href="#cache"><span lang="en">Cache</span><span lang="ru">Кеш</span></a>
@@ -40,6 +41,7 @@
       <a href="#migrate"><span lang="en">Migration</span><span lang="ru">Миграция</span></a>
       <a href="#compare"><span lang="en">Comparison</span><span lang="ru">Сравнение</span></a>
       <a href="#absent"><span lang="en">What it is not</span><span lang="ru">Чего нет</span></a>
+      <a href="#planned"><span lang="en">Planned</span><span lang="ru">Планы</span></a>
       <a href="#reproduce"><span lang="en">Reproduce</span><span lang="ru">Повторить</span></a>
     </nav>
     <div class="controls">
@@ -59,8 +61,8 @@
 <div class="hero">
   <div class="wrap">
     <h1>myc</h1>
-    <p class="lede" lang="en">A local task-and-memory layer for coding agents: a task queue, an oplog of facts and decisions, and hybrid search over a project's memory. <strong>No network calls, no mandatory LLM key.</strong></p>
-    <p class="lede" lang="ru">Локальный слой задач и памяти для кодовых агентов: очередь задач, оплог фактов и решений, гибридный поиск по памяти проекта. <strong>Без сетевых вызовов и без обязательного ключа к модели.</strong></p>
+    <p class="lede" lang="en">A local task-and-memory layer for coding agents: a task queue, an oplog of facts and decisions, hybrid search over a project's memory, and a built-in code index. <strong>No network calls of its own, no mandatory LLM key.</strong></p>
+    <p class="lede" lang="ru">Локальный слой задач и памяти для кодовых агентов: очередь задач, оплог фактов и решений, гибридный поиск по памяти проекта и встроенный индекс кода. <strong>Без собственных сетевых вызовов и без обязательного ключа к модели.</strong></p>
 
     <p class="lede dim" style="margin-top:1rem" lang="en">Agents forget. myc is the part that doesn't: decisions survive context compaction, work survives process death, and both survive being moved between machines through plain git.</p>
     <p class="lede dim" style="margin-top:1rem" lang="ru">Агенты забывают. myc — та часть, которая нет: решения переживают сжатие контекста, работа переживает смерть процесса, и то и другое переезжает между машинами обычным git.</p>
@@ -73,6 +75,7 @@
 
     <div class="cta">
       <a class="btn primary" href="#install"><span lang="en">Install</span><span lang="ru">Установить</span></a>
+      <a class="btn" href="#features"><span lang="en">What it does</span><span lang="ru">Что умеет</span></a>
       <a class="btn" href="https://github.com/aistastudio/myc">GitHub</a>
       <a class="btn" href="#absent"><span lang="en">What myc is not</span><span lang="ru">Чего в myc нет</span></a>
     </div>
@@ -88,8 +91,8 @@
       <span class="sec-index">01</span>
       <h2 lang="en">Install</h2>
       <h2 lang="ru">Установка</h2>
-      <p lang="en">One command, one binary, no models pulled. Semantic search is opt-in and says so until you enable it.</p>
-      <p lang="ru">Одна команда, один бинарь, модели при установке не качаются. Семантический поиск включается отдельно и до тех пор честно говорит, что его нет.</p>
+      <p lang="en">One command, no models pulled. Semantic search and the code grammars are fetched only when you ask, and until then the output says what is missing.</p>
+      <p lang="ru">Одна команда, модели при установке не качаются. Семантический поиск и грамматики кода скачиваются только по вашей команде, а до тех пор вывод говорит, чего не хватает.</p>
     </div>
 
     <div class="grid-2">
@@ -99,6 +102,8 @@
         <p class="sub" lang="en">The runtime is bound to <code>bun:sqlite</code>: SQLite and <code>sqlite-vec</code> ship inside Bun, with no native bindings on the Node side. It will not start on plain Node.js or Deno. Bun ≥ 1.3.0, pinned in <code>engines.bun</code>.</p>
         <p class="sub" lang="ru">Рантайм привязан к <code>bun:sqlite</code>: SQLite и <code>sqlite-vec</code> едут внутри Bun, нативных биндингов на стороне Node нет. На чистом Node.js или Deno он не стартует. Bun ≥ 1.3.0, зафиксирован в <code>engines.bun</code>.</p>
         <div class="cmd"><span class="prompt">$</span><code>curl -fsSL https://bun.sh/install | bash</code><button class="copy" type="button">copy</button></div>
+        <p class="sub" style="margin-top:1rem" lang="en"><strong>macOS and Linux.</strong> On Windows, use WSL and install Bun and myc inside it: the launcher does not start in cmd or PowerShell, and the npm install says so.</p>
+        <p class="sub" style="margin-top:1rem" lang="ru"><strong>macOS и Linux.</strong> На Windows — через WSL, Bun и myc ставятся внутри неё: в cmd и PowerShell лаунчер не стартует, и установка через npm об этом говорит.</p>
       </div>
 
       <div class="card">
@@ -111,6 +116,16 @@
           <summary><span lang="en">How the package size was measured</span><span lang="ru">Как померен размер пакета</span></summary>
           <div class="body" id="pkg-how"></div>
         </details>
+        <details class="how">
+          <summary><span lang="en">The newest code instead of the release</span><span lang="ru">Свежий код вместо релиза</span></summary>
+          <div class="body">
+            <p lang="en">Build from source: one binary, <code>dist/myc</code>. Put it where <code>myc wire</code> can find it — <code>MYC_BIN</code>, <code>~/.myc/bin/myc</code> or <code>PATH</code>; if it can't, <code>wire</code> says so instead of writing a config that will not start.</p>
+            <p lang="ru">Сборка из исходников: один бинарь, <code>dist/myc</code>. Положите его туда, где его найдёт <code>myc wire</code>, — <code>MYC_BIN</code>, <code>~/.myc/bin/myc</code> или <code>PATH</code>; если не найдёт, <code>wire</code> скажет об этом, а не запишет конфиг, который не стартует.</p>
+            <pre class="block"><code>git clone https://github.com/aistastudio/myc && cd myc
+bun install && bun run build
+./dist/myc --version</code></pre>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -118,22 +133,55 @@
       <div class="card">
         <h3 lang="en">Quick start</h3>
         <h3 lang="ru">Быстрый старт</h3>
-        <p class="sub" lang="en">Five commands is the whole loop an agent lives in.</p>
-        <p class="sub" lang="ru">Пять команд — весь цикл, в котором живёт агент.</p>
-<pre class="block" lang="en"><code>myc init      <span class="c"># .myc/ + SQLite + migrations in this repo</span>
-myc wire      <span class="c"># hooks for Claude Code / Codex / opencode / Kimi</span>
-myc ready     <span class="c"># what can be picked up right now</span>
+        <p class="sub" lang="en">Two commands set a project up; the rest is the loop an agent lives in.</p>
+        <p class="sub" lang="ru">Две команды настраивают проект; остальное — цикл, в котором живёт агент.</p>
+<pre class="block" lang="en"><code>myc init            <span class="c"># .myc/, SQLite, migrations</span>
+myc wire            <span class="c"># hooks + MCP for the 4 agents</span>
+myc ready --claim   <span class="c"># take the next task</span>
+myc show &lt;id&gt;       <span class="c"># all that is known about it</span>
+myc close &lt;id&gt;
 myc remember "why X, not Y"
-myc recall   "how retrieval works"
-myc prime     <span class="c"># session context packet — agents call this</span></code></pre>
-<pre class="block" lang="ru"><code>myc init      <span class="c"># .myc/ + SQLite + миграции в этом репозитории</span>
-myc wire      <span class="c"># хуки для Claude Code / Codex / opencode / Kimi</span>
-myc ready     <span class="c"># что можно взять прямо сейчас</span>
+myc recall "how retrieval works"
+myc prime           <span class="c"># context packet for a session</span>
+myc code fetch      <span class="c"># grammars, once</span>
+myc code index      <span class="c"># symbols, callers, search</span>
+myc doctor          <span class="c"># claims vs. a recount</span></code></pre>
+<pre class="block" lang="ru"><code>myc init            <span class="c"># .myc/, SQLite, миграции</span>
+myc wire            <span class="c"># хуки и MCP для 4 агентов</span>
+myc ready --claim   <span class="c"># взять следующую задачу</span>
+myc show &lt;id&gt;       <span class="c"># всё, что о ней известно</span>
+myc close &lt;id&gt;
 myc remember "почему X, а не Y"
-myc recall   "как устроен ретривал"
-myc prime     <span class="c"># пакет контекста сессии — его зовут агенты</span></code></pre>
+myc recall "как устроен ретривал"
+myc prime           <span class="c"># пакет контекста сессии</span>
+myc code fetch      <span class="c"># грамматики, один раз</span>
+myc code index      <span class="c"># символы, вызовы, поиск</span>
+myc doctor          <span class="c"># заявленное против пересчёта</span></code></pre>
       </div>
 
+      <div class="card">
+        <h3 lang="en">Wiring agents: the flags that matter</h3>
+        <h3 lang="ru">Подключение агентов: флаги, которые важны</h3>
+        <p class="sub" lang="en"><code>wire</code> writes only its own files in full and merges JSON configs node by node with a backup; <code>CLAUDE.md</code> is never touched. Everything below is opt-in.</p>
+        <p class="sub" lang="ru"><code>wire</code> пишет целиком только свои файлы, а JSON-конфиги сливает по узлам с резервной копией; <code>CLAUDE.md</code> не трогает никогда. Всё ниже — только по флагу.</p>
+<pre class="block" lang="en"><code>myc wire --dry-run              <span class="c"># show every change, write nothing</span>
+myc wire --agents claude,codex  <span class="c"># only some of the agents</span>
+myc wire --status-line          <span class="c"># + myc's status line</span>
+myc wire --queue-hook           <span class="c"># + heavy commands take turns</span>
+myc wire --agents-md            <span class="c"># + the myc block in AGENTS.md</span>
+myc unwire                      <span class="c"># remove what wire put in</span></code></pre>
+<pre class="block" lang="ru"><code>myc wire --dry-run              <span class="c"># показать всё, ничего не писать</span>
+myc wire --agents claude,codex  <span class="c"># только часть агентов</span>
+myc wire --status-line          <span class="c"># + строка статуса myc</span>
+myc wire --queue-hook           <span class="c"># + тяжёлые команды по очереди</span>
+myc wire --agents-md            <span class="c"># + блок myc в AGENTS.md</span>
+myc unwire                      <span class="c"># снять то, что поставил wire</span></code></pre>
+        <p class="sub" lang="en"><strong>Agents in git worktrees:</strong> <code>myc wire --scope user</code> puts the same into Claude Code's user layer, which every session reads — silent where there is no myc workspace; add <code>--status-line</code> for the line there too.</p>
+        <p class="sub" lang="ru"><strong>Агенты в git worktree:</strong> <code>myc wire --scope user</code> ставит то же в пользовательский слой Claude Code, который читает каждая сессия, — и молчит там, где нет воркспейса myc; с <code>--status-line</code> там будет и строка статуса.</p>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:1.25rem">
       <div class="card">
         <h3 lang="en">Semantic search is opt-in</h3>
         <h3 lang="ru">Семантический поиск — по запросу</h3>
@@ -142,7 +190,31 @@ myc prime     <span class="c"># пакет контекста сессии — �
         <p class="sub" style="margin-top:1rem" lang="en">Until you run it, search is lexical (BM25) and <strong>says so out loud</strong> on every degraded answer: <code>WARN degraded.embeddings</code>. The invariant is that a degraded answer must never be indistinguishable from a healthy one.</p>
         <p class="sub" style="margin-top:1rem" lang="ru">До этого поиск лексический (BM25) и <strong>говорит об этом вслух</strong> в каждом ухудшенном ответе: <code>WARN degraded.embeddings</code>. Инвариант такой: ухудшенный ответ не имеет права быть неотличимым от здорового.</p>
       </div>
+
+      <div class="card">
+        <h3 lang="en">The code index needs its grammars once</h3>
+        <h3 lang="ru">Индексу кода грамматики нужны один раз</h3>
+        <p class="sub" lang="en">Grammars are not shipped in the package: <code>myc code fetch</code> downloads exactly the ones this repository's files need, checked by sha256. Indexing never goes to the network — a language whose grammar is missing is skipped and named. Symbols, callers and code search cover TypeScript, TSX, JavaScript and Python; every other file still gets <code>code grep</code> and anchors.</p>
+        <p class="sub" lang="ru">Грамматики в пакете не лежат: <code>myc code fetch</code> скачивает ровно те, что нужны файлам этого репозитория, со сверкой sha256. Индексация в сеть не ходит никогда — язык без грамматики пропускается и называется. Символы, вызовы и поиск по коду — для TypeScript, TSX, JavaScript и Python; любой другой файл всё равно получает <code>code grep</code> и якоря.</p>
+        <div class="cmd" style="margin-bottom:.5rem"><span class="prompt">$</span><code>myc code fetch</code><button class="copy" type="button">copy</button></div>
+        <div class="cmd"><span class="prompt">$</span><code>myc code index</code><button class="copy" type="button">copy</button></div>
+      </div>
     </div>
+  </div>
+</section>
+
+<!-- ── что умеет ─────────────────────────────────────────────────────────── -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">02</span>
+      <h2 lang="en">What myc does</h2>
+      <h2 lang="ru">Что умеет myc</h2>
+      <p lang="en">Everything that exists today, grouped. Each line names the release it arrived in and a command that shows it on your machine; every myc command on this page is checked against this build's own <code>--help</code> when the site is built, flags included.</p>
+      <p lang="ru">Всё, что есть сегодня, по группам. У каждой строки — релиз, в котором это появилось, и команда, которой это видно на вашей машине; каждая команда myc на этой странице при сборке сайта сверяется со справкой <code>--help</code> этой самой сборки, вместе с флагами.</p>
+    </div>
+    <div id="feature-releases" class="releases"></div>
+    <div id="feature-groups" class="feature-groups"></div>
   </div>
 </section>
 
@@ -150,11 +222,11 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="speed">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">02</span>
+      <span class="sec-index">03</span>
       <h2 lang="en">Speed is a constraint, not an optimisation</h2>
       <h2 lang="ru">Скорость — ограничение, а не оптимизация</h2>
-      <p lang="en">Every hot path has a budget enforced in CI. The frame of each bar below <em>is</em> the budget; the fill is what was measured. A p95 regression over 15% fails the build.</p>
-      <p lang="ru">У каждого горячего пути есть бюджет, и он проверяется в CI. Рамка каждой полосы ниже — это и есть бюджет, заливка — измеренное. Регрессия p95 больше 15% роняет сборку.</p>
+      <p lang="en">Every hot path has a budget. The frame of each bar below <em>is</em> the budget; the fill is what was measured. Where it is enforced, precisely: on every push CI checks the <em>relative</em> half of each budget test — the healthy path against a deliberately degraded one, measured alternately, so the runner's hardware cancels out. The absolute budgets and the 15% p95 regression line are calibrated on the machine named below and hold there; GitHub's 4-core runner is not that machine, and the nightly run on it has been failing some absolute budgets since 2026-09-08 (<code>memory-c8sdwryfa0wv</code>, in progress).</p>
+      <p lang="ru">У каждого горячего пути есть бюджет. Рамка каждой полосы ниже — это и есть бюджет, заливка — измеренное. Где именно он проверяется: на каждом пуше CI проверяет <em>относительную</em> половину каждого бюджетного теста — здоровый путь против заведомо деградировавшего, замеренные вперемешку, так что железо раннера сокращается. Абсолютные бюджеты и порог регрессии p95 в 15% откалиброваны на машине, названной ниже, и держатся на ней; 4-ядерный раннер GitHub — не она, и ночной прогон на нём с 2026-09-08 роняет часть абсолютных бюджетов (<code>memory-c8sdwryfa0wv</code>, в работе).</p>
     </div>
     <div class="card">
       <h3 lang="en">p99 against its budget, 100 000 nodes</h3>
@@ -173,7 +245,7 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="ranking">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">03</span>
+      <span class="sec-index">04</span>
       <h2 lang="en">Ranking is measured, not asserted</h2>
       <h2 lang="ru">Ранжирование измеряется, а не декларируется</h2>
       <p lang="en">Two labelled corpora with graded relevance. Each one contains a <strong>control group that gets worse</strong> when the feature works — so the gain cannot be manufactured by shaping the corpus.</p>
@@ -218,7 +290,7 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="cache">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">04</span>
+      <span class="sec-index">05</span>
       <h2 lang="en">A cache that cannot go stale silently</h2>
       <h2 lang="ru">Кеш, который не может протухнуть молча</h2>
       <p lang="en">Result, embedding and hydration caches are invalidated by <code>MAX(oplog.seq)</code> read <em>from the database</em> — so a write by another process invalidates them too.</p>
@@ -253,7 +325,7 @@ myc prime     <span class="c"># пакет контекста сессии — �
 <section id="sessions">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">05</span>
+      <span class="sec-index">06</span>
       <h2 lang="en">Memory survives compaction, and knows whose it is</h2>
       <h2 lang="ru">Память переживает сжатие и знает, чья она</h2>
       <p lang="en">The two moments where agent memory is actually lost: the context window being squeezed, and one conversation's notes leaking into another's. Both are handled, and both say what they did.</p>
@@ -288,8 +360,8 @@ prj  project note: jitter…       prj  project note: jitter…</code></pre>
     <div class="card" style="margin-top:1.25rem">
       <h3 lang="en">A status line with what the agent cannot see</h3>
       <h3 lang="ru">Строка статуса — то, чего агент не видит</h3>
-      <p class="sub" lang="en"><code>myc wire --status-line</code> puts one line under Claude Code's prompt: how full the context is, the task queue, the code index, the project's memory, and how many of this session's calls to myc returned something — counted from the host's own transcript, where an error, a refusal or an empty answer is a call but not a useful one. Opt-in; a status line that was there before keeps receiving the same input and is never waited on or killed.</p>
-      <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: заполненность контекста, очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают.</p>
+      <p class="sub" lang="en"><code>myc wire --status-line</code> puts one line under Claude Code's prompt: how full the context is, the task queue, the code index, the project's memory, and how many of this session's calls to myc returned something — counted from the host's own transcript, where an error, a refusal or an empty answer is a call but not a useful one. Opt-in; a status line that was there before keeps receiving the same input and is never waited on or killed. Since 0.3.6 agents in git worktrees get it too: <code>myc wire --scope user --status-line</code>.</p>
+      <p class="sub" lang="ru"><code>myc wire --status-line</code> ставит под приглашением Claude Code одну строку: заполненность контекста, очередь задач, индекс кода, память проекта и сколько обращений к myc в этой сессии дали результат — по транскрипту самого хоста, где ошибка, отказ и пустой ответ — обращение, но не полезное. Только по флагу; строка статуса, стоявшая до неё, получает тот же ввод, её не ждут и не убивают. С 0.3.6 её получают и агенты в git worktree: <code>myc wire --scope user --status-line</code>.</p>
       <pre class="code"><code>myc │ ctx 42% │ 61 ready · 34 blocked │ 612 files · 4268 symbols · 1h ago │ 101 notes │ 600/653 useful calls</code></pre>
     </div>
 
@@ -309,11 +381,11 @@ myc wire --queue-hook</code></pre>
 <section id="migrate">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">06</span>
+      <span class="sec-index">07</span>
       <h2 lang="en">Migration from beads is real, not a demo</h2>
       <h2 lang="ru">Миграция с beads настоящая, а не демонстрационная</h2>
-      <p lang="en">A working project imported into an empty workspace. Unknown issue types are carried over verbatim <em>and named</em>; out-of-range priorities are clamped <em>and named</em> — instead of one odd row aborting the import.</p>
-      <p lang="ru">Живой проект, ввезённый в пустой воркспейс. Незнакомые типы задач переносятся дословно <em>и называются</em>; приоритеты вне шкалы прижимаются <em>и называются</em> — вместо того, чтобы одна странная строка роняла весь импорт.</p>
+      <p lang="en">A working project imported into an empty workspace. Unknown issue types are carried over verbatim <em>and named</em>; out-of-range priorities are clamped <em>and named</em> — instead of one odd row aborting the import. The numbers below are from the first release; what the import learned since is listed under them, with what it used to lose.</p>
+      <p lang="ru">Живой проект, ввезённый в пустой воркспейс. Незнакомые типы задач переносятся дословно <em>и называются</em>; приоритеты вне шкалы прижимаются <em>и называются</em> — вместо того, чтобы одна странная строка роняла весь импорт. Числа ниже — с первого релиза; чему импорт научился с тех пор, перечислено под ними, вместе с тем, что он раньше терял.</p>
     </div>
 
     <div class="card">
@@ -325,9 +397,26 @@ myc wire --queue-hook</code></pre>
       </details>
     </div>
 
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">What the import carries since that run — and what it used to lose</h3>
+      <h3 lang="ru">Что импорт везёт с того прогона — и что он раньше терял</h3>
+      <p class="sub" lang="en">The run above silently dropped the comments of that same export while reporting every note as imported. It was found the next day, by the owner, on a real project, and fixed in 0.2.0 (<code>git show aac5d1f</code>). The import has not been re-timed on that project since; what it carries now:</p>
+      <p class="sub" lang="ru">Прогон выше молча потерял комментарии той же выгрузки, отчитавшись, что все заметки ввезены. Это нашёл владелец на следующий день, на живом проекте, и в 0.2.0 это исправлено (<code>git show aac5d1f</code>). На том проекте импорт с тех пор не перемеряли; что он везёт теперь:</p>
+      <ul class="present-list">
+        <li lang="en"><span class="since">0.2.0</span> comments, into the node's thread, with their authors; unknown top-level fields are named instead of dropped;</li>
+        <li lang="ru"><span class="since">0.2.0</span> комментарии — в нить узла, с авторами; незнакомые поля верхнего уровня называются, а не выбрасываются;</li>
+        <li lang="en"><span class="since">0.3.3</span> acceptance criteria and design, into the task body between managed markers, and the source's own dates, author and owner;</li>
+        <li lang="ru"><span class="since">0.3.3</span> критерии приёмки и дизайн — в тело задачи между управляемыми маркерами, и даты, автора и владельца из источника;</li>
+        <li lang="en"><span class="since">0.3.3</span> statuses myc lacks, such as <code>deferred</code>, as <code>blocked</code> with the original word kept — never as <code>open</code>;</li>
+        <li lang="ru"><span class="since">0.3.3</span> статусы, которых в myc нет, вроде <code>deferred</code>, — как <code>blocked</code> с сохранённым исходным словом, и никогда как <code>open</code>;</li>
+        <li lang="en"><span class="since">0.3.3</span> sub-repositories of a shared workspace, each with its own repository reach; an empty source is a refusal with a hint, not a silent zero.</li>
+        <li lang="ru"><span class="since">0.3.3</span> вложенные репозитории общего воркспейса — каждый со своим охватом; пустой источник — отказ с подсказкой, а не молчаливый ноль.</li>
+      </ul>
+    </div>
+
     <div class="card" style="margin-top:1.25rem; border-left:2px solid var(--warning)">
-      <h3 lang="en">And where the migration is still wrong — ours, not theirs</h3>
-      <h3 lang="ru">И где миграция пока неверна — у нас, не у них</h3>
+      <h3 lang="en">Where the two ready queues disagreed — and who was right</h3>
+      <h3 lang="ru">Где две очереди готовых задач расходились — и кто был прав</h3>
       <div id="ready-gap"></div>
     </div>
   </div>
@@ -337,7 +426,7 @@ myc wire --queue-hook</code></pre>
 <section id="compare">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">07</span>
+      <span class="sec-index">08</span>
       <h2 lang="en">Comparison, with the losses included</h2>
       <h2 lang="ru">Сравнение, включая проигрыши</h2>
       <p lang="en">A table where one tool wins every row is an advertisement, not a comparison. Each tool below is compared only where the claim can be checked by a command on your own machine — which is also why some well-known tools are absent: we have not measured them, so they are not here.</p>
@@ -359,12 +448,12 @@ myc wire --queue-hook</code></pre>
             <tr>
               <td>beads<br><span class="muted tnum" style="font-size:.8rem">1.0.5</span></td>
               <td>
-                <span lang="en"><strong class="win">A 1.0 release against our 0.3.6</strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
-                <span lang="ru"><strong class="win">Релиз 1.0 против нашего 0.3.6</strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
+                <span lang="en"><strong class="win">A 1.0 release against our <span class="js-release"></span></strong>, a Go binary with no Bun requirement, and multi-machine sync through Dolt — a real database protocol rather than a merge driver over text.<br><br>Its ready queue used to be more correct than ours, too: beads inherits blockers down the parent chain and myc looked only at a task's own, so on the same imported graph myc offered 195 against beads' 144. Those 51 sat inside a still-blocked epic and beads was right to hide them. Fixed since (<code>memory-atcm254ry6c7</code>): both queues now return 152, and myc names what it withheld — <code>281 blocked (51 through an ancestor)</code>.</span>
+                <span lang="ru"><strong class="win">Релиз 1.0 против нашего <span class="js-release"></span></strong>, бинарь на Go без требования Bun и синхронизация между машинами через Dolt — настоящий протокол базы, а не merge-драйвер поверх текста.<br><br>Его очередь готовых задач тоже была корректнее нашей: beads наследует блокеры вниз по цепочке parent, а myc смотрел только на собственные блокеры задачи, и на одном и том же ввезённом графе myc предлагал 195 против 144 у beads. Те 51 задача лежали внутри ещё заблокированного эпика, и beads был прав, что их прятал. С тех пор исправлено (<code>memory-atcm254ry6c7</code>): обе очереди дают 152, и myc называет то, что скрыл, — <code>281 заблокировано (51 через предка)</code>.</span>
               </td>
               <td>
-                <span lang="en">Hybrid search over memory with a measured MRR@10 and labelled corpora; latency budgets enforced in CI on 100 000 nodes; facts and decisions as first-class nodes next to tasks, not only issues.</span>
-                <span lang="ru">Гибридный поиск по памяти с измеренным MRR@10 и размеченными корпусами; бюджеты латентности, проверяемые в CI на 100 000 узлов; факты и решения как полноправные узлы рядом с задачами, а не только задачи.</span>
+                <span lang="en">Hybrid search over memory with a measured MRR@10 and labelled corpora; latency budgets on 100 000 nodes that a command in the repository re-measures; facts and decisions as first-class nodes next to tasks, not only issues; and a built-in code index whose anchors tie that knowledge to the code it is about.</span>
+                <span lang="ru">Гибридный поиск по памяти с измеренным MRR@10 и размеченными корпусами; бюджеты латентности на 100 000 узлов, которые перемеряет команда из репозитория; факты и решения как полноправные узлы рядом с задачами, а не только задачи; и встроенный индекс кода, чьи якоря привязывают это знание к коду, о котором оно.</span>
               </td>
               <td><code>bd version</code><br><code>bd ready</code><br><code>myc ready --json</code></td>
             </tr>
@@ -375,8 +464,8 @@ myc wire --queue-hook</code></pre>
                 <span lang="ru"><strong class="win">У него есть концептуальная карта, написанная моделью.</strong> <code>graft build --deep</code> тратит LLM на выжимки по символам и связный рассказ о репозитории; у myc такого прохода нет и ключа для него тоже. На механических вопросах разрыв закрылся: разбирают обе стороны tree-sitter'ом, и на этом репозитории <code>myc code grep</code> находит 13 вхождений литерала против 12 у graft, <code>myc code map</code> укладывается в 2 742 знака против 24 583, а <code>myc code search</code> отвечает на «как резолвится сессия» там, где <code>graft ask</code> говорит «no matching nodes». Взамен myc даёт вторую половину: якорь привязывает заметку к участку кода и едет за ним при правках.</span>
               </td>
               <td>
-                <span lang="en">Different job, and honestly so: graft indexes code, myc keeps tasks, decisions and attempts. Where they overlap — recall of project knowledge — myc has a measured ranking and a queue; graft has neither, and does not claim to.</span>
-                <span lang="ru">Другая работа, и это честно: graft индексирует код, myc держит задачи, решения и попытки. Там, где они пересекаются — вспоминание знания о проекте — у myc есть измеренное ранжирование и очередь; у graft нет ни того, ни другого, и он на это не претендует.</span>
+                <span lang="en">Since 0.3.0 the jobs overlap, and this repository dropped graft: myc answers the mechanical code questions itself — symbol, callers, skeleton, search, grep, map, over MCP as well — and around them keeps what graft does not: tasks, decisions and attempts, a measured ranking of project knowledge, and anchors that follow the code. The price, as the 0.3.0 release notes state it: this repository's database grew from 5 MB to 34 MB.</span>
+                <span lang="ru">С 0.3.0 работы пересекаются, и этот репозиторий от graft отказался: механические вопросы о коде myc отвечает сам — symbol, callers, skeleton, search, grep, map, и через MCP тоже, — а вокруг них держит то, чего у graft нет: задачи, решения и попытки, измеренное ранжирование знания о проекте и якоря, которые едут за кодом. Цена — как её называет описание релиза 0.3.0: база этого репозитория выросла с 5 до 34 МБ.</span>
               </td>
               <td><code>graft --version</code><br><code>graft callers &lt;symbol&gt;</code></td>
             </tr>
@@ -405,52 +494,71 @@ myc wire --queue-hook</code></pre>
 <section id="absent">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">08</span>
+      <span class="sec-index">09</span>
       <h2 lang="en">What myc is not</h2>
       <h2 lang="ru">Чего в myc нет</h2>
       <p lang="en">Today myc is a <strong>single-user local tool over files in git</strong>. The list below is not a roadmap teaser — it is what does not exist, stated as plainly as what does.</p>
       <p lang="ru">Сегодня myc — <strong>однопользовательский локальный инструмент над файлами в git</strong>. Список ниже не анонс: это то, чего нет, сказанное так же прямо, как и то, что есть.</p>
     </div>
 
-    <div class="grid-2" style="margin-bottom:1.5rem">
+    <div class="grid-2">
       <div class="card absent">
         <h3 lang="en">Does not exist</h3>
         <h3 lang="ru">Не существует</h3>
         <ul class="absent-list" style="margin-top:.9rem">
-          <li lang="en">No server. <code>myc serve</code> is designed and not written.</li>
-          <li lang="ru">Нет сервера. <code>myc serve</code> спроектирован и не написан.</li>
+          <li lang="en">No server. <code data-future>myc serve</code> is designed and not written; what exists is a package with health endpoints and no command to start it.</li>
+          <li lang="ru">Нет сервера. <code data-future>myc serve</code> спроектирован и не написан; есть только пакет с эндпоинтами здоровья и без команды, которая бы его запускала.</li>
           <li lang="en">No team mode and no ACL enforcement across users.</li>
           <li lang="ru">Нет командного режима и нет проверки ACL между пользователями.</li>
           <li lang="en">No network sync. Machines exchange the oplog through git, and that is the only route.</li>
           <li lang="ru">Нет сетевой синхронизации. Машины обмениваются оплогом через git, и это единственный путь.</li>
           <li lang="en">No Postgres, no containers, no hosted anything.</li>
           <li lang="ru">Нет Postgres, нет контейнеров, нет ничего размещённого.</li>
-          <li lang="en">No LLM pass over the code: no concept map, no per-symbol prose. The index is mechanical — definitions, references, spans. M3 stands at 5 of 10.</li>
-          <li lang="ru">Нет прохода модели по коду: ни концептуальной карты, ни выжимок по символам. Индекс механический — определения, ссылки, спаны. M3 стоит на 5 из 10.</li>
-          <li lang="en">No routing by cost and outcome, no distillation: M5 and M6 have not started.</li>
-          <li lang="ru">Нет роутинга по цене и результату, нет дистилляции: M5 и M6 не начаты.</li>
+          <li id="absent-code"></li>
+          <li id="absent-swarm"></li>
+          <li lang="en">No native Windows: on Windows, myc runs inside WSL.</li>
+          <li lang="ru">Нет Windows как таковой: на Windows myc работает внутри WSL.</li>
         </ul>
       </div>
       <div class="card">
-        <h3 lang="en">Does exist, and is measured above</h3>
-        <h3 lang="ru">Существует и измерено выше</h3>
+        <h3 lang="en">Does exist</h3>
+        <h3 lang="ru">Существует</h3>
         <ul class="present-list" style="margin-top:.9rem">
-          <li lang="en">A task queue with leases, blockers and a parent hierarchy.</li>
-          <li lang="ru">Очередь задач с арендой, блокерами и иерархией parent.</li>
+          <li lang="en">A task queue with leases, and blockers inherited down the parent hierarchy.</li>
+          <li lang="ru">Очередь задач с арендой и блокерами, наследуемыми вниз по иерархии parent.</li>
           <li lang="en">An oplog of facts and decisions, merged per field in plain git.</li>
           <li lang="ru">Оплог фактов и решений, сливаемый пополево обычным git.</li>
           <li lang="en">Hybrid lexical + vector search with a measured MRR@10.</li>
           <li lang="ru">Гибридный лексический + векторный поиск с измеренным MRR@10.</li>
-          <li lang="en">Latency budgets enforced in CI on 100 000 nodes.</li>
-          <li lang="ru">Бюджеты латентности, проверяемые в CI на 100 000 узлов.</li>
+          <li lang="en">Latency budgets on 100 000 nodes, re-measured by one command in the repository.</li>
+          <li lang="ru">Бюджеты латентности на 100 000 узлов, которые перемеряет одна команда из репозитория.</li>
+          <li lang="en">A built-in code index on tree-sitter — symbols, callers, skeleton, search, grep, map — and anchors from knowledge to code.</li>
+          <li lang="ru">Встроенный индекс кода на tree-sitter — символы, вызовы, скелет, поиск, grep, карта — и якоря от знания к коду.</li>
           <li lang="en">Import from beads, with every anomaly named rather than swallowed.</li>
           <li lang="ru">Импорт из beads, где каждая аномалия называется, а не проглатывается.</li>
           <li lang="en">A read-write web interface for boards, cards and threads.</li>
           <li lang="ru">Веб-интерфейс с записью: доски, карточки, нити обсуждения.</li>
+          <li lang="en">A machine-wide queue for heavy commands, and a status line for Claude Code.</li>
+          <li lang="ru">Общая для машины очередь тяжёлых команд и строка статуса для Claude Code.</li>
           <li lang="en">Loud degradation: no silent fallbacks anywhere on the hot path.</li>
           <li lang="ru">Громкая деградация: молчаливых откатов на горячем пути нет.</li>
         </ul>
+        <p class="sub" style="margin-top:1rem" lang="en">The full list, each line with its release and a command: <a href="#features">What myc does</a>.</p>
+        <p class="sub" style="margin-top:1rem" lang="ru">Полный список, у каждой строки релиз и команда: <a href="#features">Что умеет myc</a>.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── что запланировано ─────────────────────────────────────────────────── -->
+<section id="planned">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">10</span>
+      <h2 lang="en">What's planned, and how far each part has got</h2>
+      <h2 lang="ru">Что запланировано и насколько продвинулась каждая часть</h2>
+      <p lang="en">Every epic in the project's own tracker, and every task still open inside it. Nothing here has a date. The counts are not typed in: <code>site/roadmap.ts</code> reads them from myc before a release, and the site build refuses a plan that describes a task the tracker no longer has open.</p>
+      <p lang="ru">Каждый эпик из трекера самого проекта и каждая задача, ещё открытая внутри него. Здесь нет ни одной даты. Числа не вписаны руками: <code>site/roadmap.ts</code> читает их из myc перед релизом, а сборка сайта не пропускает план, описывающий задачу, которая в трекере уже не открыта.</p>
     </div>
 
     <div class="card">
@@ -463,6 +571,8 @@ myc wire --queue-hook</code></pre>
         <div class="body" id="roadmap-how"></div>
       </details>
     </div>
+
+    <div id="planned-epics" class="planned-grid"></div>
   </div>
 </section>
 
@@ -470,7 +580,7 @@ myc wire --queue-hook</code></pre>
 <section id="reproduce">
   <div class="wrap">
     <div class="sec-head narrow">
-      <span class="sec-index">09</span>
+      <span class="sec-index">11</span>
       <h2 lang="en">Reproduce every number on this page</h2>
       <h2 lang="ru">Повторить каждое число этой страницы</h2>
       <p lang="en">Clone the repository, install, and run the list below. The numbers on this page live in <code>site/measurements.json</code>; <code>site/build.ts</code> checks them against the measurement artefacts in the repository and refuses to build the site on a mismatch.</p>
@@ -482,8 +592,8 @@ myc wire --queue-hook</code></pre>
     </div>
 
     <div class="card" style="margin-top:1.25rem">
-      <h3 lang="en">Test suite, including the test that is currently red</h3>
-      <h3 lang="ru">Прогон тестов, включая тот, что сейчас красный</h3>
+      <h3 lang="en">The test suite, on this release's code</h3>
+      <h3 lang="ru">Прогон тестов на коде этого релиза</h3>
       <div id="tests"></div>
     </div>
   </div>

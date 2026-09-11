@@ -26,6 +26,8 @@ on:
       - "site/**"
       # версия в шапке берётся из него (site/build.ts)
       - "packages/cli/package.json"
+      # сборка сверяет каждую команду myc на странице с --help этой сборки
+      - "packages/cli/src/**"
       - "bench/boost-eval.json"
       - "bench/graph-eval.json"
       - "bench/baseline.json"
