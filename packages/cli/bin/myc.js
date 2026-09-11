@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file --config=/dev/null
 /**
  * Точка входа npm-пакета @aistastudio/myc.
  *
@@ -10,6 +10,27 @@
  * Порядок важен: сначала проверка рантайма, и только потом ДИНАМИЧЕСКИЙ
  * импорт бандла. Статический импорт Node разрешил бы до первой строки тела
  * модуля — и мы бы снова упали на `bun:sqlite`, не успев ничего сказать.
+ *
+ * SHEBANG. Оба флага — про ЧУЖОЙ каталог: myc зовут хуки и MCP в каждом
+ * проекте пользователя, и cwd — это его проект. Без них Bun ДО первой строки
+ * этого файла грузит .env, .env.local, .env.<NODE_ENV> каталога в process.env
+ * (а `myc run` отдавал их команде: 2026-09-11 в cherry `bun test` получил
+ * 20 переменных EXPO_PUBLIC_* из .env worktree, которых в оболочке агента не
+ * было) и исполняет preload из ./bunfig.toml — happy-dom и моки тестов
+ * проекта внутри myc.
+ *   --no-env-file       .env* не грузятся;
+ *   --config=/dev/null  пустой конфиг вместо ./bunfig.toml. «Без конфига» у
+ *                       Bun нет: `--config=` (пусто) молча возвращает
+ *                       ./bunfig.toml, несуществующий путь — фатальная ошибка
+ *                       до старта, а /dev/null есть на любой POSIX. Глобальный
+ *                       ~/.bunfig.toml Bun читает по-прежнему: он не проектный.
+ * `env -S` нужен, чтобы флаги дошли до bun раздельно: ядро Linux отдаёт всё
+ * после интерпретатора ОДНИМ аргументом. -S есть в GNU coreutils ≥ 8.30 и в
+ * env macOS/BSD. На Windows такой shebang не исполним: шим `bun add -g` берёт
+ * `-S` за программу, а cmd-shim npm -S понимает, но Bun на Windows не
+ * открывает /dev/null — myc там только через WSL (говорит preflight.js).
+ * Запуск МИМО shebang (`bun …/myc.js`) флагов не получает; второй рубеж для
+ * `myc run` — callerEnv в src/commands/run.ts.
  */
 
 import { spawnSync } from "node:child_process";

@@ -25,6 +25,13 @@ export const BUILD_ARGS: readonly string[] = [
   // --bytecode: JS компилируется в байт-код на сборке, а не при каждом старте.
   // Без него каждый запуск платит за разбор всего бандла — те самые ~12 мс.
   "--bytecode",
+  // Бинарь по умолчанию сам грузит .env* и ./bunfig.toml ТОГО каталога, где
+  // его запустили, — то есть проекта пользователя: myc зовут хуки и MCP в
+  // каждом. Тогда .env проекта попадал бы в process.env myc (и через `myc run`
+  // — в команду), а preload из его bunfig.toml исполнялся бы внутри myc. Тот
+  // же дефект, что закрывает shebang packages/cli/bin/myc.js для npm-пакета.
+  "--no-compile-autoload-dotenv",
+  "--no-compile-autoload-bunfig",
   "packages/cli/src/main.ts",
   // ВТОРОЙ ВХОД — воркер пула разбора. Без него в бинаре воркера НЕТ: `bun
   // build` конструкцию `new Worker(new URL(...))` не видит и ничего по ней не

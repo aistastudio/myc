@@ -36,7 +36,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { constants, homedir, hostname } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { Subprocess } from "bun";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
@@ -214,6 +214,158 @@ class SignalRelay {
 
 function signalNumber(sig: string): number {
   return (constants.signals as Record<string, number | undefined>)[sig] ?? 1;
+}
+
+// ---------------------------------------------------------------------------
+// Окружение вызывающего
+// ---------------------------------------------------------------------------
+
+/**
+ * Файлы, которые Bun грузит из каталога запуска в process.env ДО первой
+ * строки кода, — объединение по всем NODE_ENV (src/dotenv/env_loader.zig).
+ */
+export const BUN_DOTENV_FILES: readonly string[] = [
+  ".env",
+  ".env.local",
+  ".env.development",
+  ".env.production",
+  ".env.test",
+  ".env.development.local",
+  ".env.production.local",
+  ".env.test.local",
+];
+
+export interface CallerEnv {
+  /** Окружение команды и решений самой очереди: слоты, аренда, сессия. */
+  readonly env: Env;
+  /** .env-файлы каталога запуска, которые Bun мог подмешать; пусто — подмеса не было. */
+  readonly dotenv: readonly string[];
+  /**
+   * Имена process.env, которых не было в окружении при запуске: команда их не
+   * получит. null — отличить нельзя (нет libc, bun:ffi, не прошла
+   * самопроверка), и команда получит process.env как есть.
+   */
+  readonly dropped: readonly string[] | null;
+}
+
+/**
+ * Окружение ВЫЗЫВАЮЩЕГО `myc run` — то, с которым этот процесс запустили.
+ *
+ * ЗАЧЕМ. Bun до первой строки кода грузит .env* каталога запуска в
+ * process.env, и команда под очередью получала их вместе с окружением агента:
+ * 2026-09-11 в cherry `myc run -- bun test` упал, потому что тест увидел 20
+ * переменных EXPO_PUBLIC_* из .env worktree, которых в оболочке не было.
+ * Первый рубеж — флаги: shebang bin/myc.js (`--no-env-file`) и рецепт бинаря
+ * (`--no-compile-autoload-dotenv`). Этот — на запуск мимо них: `bun …/myc.js`,
+ * `bun packages/cli/src/main.ts` в разработке. Признак — нет `--no-env-file` в
+ * execArgv (Bun кладёт туда флаги рантайма) и есть .env-файл в каталоге
+ * запуска; иначе подмеса не было, и цена — ноль.
+ *
+ * КАК. Bun копирует environ процесса в свою карту и дописывает .env туда же;
+ * в сам environ он не пишет ни при загрузке .env, ни при присваивании
+ * process.env (env_loader.zig, 1.3.14; проверено: getenv(3) не видит ни то,
+ * ни другое). Значит environ — ровно окружение, с которым процесс запустили:
+ * имя из process.env, которого getenv не знает, подмешано после exec, и
+ * команда его не получит. Значения — из process.env: существующих переменных
+ * .env не перекрывает (проверено), и у унаследованных имён они совпадают.
+ *
+ * САМОПРОВЕРКА. Начни рантайм синхронизировать process.env с environ (как
+ * Node) — getenv увидит и .env, и фильтр молча перестанет фильтровать. Поэтому
+ * сначала канарейка: присвоенная в process.env переменная обязана НЕ дойти до
+ * getenv, а хоть одно имя обязано найтись (иначе чтение сломано, и фильтр
+ * отнял бы у команды всё, включая PATH). Не прошла, нет libc (Windows), не
+ * открылся bun:ffi — dropped: null, и runHandler говорит об этом громко (И2).
+ */
+export async function callerEnv(
+  o: { readonly env?: Env; readonly cwd?: string; readonly execArgv?: readonly string[] } = {},
+): Promise<CallerEnv> {
+  const env = o.env ?? process.env;
+  // Бинарь собран с --no-compile-autoload-dotenv (scripts/build.ts, сторож —
+  // launcher.test.ts): execArgv у него пуст, но .env он не грузит.
+  if ((o.execArgv ?? process.execArgv).includes("--no-env-file") || Bun.main.startsWith("/$bunfs/")) {
+    return { env, dotenv: [], dropped: [] };
+  }
+  const cwd = o.cwd ?? process.cwd();
+  const dotenv = BUN_DOTENV_FILES.filter((f) => existsSync(join(cwd, f)));
+  if (dotenv.length === 0) return { env, dotenv, dropped: [] };
+  const environ = await openEnviron(env);
+  if (environ === null) return { env, dotenv, dropped: null };
+  try {
+    const kept: Record<string, string> = {};
+    const dropped: string[] = [];
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) continue;
+      if (environ.has(name)) kept[name] = value;
+      else dropped.push(name);
+    }
+    return { env: kept, dotenv, dropped: dropped.sort() };
+  } finally {
+    environ.close();
+  }
+}
+
+interface Environ {
+  has(name: string): boolean;
+  close(): void;
+}
+
+/** getenv(3) из libc процесса; null — недоступен или не прошёл самопроверку. */
+async function openEnviron(env: Env): Promise<Environ | null> {
+  const libs =
+    process.platform === "darwin"
+      ? ["/usr/lib/libSystem.B.dylib"]
+      : process.platform === "linux"
+        ? ["libc.so.6", `libc.musl-${process.arch === "arm64" ? "aarch64" : "x86_64"}.so.1`]
+        : [];
+  let ffi: typeof import("bun:ffi");
+  try {
+    ffi = await import("bun:ffi");
+  } catch {
+    return null;
+  }
+  for (const path of libs) {
+    const lib = dlopenGetenv(ffi, path);
+    if (lib === null) continue;
+    const has = (name: string): boolean => lib.symbols.getenv(Buffer.from(`${name}\0`)) !== null;
+    const canary = `MYC_ENVIRON_CANARY_${process.pid}`;
+    process.env[canary] = "1";
+    const synced = has(canary);
+    delete process.env[canary];
+    if (!synced && Object.keys(env).some(has)) return { has, close: () => lib.close() };
+    lib.close();
+    return null;
+  }
+  return null;
+}
+
+function dlopenGetenv(ffi: typeof import("bun:ffi"), path: string) {
+  try {
+    return ffi.dlopen(path, { getenv: { args: [ffi.FFIType.cstring], returns: ffi.FFIType.ptr } });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Текст WARN о .env каталога запуска: что подмешано и что из этого дошло до
+ * команды. Имена не переданных — все, кого не было у вызывающего: при запуске
+ * `bun …/bin/myc.js` среди них и MYC_ORT_WASM_DIR / MYC_SQLITE_VEC, которые
+ * выставил сам bin/myc.js, поэтому текст не называет их «из .env».
+ */
+function dotenvWarning(caller: CallerEnv): string {
+  const where = `${caller.dotenv.join(", ")} in ${tildify(process.cwd())}`;
+  const head = `this myc process was started without Bun's --no-env-file, so Bun loaded ${where} into its own environment`;
+  const fix = "start myc through its launcher (`myc`), or run bun with --no-env-file --config=/dev/null";
+  if (caller.dropped === null) {
+    return `${head}; here they cannot be told apart from the caller's variables, and the command gets them too — ${fix}`;
+  }
+  const n = caller.dropped.length;
+  if (n === 0) return `${head}; they changed nothing, and the command gets the caller's environment — ${fix}`;
+  const names = n > 8 ? `${caller.dropped.slice(0, 8).join(", ")}, …` : caller.dropped.join(", ");
+  return (
+    `${head}; the command gets the caller's environment only — ${n} variable${n === 1 ? "" : "s"} ` +
+    `the caller did not have ${n === 1 ? "is" : "are"} not passed: ${names} — ${fix}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +581,6 @@ async function acquire(db: Database, o: AcquireOptions): Promise<Acquired> {
 }
 
 async function runHandler(ctx: CommandContext): Promise<CommandResult> {
-  const env: Env = process.env;
   const argv = ctx.args;
   if (argv.length === 0) {
     return usage(
@@ -451,6 +602,12 @@ async function runHandler(ctx: CommandContext): Promise<CommandResult> {
   if (!existsSync(cwd)) {
     return { ok: false, code: "notfound.dir", msg: `directory does not exist: ${cwd}`, exit: ExitCode.NOTFOUND };
   }
+  // Всё ниже — и команда, и слоты, и аренда — читает окружение вызывающего,
+  // а не process.env: .env проекта не должен ни дойти до команды, ни
+  // переназначить очередь (MYC_HEAVY_SLOTS в .env — чужое решение).
+  const caller = await callerEnv();
+  const env = caller.env;
+  if (caller.dotenv.length > 0) ctx.warn("run.dotenv", dotenvWarning(caller));
   const setting = slotsFor(lane, env);
   if (setting.invalid !== undefined) {
     ctx.warn("run.slots_invalid", `${setting.invalid} is not a whole number 1..256 — using ${setting.slots} slot`);
@@ -597,6 +754,8 @@ export function createRunCommand(): Command {
       "(first come, first served), then runs it with inherited stdin/stdout/stderr and exits with ITS " +
       "exit code. SIGINT/SIGTERM/SIGHUP are forwarded to the command. The slot is released on any " +
       "outcome: exit, signal, crash.\n\n" +
+      "The command gets the caller's environment as is: myc does not load the .env files or the " +
+      "bunfig.toml of the directory it runs in.\n\n" +
       "Slots: 1 per lane by default; MYC_HEAVY_SLOTS=2 (MYC_<LANE>_SLOTS) overrides it.\n\n" +
       "A holder that dies (even by SIGKILL) frees its slot at the next poll of a waiter: tickets carry " +
       "the pid and a lease renewed every 5s; a ticket whose lease expired is removed only after a " +

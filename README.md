@@ -31,8 +31,10 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
-myc --version                     # myc 0.3.4 (schema 1)
+myc --version                     # myc 0.3.5 (schema 1)
 ```
+
+It runs on macOS and Linux; on Windows, use WSL.
 
 The embedding model is **not** downloaded during install. Semantic search is
 opt-in and explicit: `myc models fetch` (129 MB, ~7 s). Until then search is
@@ -117,7 +119,8 @@ myc run: waiting for a 'heavy' slot (1/1 busy, 1 waiting ahead), waited 0.0s of 
 
 A holder that dies — even by `SIGKILL` — frees its slot; a `myc run` nested
 inside another one runs at once, in its parent's slot. One slot per lane by
-default, `MYC_HEAVY_SLOTS=2` for two.
+default, `MYC_HEAVY_SLOTS=2` for two. myc does not load the project's `.env` or
+`bunfig.toml`: the command gets the caller's environment as is.
 
 **Agents don't have to remember it.** `myc wire --queue-hook` installs a Claude
 Code `PreToolUse` hook that rewrites a heavy Bash command into
