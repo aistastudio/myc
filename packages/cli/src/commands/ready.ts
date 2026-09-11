@@ -17,6 +17,7 @@ import {
   repoPredicate,
   repoReasonText,
 } from "@myc/core";
+import { freshnessClock, freshnessClockSql } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import {
@@ -69,14 +70,27 @@ const ANCHOR_SUBQ = `COALESCE((SELECT CASE
  * фильтра остаётся на более коротком ix_nodes_ready — за то, чего не просили,
  * платить не надо.
  */
+/**
+ * Слагаемое свежести S21 по ЧАСАМ СВЕЖЕСТИ (freshnessClockSql, @myc/retrieval) —
+ * тем же, что у выдачи и show; у ввезённой и не тронутой в myc задачи
+ * updated_at — день ввоза, и по нему она была бы свежей (memory-khny4xb612m6).
+ *
+ * Часы вычисляются ОДИН раз на кандидата: база `CASE x WHEN …` считается
+ * однажды, а ступени 1/3/7 суток — это целые сутки возраста 0 | 1–2 | 3–6 | 7+.
+ * Три `WHEN ?8 - часы < …` вычисляли бы выражение трижды: на стенде, где все
+ * 4000 готовых задач ввезены, это +70 % к скорингу.
+ */
+function freshnessTermSql(): string {
+  return `CASE min(7, max(0, CAST((?8 - ${freshnessClockSql("n")}) / 86400000 AS INTEGER)))
+                         WHEN 0 THEN 1.0 WHEN 1 THEN 0.7 WHEN 2 THEN 0.7 WHEN 7 THEN 0.15 ELSE 0.4 END`;
+}
+
 function scoredTopSql(anchorTerm: string, withRepo: boolean): string {
   return `SELECT n.id, n.priority, n.status, n.assignee, n.title,
             n.updated_at, n.created_at, n.attrs,
        round(?2 * CASE n.priority WHEN 0 THEN 1.0 WHEN 1 THEN 0.6667 WHEN 2 THEN 0.3333 ELSE 0.0 END, 2)
      + round(?3 * min(COALESCE(${UNBLOCKS_SUBQ}, 0), 3) / 3.0, 2)
-     + round(?4 * CASE WHEN ?8 - n.updated_at < 86400000 THEN 1.0
-                       WHEN ?8 - n.updated_at < 259200000 THEN 0.7
-                       WHEN ?8 - n.updated_at < 604800000 THEN 0.4 ELSE 0.15 END, 2)
+     + round(?4 * ${freshnessTermSql()}, 2)
      + round(?5 * ${anchorTerm}, 2)
      + round(?6 * CASE COALESCE(json_extract(n.attrs,'$.type'),'task')
                        WHEN 'bug' THEN 1.0 WHEN 'task' THEN 0.5 ELSE 0.25 END, 2)
@@ -351,7 +365,10 @@ function buildItem(
   const type = typeof attrs["type"] === "string" ? (attrs["type"] as string) : "task";
   const est = typeof attrs["estimate_min"] === "number" ? (attrs["estimate_min"] as number) : undefined;
 
-  const age = Math.max(0, now - row.updated_at);
+  // Возраст — по часам свежести, а не по updated_at: у ввезённой и не
+  // тронутой в myc задачи updated_at — день ввоза (memory-khny4xb612m6). Та
+  // же функция, что в SQL скоринга, — их равенство сверяет тест retrieval.
+  const age = Math.max(0, now - freshnessClock({ updated_at: row.updated_at, attrs }));
   const anchor = anchorNorm(states);
 
   // Слагаемые округляем до сотых ДО суммы: напечатанный score обязан

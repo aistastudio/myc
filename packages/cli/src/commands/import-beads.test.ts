@@ -17,7 +17,11 @@ import { Registry } from "../registry.ts";
 import type { CommandContext } from "../registry.ts";
 import type { Envelope } from "../envelope.ts";
 import { ExitCode } from "../exit.ts";
+import type { NodeRecord } from "@myc/core";
+import { FRESHNESS_ATTRS, IMPORT_WRITE_SLACK_MS } from "@myc/retrieval";
 import { openStore, type StoreHandle } from "./store.ts";
+import { createSearchCommand } from "./search.ts";
+import { createShowCommand } from "./show.ts";
 import {
   collectBeadsSnapshot,
   createImportBeadsCommand,
@@ -356,25 +360,28 @@ describe("незнакомое поле задачи НАЗВАНО, а не п�
     ...over,
   });
 
+  // Имена ниже — поля, которых импорт не читает. Прежде здесь стояли
+  // `acceptance_criteria` и `owner`: теперь импорт их ввозит
+  // (memory-khny4xb612m6), и примером незнакомого служить они не могут.
   test("два незнакомых имени на четырёх задачах названы с числами", async () => {
     const p = writeRaw("unknown.json", [
-      base("u-1", { acceptance_criteria: "критерии приёмки", owner: "alice" }),
-      base("u-2", { owner: "bob" }),
-      base("u-3", { owner: "carol" }),
+      base("u-1", { estimated_minutes: 30, spec_id: "S-1" }),
+      base("u-2", { spec_id: "S-2" }),
+      base("u-3", { spec_id: "S-3" }),
       base("u-4"),
     ]);
     const env = await mycJson("import-beads", p);
     expect(env.ok).toBe(true);
     const warn = (env.warn ?? []).find((w) => w.code === "import.unknown_fields");
     expect(warn).toBeDefined();
-    // Числа — по ЗАДАЧАМ: owner у трёх, acceptance_criteria у одной.
-    expect(warn!.msg).toContain("owner×3");
-    expect(warn!.msg).toContain("acceptance_criteria×1");
+    // Числа — по ЗАДАЧАМ: spec_id у трёх, estimated_minutes у одной.
+    expect(warn!.msg).toContain("spec_id×3");
+    expect(warn!.msg).toContain("estimated_minutes×1");
     // Разбор видит ровно два незнакомых имени, а не «сколько-то».
     const parsed = parseBeadsSnapshot(readFileSync(p, "utf8"));
     expect(Object.keys(parsed.unknownFields ?? {}).sort()).toEqual([
-      "acceptance_criteria",
-      "owner",
+      "estimated_minutes",
+      "spec_id",
     ]);
   });
 
@@ -387,7 +394,7 @@ describe("незнакомое поле задачи НАЗВАНО, а не п�
    */
   test("прежнее молчание дало бы 0 предупреждений на тех же данных", async () => {
     const p = writeRaw("unknown2.json", [
-      base("u-1", { acceptance_criteria: "критерии", design: "дизайн-док" }),
+      base("u-1", { estimated_minutes: 45, due_at: "2026-10-01T00:00:00Z" }),
     ]);
     const env = await mycJson("import-beads", p);
     const named = (env.warn ?? []).filter((w) => w.code === "import.unknown_fields");
@@ -413,6 +420,14 @@ describe("незнакомое поле задачи НАЗВАНО, а не п�
         labels: ["x"],
         notes: "заметка",
         comments: [{ id: "c-9", author: "dave", text: "реплика" }],
+        // содержимое и факты источника — ввозятся (memory-khny4xb612m6)
+        acceptance_criteria: "критерии приёмки",
+        design: "дизайн-док",
+        created_at: "2024-01-02T03:04:05Z",
+        updated_at: "2024-02-03T04:05:06Z",
+        started_at: "2024-01-05T00:00:00Z",
+        created_by: "erin",
+        owner: "owner@example.com",
         // служебные счётчики beads: производные от того, что мы и так ввозим
         comment_count: 1,
         dependency_count: 0,
@@ -942,5 +957,289 @@ describe("зависимости сверх blocks/parent-child", () => {
     expect(d["missing_refs"]).toEqual([]);
     expect(d["unknown_dep_types"]).toEqual(["myc-d5 → myc-d1: type 'smells-like' is not imported"]);
     expect(env.warn?.some((w) => w.code === "import.unknown_dep_types")).toBe(true);
+  });
+});
+
+/**
+ * Критерии приёмки, дизайн и факты источника (memory-khny4xb612m6). На
+ * рабочем cherry импорт честно называл их в `import.unknown_fields` — и не
+ * ввозил: критерии приёмки 152 задач агент в myc не видел вовсе, а у всех 812
+ * задач вместо исходной даты стояла дата импорта.
+ *
+ * Фикстура `bd-export-full.jsonl` — СИНТЕТИЧЕСКАЯ, но строки в точности той
+ * формы, что печатает `bd export` на cherry: все 24 ключа, в том же порядке.
+ */
+describe("критерии приёмки, дизайн и факты источника (memory-khny4xb612m6)", () => {
+  const FULL = join(import.meta.dir, "import-beads.fixtures", "bd-export-full.jsonl");
+  const A1_DESCRIPTION = "A social-signup account can unlink its only provider and lock itself out.";
+  const A1_CRITERIA =
+    "An account with one provider is refused the unlink with copy that says what unblocks it; " +
+    "a test covers the exact lockout scenario";
+
+  /** Строки-задачи фикстуры как сырые объекты: их правят тесты синхронизации. */
+  function fullRows(): Record<string, unknown>[] {
+    return readFileSync(FULL, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((r) => r["_type"] !== "memory");
+  }
+
+  function writeRows(name: string, rows: Record<string, unknown>[]): string {
+    const p = join(projectDir, name);
+    writeFileSync(p, JSON.stringify({ issues: rows }));
+    return p;
+  }
+
+  function patchRow(rows: Record<string, unknown>[], id: string, patch: Record<string, unknown>): void {
+    const row = rows.find((r) => r["id"] === id)!;
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) delete row[k];
+      else row[k] = v;
+    }
+  }
+
+  async function taskByRef(ref: string): Promise<NodeRecord> {
+    const id = await idByRef(ref);
+    if (id === undefined) throw new Error(`no node with external_ref ${ref}`);
+    return withStore((h) => h.store.getNode(id)!);
+  }
+
+  /** Сколько раз в теле открывается раздел: дубль даёт 2. */
+  const blocksOf = (body: string | null, field: string): number =>
+    (body ?? "").split(`<!-- beads:${field} -->`).length - 1;
+
+  test("форма настоящего bd export: не остаётся ни одного незнакомого поля", async () => {
+    expect(parseBeadsSnapshot(readFileSync(FULL, "utf8")).unknownFields).toBeUndefined();
+    const env = await mycJson("import-beads", FULL);
+    expect(env.ok).toBe(true);
+    expect((env.warn ?? []).filter((w) => w.code === "import.unknown_fields")).toHaveLength(0);
+  });
+
+  test("критерии и дизайн — управляемые разделы тела; описание перед ними вербатим", async () => {
+    const d = (await mycJson("import-beads", FULL)).data as Record<string, unknown>;
+    expect(d["sections_created"]).toBe(2);
+
+    // Форма раздела — контракт: по этим маркерам повторный импорт находит
+    // и заменяет СВОЙ блок, не трогая остального тела.
+    const a1 = await taskByRef("demo-a1");
+    expect(a1.body).toBe(
+      `${A1_DESCRIPTION}\n\n` +
+        "<!-- beads:acceptance_criteria -->\n## Acceptance criteria\n\n" +
+        `${A1_CRITERIA}\n<!-- /beads:acceptance_criteria -->`,
+    );
+    const a2 = await taskByRef("demo-a2");
+    expect(a2.body!.startsWith("The branch landed two commits from other developers.\n\n")).toBe(true);
+    // Дизайн-док несёт свои `##` — поэтому граница раздела задаётся
+    // маркером, а не заголовком: иначе «## Plan» оборвал бы раздел.
+    expect(a2.body).toContain(
+      "<!-- beads:design -->\n## Design\n\n# Spec: merge opt-in encryption\n\n## Context\n",
+    );
+    expect(a2.body!.endsWith("2. Migrate the new fields.\n<!-- /beads:design -->")).toBe(true);
+    // Без описания и без разделов тела нет — как и раньше.
+    expect((await taskByRef("demo-a3")).body).toBeNull();
+  });
+
+  test("агент видит критерии там же, где описание: в myc show и в поиске", async () => {
+    registry.register(createShowCommand());
+    registry.register(createSearchCommand());
+    await mycJson("import-beads", FULL);
+    const id = (await idByRef("demo-a1"))!;
+
+    const shown = await myc("show", id);
+    expect(shown.code).toBe(ExitCode.OK);
+    expect(String(shown.stdout)).toContain("a test covers the exact lockout scenario");
+
+    // «lockout» есть ТОЛЬКО в критериях приёмки: в описании — «lock itself out».
+    expect(A1_DESCRIPTION).not.toContain("lockout");
+    const found = await mycJson("search", "lockout");
+    expect(found.ok).toBe(true);
+    const rows = (found.data as { rows: { id: string }[] }).rows;
+    expect(rows.map((r) => r.id)).toContain(id);
+  });
+
+  test("повторный импорт не дублирует раздел и не пишет в оплог ни одной операции", async () => {
+    await mycJson("import-beads", FULL);
+    const ops = await withStore((h) => h.store.oplogCount());
+    const d = (await mycJson("import-beads", FULL)).data as Record<string, unknown>;
+    expect(d["sections_created"]).toBe(0);
+    expect(d["sections_updated"]).toBe(0);
+    expect(d["sections_existing"]).toBe(2);
+    expect(d["tasks_updated"]).toBe(0);
+    expect(d["facts_updated"]).toBe(0);
+    expect(blocksOf((await taskByRef("demo-a1")).body, "acceptance_criteria")).toBe(1);
+    expect(blocksOf((await taskByRef("demo-a2")).body, "design")).toBe(1);
+    await withStore((h) => expect(h.store.oplogCount()).toBe(ops));
+  });
+
+  test("изменение в beads заменяет раздел на месте; удаление в beads убирает его", async () => {
+    await mycJson("import-beads", FULL);
+
+    const rows = fullRows();
+    patchRow(rows, "demo-a1", { acceptance_criteria: "Unlink is refused; the e2e lockout test is green" });
+    const changed = (await mycJson("import-beads", writeRows("ac2.json", rows))).data as Record<string, unknown>;
+    expect(changed["sections_updated"]).toBe(1);
+    expect(changed["conflicts"]).toEqual([]);
+    let a1 = await taskByRef("demo-a1");
+    expect(blocksOf(a1.body, "acceptance_criteria")).toBe(1);
+    expect(a1.body).toContain("Unlink is refused; the e2e lockout test is green");
+    expect(a1.body).not.toContain(A1_CRITERIA);
+
+    patchRow(rows, "demo-a1", { acceptance_criteria: undefined });
+    const removed = (await mycJson("import-beads", writeRows("ac3.json", rows))).data as Record<string, unknown>;
+    expect(removed["sections_removed"]).toBe(1);
+    a1 = await taskByRef("demo-a1");
+    // Раздел ушёл вместе с разделителем: тело снова ровно описание.
+    expect(a1.body).toBe(A1_DESCRIPTION);
+  });
+
+  test("правка человека вне блока не затирается, а раздел при этом обновляется", async () => {
+    await mycJson("import-beads", FULL);
+    const id = (await idByRef("demo-a1"))!;
+    const local = "Local note: also checked on iOS.";
+    await withStore((h) => {
+      const n = h.store.getNode(id)!;
+      h.store.updateNode(id, { body: `${n.body}\n\n${local}` });
+    });
+
+    const rows = fullRows();
+    patchRow(rows, "demo-a1", { acceptance_criteria: "Unlink is refused with an explanation" });
+    const d = (await mycJson("import-beads", writeRows("ac2.json", rows))).data as Record<string, unknown>;
+    expect(d["conflicts"]).toEqual([]);
+    expect(d["sections_updated"]).toBe(1);
+    // Описание в myc правили, в beads — нет: локальная правка сохранена и названа.
+    expect((d["kept_local"] as string[]).some((s) => s.startsWith("demo-a1.body"))).toBe(true);
+
+    const a1 = await taskByRef("demo-a1");
+    expect(a1.body).toBe(
+      `${A1_DESCRIPTION}\n\n` +
+        "<!-- beads:acceptance_criteria -->\n## Acceptance criteria\n\n" +
+        "Unlink is refused with an explanation\n<!-- /beads:acceptance_criteria -->" +
+        `\n\n${local}`,
+    );
+  });
+
+  test("правка ВНУТРИ блока — локальная; изменили обе стороны — конфликт, тело не тронуто", async () => {
+    await mycJson("import-beads", FULL);
+    const id = (await idByRef("demo-a1"))!;
+    await withStore((h) => {
+      const n = h.store.getNode(id)!;
+      h.store.updateNode(id, { body: n.body!.replace("a test covers", "an e2e test covers") });
+    });
+    const edited = (await taskByRef("demo-a1")).body;
+
+    const kept = (await mycJson("import-beads", FULL)).data as Record<string, unknown>;
+    expect((kept["kept_local"] as string[]).some((s) => s.startsWith("demo-a1.acceptance_criteria"))).toBe(true);
+    expect((await taskByRef("demo-a1")).body).toBe(edited);
+
+    const rows = fullRows();
+    patchRow(rows, "demo-a1", { acceptance_criteria: "Rewritten in beads" });
+    const both = (await mycJson("import-beads", writeRows("ac2.json", rows))).data as Record<string, unknown>;
+    expect((both["conflicts"] as string[]).some((s) => s.startsWith("demo-a1.acceptance_criteria: conflict"))).toBe(
+      true,
+    );
+    expect((await taskByRef("demo-a1")).body).toBe(edited);
+  });
+
+  /**
+   * Ровно состояние рабочего cherry: 812 задач ввезены сборкой 0.3.2 — в
+   * слепке beads_sync нет ключей разделов, в теле одно описание, фактов
+   * источника нет. Отсутствующий в слепке ключ — это «прошлый импорт поле не
+   * вёл», а не «прошлый импорт видел пустое»: иначе сравнение с undefined
+   * дало бы конфликт на каждой из 152 задач, и критерии не доехали бы вовсе.
+   */
+  test("первый прогон после 0.3.2: слепок без новых ключей — применение, а не конфликт", async () => {
+    await mycJson("import-beads", FULL);
+    const id = (await idByRef("demo-a1"))!;
+    await withStore((h) => {
+      const n = h.store.getNode(id)!;
+      const legacy = { ...(n.attrs["beads_sync"] as Record<string, unknown>) };
+      delete legacy["acceptance_criteria"];
+      delete legacy["design"];
+      legacy["body"] = A1_DESCRIPTION;
+      h.store.updateNode(id, {
+        body: A1_DESCRIPTION,
+        attrs: {
+          beads_sync: legacy as never,
+          external_created_at: null,
+          external_updated_at: null,
+          external_started_at: null,
+          external_created_by: null,
+          external_owner: null,
+        },
+      });
+    });
+
+    const d = (await mycJson("import-beads", FULL)).data as Record<string, unknown>;
+    expect(d["conflicts"]).toEqual([]);
+    expect(d["kept_local"]).toEqual([]);
+    expect(d["sections_created"]).toBe(1);
+    expect(d["facts_updated"]).toBe(1);
+    const a1 = await taskByRef("demo-a1");
+    expect(blocksOf(a1.body, "acceptance_criteria")).toBe(1);
+    expect(a1.attrs["external_created_at"]).toBe(Date.parse("2023-03-14T09:26:53Z"));
+
+    // и следующий прогон уже холостой
+    const ops = await withStore((h) => h.store.oplogCount());
+    await mycJson("import-beads", FULL);
+    await withStore((h) => expect(h.store.oplogCount()).toBe(ops));
+  });
+
+  test("исходные даты — в attrs.external_*; created_at/updated_at узла — время ЗАПИСИ", async () => {
+    const t0 = Date.now();
+    await mycJson("import-beads", FULL);
+    const a1 = await taskByRef("demo-a1");
+    expect(a1.attrs["external_created_at"]).toBe(Date.parse("2023-03-14T09:26:53Z"));
+    expect(a1.attrs["external_updated_at"]).toBe(Date.parse("2023-05-02T17:00:00Z"));
+    expect(a1.attrs["external_started_at"]).toBe(Date.parse("2023-04-01T08:00:00Z"));
+    // Оплог не врёт о времени записи: операция сделана сейчас, а не в 2023-м.
+    // Подделать эти колонки значило бы подделать HLC операции.
+    expect(a1.created_at).toBeGreaterThanOrEqual(t0);
+    expect(a1.updated_at).toBeGreaterThanOrEqual(t0);
+    // Нет исходной даты — нет и атрибута, а не «дата импорта» под её именем.
+    expect((await taskByRef("demo-a3")).attrs["external_started_at"]).toBeUndefined();
+  });
+
+  test("новая дата в beads доезжает, пропавшая снимается", async () => {
+    await mycJson("import-beads", FULL);
+    const rows = fullRows();
+    patchRow(rows, "demo-a1", { updated_at: "2023-06-01T00:00:00Z", started_at: undefined });
+    const d = (await mycJson("import-beads", writeRows("dates2.json", rows))).data as Record<string, unknown>;
+    expect(d["facts_updated"]).toBe(1);
+    const a1 = await taskByRef("demo-a1");
+    expect(a1.attrs["external_updated_at"]).toBe(Date.parse("2023-06-01T00:00:00Z"));
+    expect(a1.attrs["external_started_at"] ?? null).toBeNull();
+    expect(a1.attrs["external_created_at"]).toBe(Date.parse("2023-03-14T09:26:53Z"));
+  });
+
+  /**
+   * Метка собственной записи импорта — то, по чему часы свежести отличают
+   * запись импорта от работы в myc (freshnessClock, @myc/retrieval). Она
+   * обязана стоять у всего, что несёт время источника, лежать в пределах
+   * допуска от updated_at этой записи и НЕ двигаться холостым прогоном.
+   */
+  test("метка записи импорта: у задачи и комментария, рядом с updated_at; холостой прогон её не двигает", async () => {
+    await mycJson("import-beads", FULL);
+    const a1 = await taskByRef("demo-a1");
+    const c1 = await withStore((h) => h.store.getNode((h.store.listNodes(h.scope, "note", 100)
+      .find((n) => n.attrs["external_ref"] === "demo-a1#comment:c-1"))!.id)!);
+    for (const n of [a1, c1]) {
+      const mark = n.attrs[FRESHNESS_ATTRS.synced];
+      expect(typeof mark).toBe("number");
+      expect(Math.abs(n.updated_at - (mark as number))).toBeLessThanOrEqual(IMPORT_WRITE_SLACK_MS);
+    }
+    await mycJson("import-beads", FULL);
+    expect((await taskByRef("demo-a1")).attrs[FRESHNESS_ATTRS.synced]).toBe(a1.attrs[FRESHNESS_ATTRS.synced]);
+  });
+
+  test("автор и владелец — в attrs; owner не исполнитель, assignee не тронут", async () => {
+    await mycJson("import-beads", FULL);
+    const a1 = await taskByRef("demo-a1");
+    expect(a1.attrs["external_created_by"]).toBe("alice");
+    expect(a1.attrs["external_owner"]).toBe("owner@example.com");
+    // На cherry owner — адрес учётной записи на всех 809 задачах и НИ разу не
+    // совпадает с assignee: это не исполнитель, а владелец в трекере.
+    expect(a1.assignee).toBe("agent-7");
+    expect((await taskByRef("demo-a2")).assignee).toBe("");
   });
 });

@@ -28,6 +28,7 @@ import {
   type JsonValue,
   type NodeRecord,
 } from "@myc/core";
+import { freshnessClock, sourceCreatedAt } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import {
@@ -141,8 +142,15 @@ interface NodeView {
   priority: number;
   assignee: string;
   acl: string;
+  /** Создан: у ввезённого — в источнике (external_created_at), не день ввоза. */
   created_at: number;
+  /**
+   * Часы свежести (freshnessClock) — те же, по которым ранжирует выдача,
+   * считает свежесть очередь ready и фильтруют search/recall.
+   */
   updated_at: number;
+  /** Когда myc записал ввезённый узел впервые; только у ввезённых. */
+  imported_at?: number;
   blocked_by: DepRef[];
   blocks: DepRef[];
   /**
@@ -366,8 +374,9 @@ function buildView(
     priority: node.priority,
     assignee: node.assignee,
     acl: node.acl,
-    created_at: node.created_at,
-    updated_at: node.updated_at,
+    created_at: sourceCreatedAt(node),
+    updated_at: freshnessClock(node),
+    ...(typeof node.attrs["external_ref"] === "string" ? { imported_at: node.created_at } : {}),
     blocked_by: blockedBy,
     blocks,
     ...(blockedVia.length > 0 ? { blocked_via: blockedVia } : {}),
@@ -440,7 +449,14 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   head.push(v.status);
   if (v.assignee.length > 0) head.push(`@${v.assignee}`);
   head.push(`created ${fmtDate(v.created_at)}`);
-  head.push(`updated ${fmtClock(v.updated_at).slice(0, 5)}Z`);
+  // Часы сегодняшние — время суток, иначе дата: у ввезённой задачи часы —
+  // время источника, и одно «14:02Z» без даты читалось бы как «сегодня».
+  head.push(
+    fmtDate(v.updated_at) === fmtDate(now)
+      ? `updated ${fmtClock(v.updated_at).slice(0, 5)}Z`
+      : `updated ${fmtDate(v.updated_at)}`,
+  );
+  if (v.imported_at !== undefined) head.push(`imported ${fmtDate(v.imported_at)}`);
   head.push(`acl ${v.acl}`);
   const lines = [head.join("  "), v.title];
 

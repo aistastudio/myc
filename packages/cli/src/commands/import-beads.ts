@@ -24,6 +24,16 @@
  * 265» и молчал о потере. Теперь всякое поле вне набора идёт в WARN
  * `import.unknown_fields` с числом задач.
  *
+ * КРИТЕРИИ ПРИЁМКИ И ДИЗАЙН — В ТЕЛО, ДАТЫ И АВТОР — В ATTRS
+ * (memory-khny4xb612m6). WARN честно называл их на cherry
+ * (acceptance_criteria×152, design×1, даты и автор на всех 812), но агент в
+ * myc критериев не видел, а у каждой задачи вместо исходной даты стояла дата
+ * ввоза. Критерии и дизайн — содержимое, поэтому они ложатся управляемыми
+ * разделами тела (SECTIONS): их находят поиск и эмбеддинг, их печатают show и
+ * ready. Даты и автор — факты об источнике, поэтому attrs.external_*
+ * (SOURCE_FACTS): родные created_at/updated_at — время записи и HLC операции,
+ * подделывать их нельзя.
+ *
  * Два правила, нарушение которых портит данные тихо:
  * 1. Исходный beads-ID каждой сущности сохраняется в attrs.external_ref —
  *    без него перенос не сверить и ссылки не разрешить. На нём же стоит
@@ -83,6 +93,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { commentInput, contentHash } from "@myc/core";
 import type { EdgeKind, JsonValue, NodeInput, NodePatch, NodeRecord } from "@myc/core";
+import { FRESHNESS_ATTRS } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import { flagBool, graphFailure, type StoreDeps, type StoreHandle, realStoreDeps } from "./store.ts";
@@ -130,6 +141,15 @@ export interface BeadsIssue {
   readonly comments?: readonly BeadsComment[];
   readonly close_reason?: string;
   readonly closed_at?: string;
+  /** Содержимое задачи наравне с описанием: ложится разделом тела (SECTIONS). */
+  readonly acceptance_criteria?: string;
+  readonly design?: string;
+  /** Факты об источнике: ложатся в attrs.external_* (см. sourceFacts). */
+  readonly created_at?: string;
+  readonly updated_at?: string;
+  readonly started_at?: string;
+  readonly created_by?: string;
+  readonly owner?: string;
 }
 
 export interface BeadsSnapshot {
@@ -187,6 +207,16 @@ const MAPPED_ISSUE_FIELDS = new Set([
   "comments",
   "close_reason",
   "closed_at",
+  // memory-khny4xb612m6: на cherry эти семь стояли в `import.unknown_fields`
+  // (acceptance_criteria×152, design×1 — содержимое; остальные — факты
+  // источника на всех 812 задачах) и не ввозились никуда.
+  "acceptance_criteria",
+  "design",
+  "created_at",
+  "updated_at",
+  "started_at",
+  "created_by",
+  "owner",
 ]);
 
 /**
@@ -194,8 +224,9 @@ const MAPPED_ISSUE_FIELDS = new Set([
  * `_type` — тег строки JSONL, а не поле задачи; три счётчика — производные от
  * массивов, которые мы и так ввозим целиком, и после ввоза считаются по ним.
  * Набор держится КОРОТКИМ намеренно: каждое имя здесь — обещание, что за ним
- * нет потери данных. Всё сомнительное (`owner`, `acceptance_criteria`,
- * `design`, времена источника) остаётся незнакомым и называется вслух.
+ * нет потери данных. Всё, что несёт содержимое или факт о записи, сюда не
+ * попадает — оно либо ввозится (MAPPED_ISSUE_FIELDS), либо остаётся
+ * незнакомым и называется вслух.
  */
 const IGNORED_ISSUE_FIELDS = new Set([
   "_type",
@@ -443,6 +474,205 @@ function parseClosedAt(issue: BeadsIssue): number | null {
   return Number.isNaN(ts) ? null : ts;
 }
 
+/** Текст поля источника вербатим; пустое, пробельное и не-строка — отсутствует. */
+function textOf(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+// ---------------------------------------------------------------------------
+// Разделы тела, которыми владеет импорт (memory-khny4xb612m6)
+// ---------------------------------------------------------------------------
+
+/**
+ * `acceptance_criteria` и `design` — СОДЕРЖИМОЕ задачи наравне с описанием,
+ * поэтому они ложатся в ТЕЛО, а не в attrs: FTS индексирует title, body и
+ * метки (trg_fts_ai), эмбеддинг считается по тексту узла, `myc show` и пакет
+ * `ready --claim` печатают тело целиком. В attrs критерии были бы на месте и
+ * при этом невидимы агенту ровно так же, как до этой правки.
+ *
+ * Каждый раздел — блок между маркерами, отдельными строками:
+ *
+ *     <!-- beads:acceptance_criteria -->
+ *     ## Acceptance criteria
+ *
+ *     <текст вербатим>
+ *     <!-- /beads:acceptance_criteria -->
+ *
+ * Граница задаётся МАРКЕРОМ, а не заголовком: дизайн-док cherry несёт свои
+ * `## Контекст`, `## План`, и разбор по заголовкам оборвал бы раздел на
+ * первом из них. Маркеры дают три свойства, которых требует синхронизация:
+ * повторный импорт находит СВОЙ блок и заменяет его на месте (не дублирует);
+ * исчезнувшее в beads поле снимает блок вместе с разделителем; всё, что
+ * человек написал вне блоков, остаётся байт в байт. Для трёхсторонней сверки
+ * тело читается как «описание» (всё вне блоков) плюс значения разделов —
+ * каждое сравнивается со своим полем снимка и слепка по отдельности.
+ */
+const SECTIONS = [
+  { field: "acceptance_criteria", heading: "Acceptance criteria" },
+  { field: "design", heading: "Design" },
+] as const;
+type Section = (typeof SECTIONS)[number];
+type SectionField = Section["field"];
+type SectionValues = Record<SectionField, string | null>;
+
+const sectionOpen = (field: SectionField): string => `<!-- beads:${field} -->`;
+const sectionClose = (field: SectionField): string => `<!-- /beads:${field} -->`;
+
+function sectionBlock(s: Section, text: string): string {
+  return `${sectionOpen(s.field)}\n## ${s.heading}\n\n${text}\n${sectionClose(s.field)}`;
+}
+
+/**
+ * Где лежит блок раздела: [from, to) — сам блок без разделителей, inner —
+ * строки между маркерами. Маркер засчитывается только отдельной строкой:
+ * упоминание маркера посреди строки текста блоком не считается.
+ */
+function findSection(body: string, s: Section): { from: number; to: number; inner: string } | undefined {
+  const open = sectionOpen(s.field);
+  const close = `\n${sectionClose(s.field)}`;
+  for (let from = body.indexOf(open); from !== -1; from = body.indexOf(open, from + 1)) {
+    if (from > 0 && body[from - 1] !== "\n") continue;
+    const innerFrom = from + open.length + 1;
+    if (body[innerFrom - 1] !== "\n") continue;
+    // поиск с перевода строки ПОСЛЕ открывающего маркера: так находится и
+    // закрывающий маркер пустого блока, стоящий сразу за открывающим
+    for (let closeAt = body.indexOf(close, innerFrom - 1); closeAt !== -1; closeAt = body.indexOf(close, closeAt + 1)) {
+      const to = closeAt + close.length;
+      if (to < body.length && body[to] !== "\n") continue;
+      return { from, to, inner: body.slice(innerFrom, Math.max(innerFrom, closeAt)) };
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Вырезать блок вместе с ОДНИМ разделителем «\n\n» — тем, что вставила
+ * запись: перед блоком, а если блок первый в теле — после него. Так вырезка
+ * точно обратна вставке, и тело «описание + раздел» без раздела снова ровно
+ * описание, без хвостовых пустых строк.
+ */
+function cutSection(body: string, at: { from: number; to: number }): string {
+  if (at.from >= 2 && body.slice(at.from - 2, at.from) === "\n\n") {
+    return body.slice(0, at.from - 2) + body.slice(at.to);
+  }
+  if (body.slice(at.to, at.to + 2) === "\n\n") return body.slice(0, at.from) + body.slice(at.to + 2);
+  return body.slice(0, at.from) + body.slice(at.to);
+}
+
+/**
+ * Тело → описание (всё вне блоков) и значения разделов. Заголовок, который
+ * пишет импорт, из значения снимается; если человек его переписал, значение —
+ * блок целиком, и он честно расходится со слепком (правка внутри блока).
+ */
+function splitBody(body: string | null): { readonly rest: string | null; readonly sections: SectionValues } {
+  const sections: SectionValues = { acceptance_criteria: null, design: null };
+  let rest = body ?? "";
+  for (const s of SECTIONS) {
+    const at = findSection(rest, s);
+    if (at === undefined) continue;
+    const head = `## ${s.heading}\n\n`;
+    sections[s.field] = at.inner.startsWith(head) ? at.inner.slice(head.length) : at.inner;
+    rest = cutSection(rest, at);
+  }
+  return { rest: rest.trim().length > 0 ? rest : null, sections };
+}
+
+/**
+ * Поставить значение раздела в тело: заменить блок НА МЕСТЕ, снять его
+ * (text=null) или дописать в конец. Всё вне блока не трогается.
+ */
+function spliceSection(body: string | null, s: Section, text: string | null): string | null {
+  const cur = body ?? "";
+  const at = findSection(cur, s);
+  if (text === null) {
+    if (at === undefined) return body;
+    const out = cutSection(cur, at);
+    return out.trim().length > 0 ? out : null;
+  }
+  const block = sectionBlock(s, text);
+  if (at !== undefined) return cur.slice(0, at.from) + block + cur.slice(at.to);
+  return cur.trim().length === 0 ? block : `${cur}\n\n${block}`;
+}
+
+/**
+ * Каноническое тело задачи: описание, затем разделы по порядку SECTIONS.
+ * Собрано ТЕМ ЖЕ spliceSection, что правит тело при синхронизации: тело
+ * нового узла и тело, доведённое синхронизацией, не могут разойтись формой.
+ */
+function composeBody(description: string | null, sections: SectionValues): string | null {
+  return SECTIONS.reduce<string | null>((b, s) => spliceSection(b, s, sections[s.field]), description);
+}
+
+function sectionsOf(issue: BeadsIssue): SectionValues {
+  return {
+    acceptance_criteria: textOf(issue.acceptance_criteria),
+    design: textOf(issue.design),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Факты об источнике (memory-khny4xb612m6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Даты и авторство записи beads — attrs.external_*, НЕ родные колонки.
+ *
+ * `created_at`/`updated_at` узла ставит движок: это `this.now()` операции,
+ * тот же момент, что уходит в её HLC, а на реплике — `op.hlc.ts`. Вписать туда
+ * апрельскую дату значило бы соврать о времени ЗАПИСИ: строка утверждала бы,
+ * что её написали в апреле, а операция в оплоге — что сегодня (и NodeInput
+ * этих колонок не принимает вовсе — ровно поэтому). attrs же реплицируются
+ * поключево и переживают и синхронизацию, и пересборку из оплога.
+ *
+ * Имена — в семействе, которое уже есть: `external_ref` (id источника) и
+ * `external_created_at` у комментариев (по нему `myc show` упорядочивает
+ * нить). Время — epoch ms, как у всех времён myc. Ключи времени берутся из
+ * FRESHNESS_ATTRS (@myc/retrieval) — из того же места, где их читают часы
+ * свежести (freshnessClock): им считают возраст и выдача, и очередь ready,
+ * и дату в show/search/recall. Иначе задача трёхлетней давности, ввезённая
+ * сегодня, была бы «свежей» ровно так же, как вчерашняя.
+ *
+ * `owner` — не исполнитель: на cherry это адрес учётной записи на 809 задачах
+ * из 812, и ни на одной из 266, где есть оба, он не совпадает с `assignee`.
+ * Поэтому он не трогает колонку `assignee`, а лежит рядом с автором.
+ *
+ * Факты правит только источник: синхронизация идёт в одну сторону, без
+ * слепка и без kept_local — локально «передатировать» запись beads нечем.
+ */
+const SOURCE_FACTS = [
+  FRESHNESS_ATTRS.sourceCreated,
+  FRESHNESS_ATTRS.sourceUpdated,
+  "external_started_at",
+  "external_created_by",
+  "external_owner",
+] as const;
+type SourceFact = (typeof SOURCE_FACTS)[number];
+
+/**
+ * Метка СОБСТВЕННОЙ записи импорта (FRESHNESS_ATTRS.synced) — не факт
+ * источника, а то, по чему часы свежести отличают запись импорта от работы в
+ * myc: `updated_at` позже метки больше чем на допуск — узел правили здесь.
+ * Берётся по тем же часам, что уйдут в HLC операции: max(стена, состояние
+ * HLC), прямо перед записью. Одна лишь стена разошлась бы с `updated_at` на
+ * величину перекоса HLC (до 5 минут после чужих часов) — и собственная
+ * запись импорта читалась бы как правка. Пишется ТОЛЬКО вместе с записью,
+ * которая и так идёт: холостой прогон по-прежнему без единой операции.
+ */
+function syncMark(h: StoreHandle): number {
+  return Math.max(Date.now(), h.store.clock.state.ts);
+}
+
+function sourceFacts(issue: BeadsIssue): Record<SourceFact, JsonValue | undefined> {
+  return {
+    [FRESHNESS_ATTRS.sourceCreated]: parseAt(issue.created_at),
+    [FRESHNESS_ATTRS.sourceUpdated]: parseAt(issue.updated_at),
+    external_started_at: parseAt(issue.started_at),
+    external_created_by: textOf(issue.created_by) ?? undefined,
+    external_owner: textOf(issue.owner) ?? undefined,
+  };
+}
+
 /** Задача beads → kind=task; исходный ID — в attrs.external_ref. Тексты вербатим. */
 export function issueToNodeInput(issue: BeadsIssue, scope: string, actor: string): NodeInput {
   const attrs: Record<string, JsonValue> = {
@@ -455,9 +685,10 @@ export function issueToNodeInput(issue: BeadsIssue, scope: string, actor: string
     // та же форма, что пишет `myc close --reason` (attrs.outcome.reason)
     attrs["outcome"] = { reason: issue.close_reason };
   }
-  const body = issue.description !== undefined && issue.description.trim().length > 0
-    ? issue.description
-    : null;
+  for (const [key, value] of Object.entries(sourceFacts(issue))) {
+    if (value !== undefined) attrs[key] = value;
+  }
+  const body = composeBody(textOf(issue.description), sectionsOf(issue));
   const closedAt = issue.status === "closed" ? parseClosedAt(issue) : null;
   return {
     kind: "task",
@@ -557,7 +788,11 @@ export function memoryToNodeInput(key: string, text: string, scope: string, acto
  */
 const BASELINE_ATTR = "beads_sync";
 
-/** Слепок одной стороны. Ключи в фиксированном порядке — JSON стабилен. */
+/**
+ * Слепок одной стороны. `body` — ОПИСАНИЕ: у узла это тело за вычетом
+ * управляемых разделов, а сами разделы ведутся своими полями — так правка
+ * человека в описании и правка критериев в beads решаются независимо.
+ */
 interface BeadsBaseline {
   readonly title: string;
   readonly body: string | null;
@@ -569,10 +804,19 @@ interface BeadsBaseline {
   readonly closed_at: number | null;
   readonly parent: string | null;
   readonly blocks: readonly string[];
+  readonly acceptance_criteria: string | null;
+  readonly design: string | null;
 }
 
+/**
+ * Порядок ключей слепка — КАНОНИЧЕСКИЙ: слепок сравнивается как JSON-строка,
+ * и одинаковые значения в другом порядке дали бы ложное «слепок изменился» —
+ * лишнюю запись в оплог на холостом прогоне. Разделы — в конце: так слепки,
+ * записанные до них, отличаются только хвостом.
+ */
 const BASELINE_FIELDS = [
   "title", "body", "status", "priority", "assignee", "tags", "outcome", "closed_at", "parent", "blocks",
+  "acceptance_criteria", "design",
 ] as const;
 type BaselineField = (typeof BASELINE_FIELDS)[number];
 
@@ -580,15 +824,18 @@ function jsonEq(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** Слепок в каноническом порядке ключей (см. BASELINE_FIELDS). */
+function orderedBaseline(b: Readonly<Record<BaselineField, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(BASELINE_FIELDS.map((f) => [f, b[f]]));
+}
+
 /** Значения задачи снимка как слепок; parent/blocks — из зависимостей. */
 function snapshotBaseline(issue: BeadsIssue): BeadsBaseline {
   const deps = decomposeDeps(issue);
-  const body = issue.description !== undefined && issue.description.trim().length > 0
-    ? issue.description
-    : null;
+  const sections = sectionsOf(issue);
   return {
     title: issue.title,
-    body,
+    body: textOf(issue.description),
     status: issue.status,
     priority: issue.priority,
     assignee: issue.assignee ?? "",
@@ -600,6 +847,8 @@ function snapshotBaseline(issue: BeadsIssue): BeadsBaseline {
     closed_at: issue.status === "closed" ? parseClosedAt(issue) : null,
     parent: deps.parent,
     blocks: deps.blocks,
+    acceptance_criteria: sections.acceptance_criteria,
+    design: sections.design,
   };
 }
 
@@ -609,9 +858,10 @@ function localBaseline(
   parentRef: string | null,
   blockRefs: readonly string[],
 ): BeadsBaseline {
+  const { rest, sections } = splitBody(node.body);
   return {
     title: node.title,
-    body: node.body,
+    body: rest,
     status: node.status,
     priority: node.priority,
     assignee: node.assignee,
@@ -620,6 +870,8 @@ function localBaseline(
     closed_at: node.closed_at,
     parent: parentRef,
     blocks: [...blockRefs].sort(),
+    acceptance_criteria: sections.acceptance_criteria,
+    design: sections.design,
   };
 }
 
@@ -704,6 +956,19 @@ export interface ImportBeadsData {
   tasks_existing: number;
   tasks_updated: number;
   fields_updated: number;
+  /**
+   * Управляемые разделы тела (критерии приёмки, дизайн) — по одному на пару
+   * «задача × поле»: сколько дописано, заменено, снято, уже совпадало.
+   */
+  sections_created: number;
+  sections_updated: number;
+  sections_removed: number;
+  sections_existing: number;
+  /**
+   * СУЩЕСТВУЮЩИЕ задачи, которым записаны или обновлены факты источника
+   * (даты, автор, владелец); новые получают их при создании.
+   */
+  facts_updated: number;
   edges_created: number;
   edges_existing: number;
   edges_removed: number;
@@ -796,6 +1061,11 @@ export function importBeadsSnapshot(
     tasks_existing: 0,
     tasks_updated: 0,
     fields_updated: 0,
+    sections_created: 0,
+    sections_updated: 0,
+    sections_removed: 0,
+    sections_existing: 0,
+    facts_updated: 0,
     edges_created: 0,
     edges_existing: 0,
     edges_removed: 0,
@@ -867,13 +1137,22 @@ export function importBeadsSnapshot(
     if (known === undefined) {
       const input = issueToNodeInput(issue, h.scope, h.actor);
       const id = createGuarded(
-        { ...input, attrs: { ...input.attrs, [BASELINE_ATTR]: snapshotBaseline(issue) as unknown as JsonValue } },
+        {
+          ...input,
+          attrs: {
+            ...input.attrs,
+            [BASELINE_ATTR]: orderedBaseline(snapshotBaseline(issue)) as JsonValue,
+            [FRESHNESS_ATTRS.synced]: syncMark(h),
+          },
+        },
         issue.id,
         "task",
       );
       if (id === undefined) continue;
       idByRef.set(issue.id, id);
       data.tasks_created++;
+      const sections = sectionsOf(issue);
+      data.sections_created += SECTIONS.filter((s) => sections[s.field] !== null).length;
       continue;
     }
     idByRef.set(issue.id, known);
@@ -893,8 +1172,13 @@ export function importBeadsSnapshot(
     const field = (
       name: BaselineField,
       put: (value: JsonValue) => void,
-    ): void => {
-      const d = decide(snap[name], local[name], oldBase?.[name], hasBase);
+    ): FieldDecision => {
+      // Ключа нет в слепке — прошлый импорт это поле НЕ ВЁЛ (слепки до
+      // разделов), а не видел его пустым. Сравнение с undefined дало бы
+      // конфликт там, где правда одна — источник: узел создан импортом, и
+      // раздела в нём не было и быть не могло.
+      const tracked = hasBase && oldBase !== undefined && name in oldBase;
+      const d = decide(snap[name], local[name], oldBase?.[name], tracked);
       if (d === "apply") {
         put(snap[name] as JsonValue);
         sync.applied = true;
@@ -912,16 +1196,61 @@ export function importBeadsSnapshot(
       // слепок следует за источником; при конфликте остаётся старым, чтобы
       // расхождение называлось снова на каждом прогоне
       baselineNew[name] = d === "conflict" ? oldBase?.[name] : snap[name];
+      return d;
     };
 
     field("title", (v) => (columns["title"] = v));
-    field("body", (v) => (columns["body"] = v));
+    // Тело — это описание плюс управляемые разделы: решения по трём полям
+    // независимы, запись — одна. Правка человека вне блоков остаётся байт в
+    // байт: если описание не применяется, тело правится только ВНУТРИ тех
+    // блоков, чьё поле применяется.
+    const applied = new Set<"body" | SectionField>();
+    field("body", () => applied.add("body"));
+    for (const s of SECTIONS) {
+      const d = field(s.field, () => applied.add(s.field));
+      if (d === "apply") {
+        if (local[s.field] === null) data.sections_created++;
+        else if (snap[s.field] === null) data.sections_removed++;
+        else data.sections_updated++;
+      } else if (d === "sync" && snap[s.field] !== null) {
+        data.sections_existing++;
+      }
+    }
+    if (applied.size > 0) {
+      const pick = (f: SectionField): string | null => (applied.has(f) ? snap[f] : local[f]);
+      columns["body"] = applied.has("body")
+        ? composeBody(snap.body, { acceptance_criteria: pick("acceptance_criteria"), design: pick("design") })
+        : SECTIONS.reduce<string | null>(
+            (b, s) => (applied.has(s.field) ? spliceSection(b, s, snap[s.field]) : b),
+            node.body,
+          );
+    }
     field("status", (v) => (columns["status"] = v));
     field("priority", (v) => (columns["priority"] = v));
     field("assignee", (v) => (columns["assignee"] = v));
     field("tags", (v) => (attrsPatch["tags"] = v));
     field("outcome", (v) => (attrsPatch["outcome"] = v));
     field("closed_at", (v) => (columns["closed_at"] = v));
+
+    // Факты источника — в одну сторону (см. SOURCE_FACTS). Совпадающий факт
+    // не попадает в патч, поэтому холостой прогон по-прежнему без записи;
+    // пропавший в источнике — снимается (null), а не остаётся устаревшим.
+    const facts = sourceFacts(issue);
+    let factsChanged = false;
+    for (const key of SOURCE_FACTS) {
+      const want = facts[key];
+      const have = node.attrs[key];
+      if (want === undefined) {
+        if (have === undefined || have === null) continue;
+        attrsPatch[key] = null;
+      } else if (jsonEq(want, have)) {
+        continue;
+      } else {
+        attrsPatch[key] = want;
+      }
+      factsChanged = true;
+    }
+    if (factsChanged) data.facts_updated++;
     syncs.set(issue.id, sync);
   }
 
@@ -1077,12 +1406,17 @@ export function importBeadsSnapshot(
     const node = h.store.getNode(sync.nodeId);
     if (node === undefined) continue;
     const hasPatch = Object.keys(sync.columns).length > 0 || Object.keys(sync.attrsPatch).length > 0;
-    const baseChanged = !jsonEq(node.attrs[BASELINE_ATTR] ?? undefined, sync.baselineNew);
+    const baselineNew = orderedBaseline(sync.baselineNew);
+    const baseChanged = !jsonEq(node.attrs[BASELINE_ATTR] ?? undefined, baselineNew);
     if (!hasPatch && !baseChanged) continue;
     if (!dry) {
       h.store.updateNode(sync.nodeId, {
         ...(sync.columns as NodePatch),
-        attrs: { ...sync.attrsPatch, [BASELINE_ATTR]: sync.baselineNew as JsonValue },
+        attrs: {
+          ...sync.attrsPatch,
+          [BASELINE_ATTR]: baselineNew as JsonValue,
+          [FRESHNESS_ATTRS.synced]: syncMark(h),
+        },
       });
     }
   }
@@ -1128,8 +1462,10 @@ export function importBeadsSnapshot(
         data.skipped.push(`${ref}: comment not imported — task ${issue.id} itself was not imported`);
         continue;
       }
+      // метка записи импорта — как у задачи: правка комментария в myc его освежит
+      const input = commentToNodeInput(issue, comment, h.scope, h.actor);
       const id = createGuarded(
-        commentToNodeInput(issue, comment, h.scope, h.actor),
+        { ...input, attrs: { ...input.attrs, [FRESHNESS_ATTRS.synced]: syncMark(h) } },
         ref,
         "comment",
       );
@@ -1174,6 +1510,15 @@ function renderImportBeadsHuman(raw: unknown): string {
     `${head} from ${d.snapshot}`,
     `tasks     ${d.issues_total}: new ${d.tasks_created}, existing ${d.tasks_existing}` +
       (d.tasks_updated > 0 ? `, updated ${d.tasks_updated} (${d.fields_updated} fields)` : ""),
+    // Критерии приёмки и дизайн — содержимое: число обязано быть на виду,
+    // даже нулевое, иначе «разделов не было» неотличимо от «не ввезли».
+    `sections  acceptance criteria / design in the body: new ${d.sections_created}, ` +
+      `existing ${d.sections_existing}` +
+      (d.sections_updated > 0 ? `, updated ${d.sections_updated}` : "") +
+      (d.sections_removed > 0 ? `, removed ${d.sections_removed}` : ""),
+    ...(d.facts_updated > 0
+      ? [`source    dates and author written on ${d.facts_updated} existing ${d.facts_updated === 1 ? "task" : "tasks"}`]
+      : []),
     `edges     new ${d.edges_created}, existing ${d.edges_existing}` +
       (d.edges_removed > 0 ? `, removed ${d.edges_removed}` : ""),
     `notes     new ${d.notes_created}, existing ${d.notes_existing}`,
@@ -1230,7 +1575,10 @@ export function createImportBeadsCommand(deps: StoreDeps = realStoreDeps): Comma
       "Without arguments collects the snapshot itself via bd export --include-memories; a JSON " +
       "file argument remains an option for moving between machines. " +
       "Every beads id is kept in attrs.external_ref; texts are copied verbatim — references like " +
-      "myc-qie.7 inside descriptions are NOT rewritten. Re-running is a sync, not just " +
+      "myc-qie.7 inside descriptions are NOT rewritten. Acceptance criteria and design go into the " +
+      "task body as sections between <!-- beads:<field> --> markers, so show, ready and search " +
+      "see them; source dates and author go to attrs.external_* (created_at/updated_at of the node " +
+      "stay the time of the write). Re-running is a sync, not just " +
       "deduplication: fields changed in beads (status, priority, labels, close reason, parent, " +
       "blockers) are applied through normal graph mutations. Local myc edits are never silently " +
       "overwritten: one-sided local changes are kept and named in kept_local, two-sided changes " +

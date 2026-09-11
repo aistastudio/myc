@@ -49,6 +49,7 @@ import {
   type FederationSource,
   type FtsCaller,
   type WorkspaceTier,
+  sourceCreatedAt,
 } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
 import type { CommandContext, CommandFailure } from "../registry.ts";
@@ -1492,7 +1493,8 @@ export async function retrieve(
         repo_state: repoInfo.state,
         ...(full !== undefined
           ? {
-              created_at: full.created_at,
+              // та же дата создания, что в карточке show: у ввезённого — источник
+              created_at: sourceCreatedAt({ created_at: full.created_at, attrs }),
               acl: full.acl,
               author: full.actor,
               status: full.status,
