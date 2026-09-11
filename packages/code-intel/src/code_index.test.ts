@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -232,7 +232,7 @@ describe("очередь и отказы", () => {
   test("скан без разбора: работа в общей очереди, повторный скан дедупом отсечён", async () => {
     await freshDb();
     write("a.ts", "export function one() {}\n");
-    const first = scanCodeIndex(db, baseOpts());
+    const first = await scanCodeIndex(db, baseOpts());
     expect(first.enqueued).toBe(1);
 
     const row = (
@@ -259,7 +259,7 @@ describe("очередь и отказы", () => {
   test("работа мёртвого воркера: файл, исчезнувший к разбору, чистит строки", async () => {
     await freshDb();
     write("a.ts", "export function one() {}\n");
-    scanCodeIndex(db, baseOpts());
+    await scanCodeIndex(db, baseOpts());
     rmSync(join(dir, "a.ts"));
 
     const drained = await drainCodeIndex(db, baseOpts());
@@ -273,7 +273,7 @@ describe("очередь и отказы", () => {
   test("падение разбора: попытка засчитана, работа не потеряна, last_error виден", async () => {
     await freshDb();
     write("a.ts", "export function one() {}\n");
-    scanCodeIndex(db, baseOpts());
+    await scanCodeIndex(db, baseOpts());
 
     const boom = (source: string): never => {
       throw new Error("парсер сломался");
@@ -342,5 +342,106 @@ describe("langOf", () => {
     expect(langOf("d.json")).toBe("json");
     // Без расширения языка нет — L0 с пустой меткой.
     expect(langOf("e")).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Перечень: реестр git-репозитория — это его `git ls-files` (memory-rda12hcf2dt1)
+// ---------------------------------------------------------------------------
+
+function git(cwd: string, ...args: string[]): void {
+  const r = Bun.spawnSync(
+    ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+    { cwd, stdout: "pipe", stderr: "pipe" },
+  );
+  if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+}
+
+function registry(): Array<{ path: string; lang: string }> {
+  return db
+    .query("SELECT path, lang FROM code_files WHERE repo_id = 'test-repo' ORDER BY path")
+    .all() as Array<{ path: string; lang: string }>;
+}
+
+describe("перечень", () => {
+  // Глобальный ~/.config/git/ignore пользователя не должен решать исход теста.
+  const saved: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME"]) saved[k] = process.env[k];
+    process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    process.env.XDG_CONFIG_HOME = join(tmpdir(), "myc-code-index-no-xdg");
+  });
+  afterAll(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  test("git-репозиторий: игнорируемое не в реестре, а попавшее туда раньше — убрано", async () => {
+    await freshDb();
+    git(dir, "init", "-q");
+    write("a.ts", "export function one() {}\n");
+    write("keys/worker-1.json", '{"secret":"SECRET-KEY-MATERIAL"}\n');
+    git(dir, "add", "a.ts");
+    git(dir, "commit", "-qm", "a");
+
+    // Пока ключи никто не игнорирует, git их перечисляет (неотслеживаемый файл).
+    const before = await runCodeIndex(db, baseOpts());
+    expect(before.scan.gitRepos).toEqual(["."]);
+    expect(before.scan.unignored).toEqual([]);
+    expect(registry().map((r) => r.path)).toEqual(["a.ts", "keys/worker-1.json"]);
+
+    // Игнор появился — строка уходит из реестра первым же прогоном. Ровно так
+    // очищается реестр, собранный прежним обходом дерева.
+    write(".gitignore", "keys/\n");
+    const after = await runCodeIndex(db, baseOpts());
+    expect(after.scan.removed).toBe(1);
+    expect(after.scan.files).toBe(2);
+    expect(registry().map((r) => r.path)).toEqual([".gitignore", "a.ts"]);
+  });
+
+  test("не-git: реестр — обход дерева, и ScanStats называет это с причиной", async () => {
+    await freshDb();
+    write("a.ts", "export function one() {}\n");
+    const { scan } = await runCodeIndex(db, baseOpts());
+    expect(scan.gitRepos).toEqual([]);
+    expect(scan.unignored).toEqual([{ dir: ".", reason: "not a git repository" }]);
+    expect(scan.files).toBe(1);
+  });
+
+  test("язык, записанный прежним langOf, исправляется без правки файла", async () => {
+    await freshDb();
+    write(".hooks/pre-commit", "#!/bin/sh\n");
+    write("x/.ts", "export function ghost() {}\n");
+    await runCodeIndex(db, baseOpts());
+    expect(registry()).toEqual([
+      { path: ".hooks/pre-commit", lang: "" },
+      { path: "x/.ts", lang: "" },
+    ]);
+
+    // Так строки выглядели после прежнего langOf: «язык» из пути каталога и
+    // L1-язык у файла по имени `.ts` — с определениями от его разбора.
+    db.query("UPDATE code_files SET lang = 'hooks/pre-commit' WHERE path = '.hooks/pre-commit'").run();
+    db.query("UPDATE code_files SET lang = 'ts' WHERE path = 'x/.ts'").run();
+    db.query(
+      "INSERT INTO code_defs (repo_id, path, name, kind, span_start, span_end) VALUES ('test-repo', 'x/.ts', 'ghost', 'function', 1, 1)",
+    ).run();
+
+    const { scan } = await runCodeIndex(db, baseOpts());
+    expect(scan.unchanged).toBe(2);
+    expect(scan.relabeled).toBe(2);
+    expect(scan.dirty).toBe(0);
+    expect(registry()).toEqual([
+      { path: ".hooks/pre-commit", lang: "" },
+      { path: "x/.ts", lang: "" },
+    ]);
+    // Разбора у L0-файла не будет — и определений от старого тоже.
+    expect(defNames("x/.ts")).toEqual([]);
+
+    // Исправленное не переписывается снова.
+    const again = await runCodeIndex(db, baseOpts());
+    expect(again.scan.relabeled).toBe(0);
   });
 });

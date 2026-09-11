@@ -114,6 +114,10 @@ interface CodeIndexData {
   dry_run: boolean;
   scan: {
     files: number;
+    /** Репозитории, перечисленные своим `git ls-files` (с .gitignore). */
+    git_repos: string[];
+    /** Каталоги, где перечень — обход БЕЗ .gitignore, и почему. Пусто — всё от git. */
+    unignored: { dir: string; reason: string }[];
     unchanged: number;
     touched: number;
     dirty: number;
@@ -198,7 +202,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
         const db = h.driver.database;
         const opts = { repoId, root: repoRoot };
         const dryRun = flagBool(ctx, "dry-run");
-        const scan = scanCodeIndex(db, opts, !dryRun);
+        const scan = await scanCodeIndex(db, opts, !dryRun);
         const batchRaw = flagNum(ctx, "batch");
         let drain;
         try {
@@ -231,6 +235,8 @@ function buildCodeIndex(deps: StoreDeps): Command {
           dry_run: dryRun,
           scan: {
             files: scan.files,
+            git_repos: [...scan.gitRepos],
+            unignored: scan.unignored.map((u) => ({ dir: u.dir, reason: u.reason })),
             unchanged: scan.unchanged,
             touched: scan.touched,
             dirty: scan.dirty,
@@ -284,6 +290,28 @@ function buildCodeIndex(deps: StoreDeps): Command {
         if (drain.failed > 0) {
           ctx.warn("code_index.failed", `files not parsed: ${drain.failed} (see jobs.last_error)`);
         }
+        if (scan.unignored.length > 0) {
+          // Перечень без .gitignore — не обычный перечень: в реестр попало
+          // игнорируемое, и `code grep` его покажет (И2). Причины сгруппированы:
+          // «git не найден» у пятнадцати репозиториев — одна строка, не пятнадцать.
+          const byReason = new Map<string, string[]>();
+          for (const u of scan.unignored) {
+            const dirs = byReason.get(u.reason) ?? [];
+            dirs.push(u.dir);
+            byReason.set(u.reason, dirs);
+          }
+          const named = [...byReason]
+            .map(([reason, dirs]) => {
+              const more = dirs.length > 5 ? ` +${dirs.length - 5}` : "";
+              return `${dirs.slice(0, 5).join(", ")}${more} (${reason})`;
+            })
+            .join("; ");
+          ctx.warn(
+            "code_index.gitignore_off",
+            `.gitignore NOT applied in ${named}: the file list there is a directory walk minus ` +
+              "node_modules/.git/dist/…, so ignored files (keys, data, caches) are indexed and visible to code grep",
+          );
+        }
         if (data.missing_grammars.length > 0) {
           const total = data.missing_grammars.reduce((n, m) => n + m.files, 0);
           const named = data.missing_grammars
@@ -323,7 +351,8 @@ function buildCodeIndex(deps: StoreDeps): Command {
       const lines = [
         `repo      ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}`,
         `scan      files ${d.scan.files}, unchanged ${d.scan.unchanged}, touched ${d.scan.touched}, ` +
-          `queued ${d.scan.enqueued}, removed ${d.scan.removed}  ${d.scan.scan_ms} ms`,
+          `queued ${d.scan.enqueued}, removed ${d.scan.removed}  ${d.scan.scan_ms} ms` +
+          `${d.scan.git_repos.length > 0 ? `  [git: ${count(d.scan.git_repos.length, "repo")}]` : ""}`,
         `parse     claimed ${d.drain.claimed}, parsed ${d.drain.parsed} (pool ${d.drain.pooled}), ` +
           `written ${d.drain.written}, skipped ${d.drain.skipped}, failed ${d.drain.failed}  ` +
           `${d.drain.drain_ms} ms`,

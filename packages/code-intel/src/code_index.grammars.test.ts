@@ -56,7 +56,7 @@ function write(rel: string, content: string): void {
 }
 
 async function index(): Promise<DrainStats> {
-  scanCodeIndex(db, OPTS, true);
+  await scanCodeIndex(db, OPTS, true);
   return drainCodeIndex(db, OPTS, { holder: "t" });
 }
 

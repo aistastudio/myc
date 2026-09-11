@@ -8,7 +8,7 @@
  * полной.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -305,5 +305,56 @@ describe("бинарные файлы", () => {
     // Область сужает и счёт бинарных: вне области файл не «пропущен», его не спрашивали.
     expect(grepCode(db, "r", dir, "needle", { scopes: scopeOf(["data"]) }).binary).toBe(0);
     expect(grepCode(db, "r", dir, "needle", { scopes: scopeOf(["src"]) }).binary).toBe(1);
+  });
+});
+
+// Добавлено memory-rda12hcf2dt1: на корне cherry обход дерева положил бы в
+// реестр 2000 файлов testing/keys — и grep вывел бы агенту их содержимое.
+// grep читает ТОЛЬКО реестр, а реестр git-репозитория — его `git ls-files`.
+describe("игнорируемое git", () => {
+  const saved: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME"]) saved[k] = process.env[k];
+    process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    process.env.XDG_CONFIG_HOME = join(tmpdir(), "code-grep-no-xdg");
+  });
+  afterAll(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  function git(cwd: string, ...args: string[]): void {
+    const r = Bun.spawnSync(
+      ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+      { cwd, stdout: "pipe", stderr: "pipe" },
+    );
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+  }
+
+  test("литерал из игнорируемого файла не находится, а литерал кода — находится", async () => {
+    const repo = join(work, "repo");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, ".gitignore"), "testing/keys/\n.data/\n");
+    writeFileSync(join(repo, "src", "wallet.ts"), "export const KEY_FILE = 'worker-1.json';\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-qm", "init");
+    mkdirSync(join(repo, "testing", "keys"), { recursive: true });
+    writeFileSync(join(repo, "testing", "keys", "worker-1.json"), '{"secretKey":"PRIVKEY-5b3a9f"}\n');
+    mkdirSync(join(repo, ".data"));
+    writeFileSync(join(repo, ".data", "dump.json"), '{"note":"PRIVKEY-5b3a9f"}\n');
+    await runCodeIndex(db, { repoId: "g", root: repo });
+
+    const leak = grepCode(db, "g", repo, "PRIVKEY-5b3a9f");
+    expect({ hits: leak.hits, files: leak.files }).toEqual({ hits: 0, files: 0 });
+    // Просмотрено ровно то, что в реестре: .gitignore и src/wallet.ts.
+    expect(leak.searched).toBe(2);
+    expect(grepCode(db, "g", repo, "worker-1.json").groups.map((g) => g.path)).toEqual(["src/wallet.ts"]);
+    // Области под игнорируемым нет — это отказ, а не «0 вхождений».
+    const scope = resolveGrepScope(db, "g", repo, ["testing/keys"]);
+    expect(scope.ok ? "ok" : scope.code).toBe("notfound.scope");
   });
 });

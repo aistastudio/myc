@@ -44,12 +44,21 @@ import {
 } from "./symbols.ts";
 import { listDefsAndRefs, type ParsedFile, type Ref } from "./refs.ts";
 import { PARSE_WORKER_IN_BINARY } from "./parse_worker_entry.ts";
-import { L1_LANGS, langOf, walkFiles } from "./langs.ts";
+import { L1_LANGS, langOf, listFiles, type UnignoredDir } from "./langs.ts";
 import { GRAMMAR_BY_LANG, type MissingGrammar, missingGrammars } from "./grammars.ts";
 
-// Языки, обход дерева и список пропускаемых каталогов живут в `./langs.ts`:
+// Языки, перечень файлов и список пропускаемых каталогов живут в `./langs.ts`:
 // их же читает `select.ts`, которому граф модулей индекса не по карману.
-export { L1_LANGS, LANG_BY_EXT, SKIP_DIRS, langOf, walkFiles } from "./langs.ts";
+export {
+  L1_LANGS,
+  LANG_BY_EXT,
+  SKIP_DIRS,
+  langOf,
+  listFiles,
+  walkFiles,
+  type FileListing,
+  type UnignoredDir,
+} from "./langs.ts";
 
 // ---------------------------------------------------------------------------
 // Константы
@@ -109,11 +118,21 @@ export interface CodeIndexOptions {
 }
 
 export interface ScanStats {
-  /** Файлов увидено на диске. */
+  /** Файлов в перечне (`listFiles`): git-репозитории — без игнорируемых. */
   readonly files: number;
+  /** Репозитории, перечисленные своим git (".", вложенные — путём от корня). */
+  readonly gitRepos: readonly string[];
+  /**
+   * Каталоги, где перечень — обход без .gitignore, с причиной. Непустой
+   * список команда обязана назвать: игнорируемое (ключи, кеши, сборка) там
+   * попало в реестр и видно `code grep` (И2).
+   */
+  readonly unignored: readonly UnignoredDir[];
   readonly unchanged: number;
   /** mtime/size изменились, хеш — нет: разбора не было, mtime записан. */
   readonly touched: number;
+  /** Неизменённые файлы, чей записанный язык разошёлся с `langOf`: язык исправлен. */
+  readonly relabeled: number;
   /** Содержимое изменилось (или freshness="mtime" и mtime изменился). */
   readonly dirty: number;
   /** Из dirty реально вставлено в очередь (дедуп мог отсечь повтор). */
@@ -395,9 +414,10 @@ class ParsePool {
 
 function loadLedger(db: Database, repoId: string): Map<string, FileRow> {
   const rows = db
-    .query("SELECT path, mtime_ms, size_bytes, file_hash FROM code_files WHERE repo_id = ?1")
+    .query("SELECT path, lang, mtime_ms, size_bytes, file_hash FROM code_files WHERE repo_id = ?1")
     .all(repoId) as Array<{
     path: string;
+    lang: string;
     mtime_ms: number;
     size_bytes: number;
     file_hash: string;
@@ -405,6 +425,7 @@ function loadLedger(db: Database, repoId: string): Map<string, FileRow> {
   const map = new Map<string, FileRow>();
   for (const r of rows) {
     map.set(r.path, {
+      lang: r.lang,
       mtime_ms: Number(r.mtime_ms),
       size_bytes: Number(r.size_bytes),
       file_hash: r.file_hash,
@@ -414,6 +435,7 @@ function loadLedger(db: Database, repoId: string): Map<string, FileRow> {
 }
 
 interface FileRow {
+  readonly lang: string;
   readonly mtime_ms: number;
   readonly size_bytes: number;
   readonly file_hash: string;
@@ -426,18 +448,33 @@ interface FileRow {
  * после разбора. Работа, добившаяся до терминального состояния (dead),
  * дедупом новой не заменит — файл останется на переиндексацию следующей
  * своей правки, как у embed.
+ *
+ * Файлы берутся из `listFiles`: у git-репозитория — его `git ls-files`, с
+ * .gitignore. Строки реестра, которых нет в перечне, уходят в `removed` —
+ * так реестр, собранный старым обходом, очищается от игнорируемого первым
+ * же прогоном. Асинхронна ради git вложенных репозиториев: они спрашиваются
+ * разом, а не по очереди.
  */
-export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true): ScanStats {
+export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true): Promise<ScanStats> {
   const now = opts.now ?? Date.now();
   const t0 = performance.now();
   const incremental = opts.incremental !== false;
   const useHash = (opts.freshness ?? "hash") === "hash";
 
-  const paths = walkFiles(opts.root);
+  // git запускается ПЕРВЫМ и работает своим процессом, пока здесь читается
+  // реестр: ожидание перечня и чтение базы идут одновременно.
+  const listing = listFiles(opts.root);
   const ledger = loadLedger(db, opts.repoId);
+  const listed = await listing;
+  const paths = listed.files;
   const dirtyL1: Array<{ path: string; lang: string }> = [];
   const dirtyL0: Array<{ path: string; lang: string; mtimeMs: number; size: number; hash: string }> = [];
-  const touched: Array<{ path: string; mtimeMs: number }> = [];
+  const touched: Array<{ path: string; mtimeMs: number; lang: string }> = [];
+  // Строки с языком, который записал прежний `langOf` (`dolt/noms/vvvv…` у
+  // файла без расширения под каталогом с точкой). Язык — функция ПУТИ, а не
+  // содержимого: без этой сверки строка неизменённого файла не исправилась бы
+  // никогда.
+  const relabel: Array<{ path: string; lang: string; wasL1: boolean }> = [];
   const removed: string[] = [];
   let unchanged = 0;
   let excluded = 0;
@@ -462,8 +499,10 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
       opts.freshness === "mtime"
         ? row !== undefined && row.mtime_ms === mtimeMs
         : row !== undefined && row.mtime_ms === mtimeMs && row.size_bytes === st.size;
+    const lang = langOf(path);
     if (incremental && level1) {
       unchanged++;
+      if (row!.lang !== lang) relabel.push({ path, lang, wasL1: L1_LANGS.has(row!.lang) });
       continue;
     }
     // Уровень 1 не совпал. Без хеша файл сразу грязный; с хешем — читаем и
@@ -476,9 +515,8 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
         continue;
       }
     }
-    const lang = langOf(path);
     if (incremental && row !== undefined && hash !== "" && hash === row.file_hash) {
-      touched.push({ path, mtimeMs });
+      touched.push({ path, mtimeMs, lang });
       continue;
     }
     if (L1_LANGS.has(lang)) {
@@ -497,13 +535,16 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
 
   let enqueued = 0;
   const t1 = performance.now();
-  if (write && (touched.length > 0 || removed.length > 0 || dirtyL0.length > 0 || dirtyL1.length > 0)) {
+  const pending = touched.length + relabel.length + removed.length + dirtyL0.length + dirtyL1.length;
+  if (write && pending > 0) {
     db.exec("BEGIN IMMEDIATE");
     try {
       const touch = db.query(
-        "UPDATE code_files SET mtime_ms = ?3, indexed_at = ?4 WHERE repo_id = ?1 AND path = ?2",
+        "UPDATE code_files SET mtime_ms = ?3, indexed_at = ?4, lang = ?5 WHERE repo_id = ?1 AND path = ?2",
       );
-      for (const t of touched) touch.run(opts.repoId, t.path, t.mtimeMs, now);
+      for (const t of touched) touch.run(opts.repoId, t.path, t.mtimeMs, now, t.lang);
+      const relang = db.query("UPDATE code_files SET lang = ?3 WHERE repo_id = ?1 AND path = ?2");
+      for (const r of relabel) relang.run(opts.repoId, r.path, r.lang);
 
       const upsertL0 = db.query(`
         INSERT INTO code_files (repo_id, path, lang, mtime_ms, size_bytes, file_hash, indexed_at)
@@ -527,7 +568,14 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
         delRefSites.run(opts.repoId, path);
         delFile.run(opts.repoId, path);
       }
-      if (removed.length > 0) invalidateRefs(db, opts.repoId);
+      // Файл, который прежний `langOf` счёл L1 (имя `.ts` целиком), теперь L0:
+      // его определения — от разбора, которого больше не будет.
+      const unparsed = relabel.filter((r) => r.wasL1 && !L1_LANGS.has(r.lang));
+      for (const r of unparsed) {
+        delDefs.run(opts.repoId, r.path);
+        delRefSites.run(opts.repoId, r.path);
+      }
+      if (removed.length > 0 || unparsed.length > 0) invalidateRefs(db, opts.repoId);
 
       for (const f of dirtyL1) {
         const res = jobs.enqueue(db, CODE_INDEX_JOB_KIND, {
@@ -546,8 +594,11 @@ export function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true
   }
   return {
     files: paths.length,
+    gitRepos: listed.gitRepos,
+    unignored: listed.unignored,
     unchanged,
     touched: touched.length,
+    relabeled: relabel.length,
     dirty: dirtyL1.length + dirtyL0.length,
     enqueued,
     removed: removed.length,
@@ -1035,7 +1086,7 @@ export async function runCodeIndex(
   opts: CodeIndexOptions,
   drain: DrainOptions = {},
 ): Promise<IndexRunResult> {
-  const scan = scanCodeIndex(db, opts);
+  const scan = await scanCodeIndex(db, opts);
   const drainStats = await drainCodeIndex(db, opts, drain);
   return { scan, drain: drainStats };
 }
