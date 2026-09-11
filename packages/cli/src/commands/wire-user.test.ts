@@ -26,7 +26,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { run, type RunResult } from "../index.ts";
@@ -592,12 +592,17 @@ describe("helper пользовательского слоя: как его за
     const proj = join(root, "proj");
     mkdirSync(join(proj, ".myc"), { recursive: true });
     writeFileSync(join(proj, ".myc", "myc.db"), "");
-    const rewritten = runHook(cmd!, proj, payload, sessionEnv());
+    // Хук очереди записан со словом `myc` (PATH): на машине разработчика оно
+    // находилось в ~/.bun/bin, на раннере CI — нет, и хук честно говорил «myc
+    // is not found». Здесь `myc` — заглушка, первая в PATH сессии.
+    symlinkSync(stubMyc, join(bin, "myc"));
+    const withMyc = sessionEnv({ PATH: `${bin}:${process.env.PATH ?? ""}` });
+    const rewritten = runHook(cmd!, proj, payload, withMyc);
     expect(rewritten.code).toBe(0);
     expect(rewritten.stdout).toContain("myc run -- bun test");
 
     // Свой хук очереди у проекта — пользовательский молчит.
     expect((await myc(r, "-C", proj, "wire", "--agents", "claude", "--queue-hook")).code).toBe(0);
-    expect(runHook(cmd!, proj, payload, sessionEnv()).stdout).toBe("");
+    expect(runHook(cmd!, proj, payload, withMyc).stdout).toBe("");
   });
 });
