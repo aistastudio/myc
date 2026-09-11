@@ -27,7 +27,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { cliTestEnv } from "@myc/core";
-import { expectAheadOfRival, expectWithinBudget, measureAsync, report } from "@myc/bench";
+import { expectAheadOfRival, expectCostAtMost, expectWithinBudget, measureAsync, report } from "@myc/bench";
 import { queueDbPath } from "../run-queue.ts";
 import { QUEUE_HELPER_REL } from "./queue-hook.ts";
 
@@ -308,15 +308,30 @@ describe("(d) цена: лёгкая команда не запускает JS",
         rivalLabel: "the same hook with no prefilter (bun/node on every call)",
       });
       report(m);
+      // Тяжёлая команда — это по построению старт node (helper разбирает
+      // команду и переписывает её), а за ним идёт полный прогон тестов или
+      // сборка — минуты. Абсолютные 30 мс p99 здесь мерили старт node на
+      // загруженном ноутбуке: p50 21 мс, и одинокий выброс в двух прогонах из
+      // трёх ронял полный набор (2026-09-11, load1 4.9, дважды), хотя сам хук
+      // не менялся. Что обязано не расти — цена helper'а СВЕРХ старта node:
+      // соперник — тот же shell, тот же stdin и голый node, чередуясь, и
+      // отношение от загрузки не зависит. Абсолют остаётся у лёгкой команды:
+      // её цену агент платит на каждом вызове Bash.
+      // Тот же выбор рантайма, что у записи хука (queueHookCommand): bun, если
+      // он в PATH, иначе node.
+      const floorCommand =
+        `IFS= read -r p; r=node; command -v bun >/dev/null 2>&1 && r=bun; ` +
+        `printf '%s\\n' "$p" | "$r" -e "require('fs').readFileSync(0)"`;
       const h = await measureAsync(`queue hook, heavy command (${HOST_SHELL})`, () => once(hookCommand, heavy), {
         warmup: 3,
         iters: 40,
-        budgetMs: 30,
+        rival: () => once(floorCommand, heavy),
+        rivalLabel: "the same shell starting the same runtime bare, on the same stdin",
       });
       report(h);
       expectAheadOfRival(m, 2);
       expectWithinBudget(m);
-      expectWithinBudget(h);
+      expectCostAtMost(h, 1.6);
     },
     120_000,
   );
