@@ -266,6 +266,13 @@ myc code grep "<lit>"    exhaustive, every occurrence; --in <path> narrows it
 myc skeleton <file>      the file's API — 26× cheaper than reading it
 ```
 
+The file list is git's own (`git ls-files`, so `.gitignore` applies; a tree
+without git is walked, and the command says so). On top of any list,
+secret-named files are never indexed, whatever `.gitignore` says: `.env` and
+`.env.*` (templates like `.env.example` are indexed), `*.pem`, `*.key`,
+keystores, private SSH keys, `.npmrc`, `.netrc` and other credential files —
+`code index` counts them without naming them, and `code grep` refuses to read one.
+
 Anchors tie knowledge to a span and follow the code as it moves; that half is
 language-agnostic and was verified on Python as well as TypeScript.
 

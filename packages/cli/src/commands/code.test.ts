@@ -349,6 +349,53 @@ describe("myc code grep — исчерпывающий откат", () => {
   });
 });
 
+/**
+ * Секретные по имени файлы (memory-wpr1x91jp8fm): индекс их не берёт и
+ * говорит об этом ЧИСЛОМ, не называя имён; grep их не читает, а явный путь к
+ * такому файлу — отказ DENIED. Дерево здесь не git — перечень идёт запасным
+ * обходом, где .gitignore не спасает вовсе.
+ */
+describe("myc code — секретные по имени файлы", () => {
+  const SECRET = "CLISECRET-2e9f";
+  const TEMPLATE = "CLI-TEMPLATE-5a1c";
+
+  beforeEach(() => {
+    writeFileSync(join(dir, ".env"), `API_KEY=${SECRET}\n`);
+    mkdirSync(join(dir, "deploy"));
+    writeFileSync(join(dir, "deploy", "server.pem"), `${SECRET}\n`);
+    writeFileSync(join(dir, ".env.example"), `API_KEY=${TEMPLATE}\n`);
+  });
+
+  test("index: счёт в --json и в строке scan, без имён файлов", async () => {
+    const d = await data("code", "index");
+    expect((d["scan"] as Record<string, number>)["secret_skipped"]).toBe(2);
+    const human = await myc("code", "index");
+    expect(human.code).toBe(ExitCode.OK);
+    const out = human.stdout as string;
+    expect(out).toMatch(/^scan .*secret-named skipped 2/m);
+    expect(out).not.toContain(".env");
+    expect(out).not.toContain("server.pem");
+    expect(count("code_files")).toBe((d["scan"] as Record<string, number>)["files"]!);
+  });
+
+  test("grep: строка секрета не находится, шаблон — находится, --in на секрет — denied.secret", async () => {
+    await data("code", "index");
+    expect((await data("code", "grep", SECRET))["hits"]).toBe(0);
+    expect((await data("code", "grep", SECRET, "--in", "deploy/.."))["hits"]).toBe(0);
+    expect((await data("code", "grep", TEMPLATE))["hits"]).toBe(1);
+
+    for (const target of [".env", "deploy/server.pem"]) {
+      const r = await myc("code", "grep", SECRET, "--in", target, "--json");
+      expect({ target, exit: r.code }).toEqual({ target, exit: ExitCode.DENIED });
+      const env = JSON.parse(String(r.stdout ?? "")) as { ok: boolean; error?: { code: string } };
+      expect(env.ok).toBe(false);
+      expect(env.error?.code).toBe("denied.secret");
+      // Отказ не читает файл — и ни строки его содержимого не печатает.
+      expect(String(r.stdout ?? "") + String(r.stderr ?? "")).not.toContain("API_KEY=");
+    }
+  });
+});
+
 describe("myc code map — ориентация в незнакомом дереве", () => {
   test("карта печатает итоги, кластеры и СВОЙ размер в знаках", async () => {
     await data("code", "index");

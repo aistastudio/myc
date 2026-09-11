@@ -45,6 +45,7 @@ import {
 import { listDefsAndRefs, type ParsedFile, type Ref } from "./refs.ts";
 import { PARSE_WORKER_IN_BINARY } from "./parse_worker_entry.ts";
 import { L1_LANGS, langOf, listFiles, type UnignoredDir } from "./langs.ts";
+import { isSecretPath } from "./secret-paths.ts";
 import { GRAMMAR_BY_LANG, type MissingGrammar, missingGrammars } from "./grammars.ts";
 
 // Языки, перечень файлов и список пропускаемых каталогов живут в `./langs.ts`:
@@ -128,6 +129,12 @@ export interface ScanStats {
    * попало в реестр и видно `code grep` (И2).
    */
   readonly unignored: readonly UnignoredDir[];
+  /**
+   * Файлов, не взятых в перечень по секретному имени (`.env`, ключи, учётные
+   * данные — `secret-paths.ts`). Их строки, если реестр собран до запрета,
+   * уходят в `removed` этого же прогона.
+   */
+  readonly secretSkipped: number;
   readonly unchanged: number;
   /** mtime/size изменились, хеш — нет: разбора не было, mtime записан. */
   readonly touched: number;
@@ -452,8 +459,9 @@ interface FileRow {
  * Файлы берутся из `listFiles`: у git-репозитория — его `git ls-files`, с
  * .gitignore. Строки реестра, которых нет в перечне, уходят в `removed` —
  * так реестр, собранный старым обходом, очищается от игнорируемого первым
- * же прогоном. Асинхронна ради git вложенных репозиториев: они спрашиваются
- * разом, а не по очереди.
+ * же прогоном, а собранный до запрета секретных имён — от `.env` и ключей.
+ * Асинхронна ради git вложенных репозиториев: они спрашиваются разом, а не
+ * по очереди.
  */
 export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write = true): Promise<ScanStats> {
   const now = opts.now ?? Date.now();
@@ -596,6 +604,7 @@ export async function scanCodeIndex(db: Database, opts: CodeIndexOptions, write 
     files: paths.length,
     gitRepos: listed.gitRepos,
     unignored: listed.unignored,
+    secretSkipped: listed.secretSkipped,
     unchanged,
     touched: touched.length,
     relabeled: relabel.length,
@@ -934,6 +943,16 @@ async function drainBatch(
     if (path === null) {
       // Работа без файла не имеет смысла; ограждённый complete снимет её.
       jobs.complete(db, job.id, holder);
+      continue;
+    }
+    // Работа на секретный файл могла встать в очередь до запрета (или чужим
+    // сканом старой сборки). Файл не читается: его строки снимаются так же,
+    // как у исчезнувшего, — иначе разбор записал бы его обратно в реестр.
+    if (isSecretPath(path)) {
+      entries.push({
+        job, path, cleanup: true, lang: "", mtimeMs: 0, size: 0, hash: "", source: "",
+        skip: false, pending: null,
+      });
       continue;
     }
     const abs = join(opts.root, path);

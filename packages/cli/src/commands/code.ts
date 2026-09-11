@@ -118,6 +118,8 @@ interface CodeIndexData {
     git_repos: string[];
     /** Каталоги, где перечень — обход БЕЗ .gitignore, и почему. Пусто — всё от git. */
     unignored: { dir: string; reason: string }[];
+    /** Не взято в перечень по секретному имени (.env, ключи, учётные данные) — числом, без имён. */
+    secret_skipped: number;
     unchanged: number;
     touched: number;
     dirty: number;
@@ -188,7 +190,10 @@ function buildCodeIndex(deps: StoreDeps): Command {
       `running it inline (I1). Symbols are parsed for ${L1_LANGS_LABEL} (L1); every other file is ` +
       "registered by path, language and hash (L0) and gets no symbols. A L1 language whose " +
       "tree-sitter grammar is not staged is SKIPPED and NAMED — indexing never goes to the " +
-      "network, not even in the background; `myc code fetch` does, and only when a human asks.",
+      "network, not even in the background; `myc code fetch` does, and only when a human asks. " +
+      "Secret-named files (.env and .env.* except templates, *.pem, *.key, keystores, private SSH " +
+      "keys, .npmrc/.netrc and other credentials) are never indexed, whatever .gitignore says: " +
+      "the scan line counts them as 'secret-named skipped', and rows left from an older index are removed.",
     flags: INDEX_FLAGS,
     handler: async (ctx) => {
       const t0 = performance.now();
@@ -237,6 +242,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
             files: scan.files,
             git_repos: [...scan.gitRepos],
             unignored: scan.unignored.map((u) => ({ dir: u.dir, reason: u.reason })),
+            secret_skipped: scan.secretSkipped,
             unchanged: scan.unchanged,
             touched: scan.touched,
             dirty: scan.dirty,
@@ -351,7 +357,8 @@ function buildCodeIndex(deps: StoreDeps): Command {
       const lines = [
         `repo      ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}`,
         `scan      files ${d.scan.files}, unchanged ${d.scan.unchanged}, touched ${d.scan.touched}, ` +
-          `queued ${d.scan.enqueued}, removed ${d.scan.removed}  ${d.scan.scan_ms} ms` +
+          `queued ${d.scan.enqueued}, removed ${d.scan.removed}, ` +
+          `secret-named skipped ${d.scan.secret_skipped}  ${d.scan.scan_ms} ms` +
           `${d.scan.git_repos.length > 0 ? `  [git: ${count(d.scan.git_repos.length, "repo")}]` : ""}`,
         `parse     claimed ${d.drain.claimed}, parsed ${d.drain.parsed} (pool ${d.drain.pooled}), ` +
           `written ${d.drain.written}, skipped ${d.drain.skipped}, failed ${d.drain.failed}  ` +
@@ -963,12 +970,16 @@ const GREP_FLAGS: readonly FlagSpec[] = [
   { name: "limit", value: "number", description: "symbol groups to print (default 60); the count is always exhaustive" },
 ];
 
-/** Отказ разбора `--in` → код выхода: нет пути или файлов под ним — NOTFOUND, остальное — USAGE. */
+/**
+ * Отказ разбора `--in` → код выхода: нет пути или файлов под ним — NOTFOUND,
+ * файл с секретным именем — DENIED, остальное — USAGE.
+ */
 const GREP_SCOPE_EXIT: Readonly<Record<string, ExitCode>> = {
   "usage.invalid": ExitCode.USAGE,
   "usage.outside_repo": ExitCode.USAGE,
   "notfound.path": ExitCode.NOTFOUND,
   "notfound.scope": ExitCode.NOTFOUND,
+  "denied.secret": ExitCode.DENIED,
 };
 
 function buildCodeGrep(deps: StoreDeps): Command {
@@ -985,7 +996,8 @@ function buildCodeGrep(deps: StoreDeps): Command {
       "first 8000 bytes, the git rule) are skipped and COUNTED; nothing is dropped silently. " +
       "`--in` narrows the search to paths from the repo root — the same paths the output prints — " +
       "and the answer names the scope; a path that does not exist, lies outside the repo or has no " +
-      "indexed files under it is refused, not answered with zero hits.",
+      "indexed files under it is refused, not answered with zero hits. Secret-named files (.env, " +
+      "keys, credentials) are never read: `--in` to one is refused with denied.secret.",
     flags: GREP_FLAGS,
     handler: async (ctx) => {
       const literal = ctx.args.join(" ");

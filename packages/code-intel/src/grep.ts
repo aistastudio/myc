@@ -41,11 +41,18 @@
  * выдаче — мусор.
  * Пропуск считается и называется числом, как пропуск по размеру. Файл и так
  * читается целиком, поэтому признак — один memchr по уже прочитанному буферу.
+ *
+ * СЕКРЕТНЫЕ ПО ИМЕНИ ФАЙЛЫ (`.env`, ключи, учётные данные — `secret-paths.ts`)
+ * не читаются ни в каком режиме (memory-wpr1x91jp8fm). В реестр их не кладёт
+ * перечень; явный `--in` на такой файл — отказ `denied.secret`, до чтения; а
+ * строка, оставшаяся в реестре, собранном до запрета, пропускается, пока
+ * ближайший `code index` её не удалит.
  */
 
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
+import { isSecretPath, SECRET_NAMES_LABEL } from "./secret-paths.ts";
 
 export interface GrepHit {
   readonly line: number;
@@ -137,7 +144,7 @@ function inScope(path: string, scopes: readonly GrepScope[]): boolean {
 
 export type GrepScopeRefusal = {
   readonly ok: false;
-  readonly code: "usage.invalid" | "usage.outside_repo" | "notfound.path" | "notfound.scope";
+  readonly code: "usage.invalid" | "usage.outside_repo" | "notfound.path" | "notfound.scope" | "denied.secret";
   readonly msg: string;
   readonly hint?: string;
 };
@@ -151,6 +158,9 @@ export type GrepScopeRefusal = {
  * заходит (node_modules, .git) или отстал (`notfound.scope`): «0 вхождений»
  * там значило бы «не искали»; пустой `--in` (`usage.invalid`). Путь, под
  * которым файлы реестра есть, а вхождений нет, — обычный пустой ответ.
+ * Пятый отказ — файл с секретным именем (`denied.secret`): он решается по
+ * имени, до реестра и без чтения файла, чтобы устаревший реестр, ещё
+ * держащий `.env`, не открыл его явным путём.
  *
  * `cwd` нужен только подсказке: из подкаталога легко написать путь от себя, а
  * не от корня, и отказ тогда называет, как было бы правильно.
@@ -199,10 +209,18 @@ export function resolveGrepScope(
       }
       return { ok: false, code: "notfound.path", msg: `--in ${input}: no such path in the repo`, hint };
     }
+    if (!dir && isSecretPath(rel)) {
+      return {
+        ok: false,
+        code: "denied.secret",
+        msg: `--in ${input}: a secret-named file — code grep never reads it, and the index never lists it`,
+        hint: `secret-named files: ${SECRET_NAMES_LABEL}`,
+      };
+    }
     const path = dir ? (rel.length === 0 ? "" : `${rel}/`) : rel;
     const scope: GrepScope = { label: dir ? (rel.length === 0 ? "." : `${rel}/`) : rel, path, dir };
     registry ??= (db.query(SQL_PATHS).all(repoId) as Array<{ path: string }>).map((r) => r.path);
-    if (!registry.some((p) => inScope(p, [scope]))) {
+    if (!registry.some((p) => inScope(p, [scope]) && !isSecretPath(p))) {
       return {
         ok: false,
         code: "notfound.scope",
@@ -210,8 +228,8 @@ export function resolveGrepScope(
           ? `--in ${input}: the directory exists, but the file registry has no files under it — nothing to search there`
           : `--in ${input}: the file exists, but it is not in the file registry — nothing to search`,
         hint:
-          "the index skips files git ignores, and node_modules, .git, dist and the like; " +
-          "for new files run myc code index",
+          "the index skips files git ignores, secret-named files (.env, keys, credentials), " +
+          "and node_modules, .git, dist and the like; for new files run myc code index",
       };
     }
     if (!scopes.some((s) => s.path === scope.path)) scopes.push(scope);
@@ -282,6 +300,9 @@ export function grepCode(
     lang: string;
     size_bytes: number;
   }>) {
+    // Реестр, собранный до запрета, может ещё держать секретный файл — до
+    // ближайшего `code index`, который строку удалит. Читать его нельзя и тогда.
+    if (isSecretPath(f.path)) continue;
     // Область — до потолка размера: файл вне области не «пропущен», его не спрашивали.
     if (scopes !== null && !inScope(f.path, scopes)) continue;
     if (wanted !== null && !wanted.has(f.lang)) continue;

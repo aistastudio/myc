@@ -12,6 +12,7 @@
 
 import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import { isSecretName, isSecretPath } from "./secret-paths.ts";
 
 /**
  * Языки уровня L1 (§5): определения разбираются только для них.
@@ -100,6 +101,11 @@ export interface FileListing {
   readonly gitRepos: readonly string[];
   /** Где перечень — обход без .gitignore. Пусто — весь перечень от git. */
   readonly unignored: readonly UnignoredDir[];
+  /**
+   * Файлов, НЕ взятых в перечень по секретному имени (`secret-paths.ts`), —
+   * числом, без имён: имя секрета в выводе команды тоже лишнее.
+   */
+  readonly secretSkipped: number;
 }
 
 export interface ListOptions {
@@ -231,11 +237,17 @@ function joinRel(dir: string, name: string): string {
  *
  * Симлинки не входят ни в какой перечень: git их перечисляет, но файл по
  * ссылке может лежать за корнем, а скан и grep читают по пути.
+ *
+ * Секретные по имени файлы (`.env`, ключи, учётные данные — `secret-paths.ts`)
+ * не входят тоже, и на обеих ветках: чужой .gitignore их может не закрывать,
+ * а отслеживаемый `.env` от этого не перестаёт быть секретом. Считаются
+ * числом (`secretSkipped`), чтобы запрет был виден, а не молчалив.
  */
 function* listing(root: string, absent: string | null): Generator<string[], FileListing, GitRun[]> {
   const files: string[] = [];
   const gitRepos: string[] = [];
   const unignored: UnignoredDir[] = [];
+  let secretSkipped = 0;
   // Бинаря git нет — спрашивать его о каждом вложенном репозитории незачем.
   let noGit: string | null = absent;
   let wave: Array<{ rel: string; how: "git" | "walk" }> = [{ rel: "", how: "git" }];
@@ -261,7 +273,9 @@ function* listing(root: string, absent: string | null): Generator<string[], File
           if (!SKIP_DIRS.has(e.name)) stack.push(joinRel(dir, e.name));
           continue;
         }
-        if (e.isFile()) files.push(joinRel(dir, e.name));
+        if (!e.isFile()) continue;
+        if (isSecretName(e.name)) secretSkipped++;
+        else files.push(joinRel(dir, e.name));
       }
     }
   };
@@ -327,7 +341,8 @@ function* listing(root: string, absent: string | null): Generator<string[], File
           continue; // отслеживается, но удалён из рабочего дерева
         }
         if (st.isFile()) {
-          files.push(path);
+          if (isSecretPath(path)) secretSkipped++;
+          else files.push(path);
         } else if (st.isDirectory() && existsSync(join(root, path, ".git"))) {
           // gitlink в индексе — подмодуль (или вложенный репозиторий, добавленный
           // `git add`): его файлы перечисляет его git. Не извлечённый подмодуль
@@ -341,7 +356,7 @@ function* listing(root: string, absent: string | null): Generator<string[], File
   }
 
   files.sort();
-  return { files, gitRepos, unignored };
+  return { files, gitRepos, unignored, secretSkipped };
 }
 
 /** Каталоги первого уровня со своим `.git` — кандидаты в первую волну. */
@@ -413,7 +428,9 @@ function gitBinary(opts: ListOptions): { readonly git: string; readonly absent: 
  * вложенный) перечисляется `git ls-files`, то есть с .gitignore; не-git —
  * обходом с SKIP_DIRS и записью в `unignored`. SKIP_DIRS действует поверх
  * git тоже: `.myc` и `node_modules` не индексируются, даже если их никто не
- * игнорирует.
+ * игнорирует. Так же поверх любого перечня — запрет по секретному имени
+ * (`secret-paths.ts`): `.env`, ключи и учётные данные не индексируются, что
+ * бы ни говорил .gitignore.
  */
 export async function listFiles(root: string, opts: ListOptions = {}): Promise<FileListing> {
   const { git, absent } = gitBinary(opts);

@@ -224,7 +224,10 @@ describe("перечень git-дерева", () => {
     expect(l.unignored[0]!.dir).toBe(".");
     expect(l.unignored[0]!.reason).toMatch(/git not runnable/);
     expect(l.gitRepos).toEqual([]);
-    expect(l.files).toContain("nested/secrets/deploy.pem");
+    // .gitignore в обходе не действует (ключи корня ниже — в перечне), а запрет
+    // секретных имён действует: deploy.pem не входит и сюда (memory-wpr1x91jp8fm).
+    expect(l.files).not.toContain("nested/secrets/deploy.pem");
+    expect(l.secretSkipped).toBe(1);
     expect(l.files).toContain("keys/worker-1.json");
     expect(l.files).not.toContain("nested/.git");
   });
