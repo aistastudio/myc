@@ -445,7 +445,7 @@ window.MYC_DATA = {
         "key": "M7",
         "title_en": "human interface: board, cards, threads",
         "title_ru": "человек в интерфейсе: доска, карточки, нити",
-        "status": "open",
+        "status": "closed",
         "done": 15,
         "total": 15,
         "cancelled": 0,
@@ -508,7 +508,7 @@ window.MYC_DATA = {
         "key": "EN",
         "title_en": "all CLI and MCP output in English",
         "title_ru": "весь вывод CLI и MCP — на английском",
-        "status": "open",
+        "status": "closed",
         "done": 2,
         "total": 2,
         "cancelled": 0,
@@ -1648,5 +1648,5 @@ window.MYC_DATA = {
     "myc": "0.3.6"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-11T21:16:29.681Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-09-11T21:19:21.624Z", assertions: 77 };
 window.MYC_DATA.release = "0.3.6";
