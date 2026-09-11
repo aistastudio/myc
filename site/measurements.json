@@ -326,8 +326,8 @@
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.39,
-    "unpacked_mb": 12.49,
+    "compressed_mb": 3.40,
+    "unpacked_mb": 12.53,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -337,7 +337,7 @@
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.6",
+    "version": "0.3.7",
     "date": "2026-09-11"
   },
   "roadmap": {
@@ -642,6 +642,12 @@
             "cmd": "myc report models",
             "en": "A model roster with dated prices, and a report of which model is cheaper at an equal result per task class — the data routing would learn from. Routing itself is not built (M5).",
             "ru": "Ростер моделей с датированными ценами и отчёт, какая модель дешевле при равном результате по классу задач, — данные, на которых учился бы роутинг. Самого роутинга нет (M5)."
+          },
+          {
+            "since": "0.3.7",
+            "cmd": "myc attempt list",
+            "en": "A task's class for routing is taken from the files the attempt actually changed — against a git snapshot taken at its start, across nested repositories and worktrees — and attempt list shows the distribution.",
+            "ru": "Класс задачи для роутинга берётся из файлов, которые попытка действительно изменила, — против git-снимка на её старте, по вложенным репозиториям и worktree; attempt list показывает распределение."
           }
         ]
       },
@@ -691,6 +697,12 @@
             "cmd": "myc absorb --dry-run",
             "en": "New memory is classified without a model — duplicate, update, contradiction, related, new — by hash, cosine and trigrams, with thresholds calibrated on labelled pairs.",
             "ru": "Новая память классифицируется без модели — дубль, обновление, противоречие, связанное, новое — по хешу, косинусу и триграммам, с порогами, откалиброванными на размеченных парах."
+          },
+          {
+            "since": "0.3.7",
+            "cmd": "myc recall",
+            "en": "Unconfirmed decision candidates written by the compaction hook stay out of recall, search, prime and the MCP tools until a person or distillation confirms them; an explicit remember of the same text confirms one.",
+            "ru": "Кандидаты решений, записанные хуком сжатия, не попадают в recall, search, prime и MCP-инструменты, пока их не подтвердит человек или дистилляция; явный remember того же текста подтверждает кандидата."
           }
         ]
       },
@@ -807,6 +819,12 @@
             "cmd": "myc mcp",
             "en": "Six code tools over MCP — symbol, callers, skeleton, search, grep, map — among 13; this repository dropped graft for them.",
             "ru": "Шесть инструментов кода через MCP — symbol, callers, skeleton, search, grep, map — из 13; этот репозиторий ради них отказался от graft."
+          },
+          {
+            "since": "0.3.7",
+            "cmd": "myc code index",
+            "en": "The index keeps itself fresh: when its last run is older than 15 minutes, one background refresh per workspace is queued after any command and runs at low priority; the status line says refreshing, queued or stale.",
+            "ru": "Индекс сам следит за свежестью: если последний прогон старше 15 минут, после любой команды в очередь ставится одно фоновое обновление на воркспейс с пониженным приоритетом; строка статуса говорит «обновляется», «в очереди» или «устарел»."
           }
         ]
       },
@@ -1395,14 +1413,14 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 3438,
+    "pass": 3501,
     "fail": 0,
     "skip": 16,
-    "files": 225,
-    "assertions": 34244,
-    "seconds": 315.5,
-    "sources": "3c881153bf04d961",
-    "date": "2026-09-11",
-    "myc": "0.3.6"
+    "files": 228,
+    "assertions": 34607,
+    "seconds": 344.8,
+    "sources": "adc1db1cc4424299",
+    "date": "2026-09-12",
+    "myc": "0.3.7"
   }
 }

@@ -37,8 +37,8 @@ Install Bun: https://bun.sh
 Installation is one command:
 
 ```bash
-bun install -g @aistastudio/myc   # 3.39 MB compressed, 12.49 MB unpacked, 13 files; no models pulled
-myc --version                     # myc 0.3.6 (schema 1)
+bun install -g @aistastudio/myc   # 3.40 MB compressed, 12.53 MB unpacked, 13 files; no models pulled
+myc --version                     # myc 0.3.7 (schema 1)
 ```
 
 It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside
@@ -235,7 +235,11 @@ repository every code command answers from that repository's part of the
 root index, with paths relative to the repository you are in; from the root
 the answers do not change. `myc code index` run inside a nested repository
 refreshes its part of the root index instead of building a second copy of the
-same files, and so does the background refresh. A git worktree — even one
+same files. The index also keeps itself fresh: after any myc command, when its
+last run is older than 15 minutes (`MYC_CODE_INDEX_PERIOD_MS`), one background
+`code index` per workspace is queued and runs detached at low priority, never
+delaying the command; the status line and the code commands say when it is
+refreshing, queued or stale. A git worktree — even one
 outside the workspace tree — is answered from the index of the main checkout:
 there is no index per branch. When the worktree is on another commit, or has
 uncommitted changes to tracked files, every answer carries
@@ -397,7 +401,7 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 3438 pass / 0 fail / 16 skip
+is treated as absent. The full suite: 3501 pass / 0 fail / 16 skip
 (`bun test`, 2026-09-11).
 
 ## What myc does
