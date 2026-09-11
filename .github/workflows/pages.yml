@@ -24,6 +24,8 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      # версия в шапке берётся из него (site/build.ts)
+      - "packages/cli/package.json"
       - "bench/boost-eval.json"
       - "bench/graph-eval.json"
       - "bench/baseline.json"

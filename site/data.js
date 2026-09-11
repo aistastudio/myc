@@ -419,4 +419,5 @@ window.MYC_DATA = {
     "sources": "9a0c19671ddac1a1"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-11T13:49:07.984Z", assertions: 67 };
+window.MYC_DATA.verified = { at: "2026-09-11T14:24:29.222Z", assertions: 68 };
+window.MYC_DATA.release = "0.3.5";

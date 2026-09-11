@@ -92,7 +92,9 @@
   }
 
   // ── шапка и подвал ─────────────────────────────────────────────────────────
-  document.getElementById("brand-ver").textContent = D.env.myc;
+  // Шапка — текущий релиз (packages/cli/package.json, сверено site/build.ts);
+  // env.myc — версия, на которой сняты замеры, она остаётся в подвале.
+  document.getElementById("brand-ver").textContent = D.release || D.package.version;
   put("footer-env", bi(
     "Measured " + D.env.date + " on " + D.env.machine + " — Bun " + D.env.bun +
       ", myc " + D.env.myc + ", beads " + D.env.beads + ". " + D.env.note_en +

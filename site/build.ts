@@ -163,6 +163,22 @@ const m = readJson("site/measurements.json");
   }
 }
 
+// ── Версия релиза: из packages/cli/package.json, а не из замеров ──────────────
+// Шапка сайта показывала env.myc — версию, на которой 2026-09-07 сняли замеры
+// задержек (0.1.1), и полтора десятка релизов подряд выдавала её за текущую.
+// Текущий релиз — факт репозитория; package.version в measurements.json обязан
+// с ним совпадать, иначе размеры пакета на странице — от другой версии.
+const release: string = readJson("packages/cli/package.json").version;
+if (m.package?.version !== release) {
+  problems.push({
+    where: "package/version",
+    expected: release,
+    actual: `${m.package?.version} — пересоберите пакет (bun run pack:npm) и обновите package в measurements.json`,
+  });
+} else {
+  checks.push(`package: версия ${release} = packages/cli/package.json`);
+}
+
 // ── Числа без артефакта: обязаны нести команду ────────────────────────────────
 {
   const needCommand = ["cache", "import", "package", "roadmap", "latency", "boost", "graph", "tests"];
@@ -282,6 +298,6 @@ if (checkOnly) {
   process.exit(0);
 }
 
-const out = `// СГЕНЕРИРОВАНО site/build.ts — не править руками.\n// Источник: site/measurements.json, сверено с артефактами репозитория.\nwindow.MYC_DATA = ${JSON.stringify(m, null, 2)};\nwindow.MYC_DATA.verified = { at: ${JSON.stringify(new Date().toISOString())}, assertions: ${checks.length} };\n`;
+const out = `// СГЕНЕРИРОВАНО site/build.ts — не править руками.\n// Источник: site/measurements.json, сверено с артефактами репозитория.\nwindow.MYC_DATA = ${JSON.stringify(m, null, 2)};\nwindow.MYC_DATA.verified = { at: ${JSON.stringify(new Date().toISOString())}, assertions: ${checks.length} };\nwindow.MYC_DATA.release = ${JSON.stringify(release)};\n`;
 writeFileSync(join(siteDir, "data.js"), out, "utf8");
 console.log(`\nsite/data.js выпущен: ${checks.length} сверенных утверждений.`);
