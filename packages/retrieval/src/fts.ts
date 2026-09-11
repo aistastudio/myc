@@ -6,6 +6,7 @@
 // RRF комбинирует источники по рангу, а не по несопоставимым шкалам скоров.
 
 import { defineQueries, historyClause, type DbDriver, type Layer } from "@myc/core";
+import { notPendingClause } from "./review.ts";
 
 export interface FtsSearchHit {
   readonly id: string;
@@ -50,7 +51,8 @@ export const ftsQueries = defineQueries({
     name: "ftsSearch",
     // Фильтры — внутри CTE источника, до ранжирования (§2.2: иначе top-N
     // источника вымывается фильтром уже после отбора). head_id IS NULL и
-    // status <> 'superseded' убирают старые версии и снятые с учёта узлы;
+    // status <> 'superseded' убирают старые версии и снятые с учёта узлы,
+    // notPendingClause — кандидатов на подтверждение (./review.ts, §6.2);
     // GROUP BY node_id страхует от дублей, если строка nodes_fts когда-либо
     // окажется не 1:1 с rowid узла.
     sql: `
@@ -74,7 +76,7 @@ export const ftsQueries = defineQueries({
                   WHERE g.node_id = n.id
                     AND g.principal IN (SELECT value FROM json_each(?8))
                 ))
-          )
+          )${notPendingClause("n")}
       ),
       ranked AS (
         SELECT node_id, RANK() OVER (ORDER BY bm25_score ASC) AS r

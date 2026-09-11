@@ -269,6 +269,12 @@ export interface KbRow {
   readonly session: string;
   readonly repo: string;
   readonly repo_state: KbRepoState;
+  /**
+   * Кандидат хука сжатия, ещё не подтверждённый (`attrs.state =
+   * 'pending_review'`, §6.2). Из списка не прячется — здесь человек видит базу
+   * целиком, — но помечен: recall, search и prime его не отдают.
+   */
+  readonly review: "pending_review" | null;
   readonly updated_at: number;
 }
 
@@ -277,6 +283,8 @@ export interface KbCounts {
   readonly by_kind: readonly CountRow[];
   readonly by_layer: readonly CountRow[];
   readonly reach: { readonly project: number; readonly session: number; readonly unknown: number };
+  /** Кандидаты, ждущие разбора: отклонённые (retracted) уже разобраны и не входят. */
+  readonly pending_review: number;
   readonly repo: {
     readonly root: number;
     readonly unknown: number;

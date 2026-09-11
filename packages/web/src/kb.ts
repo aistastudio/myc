@@ -29,6 +29,15 @@ import type { CountRow, KbCounts, KbPayload, KbReachState, KbRepoState, KbRow } 
  *  message, anchor живут своими экранами и в список знаний не заходят). */
 export const KB_KINDS: readonly string[] = ["note", "doc", "fragment", "entity", "skill"];
 
+/**
+ * Состояние кандидата хука сжатия (§6.2). Совпадает с PENDING_REVIEW в
+ * @myc/retrieval (review.ts), где живёт фильтр выдачи; у веба зависимости от
+ * retrieval нет, поэтому здесь копия строки, а не импорт.
+ */
+const PENDING_REVIEW = "pending_review";
+/** Разбор кандидата закончен — отклонён или заменён; в «ждёт» не входит. */
+const REVIEWED_STATUSES = new Set(["retracted", "superseded"]);
+
 const ROWS_SQL = `
 SELECT id, kind, title, status, layer, acl, attrs, updated_at
   FROM nodes
@@ -84,6 +93,7 @@ function toRow(r: RawRow): KbRow {
     session: reach.session,
     repo: repo.repo,
     repo_state: repo.state as KbRepoState,
+    review: attrs["state"] === PENDING_REVIEW ? PENDING_REVIEW : null,
     updated_at: r.updated_at,
   };
 }
@@ -101,6 +111,7 @@ function countsOf(rows: readonly KbRow[]): KbCounts {
   const byLayer = new Map<string, number>();
   const reach = { project: 0, session: 0, unknown: 0 };
   const repo = { root: 0, unknown: 0, by_repo: new Map<string, number>() };
+  let pending = 0;
   for (const r of rows) {
     byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
     const l = `L${r.layer}`;
@@ -109,8 +120,15 @@ function countsOf(rows: readonly KbRow[]): KbCounts {
     if (r.repo_state === "root") repo.root += 1;
     else if (r.repo_state === "unknown") repo.unknown += 1;
     else repo.by_repo.set(r.repo, (repo.by_repo.get(r.repo) ?? 0) + 1);
+    if (r.review !== null && !REVIEWED_STATUSES.has(r.status)) pending += 1;
   }
-  return { by_kind: topCounts(byKind), by_layer: topCounts(byLayer), reach, repo: { ...repo, by_repo: topCounts(repo.by_repo) } };
+  return {
+    by_kind: topCounts(byKind),
+    by_layer: topCounts(byLayer),
+    reach,
+    pending_review: pending,
+    repo: { ...repo, by_repo: topCounts(repo.by_repo) },
+  };
 }
 
 export interface KbOptions {
@@ -140,6 +158,7 @@ export function buildKb(db: ReadOnlyDb, opts: KbOptions = {}): KbPayload {
         by_kind: [],
         by_layer: [],
         reach: { project: 0, session: 0, unknown: 0 },
+        pending_review: 0,
         repo: { root: 0, unknown: 0, by_repo: [] },
       },
       took_ms: Math.round(performance.now() - t0),

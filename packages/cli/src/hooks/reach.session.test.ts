@@ -124,14 +124,26 @@ test("хук сжатия из чужого процесса пишет памя
   db.close();
   expect(written).toBeGreaterThan(0);
 
+  // Кандидаты хука — не знание, пока их не подтвердили (§6.2,
+  // memory-7j8zgjnd0bjz): в DECISIONS их нет ни в одной сессии. Охват
+  // различает сессии СЧЁТЧИКАМИ: своей кандидаты проходят охват и ждут
+  // разбора (pending_review), чужой — отсеяны охватом (reach_hidden), до
+  // счёта кандидатов не доходя.
   const mine = await primeData(SESSION_A);
   const theirs = await primeData(SESSION_B);
-  const decisionsA = titles(mine["decisions"]);
-  const decisionsB = titles(theirs["decisions"]);
-
-  expect(decisionsA.length).toBeGreaterThan(0);
-  expect(decisionsB).toEqual([]);
+  expect(titles(mine["decisions"])).toEqual([]);
+  expect(mine["reach_hidden"] as number).toBe(0);
+  expect(mine["pending_review"] as number).toBe(absorbed["candidates"] as number);
+  expect(titles(theirs["decisions"])).toEqual([]);
   expect(theirs["reach_hidden"] as number).toBeGreaterThan(0);
+  expect(theirs["pending_review"] as number).toBe(0);
+
+  // Подтверждение отдельным процессом — явная запись того же факта в сессии
+  // A: знание появляется в DECISIONS своей сессии и НЕ появляется в чужой.
+  const decision = "Решили: очередь jobs разбирает следующий вызов CLI по бюджету времени.";
+  expect((await myc("remember", decision, "--session", SESSION_A)).code).toBe(0);
+  expect(titles((await primeData(SESSION_A))["decisions"])).toContain(decision);
+  expect(titles((await primeData(SESSION_B))["decisions"])).not.toContain(decision);
 });
 
 test("общий кеш дайджеста в базе не переносит знание между процессами разных сессий", async () => {
@@ -194,7 +206,11 @@ test("без --session хук говорит вслух, что охват вы�
   // контекста — пакет и есть то, что доезжает до агента.
   expect(data["packet"] as string).toContain("reach derived from the episode");
 
-  // И такое знание всё равно доступно тому, кто назовёт этот ключ.
+  // И такое знание всё равно принадлежит тому, кто назовёт этот ключ: охват
+  // его пропускает (ничего не скрыто как чужое), а в DECISIONS его нет только
+  // потому, что это неподтверждённые кандидаты (§6.2) — они названы числом.
   const derived = await primeData(`episode:${data["episode"] as string}`);
-  expect(titles(derived["decisions"]).length).toBeGreaterThan(0);
+  expect(derived["reach_hidden"] as number).toBe(0);
+  expect(derived["pending_review"] as number).toBe(data["candidates"] as number);
+  expect(derived["pending_review"] as number).toBeGreaterThan(0);
 });

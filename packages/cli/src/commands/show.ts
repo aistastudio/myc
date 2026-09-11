@@ -28,7 +28,7 @@ import {
   type JsonValue,
   type NodeRecord,
 } from "@myc/core";
-import { freshnessClock, sourceCreatedAt } from "@myc/retrieval";
+import { PENDING_REVIEW, freshnessClock, isPendingReview, sourceCreatedAt } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import {
@@ -151,6 +151,12 @@ interface NodeView {
   updated_at: number;
   /** Когда myc записал ввезённый узел впервые; только у ввезённых. */
   imported_at?: number;
+  /**
+   * Кандидат хука сжатия, ещё не подтверждённый (§6.2, `attrs.state`). По id
+   * узел показывается — это явный запрос, — но выглядеть знанием не имеет
+   * права: recall, search и prime его не отдают, и читатель обязан это видеть.
+   */
+  review?: typeof PENDING_REVIEW;
   blocked_by: DepRef[];
   blocks: DepRef[];
   /**
@@ -228,6 +234,7 @@ function oneLine(h: StoreHandle, id: string): string {
   const parts = [n.id];
   if (n.kind === "task") parts.push(fmtPriority(n.priority));
   parts.push(nodeType(n), n.status);
+  if (isPendingReview(n.attrs)) parts.push("unconfirmed");
   if (n.assignee.length > 0) parts.push(`@${n.assignee}`);
   parts.push(n.title);
   return parts.join("  ");
@@ -377,6 +384,7 @@ function buildView(
     created_at: sourceCreatedAt(node),
     updated_at: freshnessClock(node),
     ...(typeof node.attrs["external_ref"] === "string" ? { imported_at: node.created_at } : {}),
+    ...(isPendingReview(node.attrs) ? { review: PENDING_REVIEW } : {}),
     blocked_by: blockedBy,
     blocks,
     ...(blockedVia.length > 0 ? { blocked_via: blockedVia } : {}),
@@ -459,6 +467,12 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   if (v.imported_at !== undefined) head.push(`imported ${fmtDate(v.imported_at)}`);
   head.push(`acl ${v.acl}`);
   const lines = [head.join("  "), v.title];
+  if (v.review !== undefined) {
+    lines.push(
+      `review    unconfirmed compaction candidate (state ${v.review}) — ` +
+        "recall, search and prime do not return it",
+    );
+  }
 
   if (v.body !== null && v.body.trim().length > 0) {
     lines.push(RULE, v.body.trimEnd(), RULE);

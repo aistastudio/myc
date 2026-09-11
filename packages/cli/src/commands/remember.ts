@@ -43,6 +43,9 @@ import {
   readReach,
   resolveSession,
 } from "@myc/core";
+// Подпуть, а не "@myc/retrieval": корень пакета тянет гибрид, вектор и кеш, а
+// у записи бюджет 5 мс на весь процесс (шапка модуля).
+import { confirmAttrs, isPendingReview } from "@myc/retrieval/review";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
@@ -258,6 +261,14 @@ export interface RememberData {
    */
   duplicate_of?: string;
   seen_count?: number;
+  /**
+   * Точный повтор оказался КАНДИДАТОМ хука сжатия (`attrs.state =
+   * 'pending_review'`, §6.2): явная запись того же факта — подтверждение, и
+   * эта запись его подтвердила. Без этого поля ответ «duplicate» скрывал бы,
+   * что узел только что стал знанием, которого recall и prime до сих пор не
+   * отдавали.
+   */
+  review_confirmed?: boolean;
   body_chars: number;
   took_ms: number;
 }
@@ -273,8 +284,12 @@ function renderRememberHuman(raw: unknown): string {
   const d = raw as RememberData;
   if (d.duplicate_of !== undefined) {
     const promoted = d.reach_promoted === true ? ", promoted to project" : "";
+    const confirmed =
+      d.review_confirmed === true
+        ? " of an unconfirmed compaction candidate — confirmed now, recall and prime return it"
+        : "";
     return (
-      `${d.id} duplicate · exact repeat, seen_count ${d.seen_count ?? "?"}${promoted} · ` +
+      `${d.id} duplicate · exact repeat${confirmed}, seen_count ${d.seen_count ?? "?"}${promoted} · ` +
       `${reachBit(d)} · ${d.took_ms} ms\n`
     );
   }
@@ -450,12 +465,13 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           // что факт ему нужен. Поэтому: явное `--reach project` поднимает
           // узел (решение принято человеком), всё остальное печатает
           // фактический охват и предупреждает, если он чужой.
-          let before: ReachInfo;
+          let existingAttrs: Record<string, JsonValue> | undefined;
           try {
-            before = readReach(JSON.parse(existing.attrs) as Record<string, JsonValue>);
+            existingAttrs = JSON.parse(existing.attrs) as Record<string, JsonValue>;
           } catch {
-            before = readReach(undefined);
+            existingAttrs = undefined;
           }
+          const before: ReachInfo = readReach(existingAttrs);
           let after = before;
           let promoted = false;
           if (reachRaw === "project" && before.reach !== "project") {
@@ -476,6 +492,24 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
                 "to promote it to project — myc remember … --reach project",
             );
           }
+          // КАНДИДАТ ХУКА СЖАТИЯ (§6.2). Хук пишет строку «решили …» узлом без
+          // тела, и однострочный remember того же текста даёт тот же
+          // content_hash, то есть попадает СЮДА, в кандидата. Кандидат из
+          // выдачи исключён, пока его не подтвердят, — и если здесь только
+          // нарастить seen_count, явно записанный факт исчезает из recall и
+          // prime вместе с ним. Явная запись и есть подтверждение человеком:
+          // state → confirmed, кто и когда — в строке узла.
+          let reviewConfirmed = false;
+          if (isPendingReview(existingAttrs)) {
+            try {
+              h.store.updateNode(existing.id, {
+                attrs: confirmAttrs(flagStr(ctx, "as") ?? h.actor, Date.now()),
+              });
+              reviewConfirmed = true;
+            } catch (e) {
+              return graphFailure(e);
+            }
+          }
           const dup: RememberData = {
             id: existing.id,
             kind: input.kind,
@@ -491,6 +525,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
             absorb_heuristic: false,
             duplicate_of: existing.id,
             seen_count: seen,
+            ...(reviewConfirmed ? { review_confirmed: true } : {}),
             body_chars: text.length,
             took_ms: Math.round((performance.now() - t0) * 10) / 10,
           };
@@ -502,6 +537,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
               tier: dup.tier,
               queue: [],
               duplicate_of: existing.id,
+              ...(reviewConfirmed ? { review_confirmed: true } : {}),
               reach: after.reach,
               session: after.session.length > 0 ? after.session : null,
             },

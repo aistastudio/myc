@@ -142,12 +142,19 @@ const mark = (ops: readonly string[], m: string): string[] =>
 /** Прямой посев узла для тестов ЧТЕНИЯ: экран меряет просмотрщик, не движок. */
 function seedNode(
   db: Database,
-  args: { id: string; kind: string; title: string; layer?: number; attrs?: Record<string, unknown> },
+  args: {
+    id: string;
+    kind: string;
+    title: string;
+    layer?: number;
+    status?: string;
+    attrs?: Record<string, unknown>;
+  },
 ): void {
   db.run(
     `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, open_blockers,
                         content_hash, created_at, updated_at, actor, attrs)
-     VALUES (?1, ?2, ?3, '', ?4, 'active', 2, 0, ?5, 1, 1, 'seed', ?6)`,
+     VALUES (?1, ?2, ?3, '', ?4, ?7, 2, 0, ?5, 1, 1, 'seed', ?6)`,
     [
       args.id,
       args.kind,
@@ -155,6 +162,7 @@ function seedNode(
       args.title,
       `seed-${args.id}`,
       JSON.stringify(args.attrs ?? {}),
+      args.status ?? "active",
     ],
   );
 }
@@ -407,6 +415,29 @@ describe("приёмка W7: две оси охвата независимы (S5
     expect(kb.counts.reach.session).toBe(1);
     expect(kb.counts.reach.unknown).toBe(1);
     expect(kb.counts.by_kind).toEqual([{ key: "fragment", n: 1 }, { key: "note", n: 1 }].sort((a, b) => b.n - a.n || a.key.localeCompare(b.key)));
+  }, 90_000);
+});
+
+describe("кандидаты хука сжатия (§6.2, memory-7j8zgjnd0bjz)", () => {
+  // Список базы знаний — место, где человек видит базу целиком: кандидат в нём
+  // остаётся, но помечен, а ждущие разбора названы числом в подвале.
+  // Отклонённый (retracted) разбор прошёл и в «ждёт» не входит.
+  test("строка кандидата помечена, подвал считает только ждущих разбора", async () => {
+    const { w, url } = await ws();
+    const hook = { state: "pending_review", extracted_by: "precompact", episode_id: "ep-1", reach: "session", session_id: "s-1" };
+    seedNode(w.db, { id: "kb-cand", kind: "note", layer: 2, title: "решили держать k=60", attrs: hook });
+    seedNode(w.db, { id: "kb-cand-no", kind: "note", layer: 2, title: "решили не то", status: "retracted", attrs: hook });
+    seedNode(w.db, { id: "kb-plain", kind: "note", layer: 2, title: "обычная заметка", attrs: { reach: "project" } });
+    seedNode(w.db, { id: "kb-confirmed", kind: "note", layer: 2, title: "подтверждённое", attrs: { ...hook, state: "confirmed" } });
+    const kb = await kbOf(url);
+    const review = Object.fromEntries(kb.rows.map((r) => [r.id, r.review]));
+    expect(review).toEqual({
+      "kb-cand": "pending_review",
+      "kb-cand-no": "pending_review",
+      "kb-plain": null,
+      "kb-confirmed": null,
+    });
+    expect(kb.counts.pending_review).toBe(1);
   }, 90_000);
 });
 

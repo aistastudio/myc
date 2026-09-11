@@ -204,14 +204,18 @@ test("кандидаты первого сжатия остаются в СВО�
     expect(afterAll.get(row.title)).toBe(SESSION_UUID);
   }
 
-  // Своей сессии не спрятано ничего; чужой — спрятано всё.
+  // Своей сессии охват не спрятал ничего; чужой — спрятал всё. Кандидаты —
+  // не знание, пока их не подтвердили (§6.2, memory-7j8zgjnd0bjz), поэтому в
+  // DECISIONS своей сессии их нет, но охват они ПРОШЛИ и названы числом
+  // ждущих разбора; у чужой до этого счёта они не доходят.
   const mine = await primeData(SESSION_UUID);
   expect(mine["reach_hidden"] as number).toBe(0);
-  expect(titles(mine["decisions"]).length).toBeGreaterThan(0);
+  expect(mine["pending_review"] as number).toBeGreaterThanOrEqual(firstOwned.length);
 
   const theirs = await primeData("S-чужая");
   expect(titles(theirs["decisions"])).toEqual([]);
   expect(theirs["reach_hidden"] as number).toBeGreaterThanOrEqual(firstOwned.length);
+  expect(theirs["pending_review"] as number).toBe(0);
 });
 
 test("стенограмма Codex (rollout-<дата>-<uuid>) даёт тот же ключ", () => {

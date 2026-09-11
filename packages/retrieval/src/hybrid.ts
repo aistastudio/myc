@@ -48,6 +48,7 @@ import {
   type SearchResultCache,
 } from "./cache.ts";
 import { analyzeFtsQuery } from "./fts.ts";
+import { notPendingClause } from "./review.ts";
 import { vectorSearch, type VectorSearchOutcome, type VectorSearchParams } from "./vector.ts";
 
 // ============================ конфигурация ==================================
@@ -686,7 +687,9 @@ function clampLimit(limit: number | undefined): number {
 
 // Фильтр ACL повторяется дословно в обоих запросах — он обязан быть ВНУТРИ
 // источника, до ранжирования (§2.2, урок TencentDB), иначе top-100 вымывается
-// фильтром уже после отбора.
+// фильтром уже после отбора. По той же причине рядом с ним стоит фильтр
+// кандидатов на подтверждение (./review.ts, §6.2): сто кандидатов с лучшим
+// BM25 заняли бы весь пул, и обычная заметка не доехала бы до слияния.
 const ACL_PREDICATE = `
       (
         (n.acl = 'private' AND n.owner_id = ?5)
@@ -860,7 +863,7 @@ export const hybridQueries = defineQueries({
           AND n.status <> 'superseded'
           AND n.scope IN (SELECT value FROM json_each(?2))
           AND n.layer BETWEEN ?3 AND ?4
-          AND ${ACL_PREDICATE}
+          AND ${ACL_PREDICATE}${notPendingClause("n")}
       ),
       pool AS (
         SELECT node_id, MIN(bm25_score) AS bm25_score
@@ -985,6 +988,9 @@ export const hybridQueries = defineQueries({
       -- the planner is tempted to enter from nodes, reading thousands of the
       -- scope's rows only to look them up in merged. The order "merged first
       -- (a hundred rows), then seek by id" is an order of magnitude faster.
+      -- The candidate filter (./review.ts) repeats here for the same reason
+      -- ACL does: graph hops enter through edges, not through matches, and a
+      -- pending_review candidate one edge away must not ride in on a seed.
       FROM merged m
       CROSS JOIN nodes n ON n.id = m.node_id
       WHERE n.deleted_at IS NULL
@@ -992,7 +998,7 @@ export const hybridQueries = defineQueries({
         AND n.status <> 'superseded'
         AND n.scope IN (SELECT value FROM json_each(?2))
         AND n.layer BETWEEN ?3 AND ?4
-        AND ${ACL_PREDICATE}
+        AND ${ACL_PREDICATE}${notPendingClause("n")}
       ORDER BY (m.fts_rank IS NULL), m.fts_rank ASC, m.node_id ASC
     `,
     params: [
@@ -1055,7 +1061,7 @@ export const hybridQueries = defineQueries({
           AND n.status <> 'superseded'
           AND n.scope IN (SELECT value FROM json_each(?1))
           AND n.layer BETWEEN ?2 AND ?3
-          AND ${aclPredicate(4)}
+          AND ${aclPredicate(4)}${notPendingClause("n")}
         LIMIT 1001
       )
     `,
@@ -1082,7 +1088,7 @@ export const hybridQueries = defineQueries({
         AND n.status <> 'superseded'
         AND n.scope IN (SELECT value FROM json_each(?2))
         AND n.layer BETWEEN ?3 AND ?4
-        AND ${ACL_PREDICATE}
+        AND ${ACL_PREDICATE}${notPendingClause("n")}
     `,
     params: [
       "ids",

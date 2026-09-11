@@ -17,14 +17,22 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { migrate, migrations, ensureSqliteRuntime, openSqlite } from "@myc/store-sqlite";
-import { DEFAULT_ABSORB_THRESHOLDS } from "@myc/core";
+import { GraphStore, migrate, migrations, ensureSqliteRuntime, openSqlite } from "@myc/store-sqlite";
+import { DEFAULT_ABSORB_THRESHOLDS, generateId } from "@myc/core";
 import type { EmbedFingerprint } from "@myc/embed/fingerprint";
 import { ExitCode } from "../exit.ts";
 import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
 import { createRememberCommand, realRememberDeps } from "./remember.ts";
-import { createAbsorbCommand, absorbText, ftsMatchOf, realAbsorbDeps, type AbsorbData, type AbsorbDeps } from "./absorb.ts";
+import {
+  createAbsorbCommand,
+  absorbQueries,
+  absorbText,
+  ftsMatchOf,
+  realAbsorbDeps,
+  type AbsorbData,
+  type AbsorbDeps,
+} from "./absorb.ts";
 
 const VEC0 = ensureSqliteRuntime().vec.loaded;
 
@@ -490,6 +498,101 @@ describe("remember — фаза 0 absorb", () => {
     const r = await myc("remember", ALPHA_OLD);
     expect(text(r.stdout)).toContain("duplicate · exact repeat, seen_count 3");
     expect(node(a).seen_count).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Кандидат хука сжатия (§6.2, memory-7j8zgjnd0bjz): `attrs.state =
+// 'pending_review'`, из выдачи исключён. Стань он целью класса duplicate —
+// канонический он (старше), новая явная заметка ушла бы в него superseded, и
+// факт пропал бы из recall и prime целиком.
+// ---------------------------------------------------------------------------
+
+describe("кандидат хука сжатия — не цель дедупликации", () => {
+  /** Кандидат в форме writeCandidates хука: note L2, без тела, salience 0. */
+  function candidate(scope: string, title: string): { id: string; rowid: number } {
+    const driver = openSqlite({ path: join(dir, ".myc", "myc.db") });
+    try {
+      const store = new GraphStore(driver, { newId: () => generateId(), siteId: "site-test", actor: "hook" });
+      const n = store.createNode({
+        kind: "note",
+        layer: 2,
+        acl: "private",
+        salience: 0,
+        scope,
+        title,
+        actor: "hook",
+        attrs: { state: "pending_review", extracted_by: "precompact", episode_id: "ep-1", reach: "session", session_id: "S-1" },
+      });
+      const rowid = driver.database.query<{ rowid: number }, [string]>("SELECT rowid FROM nodes WHERE id = ?1").get(n.id)!.rowid;
+      return { id: n.id, rowid };
+    } finally {
+      driver.close();
+    }
+  }
+
+  function scopeOf(id: string): string {
+    return (db((d) => d.query("SELECT scope FROM nodes WHERE id = ?1").get(id)) as { scope: string }).scope;
+  }
+
+  function stateOf(id: string): unknown {
+    return (JSON.parse(node(id).attrs) as Record<string, unknown>)["state"];
+  }
+
+  // Кандидат найдётся и лексикой, и (при vec0) вектором: `myc absorb <id>`
+  // кладёт его вектор в nodes_vec. Мутация «снять фильтр» из запроса fts ИЛИ
+  // из запроса knn absorb роняет этот тест: цель — кандидат (класс duplicate
+  // при векторе, related без него), новая заметка уходит в него.
+  test("почти дословный повтор кандидата остаётся самостоятельной заметкой", async () => {
+    const other = await remember("beta: рецепт блинов — 200 г муки, 2 яйца, 300 мл молока, щепотка соли.");
+    await myc("absorb");
+    const cand = candidate(scopeOf(other), ALPHA_OLD);
+    await myc("absorb", cand.id);
+    const fresh = await remember(
+      "alpha: миграции только вперёд, версия целочисленная, таблица schema_migrations с checksum, при расхождении exit 4",
+    );
+    const { env } = await mycJson<AbsorbData>("absorb");
+    const r = env.data.nodes.find((x) => x.id === fresh)!;
+    expect(r.class).not.toBe("duplicate");
+    expect(r.target).not.toBe(cand.id);
+    const f = node(fresh);
+    expect(f.status).toBe("active");
+    expect(f.head_id).toBeNull();
+    // Кандидат не тронут: ждёт разбора, повтором не засчитан.
+    expect(node(cand.id).seen_count).toBe(1);
+    expect(stateOf(cand.id)).toBe("pending_review");
+    expect(edges()).not.toContainEqual(expect.objectContaining({ type: "duplicates", dst: cand.id }));
+  });
+
+  // Путь kNN — тем же текстом запроса, что исполняет команда: у кандидата и у
+  // обычной заметки ОДИН И ТОТ ЖЕ вектор, запрос обязан вернуть только
+  // заметку. Мутация «снять фильтр из запроса knn absorb» роняет этот тест.
+  test.skipIf(!VEC0)("kNN absorb не возвращает кандидата при том же векторе", async () => {
+    const plain = await remember(ALPHA_OLD);
+    await myc("absorb"); // накатывает векторный набор миграций: nodes_vec появляется здесь
+    const scope = scopeOf(plain);
+    const cand = candidate(scope, "alpha: кандидат с тем же вектором темы");
+    const v = topicVector("alpha");
+    let max = 0;
+    for (const x of v) max = Math.max(max, Math.abs(x));
+    const q = new Int8Array(v.length);
+    for (let i = 0; i < v.length; i++) q[i] = Math.max(-127, Math.min(127, Math.round((127 * v[i]!) / max)));
+    const blob = Buffer.from(q.buffer);
+    const found = vec((d) => {
+      const plainRow = d.query<{ rowid: number }, [string]>("SELECT rowid FROM nodes WHERE id = ?1").get(plain)!.rowid;
+      for (const rowid of [plainRow, cand.rowid]) {
+        d.query("DELETE FROM nodes_vec WHERE node_rowid = ?1").run(rowid);
+        d.query(
+          "INSERT INTO nodes_vec (node_rowid, scope, layer, kind, head, embedding) VALUES (?1, ?2, 1, 'note', 1, vec_int8(?3))",
+        ).run(rowid, scope, blob);
+      }
+      return d
+        .query<{ id: string }, [Buffer, number, string, string, string]>(absorbQueries.knn.sql)
+        .all(blob, 24, scope, "self-none", "note")
+        .map((r) => r.id);
+    });
+    expect(found).toContain(plain);
+    expect(found).not.toContain(cand.id);
   });
 });
 

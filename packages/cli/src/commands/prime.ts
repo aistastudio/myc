@@ -84,6 +84,7 @@ import {
   type ReachInfo,
 } from "@myc/core";
 import type { QueryDef } from "@myc/core";
+import { awaitingReviewPredicate, notPendingClause } from "@myc/retrieval";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ExitCode } from "../exit.ts";
@@ -119,12 +120,13 @@ const FOOTER_MAX = 90;
  * остальным подвалом: «чужого скрыто 7» — это и есть громкость И2, и
  * обрезать её значит вернуть молчаливую фильтрацию. Поэтому под неё
  * резервируется место, а не остаток. Типичный потолок: «сессия abcdefgh ·
- * чужого скрыто 99999 · без охвата 99999 · repo collector · 99999 из других
- * репозиториев скрыто · 99999 без охвата репозитория». Длинное объяснение
- * "путь вне воркспейса: <path>" (repoReasonText) в этот потолок не
- * закладывается — тот же необрезаемый принцип, что и у самой строки охвата.
+ * чужого скрыто 99999 · без охвата 99999 · 99999 кандидатов скрыто · repo
+ * collector · 99999 из других репозиториев скрыто · 99999 без охвата
+ * репозитория». Длинное объяснение "путь вне воркспейса: <path>"
+ * (repoReasonText) в этот потолок не закладывается — тот же необрезаемый
+ * принцип, что и у самой строки охвата.
  */
-const REACH_FOOTER_MAX = 160;
+const REACH_FOOTER_MAX = 190;
 /** Сколько символов ключа сессии печатать: он бывает и uuid, и путём. */
 const SESSION_SHORT = 8;
 
@@ -172,13 +174,20 @@ export const primeQueries = defineQueries({
   // ready_repo (миграция 007); аналогичного индекса для памяти пока нет —
   // если `prime --repo` станет горячим путём на большом корпусе, это заявка
   // на такую же миграцию, а не тихая деградация здесь.
+  // КАНДИДАТЫ НА ПОДТВЕРЖДЕНИЕ (§6.2, @myc/retrieval review.ts) отсеиваются
+  // тем же способом и по той же причине — в SQL, до LIMIT: кандидат пишется
+  // L2, и окно из 60 строк иначе доставалось бы им. Индекса под этот терм не
+  // нужно: SQLite считает термы, покрытые индексом (охват), ДО похода в
+  // строку, а строку прошедших всё равно читает ради title/excerpt — проверка
+  // состояния ложится на уже прочитанную строку (замер —
+  // prime.pending-latency.test.ts).
   prime_digest_scan: {
     name: "prime_digest_scan",
     sql: `SELECT nodes.id, nodes.layer, nodes.title, nodes.excerpt, nodes.updated_at,
                  ${reachColumns("nodes")}
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
-             AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}
+             AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${notPendingClause("nodes")}
            ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT ?2`,
     params: ["scope", "lim", "session"],
   },
@@ -188,7 +197,7 @@ export const primeQueries = defineQueries({
                  ${reachColumns("nodes")}, ${repoColumns("nodes")}
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
-             AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${repoClause("nodes", 4)}
+             AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${repoClause("nodes", 4)}${notPendingClause("nodes")}
            ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT ?2`,
     params: ["scope", "lim", "session", "repo"],
   },
@@ -210,6 +219,27 @@ export const primeQueries = defineQueries({
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
              AND nodes.deleted_at IS NULL`,
+    params: ["scope", "session"],
+  },
+  // Сколько кандидатов фильтр ИМЕННО ЭТОГО prime спрятал (И2): те, что
+  // прошли бы охват (чужие сессионные уже названы числом выше), но ещё ждут
+  // разбора. Отдельным запросом, а не третьей суммой в prime_reach_counts:
+  // терм по attrs требует строку таблицы, а prime_reach_counts живёт одним
+  // индексом. Здесь строка читается только у прошедших охват — его термы
+  // покрыты индексом и считаются первыми. Замер на 100k
+  // (prime.pending-latency.test.ts): где 97 % L2/L3 чужие — 0.41 мс против
+  // 0.57 у prime_reach_counts; где видимо всё (худший случай) — ≈ 1.2 мс,
+  // весь дайджест 1.6 мс p50 при подбюджете 3. Платится раз на версию базы:
+  // payload кешируется вместе с дайджестом. Частичный индекс `WHERE
+  // json_extract(attrs,'$.state')='pending_review'` снял бы и это (тот же
+  // стенд, ≈ 0.05 мс) — ценой миграции, которой один счётчик подвала не стоит.
+  prime_pending_count: {
+    name: "prime_pending_count",
+    sql: `SELECT count(*) AS n
+            FROM nodes INDEXED BY ix_nodes_prime_reach
+           WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
+             AND nodes.deleted_at IS NULL${reachClause("nodes", 2)}
+             AND ${awaitingReviewPredicate("nodes")}`,
     params: ["scope", "session"],
   },
   prime_repo_counts: {
@@ -283,6 +313,8 @@ interface DigestPayload {
   readonly decisions: readonly DigestItem[];
   readonly reach: ReachSummary;
   readonly repo: RepoMemSummary;
+  /** Кандидаты на подтверждение (§6.2), скрытые из этого дайджеста (И2). */
+  readonly pending: number;
 }
 
 const DIGEST_SCAN_LIMIT = 60;
@@ -332,6 +364,7 @@ function scanDigest(
     hidden: repoCounts?.repo_hidden ?? 0,
     unknown: repoCounts?.repo_unknown ?? 0,
   };
+  const pending = h.driver.one<{ n: number }>(QP.prime_pending_count, [h.scope, session])?.n ?? 0;
 
   const needle = focus?.trim().toLowerCase();
   const matches = (title: string, excerpt: string): boolean =>
@@ -368,7 +401,7 @@ function scanDigest(
     }
     if (core.length >= CORE_LIMIT && decisions.length >= DECISIONS_LIMIT) break;
   }
-  return { core, decisions, reach, repo: repoSummary };
+  return { core, decisions, reach, repo: repoSummary, pending };
 }
 
 /**
@@ -380,13 +413,15 @@ function scanDigest(
  * repoX` отдал бы дайджест, посчитанный для repoY. Оба случая — не промах
  * производительности, а обход фильтра охвата (S58/S59) попаданием в кеш.
  *
- * v3 — версия ФОРМЫ payload (в неё добавлено поле `repo`): при смене формы
- * версия обязана меняться, иначе старая запись подсунет payload без нового
- * поля. Версия стоит в варианте, а не в имени профиля: профиль — это стык
- * S4 (`prime` и есть `prime`), его нельзя двигать при каждой правке формы.
+ * v4 — версия ФОРМЫ payload (v3 добавила поле `repo`, v4 — `pending`): при
+ * смене формы версия обязана меняться, иначе старая запись подсунет payload
+ * без нового поля. Версия стоит в варианте, а не в имени профиля: профиль —
+ * это стык S4 (`prime` и есть `prime`), его нельзя двигать при каждой правке
+ * формы. Смена версии заодно выбрасывает дайджесты, посчитанные ДО фильтра
+ * кандидатов: иначе попадание в кеш отдало бы их в контекст ещё раз.
  */
 function digestVariant(session: string, repo: string): string {
-  return `v3:${session}:${repo}`;
+  return `v4:${session}:${repo}`;
 }
 
 /**
@@ -486,6 +521,12 @@ export interface PrimeData {
   readonly mem_repo_unknown: number;
   /** L2/L3 памяти, скрытых фильтром как чужой репозиторий. */
   readonly mem_repo_foreign: number;
+  /**
+   * Кандидаты хука сжатия (`attrs.state = 'pending_review'`, §6.2), которые
+   * прошли бы охват, но скрыты как неподтверждённые. Отклонённые
+   * (`retracted`) не считаются: их разбор уже закончен.
+   */
+  readonly pending_review: number;
   readonly degraded: readonly string[];
   readonly focus?: string;
   readonly format: "agent" | "md" | "json";
@@ -633,7 +674,13 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
 
         const digested = empty
           ? {
-              payload: { core: [], decisions: [], reach: { hidden: 0, unknown: 0 }, repo: { hidden: 0, unknown: 0 } },
+              payload: {
+                core: [],
+                decisions: [],
+                reach: { hidden: 0, unknown: 0 },
+                repo: { hidden: 0, unknown: 0 },
+                pending: 0,
+              },
               cache: "miss" as const,
             }
           : digestForPrime(h, focus, session, repo);
@@ -645,6 +692,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
         let reachUnknown = digested.payload.reach.unknown;
         let memRepoHidden = digested.payload.repo.hidden;
         let memRepoUnknown = digested.payload.repo.unknown;
+        let pendingReview = digested.payload.pending;
 
         if (!empty) {
           try {
@@ -662,6 +710,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
                 reachUnknown += personalDigest.reach.unknown;
                 memRepoHidden += personalDigest.repo.hidden;
                 memRepoUnknown += personalDigest.repo.unknown;
+                pendingReview += personalDigest.pending;
               } finally {
                 personal.close();
               }
@@ -699,6 +748,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
           repo_foreign: stats.repoForeign,
           mem_repo_unknown: memRepoUnknown,
           mem_repo_foreign: memRepoHidden,
+          pending_review: pendingReview,
           degraded,
           ...(focus !== undefined ? { focus } : {}),
           format,
@@ -743,6 +793,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
             repo_foreign: stats.repoForeign,
             mem_repo_unknown: memRepoUnknown,
             mem_repo_foreign: memRepoHidden,
+            pending_review: pendingReview,
             degraded: degraded.length > 0 ? degraded : undefined,
           },
         };
@@ -804,6 +855,10 @@ function reachFooter(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string 
   ];
   if (d.reach_hidden > 0) parts.push(`${d.reach_hidden} from other sessions hidden`);
   if (d.reach_unknown > 0) parts.push(`${d.reach_unknown} without reach`);
+  // Кандидаты хука сжатия (§6.2) скрыты как неподтверждённые — это та же
+  // громкость И2, что у охвата: фильтр, не названный числом, неотличим от
+  // пустой памяти.
+  if (d.pending_review > 0) parts.push(`${d.pending_review} pending review hidden`);
   parts.push(...repoFooterParts(d));
   return parts.join(" · ");
 }

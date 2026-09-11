@@ -33,6 +33,7 @@
 
 import { defineQueries, historyClause, type DbDriver, type Layer } from "@myc/core";
 import type { FtsCaller } from "./fts.ts";
+import { notPendingClause } from "./review.ts";
 
 export interface VectorSearchHit {
   readonly id: string;
@@ -163,6 +164,9 @@ export const vectorQueries = defineQueries({
   // строк, глобальный порядок наводит внешний ORDER BY + LIMIT.
   // Живость и ACL — тот же предикат, что у ftsSearch: RRF сольёт оба
   // источника в одну выдачу, разные наборы видимости в неё попадать не должны.
+  // Отсюда же фильтр кандидатов на подтверждение (./review.ts): он стоит до
+  // LIMIT, иначе векторный пул отдавался бы кандидатам, а гидратация гибрида
+  // выбросила бы их уже после отбора.
   vectorKnn: {
     name: "vectorKnn",
     sql: `
@@ -189,7 +193,7 @@ export const vectorQueries = defineQueries({
                 WHERE g.node_id = n.id
                   AND g.principal IN (SELECT value FROM json_each(?8))
               ))
-        )
+        )${notPendingClause("n")}
       ORDER BY knn.distance ASC
       LIMIT ?9
     `,

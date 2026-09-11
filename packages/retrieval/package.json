@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./fts": "./src/fts.ts"
+    "./fts": "./src/fts.ts",
+    "./review": "./src/review.ts"
   },
   "dependencies": {
     "@myc/core": "workspace:*"

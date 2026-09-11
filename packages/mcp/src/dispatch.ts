@@ -626,7 +626,11 @@ async function toolRemember(deps: DispatchDeps, args: Args): Promise<CallToolRes
 
   const env = await runJson(deps.runCli, argv);
   if (!env.ok) return envelopeFailure(env);
-  const d = env.data as unknown as Parameters<typeof rememberText>[0];
+  const d = env.data as unknown as Parameters<typeof rememberText>[0] & {
+    duplicate_of?: string;
+    seen_count?: number;
+    review_confirmed?: boolean;
+  };
   const degraded: string[] = [];
   let warns = warnBlock(env.warn ?? []);
   if (d.absorb_heuristic) {
@@ -634,11 +638,23 @@ async function toolRemember(deps: DispatchDeps, args: Args): Promise<CallToolRes
     degraded.push("llm.chat.off");
     warns += "WARN llm.chat.off: absorb classification is heuristic — chat LLM is off\n";
   }
-  return textResult(`${warns}${rememberText(d)}`, {
+  // Точный повтор (фаза 0 absorb): узел НЕ создан, `id` — существующий. Если
+  // существующий был кандидатом хука сжатия, эта запись его подтвердила (§6.2)
+  // — агент обязан это прочесть, а не принять за «записано новое».
+  const duplicate = d.duplicate_of !== undefined;
+  const head = duplicate
+    ? `${d.id} duplicate · exact repeat${
+        d.review_confirmed === true
+          ? " of an unconfirmed compaction candidate — confirmed now, recall and prime return it"
+          : ""
+      }, seen_count ${d.seen_count ?? "?"}\n`
+    : "";
+  return textResult(`${warns}${head}${duplicate ? "" : rememberText(d)}`, {
     id: d.id,
-    verdict: "new",
+    verdict: duplicate ? "duplicate" : "new",
     verdict_source: !absorb ? "skipped" : d.absorb_heuristic ? "heuristic" : "llm",
-    written: true,
+    written: !duplicate,
+    ...(d.review_confirmed === true ? { review_confirmed: true } : {}),
     redacted: 0,
     queued: d.queue,
     meta: metaOf(env, degraded),

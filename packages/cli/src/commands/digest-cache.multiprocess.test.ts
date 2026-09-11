@@ -231,7 +231,9 @@ describe("digest_cache между процессами", () => {
       .filter((r) => r.profile === "prime")
       .map((r) => r.variant)
       .sort();
-    expect(variants).toEqual(["v3:sessionA:", "v3:sessionB:"]);
+    // v4 — версия формы payload (prime.ts, digestVariant: v4 добавила поле
+    // `pending`, memory-7j8zgjnd0bjz).
+    expect(variants).toEqual(["v4:sessionA:", "v4:sessionB:"]);
   });
 
   test("шесть процессов промахиваются ОДНОВРЕМЕННО: запись кеша не рвёт ответ", async () => {

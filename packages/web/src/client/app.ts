@@ -1936,6 +1936,20 @@ function kbReachMark(row: KbRow): HTMLElement {
   return el("span", "kreach kreach-unknown", "[@без охвата]");
 }
 
+/**
+ * Метка кандидата хука сжатия (§6.2): строка «решили …» из стенограммы, ещё
+ * не подтверждённая. В списке она есть, в выдаче агенту — нет, и без метки
+ * читалась бы решением наравне с записанными осознанно.
+ */
+function kbReviewMark(row: KbRow): HTMLElement | null {
+  if (row.review === null) return null;
+  const mark = el("span", "kreach kreach-unknown", "[кандидат · не подтверждён]");
+  mark.title =
+    "кандидат хука сжатия (state pending_review): recall, search и prime его не отдают, " +
+    "пока его не подтвердит дистилляция или человек; отклонить — myc update <id> --status retracted";
+  return mark;
+}
+
 /** Метка охвата репозитория — вторая ось, рядом с первой, а не вместо (S59). */
 function kbRepoMark(row: KbRow): HTMLElement {
   if (row.repo_state === "repo") return el("span", "krepo", row.repo);
@@ -1966,8 +1980,10 @@ function renderKbRow(row: KbRow): HTMLElement {
     el("span", "ktitle", row.title || "(без заголовка)"),
     kbReachMark(row),
     kbRepoMark(row),
-    el("span", "kage", `${fmtAge(Date.now() - row.updated_at)} назад`),
   );
+  const review = kbReviewMark(row);
+  if (review !== null) top.append(review);
+  top.append(el("span", "kage", `${fmtAge(Date.now() - row.updated_at)} назад`));
   box.append(top);
 
   const detail = el("div", "krow-detail");
@@ -2018,6 +2034,14 @@ function renderKbFooter(counts: KbCounts, host: HTMLElement): void {
   for (const r of counts.repo.by_repo) repoBits.push(`${r.key} ${r.n}`);
   repo.append(el("span", "kfooter-name", "охват репозитория:"), el("span", undefined, ` ${repoBits.join(" · ")}`));
   host.append(reach, repo);
+  if (counts.pending_review > 0) {
+    const review = el("span", "kfooter-group");
+    review.append(
+      el("span", "kfooter-name", "кандидаты на подтверждение:"),
+      el("span", undefined, ` ${counts.pending_review} — в выдачу агенту не попадают`),
+    );
+    host.append(review);
+  }
 }
 
 function renderKbFilters(): void {

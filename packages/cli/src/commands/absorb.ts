@@ -69,6 +69,7 @@ import {
   FingerprintMismatchError,
   type EmbedFingerprint,
 } from "@myc/embed/fingerprint";
+import { notPendingClause } from "@myc/retrieval/review";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext } from "../registry.ts";
@@ -155,6 +156,13 @@ const Q = defineQueries({
     params: ["rowid", "scope", "layer", "kind", "embedding"],
   },
   // k — на каждую партицию (scope, layer); внешний LIMIT наводит общий порядок.
+  //
+  // КАНДИДАТ ХУКА СЖАТИЯ (`attrs.state = 'pending_review'`, §6.2) целью
+  // классификации не бывает. Иначе класс duplicate сделал бы его каноническим
+  // (он старше) и увёл бы в него новую, явно записанную заметку — status
+  // superseded, head_id на кандидата, — а кандидат из выдачи исключён: факт
+  // пропал бы из recall и prime целиком. Явная заметка остаётся
+  // самостоятельной, кандидат ждёт разбора.
   knn: {
     name: "knn",
     sql: `WITH knn AS (
@@ -164,7 +172,7 @@ const Q = defineQueries({
           )
           SELECT n.id AS id FROM knn JOIN nodes n ON n.rowid = knn.node_rowid
            WHERE n.id <> ?4 AND n.kind = ?5
-             AND n.deleted_at IS NULL${historyClause("follow")} AND n.status <> 'superseded'
+             AND n.deleted_at IS NULL${historyClause("follow")} AND n.status <> 'superseded'${notPendingClause("n")}
            ORDER BY knn.distance ASC LIMIT ?2`,
     params: ["vector", "k", "scope", "self", "kind"],
   },
@@ -173,7 +181,7 @@ const Q = defineQueries({
     sql: `SELECT n.id AS id FROM nodes_fts f JOIN nodes n ON n.rowid = f.rowid
            WHERE nodes_fts MATCH ?1
              AND n.scope = ?2 AND n.id <> ?3 AND n.kind = ?4
-             AND n.deleted_at IS NULL${historyClause("follow")} AND n.status <> 'superseded'
+             AND n.deleted_at IS NULL${historyClause("follow")} AND n.status <> 'superseded'${notPendingClause("n")}
            ORDER BY bm25(nodes_fts) LIMIT ?5`,
     params: ["match", "scope", "self", "kind", "limit"],
   },
@@ -206,6 +214,12 @@ const Q = defineQueries({
     params: ["state", "reason", "since", "detail"],
   },
 });
+
+/**
+ * Запросы absorb — ради теста: проверять отбор кандидатов надо ТЕМ ЖЕ текстом,
+ * что исполняет команда (тот же приём, что primeQueries в prime.ts).
+ */
+export const absorbQueries = Q;
 
 // ---------------------------------------------------------------------------
 // Текст узла и вектора

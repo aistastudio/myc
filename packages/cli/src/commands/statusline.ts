@@ -79,6 +79,9 @@ import { join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { defineQueries, reachPredicate, repoPredicate } from "@myc/core";
 import { DEFAULT_MODEL_ID, modelManifestPath } from "@myc/embed/model-id";
+// Подпуть, а не "@myc/retrieval": корень пакета тянет гибрид, вектор и кеш —
+// модули, за загрузку которых строка статуса платила бы на каждой отрисовке.
+import { notPendingPredicate } from "@myc/retrieval/review";
 import type { FlagSpec } from "../flags.ts";
 import { envelopeLine, okEnvelope } from "../envelope.ts";
 import { ExitCode } from "../exit.ts";
@@ -314,7 +317,9 @@ export function defaultCacheDir(env: NodeJS.ProcessEnv = process.env): string {
  * (`attrs.type = 'decision'` у любого вида: на живой базе решения заведены и
  * задачами). Живые: не отозваны и не заменены. Охват — как у `recall` этой
  * сессии: репозиторий вызова и видимость сессии (чужое сессионное не
- * считается).
+ * считается). Кандидаты хука сжатия (`attrs.state = 'pending_review'`, §6.2)
+ * — не знание, пока их не подтвердили, и узлом знания не считаются: recall
+ * их не отдаёт, и счётчик, в котором они есть, обещал бы то, чего нет.
  */
 const QS = defineQueries({
   sl_seq: { name: "sl_seq", sql: "SELECT coalesce(max(seq), 0) AS s FROM oplog", params: [] },
@@ -326,7 +331,8 @@ const QS = defineQueries({
              AND CASE kind WHEN 'note' THEN coalesce(json_extract(attrs,'$.type'),'') <> 'comment'
                            ELSE json_extract(attrs,'$.type') = 'decision' END
              AND ${repoPredicate("nodes", 2)}
-             AND ${reachPredicate("nodes", 3)}`,
+             AND ${reachPredicate("nodes", 3)}
+             AND ${notPendingPredicate("nodes")}`,
     params: ["scope", "repo", "session"],
   },
   sl_anchors_stale: {
