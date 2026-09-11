@@ -10,7 +10,8 @@ import {
   type ProcState,
 } from "./launch.ts";
 import { RosterError, type Effort, type Harness } from "./roster.ts";
-import { isTaskClass, type TaskClass } from "./taskclass.ts";
+import { isTaskClass, SCOPE_SOURCES, type ScopeSource, type TaskClass } from "./taskclass.ts";
+import { parseGitBase, type GitBase } from "./touched.ts";
 
 /**
  * Атрибуция исполнения (W11): кто выполнял задачу, чем и с каким
@@ -123,6 +124,13 @@ export interface StartAttemptInput extends TokenUsage {
   readonly modelId: string;
   readonly taskClass: string;
   readonly classSource?: "derived" | "declared";
+  /** Чем решён scope выведенного класса; у объявленного руками — не пишется. */
+  readonly scopeSource?: ScopeSource;
+  /**
+   * Что видел бы роутер на старте (предсказание классификатора). Не назван —
+   * пишется сам ключ `taskClass`: другого взгляда на задачу на старте не было.
+   */
+  readonly predictedClass?: string;
   /** Не указан — берётся из ростера: модель уже знает свой уровень. */
   readonly effort?: Effort;
   /** Не указан — берётся из ростера: модель уже знает свой харнесс. */
@@ -156,6 +164,16 @@ export interface AttemptRecord {
   readonly actor: string;
   readonly taskClass: TaskClass;
   readonly classSource: "derived" | "declared";
+  /**
+   * Что видел бы роутер на старте — предсказание классификатора, в том числе
+   * по путям из текста задачи. Ключ `taskClass` на финише может смениться
+   * фактом (`settleClass`), этот не переписывается никогда: пара
+   * `predictedClass × taskClass` — матрица ошибок предсказания (§2.1.3).
+   * null — не записано (попытки до миграции 9, пока их не пересчитали).
+   */
+  readonly predictedClass: TaskClass | null;
+  /** Чем решён scope `taskClass`; null — не записано (до миграции 9, `--class`). */
+  readonly scopeSource: ScopeSource | null;
   readonly startedAt: number;
   readonly finishedAt: number | null;
   readonly verdict: Verdict | null;
@@ -186,6 +204,8 @@ interface AttemptRow {
   actor: string;
   task_class: string;
   class_source: string;
+  predicted_class?: string | null;
+  scope_source?: string | null;
   started_at: number;
   finished_at: number | null;
   verdict: string | null;
@@ -225,6 +245,8 @@ export function toAttempt(row: AttemptRow): AttemptRecord {
     actor: row.actor,
     taskClass: row.task_class as TaskClass,
     classSource: row.class_source as "derived" | "declared",
+    predictedClass: (row.predicted_class ?? null) as TaskClass | null,
+    scopeSource: (row.scope_source ?? null) as ScopeSource | null,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     verdict,
@@ -253,6 +275,14 @@ function requireVerdict(value: string): Verdict {
   throw new AttributionError(
     "usage.verdict",
     `unknown verdict "${value}"; allowed: ${VERDICTS.join(", ")}`,
+  );
+}
+
+function requireScopeSource(value: string | undefined): void {
+  if (value === undefined || (SCOPE_SOURCES as readonly string[]).includes(value)) return;
+  throw new AttributionError(
+    "usage.input",
+    `unknown scope source "${value}"; allowed: ${SCOPE_SOURCES.join(", ")}`,
   );
 }
 
@@ -305,6 +335,8 @@ export interface RunInput {
   readonly transcriptPath?: string | null;
   /** HEAD на момент старта — база для «какие файлы тронуты». */
   readonly gitHead?: string | null;
+  /** Снимок рабочих деревьев на старте (./touched.ts): база честного диффа. */
+  readonly gitBase?: GitBase | null;
   readonly procState?: ProcState;
 }
 
@@ -325,6 +357,7 @@ export interface RunRecord {
   readonly procCheckedAt: number | null;
   readonly procExitedAt: number | null;
   readonly gitHead: string | null;
+  readonly gitBase: GitBase | null;
   readonly filesTouched: readonly string[] | null;
   readonly recordedAt: number;
 }
@@ -346,6 +379,7 @@ interface RunRow {
   proc_checked_at: number | null;
   proc_exited_at: number | null;
   git_head: string | null;
+  git_base?: string | null;
   files_touched: string | null;
   recorded_at: number;
 }
@@ -379,6 +413,7 @@ export function toRun(row: RunRow): RunRecord {
     procCheckedAt: row.proc_checked_at,
     procExitedAt: row.proc_exited_at,
     gitHead: row.git_head,
+    gitBase: parseGitBase(row.git_base ?? null),
     filesTouched: parseFiles(row.files_touched),
     recordedAt: row.recorded_at,
   };
@@ -426,6 +461,13 @@ export class Attribution {
         `task class "${input.taskClass}" is not in the intent:scope taxonomy`,
       );
     }
+    requireScopeSource(input.scopeSource);
+    if (input.predictedClass !== undefined && !isTaskClass(input.predictedClass)) {
+      throw new AttributionError(
+        "usage.class",
+        `predicted class "${input.predictedClass}" is not in the intent:scope taxonomy`,
+      );
+    }
     const model = this.#db
       .query(
         "SELECT model_id, harness, effort FROM swarm_model WHERE model_id = ?1",
@@ -446,8 +488,8 @@ export class Attribution {
           `INSERT INTO swarm_attempt
              (attempt_id, task_id, model_id, effort, harness, actor, task_class,
               class_source, started_at, tokens_in, tokens_out, tokens_cache_read,
-              tokens_cache_write, source, note)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`,
+              tokens_cache_write, source, note, predicted_class, scope_source)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?17, ?16)`,
         )
         .run(
           attemptId,
@@ -465,6 +507,8 @@ export class Attribution {
           count(input.tokensCacheWrite, "tokensCacheWrite"),
           input.source ?? "cli",
           input.note ?? null,
+          input.scopeSource ?? null,
+          input.predictedClass ?? input.taskClass,
         );
       // В ТОЙ ЖЕ транзакции. Попытка, открытая без своей строки запуска
       // из-за отказа на второй вставке, — это ровно та потеря связи с
@@ -483,7 +527,14 @@ export class Attribution {
    */
   #insertRun(attemptId: string, recordedAt: number, run: RunInput): void {
     const c = run.launch;
-    if (isEmptyLaunch(c) && run.gitHead == null && run.transcriptPath == null) return;
+    if (
+      isEmptyLaunch(c) &&
+      run.gitHead == null &&
+      run.gitBase == null &&
+      run.transcriptPath == null
+    ) {
+      return;
+    }
     const procState: ProcState =
       run.procState ?? (c.agentPid === null ? "unknown" : "running");
     this.#db
@@ -491,8 +542,8 @@ export class Attribution {
         `INSERT INTO swarm_attempt_run
            (attempt_id, session_id, session_source, transcript_path, dispatch_id,
             dispatch_source, run_id, terminal, pane_key, agent_pid, pid_source,
-            harness_build, proc_state, proc_checked_at, git_head, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
+            harness_build, proc_state, proc_checked_at, git_head, recorded_at, git_base)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`,
       )
       .run(
         attemptId,
@@ -511,6 +562,7 @@ export class Attribution {
         c.agentPid === null ? null : recordedAt,
         run.gitHead ?? null,
         recordedAt,
+        run.gitBase == null ? null : JSON.stringify(run.gitBase),
       );
   }
 
@@ -603,6 +655,88 @@ export class Attribution {
         .query("UPDATE swarm_attempt_run SET files_touched = ?2 WHERE attempt_id = ?1")
         .run(attemptId, JSON.stringify([...files]));
     });
+  }
+
+  /**
+   * Класс попытки по ФАКТУ (решение S67). Меняет ровно ключ и его
+   * происхождение — вердикт, оговорки, токены и замороженная стоимость не
+   * трогаются даже случайно: в UPDATE их просто нет, на этом стоит тест
+   * «пересчёт не меняет исход».
+   *
+   * `predicted_class` пишется только там, где его ещё нет (COALESCE):
+   * записанное на старте — то, что видел роутер, — пересчёт не переписывает
+   * никогда. У попытки до миграции 9 предсказания нет, и тогда пишется
+   * переданное `predictedClass`, а без него — прежний ключ.
+   *
+   * Объявленный руками класс (`class_source='declared'`) не трогается: его
+   * назвал координатор, и вывод из путей слабее названного. Такая попытка
+   * возвращается с `changed: false`, а не ошибкой — пересчёт идёт по всему
+   * списку и не должен на ней останавливаться.
+   */
+  settleClass(
+    attemptId: string,
+    next: {
+      readonly taskClass: string;
+      readonly scopeSource: ScopeSource;
+      readonly predictedClass?: string;
+    },
+  ): { readonly record: AttemptRecord; readonly changed: boolean } {
+    if (!isTaskClass(next.taskClass)) {
+      throw new AttributionError(
+        "usage.class",
+        `task class "${next.taskClass}" is not in the intent:scope taxonomy`,
+      );
+    }
+    if (next.predictedClass !== undefined && !isTaskClass(next.predictedClass)) {
+      throw new AttributionError(
+        "usage.class",
+        `predicted class "${next.predictedClass}" is not in the intent:scope taxonomy`,
+      );
+    }
+    requireScopeSource(next.scopeSource);
+    const changed = this.#writeTx(
+      () =>
+        this.#db
+          .query(
+            `UPDATE swarm_attempt
+                SET predicted_class = COALESCE(predicted_class, ?4, task_class),
+                    task_class = ?2, scope_source = ?3
+              WHERE attempt_id = ?1 AND class_source = 'derived'
+                AND (task_class <> ?2 OR scope_source IS NOT ?3 OR predicted_class IS NULL)`,
+          )
+          .run(attemptId, next.taskClass, next.scopeSource, next.predictedClass ?? null).changes,
+    );
+    const record = this.getAttempt(attemptId);
+    if (record === undefined) {
+      throw new AttributionError("notfound.attempt", `attempt "${attemptId}" not found`);
+    }
+    return { record, changed: changed > 0 };
+  }
+
+  /**
+   * Предсказание для попытки, у которой его нет (до миграции 9) — в том числе
+   * с объявленным руками ключом: ключ не трогается, а пара «предсказано ×
+   * названо координатором» и есть самая дешёвая проверка классификатора.
+   * Уже записанное не переписывается. true — записано.
+   */
+  fillPrediction(attemptId: string, predictedClass: string): boolean {
+    if (!isTaskClass(predictedClass)) {
+      throw new AttributionError(
+        "usage.class",
+        `predicted class "${predictedClass}" is not in the intent:scope taxonomy`,
+      );
+    }
+    return (
+      this.#writeTx(
+        () =>
+          this.#db
+            .query(
+              `UPDATE swarm_attempt SET predicted_class = ?2
+                WHERE attempt_id = ?1 AND predicted_class IS NULL`,
+            )
+            .run(attemptId, predictedClass).changes,
+      ) > 0
+    );
   }
 
   /**
@@ -771,7 +905,7 @@ export class Attribution {
                 r.transcript_path, r.dispatch_id, r.dispatch_source, r.run_id,
                 r.terminal, r.pane_key, r.agent_pid, r.pid_source, r.harness_build,
                 r.proc_state, r.proc_checked_at, r.proc_exited_at, r.git_head,
-                r.files_touched, r.recorded_at
+                r.git_base, r.files_touched, r.recorded_at
            FROM swarm_attempt a
            LEFT JOIN swarm_attempt_run r ON r.attempt_id = a.attempt_id
           ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}

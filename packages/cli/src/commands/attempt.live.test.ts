@@ -44,8 +44,11 @@ const probe: LaunchProbe = {
   env: () => env,
   alive: (pid) => (pid === null ? null : aliveSet.has(pid)),
   dispatchOf: (terminal) => dispatchTable.get(terminal) ?? null,
-  gitHead: () => "0000000000000000000000000000000000000000",
-  filesTouched: () => ["packages/swarm/src/launch.ts"],
+  gitBase: async (cwd) => ({
+    v: 1,
+    checkouts: [{ root: cwd, prefix: "", head: "0000000000000000000000000000000000000000", dirty: {} }],
+  }),
+  touchedSince: async () => [{ prefix: "", path: "packages/swarm/src/launch.ts" }],
   now: () => clock,
 };
 
@@ -434,13 +437,18 @@ describe("attempt link — запасной путь", () => {
 });
 
 describe("тронутые файлы", () => {
-  test("finish записывает файлы, изменившиеся с HEAD на старте", async () => {
+  test("finish записывает файлы, изменившиеся со снимка на старте, и класс по ним", async () => {
     const id = await setup();
     await json("attempt", "start", id, "--model", "p/big");
     const r = await json("attempt", "finish", "--task", id, "--verdict", "accepted");
     expect(r.envelope.data.run).toMatchObject({
       gitHead: "0000000000000000000000000000000000000000",
       filesTouched: ["packages/swarm/src/launch.ts"],
+    });
+    expect(r.envelope.data).toMatchObject({
+      taskClass: "fix:local",
+      scopeSource: "touched",
+      predictedClass: "fix:unknown",
     });
   });
 });

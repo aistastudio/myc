@@ -10,6 +10,7 @@
  *                      [--tokens-in N] [--tokens-out N] [--note]
  *   myc attempt list   [--task <id>] [--model <id>] [--open] [--since 7d]
  *   myc attempt show   <attempt-id>
+ *   myc attempt reclass [--task <id>] [--dry-run]
  *   myc report models  [--class intent:scope] [--since 30d] [--min N]
  *
  * ПОЧЕМУ ЭТО НЕ ШЕСТЬ ФЛАГОВ НА ЗАКРЫТИЕ. Схема исхода в `myc close`
@@ -36,18 +37,18 @@
  * дают: источник ровно один.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
-import type { JsonValue } from "@myc/core";
+import { readRepo, type JsonValue } from "@myc/core";
 import { STORE_PRAGMAS } from "@myc/store-sqlite";
 import {
   Attribution,
   AttributionError,
   CAVEATS,
+  classifyTask,
   compareModels,
-  computeTaskClass,
   EFFORTS,
   ensureSwarmSchema,
   findSessionTranscript,
@@ -58,10 +59,13 @@ import {
   LIVE_STATE_MEANING,
   liveStateOf,
   overrideLaunch,
+  pathsInText,
   pidAlive,
   readTranscriptUsage,
   Roster,
   RosterError,
+  snapshotCheckouts,
+  touchedSince,
   transcriptDir,
   TranscriptError,
   VERDICTS,
@@ -69,11 +73,14 @@ import {
   type AttemptWithRun,
   type Caveat,
   type ClassAnswer,
+  type ClassifyResult,
   type CompareReport,
+  type GitBase,
   type LaunchContext,
   type LiveState,
   type OrphanContext,
   type RunRecord,
+  type TouchedKey,
   type TranscriptUsage,
 } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
@@ -89,6 +96,8 @@ import {
   resolveId,
   type StoreDeps,
 } from "./store.ts";
+import { wsPathOfKey } from "./anchor.ts";
+import { findWorkspaceDb, workspaceDirOfDb } from "./wsfind.ts";
 
 // ---------------------------------------------------------------------------
 // Открытие базы роя
@@ -120,9 +129,14 @@ export interface LaunchProbe {
   alive(pid: number | null): boolean | null;
   /** Диспетчер по терминалу — из записей оркестратора, не поиском по ps. */
   dispatchOf(terminal: string): { dispatchId: string; runId: string | null } | null;
-  gitHead(cwd: string): string | null;
-  /** Файлы, изменившиеся с указанного коммита, включая неотслеживаемые. */
-  filesTouched(cwd: string, sinceHead: string): readonly string[] | null;
+  /**
+   * Снимок рабочих деревьев на старте (@myc/swarm, touched.ts): корень, где
+   * стоит попытка, HEAD и хеши уже грязных файлов, из основного дерева
+   * корня — и вложенные репозитории. null — снимать нечего.
+   */
+  gitBase(cwd: string, wsDir: string): Promise<GitBase | null>;
+  /** Что изменилось со снимка, ключами (репозиторий, путь); null — посчитать нечем. */
+  touchedSince(base: GitBase): Promise<readonly TouchedKey[] | null>;
   now(): number;
 }
 
@@ -134,9 +148,18 @@ export interface AttemptDeps {
   readonly probe: LaunchProbe;
 }
 
+/**
+ * База роя — та же, что у графа: подъём к первому `.myc` (R1) и через ссылку
+ * git worktree в основное дерево. Раньше здесь стоял `<cwd>/.myc/myc.db`
+ * без подъёма, и `attempt finish` из вложенного репозитория или worktree
+ * агента отвечал `ws.not_initialized`, хотя `attempt start` оттуда же
+ * проходил: граф поднимался, база роя — нет.
+ */
 export function dbPathOf(ctx: CommandContext): string {
+  if (ctx.globals.db !== undefined) return ctx.globals.db;
   const dir = resolve(ctx.globals.directory ?? process.cwd());
-  return ctx.globals.db ?? join(dir, ".myc", "myc.db");
+  const found = findWorkspaceDb(dir);
+  return "dbPath" in found ? found.dbPath : join(dir, ".myc", "myc.db");
 }
 
 /**
@@ -210,20 +233,8 @@ export const realProbe: LaunchProbe = {
       return null;
     }
   },
-  gitHead: (cwd) => capture(["git", "rev-parse", "HEAD"], cwd, 3000),
-  filesTouched: (cwd, sinceHead) => {
-    const changed = capture(["git", "diff", "--name-only", sinceHead], cwd, 5000);
-    const untracked = capture(
-      ["git", "ls-files", "--others", "--exclude-standard"],
-      cwd,
-      5000,
-    );
-    if (changed === null && untracked === null) return null;
-    const all = [...(changed ?? "").split("\n"), ...(untracked ?? "").split("\n")]
-      .map((l) => l.trim())
-      .filter((l) => l !== "");
-    return [...new Set(all)].sort();
-  },
+  gitBase: (cwd, wsDir) => snapshotCheckouts(cwd, wsDir),
+  touchedSince: (base) => touchedSince(base),
   now: () => Date.now(),
 };
 
@@ -243,8 +254,8 @@ export const inertProbe: LaunchProbe = {
   env: () => ({}),
   alive: () => null,
   dispatchOf: () => null,
-  gitHead: () => null,
-  filesTouched: () => null,
+  gitBase: async () => null,
+  touchedSince: async () => null,
   now: () => Date.now(),
 };
 
@@ -492,11 +503,28 @@ export function caveatArgs(ctx: CommandContext): Caveat[] | CommandFailure {
 
 interface NodeLike {
   readonly title: string;
+  readonly body?: string | null;
   readonly attrs: Readonly<Record<string, JsonValue>>;
 }
 
 /**
- * Пути якорей: заявленные в `attrs` и связанные ребром `touches`.
+ * Путь от корня воркспейса для пути, записанного ОТ РЕПОЗИТОРИЯ задачи
+ * (`attrs.repo`, S59): намерение якоря в `attrs.anchors` и путь в тексте
+ * задачи пишутся так, как их видел автор из своего каталога. Уже полный
+ * путь (`<repo>/…`) второй раз не приклеивается; `..` и абсолютный путь
+ * ключа не имеют — null.
+ */
+function wsPathForTask(node: NodeLike, path: string): string | null {
+  const clean = path.replace(/^\.\//, "");
+  if (clean === "" || clean.startsWith("/") || clean === ".." || clean.startsWith("../")) return null;
+  const repo = readRepo(node.attrs).repo ?? "";
+  if (repo === "" || clean === repo || clean.startsWith(`${repo}/`)) return clean;
+  return wsPathOfKey(repo, clean);
+}
+
+/**
+ * Пути якорей: заявленные в `attrs` и связанные ребром `touches` — все ОТ
+ * КОРНЯ ВОРКСПЕЙСА (memory-pj163pnxzy3a).
  *
  * ЗАПРОС ИДЁТ ЧЕРЕЗ РЕБРО, А НЕ ПО `anchors.node_id = <id задачи>`. Якорь —
  * это ОТДЕЛЬНЫЙ узел `kind='anchor'` (первичный ключ `anchors.node_id`
@@ -505,6 +533,13 @@ interface NodeLike {
  * (ANCHOR_SUBQ). Пока здесь стояло `WHERE node_id = <id задачи>`, выборка не
  * находила НИ ОДНОГО привязанного якоря, и `scope` класса задачи оставался
  * `unknown` у всех задач разом — а роутинг считается по классу.
+ *
+ * ПУТЬ — ИЗ ОБОИХ ПОЛЕЙ КЛЮЧА. Якорь из корня экосистемы лежит ключом
+ * `('', 'messaging-server/x.ts')`, из messaging-server на тот же файл —
+ * `('messaging-server', 'x.ts')` (anchor.ts, `anchorKeysFor`). Пока отсюда
+ * отдавался один `a.path`, scope считался по каталогам верхнего уровня
+ * РАЗНЫХ путей, и local/cross одной задачи зависел от того, откуда агент
+ * поставил якорь. `wsPathOfKey` сводит оба ключа к одному пути.
  */
 export function anchorPathsOf(node: NodeLike, db: Database, nodeId: string): string[] {
   const paths: string[] = [];
@@ -512,28 +547,270 @@ export function anchorPathsOf(node: NodeLike, db: Database, nodeId: string): str
   if (Array.isArray(declared)) {
     for (const a of declared) {
       if (a !== null && typeof a === "object" && typeof (a as { path?: unknown }).path === "string") {
-        paths.push((a as { path: string }).path);
+        const ws = wsPathForTask(node, (a as { path: string }).path);
+        if (ws !== null) paths.push(ws);
       }
     }
   }
   const bound = db
     .query(
-      `SELECT a.path AS path
+      `SELECT a.repo_id AS repo_id, a.path AS path
          FROM edges e JOIN anchors a ON a.node_id = e.dst
         WHERE e.src = ?1 AND e.type = 'touches' AND e.deleted_at IS NULL`,
     )
-    .all(nodeId) as Array<{ path: string }>;
-  for (const row of bound) paths.push(row.path);
+    .all(nodeId) as Array<{ repo_id: string; path: string }>;
+  for (const row of bound) paths.push(wsPathOfKey(row.repo_id, row.path));
   return paths;
 }
 
-export function taskClassOf(node: NodeLike, db: Database, nodeId: string): string {
+/**
+ * Пути файлов, НАЗВАННЫЕ в тексте задачи (заголовок и описание), — только те,
+ * что есть в воркспейсе. Проверка на диске не украшение: замер по 307 задачам
+ * этого воркспейса — у 17 scope по тексту менялся от путей, которых нет:
+ * примеры (`messaging-server/x.ts` в задаче про чужой репозиторий),
+ * обрезанные пути (`retrieval/hybrid.ts` вместо `packages/retrieval/src/…`),
+ * файлы из временных каталогов. Такой путь дал бы лишний каталог верхнего
+ * уровня и сделал бы задачу «cross» на ровном месте.
+ *
+ * Без корня воркспейса (`wsDir` не известен) проверять не на чем, и текст
+ * НЕ используется вовсе: непроверенный путь хуже отсутствующего.
+ */
+export function textPathsOf(node: NodeLike, wsDir: string | undefined): string[] {
+  if (wsDir === undefined) return [];
+  const out: string[] = [];
+  for (const p of pathsInText(`${node.title}\n${node.body ?? ""}`)) {
+    const ws = wsPathForTask(node, p);
+    if (ws === null) continue;
+    try {
+      if (statSync(join(wsDir, ws)).isFile()) out.push(ws);
+    } catch {
+      /* нет такого файла — не путь задачи */
+    }
+  }
+  return out;
+}
+
+function typeOf(node: NodeLike): { readonly type?: string } {
   const type = node.attrs["type"];
-  return computeTaskClass({
+  return typeof type === "string" ? { type } : {};
+}
+
+/**
+ * КЛЮЧ — класс, по которому копится статистика (S67): scope из ФАКТА, если он
+ * передан (`touched` — файлы, изменившиеся за попытку, уже от корня
+ * воркспейса), иначе из якорей, иначе `unknown`.
+ *
+ * Пути из ТЕКСТА задачи в ключ не идут, и это решение по замеру, а не вкус.
+ * На этом воркспейсе 32 попытки с классом, который координатор назвал руками
+ * после приёмки; там, где текст задачи вообще давал scope (10 из 32), он
+ * совпал с названным ОДИН раз: задача называет один файл-вход, а работа
+ * задевает ещё тесты и соседей, и текст систематически говорит `local` там,
+ * где было `module`/`cross`. Ключ из такого источника наполнил бы корзину
+ * `local` чужими задачами — это хуже честного `unknown`.
+ */
+export function keyFromTask(
+  node: NodeLike,
+  db: Database,
+  nodeId: string,
+  touched: readonly string[] | null = null,
+): ClassifyResult {
+  return classifyTask({
     title: node.title,
-    type: typeof type === "string" ? type : undefined,
-    anchorPaths: anchorPathsOf(node, db, nodeId),
-  }).taskClass;
+    ...typeOf(node),
+    sources: { touched, anchors: anchorPathsOf(node, db, nodeId) },
+  });
+}
+
+/**
+ * ПРЕДСКАЗАНИЕ — что видел бы роутер на старте: якоря, иначе пути из текста.
+ * Пишется в `predicted_class` и не переписывается; ключ на финише сменит
+ * факт, и пара `predicted × task_class` покажет, насколько предсказание
+ * врёт (§2.1.3). Без `wsDir` текст не проверить на диске, и он не
+ * используется (`textPathsOf`).
+ */
+export function predictFromTask(
+  node: NodeLike,
+  db: Database,
+  nodeId: string,
+  wsDir: string | undefined,
+): ClassifyResult {
+  return classifyTask({
+    title: node.title,
+    ...typeOf(node),
+    sources: { anchors: anchorPathsOf(node, db, nodeId), text: textPathsOf(node, wsDir) },
+  });
+}
+
+/**
+ * Ключ строкой, как его ждёт ретроспективная попытка `myc close --verdict`:
+ * факта у неё нет, значит якоря или `unknown` — ровно как было до S67.
+ */
+export function taskClassOf(node: NodeLike, db: Database, nodeId: string): string {
+  return keyFromTask(node, db, nodeId).taskClass;
+}
+
+/**
+ * Задача по id прямо из таблицы узлов — для команд, которые открывают только
+ * базу роя (`attempt finish`, `attempt reclass`). Узла нет или таблицы нет
+ * (база роя отдельным файлом) — undefined: пересчитывать класс не из чего.
+ */
+function taskRowOf(db: Database, taskId: string): NodeLike | undefined {
+  try {
+    const row = db
+      .query("SELECT title, body, attrs FROM nodes WHERE id = ?1")
+      .get(taskId) as { title: string; body: string | null; attrs: string | null } | null;
+    if (row === null) return undefined;
+    let attrs: Record<string, JsonValue> = {};
+    try {
+      const parsed: unknown = JSON.parse(row.attrs ?? "{}");
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        attrs = parsed as Record<string, JsonValue>;
+      }
+    } catch {
+      /* битые attrs — класс считается без них */
+    }
+    return { title: row.title, body: row.body, attrs };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Тронутые файлы попытки ключами → пути от корня воркспейса (один файл — один путь). */
+export function wsPathsOfTouched(keys: readonly TouchedKey[]): string[] {
+  return [...new Set(keys.map((k) => wsPathOfKey(k.prefix, k.path)))].sort();
+}
+
+export interface Settled {
+  readonly attemptId: string;
+  readonly from: string;
+  readonly to: string;
+  /** Источник scope ключа; `declared` — ключ назван руками и не пересчитывался. */
+  readonly scopeSource: string;
+  /** Предсказание попытки после пересчёта (записанное раньше не меняется). */
+  readonly predicted: string | null;
+  /** Сменился ключ или его источник. */
+  readonly changed: boolean;
+  /** Записано предсказание, которого не было (попытка до миграции 9). */
+  readonly predictionFilled: boolean;
+  /** Почему ключ не пересчитан. Пусто — пересчитан (или совпал). */
+  readonly skipped?: string;
+}
+
+/**
+ * Ключ попытки по лучшему источнику — на финише и в пересчёте — плюс
+ * предсказание там, где его ещё нет. Объявленный руками ключ (`--class`)
+ * не трогается. `touched` — факт этой попытки (уже от корня воркспейса) или
+ * null.
+ */
+export function settleAttemptClass(
+  db: Database,
+  attribution: Attribution,
+  attempt: AttemptRecord,
+  touched: readonly string[] | null,
+  wsDir: string | undefined,
+  opts: { readonly dryRun?: boolean } = {},
+): Settled {
+  const base = { attemptId: attempt.attemptId, from: attempt.taskClass };
+  const node = taskRowOf(db, attempt.taskId);
+  if (node === undefined) {
+    return {
+      ...base,
+      to: attempt.taskClass,
+      scopeSource: attempt.classSource === "declared" ? "declared" : (attempt.scopeSource ?? "—"),
+      predicted: attempt.predictedClass,
+      changed: false,
+      predictionFilled: false,
+      skipped: "task not in this database",
+    };
+  }
+  const predicted = attempt.predictedClass ?? predictFromTask(node, db, attempt.taskId, wsDir).taskClass;
+  const predictionFilled = attempt.predictedClass === null;
+  if (attempt.classSource === "declared") {
+    if (predictionFilled && opts.dryRun !== true) attribution.fillPrediction(attempt.attemptId, predicted);
+    return {
+      ...base,
+      to: attempt.taskClass,
+      scopeSource: "declared",
+      predicted,
+      changed: false,
+      predictionFilled,
+      skipped: "declared by hand",
+    };
+  }
+  const key = keyFromTask(node, db, attempt.taskId, touched);
+  if (opts.dryRun === true) {
+    const changed = key.taskClass !== attempt.taskClass || key.scopeSource !== attempt.scopeSource;
+    return { ...base, to: key.taskClass, scopeSource: key.scopeSource, predicted, changed, predictionFilled };
+  }
+  const before = attempt.taskClass !== key.taskClass || attempt.scopeSource !== key.scopeSource;
+  const r = attribution.settleClass(attempt.attemptId, {
+    taskClass: key.taskClass,
+    scopeSource: key.scopeSource,
+    predictedClass: predicted,
+  });
+  return {
+    ...base,
+    to: r.record.taskClass,
+    scopeSource: key.scopeSource,
+    predicted: r.record.predictedClass,
+    changed: before,
+    predictionFilled,
+  };
+}
+
+/**
+ * Совпадение предсказания с ключом там, где у обоих известен scope, — самая
+ * дешёвая проверка классификатора: против факта или против класса, который
+ * координатор назвал руками после приёмки.
+ */
+export function predictionAgreement(
+  rows: ReadonlyArray<{ readonly taskClass: string; readonly predicted: string | null }>,
+): { readonly compared: number; readonly sameClass: number; readonly sameScope: number } {
+  let compared = 0;
+  let sameClass = 0;
+  let sameScope = 0;
+  for (const r of rows) {
+    if (r.predicted === null) continue;
+    const scope = r.taskClass.split(":")[1];
+    const predictedScope = r.predicted.split(":")[1];
+    if (scope === "unknown" || predictedScope === "unknown") continue;
+    compared++;
+    if (scope === predictedScope) sameScope++;
+    if (r.taskClass === r.predicted) sameClass++;
+  }
+  return { compared, sameClass, sameScope };
+}
+
+/** Распределение по ключу: `класс → число попыток`, по убыванию числа. */
+export function classDistribution(
+  rows: ReadonlyArray<{ readonly taskClass: string }>,
+): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(r.taskClass, (counts.get(r.taskClass) ?? 0) + 1);
+  return Object.fromEntries(
+    [...counts.entries()].sort(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0)),
+  );
+}
+
+/**
+ * Чем решён класс: `declared` — назван руками, `touched`/`anchors`/`text`/
+ * `none` — выведен из этого источника, `unrecorded` — выведен, но источник не
+ * записан (попытки до миграции 9 и ретроспектива `myc close --verdict`).
+ */
+export function scopeDistribution(
+  rows: ReadonlyArray<{ readonly classSource: string; readonly scopeSource: string | null }>,
+): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    const key = r.classSource === "declared" ? "declared" : (r.scopeSource ?? "unrecorded");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return Object.fromEntries([...counts.entries()].sort(([, x], [, y]) => y - x));
+}
+
+function distLine(label: string, dist: Record<string, unknown>): string {
+  const parts = Object.entries(dist).map(([k, n]) => `${k} ${n}`);
+  return `${label.padEnd(8)} ${parts.length === 0 ? "—" : parts.join(" · ")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +827,8 @@ export function attemptView(a: AttemptRecord): Record<string, unknown> {
     actor: a.actor,
     taskClass: a.taskClass,
     classSource: a.classSource,
+    scopeSource: a.scopeSource,
+    predictedClass: a.predictedClass,
     startedAt: new Date(a.startedAt).toISOString(),
     finishedAt: a.finishedAt === null ? null : new Date(a.finishedAt).toISOString(),
     wallMs: a.wallMs,
@@ -630,6 +909,15 @@ export function runView(r: RunRecord | undefined): Record<string, unknown> | nul
     procCheckedAt: r.procCheckedAt === null ? null : new Date(r.procCheckedAt).toISOString(),
     procExitedAt: r.procExitedAt === null ? null : new Date(r.procExitedAt).toISOString(),
     gitHead: r.gitHead,
+    gitBase:
+      r.gitBase === null
+        ? null
+        : r.gitBase.checkouts.map((c) => ({
+            root: c.root,
+            prefix: c.prefix,
+            head: c.head,
+            dirtyAtStart: Object.keys(c.dirty).length,
+          })),
     filesTouched: r.filesTouched,
     recordedAt: new Date(r.recordedAt).toISOString(),
   };
@@ -752,6 +1040,15 @@ function renderAttemptListHuman(raw: unknown): string {
       wall === null ? "" : `${(wall / 1000).toFixed(1)}s`,
     ].join(" ").trimEnd();
   });
+  // Распределение — ответ на вопрос «по скольким корзинам вообще идёт
+  // роутинг»: пока класс был `*:unknown` у всех, это была одна корзина, и
+  // увидеть это можно было только перебором строк глазами.
+  const views = rows as Array<{ taskClass: string; classSource: string; scopeSource: string | null }>;
+  lines.push(
+    "",
+    distLine("classes", classDistribution(views)),
+    distLine("from", scopeDistribution(views)),
+  );
   return `${lines.join("\n")}\n`;
 }
 
@@ -779,7 +1076,13 @@ export function withTranscript(
 function renderAttemptHuman(raw: unknown): string {
   const a = raw as ReturnType<typeof attemptView>;
   const head = `${a["attemptId"]}  ${a["taskId"]}  ${a["modelId"]}@${a["effort"]} (${a["harness"]})`;
-  const cls = `class    ${a["taskClass"]}`;
+  const from =
+    a["classSource"] === "declared" ? "declared" : `from ${a["scopeSource"] ?? "unrecorded"}`;
+  const predicted =
+    a["predictedClass"] !== null && a["predictedClass"] !== undefined && a["predictedClass"] !== a["taskClass"]
+      ? ` · predicted ${a["predictedClass"]}`
+      : "";
+  const cls = `class    ${a["taskClass"]} (${from})${predicted}`;
   if (a["finishedAt"] === null) {
     return `${[head, cls, `open     started ${a["startedAt"]}`, ...runLines(a)].join("\n")}\n`;
   }
@@ -814,7 +1117,10 @@ function runLines(a: Record<string, unknown>): string[] {
   ];
   const files = r["filesTouched"] as string[] | null;
   if (files !== null && files !== undefined) {
-    out.push(`touched  ${files.length} ${files.length === 1 ? "file" : "files"}${files.length > 0 ? `: ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`);
+    // Список без снимка на старте записан наивным диффом от HEAD — в нём вся
+    // несданная работа соседей, и классу он не факт (S67): это видно здесь же.
+    const naive = r["gitBase"] === null || r["gitBase"] === undefined ? " (no start snapshot: not used as fact)" : "";
+    out.push(`touched  ${files.length} ${files.length === 1 ? "file" : "files"}${files.length > 0 ? `: ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}${naive}`);
   }
   return out;
 }
@@ -884,20 +1190,27 @@ function buildStartCommand(deps: AttemptDeps): Command {
         const model = modelArg(ctx, swarm.roster);
         if (!model.ok) return model.failure;
 
-        const taskClass =
-          declaredClass ?? taskClassOf(node, h.driver.database, node.id);
+        // Ключ на старте — якоря или `unknown`; факт (тронутые файлы) появится
+        // только на финише и заменит ключ там. Предсказание — то, что видел бы
+        // роутер (якоря, иначе пути из текста), — пишется рядом и остаётся.
+        const key =
+          declaredClass === undefined ? keyFromTask(node, h.driver.database, node.id) : undefined;
+        const predicted = predictFromTask(node, h.driver.database, node.id, h.wsDir);
         const cwd = resolve(ctx.globals.directory ?? process.cwd());
         const { launch, lookupFailed } = resolveLaunch(ctx, deps.probe);
+        const gitBase = await deps.probe.gitBase(cwd, h.wsDir);
         const record = swarm.attribution.startAttempt({
           taskId: node.id,
           modelId: model.modelId,
-          taskClass,
+          taskClass: declaredClass ?? key!.taskClass,
           classSource: declaredClass === undefined ? "derived" : "declared",
+          ...(key !== undefined ? { scopeSource: key.scopeSource } : {}),
+          predictedClass: predicted.taskClass,
           effort: flagStr(ctx, "effort") as never,
           harness: flagStr(ctx, "harness") as never,
           actor: resolveActor(ctx),
           note: flagStr(ctx, "note"),
-          run: { launch, gitHead: deps.probe.gitHead(cwd) },
+          run: { launch, gitHead: gitBase?.checkouts[0]?.head ?? null, gitBase },
           ...tokenArgs(ctx),
         });
         // Молчать тут нельзя: связь, которой нет, потом ищут перебором
@@ -1005,7 +1318,7 @@ function buildFinishCommand(deps: AttemptDeps): Command {
       ...TRANSCRIPT_FLAGS,
       ...TOKEN_FLAGS,
     ],
-    handler: (ctx): CommandResult => {
+    handler: async (ctx): Promise<CommandResult> => {
       const verdict = flagStr(ctx, "verdict");
       if (verdict === undefined) {
         return usage("usage.verdict", `--verdict required: ${VERDICTS.join("|")}`);
@@ -1051,18 +1364,50 @@ function buildFinishCommand(deps: AttemptDeps): Command {
           note: flagStr(ctx, "note"),
           ...recorded.tokens,
         });
-        const cwd = resolve(ctx.globals.directory ?? process.cwd());
+        // ФАКТ: что изменилось со снимка, снятого на старте, — в тех деревьях,
+        // где стояла попытка (worktree агента, вложенный репозиторий), а не в
+        // каталоге того, кто финиширует. Попытка без снимка (открыта до
+        // миграции 9 или ретроспективно) факта не имеет: наивный дифф от
+        // HEAD записывал всю несданную работу соседей и здесь больше не зовётся.
         const run = opened.attribution.getRun(attemptId);
-        if (run?.gitHead != null) {
-          const touched = deps.probe.filesTouched(cwd, run.gitHead);
-          if (touched !== null) opened.attribution.recordFilesTouched(attemptId, touched);
+        let touched: string[] | null = null;
+        if (run?.gitBase != null) {
+          const keys = await deps.probe.touchedSince(run.gitBase);
+          if (keys === null) {
+            ctx.warn(
+              "attempt.touched_unknown",
+              `${attemptId}: files touched not measured — the checkout recorded at start ` +
+                `(${run.gitBase.checkouts[0]?.root ?? "?"}) is gone or git did not answer; ` +
+                "the class falls back to anchors, then to paths named in the task",
+            );
+          } else {
+            touched = wsPathsOfTouched(keys);
+            opened.attribution.recordFilesTouched(attemptId, touched);
+          }
+        }
+        // Вердикт уже записан, и терять его из-за пересчёта ключа нельзя: сбой
+        // здесь — громкая деградация (И2), а не отказ команды.
+        let settled: Settled | { readonly skipped: string };
+        try {
+          settled = settleAttemptClass(
+            opened.db,
+            opened.attribution,
+            record,
+            touched,
+            workspaceDirOfDb(dbPathOf(ctx)),
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          ctx.warn("attempt.class_not_settled", `${attemptId}: class kept as at start — ${msg}`);
+          settled = { skipped: msg };
         }
         return {
           ok: true,
           data: {
-            ...withTranscript(attemptView(record), recorded.transcript),
+            ...withTranscript(attemptView(opened.attribution.getAttempt(attemptId)!), recorded.transcript),
             run: runView(opened.attribution.getRun(attemptId)),
             spendVia: recorded.via,
+            classSettled: settled,
           },
         };
       } catch (e) {
@@ -1146,6 +1491,7 @@ function buildLinkCommand(deps: AttemptDeps): Command {
               : merged,
           transcriptPath: flagStr(ctx, "transcript") ?? existing?.transcriptPath ?? null,
           gitHead: existing?.gitHead ?? null,
+          gitBase: existing?.gitBase ?? null,
           procState: existing?.procState,
         });
         return { ok: true, data: { attemptId, run: runView(run) } };
@@ -1204,7 +1550,15 @@ function buildListCommand(deps: AttemptDeps): Command {
         };
         if (!flagBool(ctx, "live")) {
           const rows = opened.attribution.listAttempts(filter);
-          return { ok: true, data: rows.map(attemptView), meta: { count: rows.length } };
+          return {
+            ok: true,
+            data: rows.map(attemptView),
+            meta: {
+              count: rows.length,
+              classes: classDistribution(rows),
+              classFrom: scopeDistribution(rows),
+            },
+          };
         }
 
         // Запись процессов ведётся ЗДЕСЬ и только здесь: обычный `list` —
@@ -1286,6 +1640,127 @@ function buildShowCommand(deps: AttemptDeps): Command {
   };
 }
 
+/**
+ * Пересчёт класса уже записанных попыток (memory-1ax1pmk6mc3q).
+ *
+ * ЧТО МЕНЯЕТСЯ — ТОЛЬКО КЛАСС. `settleClass` пишет `task_class` и
+ * `scope_source`, а `predicted_class` — только там, где его ещё нет;
+ * вердикт, оговорки, токены и замороженная стоимость в UPDATE не входят
+ * вовсе. Ключ, названный руками (`--class`), не трогается — ему лишь
+ * дописывается предсказание, и пара «предсказано × названо координатором»
+ * печатается строкой `agree`: это самая дешёвая проверка классификатора.
+ *
+ * ОТКУДА БЕРЁТСЯ ФАКТ ДЛЯ СТАРЫХ ПОПЫТОК. Только из `files_touched`,
+ * посчитанных по снимку (`git_base`, миграция 9). Списки, записанные до неё
+ * наивным `git diff <HEAD на старте>`, НЕ используются: у трёх разных задач
+ * этого воркспейса там один и тот же список из 46 файлов — рабочее дерево
+ * координатора. История git тоже не источник: коммиты здесь не называют
+ * задачу и сливают работу нескольких агентов (из 50 отчётов 43 лежат в
+ * коммитах, внёсших по 3–33 отчёта). Без факта ключ — якоря или `unknown`.
+ */
+function buildReclassCommand(deps: AttemptDeps): Command {
+  return {
+    name: "reclass",
+    summary: "recompute the task class of recorded attempts from the best source",
+    help:
+      "The key (task_class) comes from files touched during the attempt (only when measured by " +
+      "the start snapshot), else from task anchors, else it stays unknown. The prediction " +
+      "(predicted_class: anchors, else file paths named in the task) is filled only where it is " +
+      "missing. Verdicts, caveats, tokens and frozen cost stay as they are; a class declared " +
+      "with --class is kept.",
+    flags: [
+      { name: "task", value: "string", description: "only attempts of this task" },
+      { name: "dry-run", description: "show what would change, write nothing" },
+    ],
+    handler: (ctx): CommandResult => {
+      const opened = deps.openSwarm(ctx, deps.probe.now);
+      if (!("db" in opened)) return opened;
+      try {
+        const dryRun = flagBool(ctx, "dry-run");
+        const wsDir = workspaceDirOfDb(dbPathOf(ctx));
+        const rows = opened.attribution.listWithRuns({
+          ...(flagStr(ctx, "task") !== undefined ? { taskId: flagStr(ctx, "task")! } : {}),
+          limit: Number.MAX_SAFE_INTEGER,
+        });
+        const before = rows.map((r) => r.attempt);
+        const results: Settled[] = rows.map(({ attempt, run }) =>
+          settleAttemptClass(
+            opened.db,
+            opened.attribution,
+            attempt,
+            run?.gitBase != null ? (run.filesTouched ?? null) : null,
+            wsDir,
+            { dryRun },
+          ),
+        );
+        const after = rows.map(({ attempt }, i) => ({
+          taskClass: results[i]!.to,
+          classSource: attempt.classSource,
+          scopeSource:
+            results[i]!.skipped === undefined ? results[i]!.scopeSource : attempt.scopeSource,
+          predicted: results[i]!.predicted,
+        }));
+        return {
+          ok: true,
+          data: {
+            dryRun,
+            scanned: rows.length,
+            changed: results.filter((r) => r.changed).length,
+            predictionsFilled: results.filter((r) => r.predictionFilled).length,
+            declared: rows.filter((r) => r.attempt.classSource === "declared").length,
+            skipped: results.filter((r) => r.skipped !== undefined && r.skipped !== "declared by hand").length,
+            before: classDistribution(before),
+            after: classDistribution(after),
+            classFrom: scopeDistribution(after),
+            predicted: classDistribution(
+              after.flatMap((a) => (a.predicted === null ? [] : [{ taskClass: a.predicted }])),
+            ),
+            agreement: predictionAgreement(after),
+            changes: results.filter((r) => r.changed),
+          },
+        };
+      } catch (e) {
+        return attemptFailure(e);
+      } finally {
+        opened.close();
+      }
+    },
+    renderHuman: (raw) => {
+      const d = raw as {
+        dryRun: boolean;
+        scanned: number;
+        changed: number;
+        predictionsFilled: number;
+        declared: number;
+        skipped: number;
+        before: Record<string, number>;
+        after: Record<string, number>;
+        classFrom: Record<string, number>;
+        predicted: Record<string, number>;
+        agreement: { compared: number; sameClass: number; sameScope: number };
+        changes: Settled[];
+      };
+      const lines = d.changes.map(
+        (c) => `${c.attemptId.padEnd(16)} ${c.from.padEnd(17)} → ${c.to.padEnd(17)} (${c.scopeSource})`,
+      );
+      if (lines.length > 0) lines.push("");
+      const verb = d.dryRun ? "would change" : "changed";
+      lines.push(
+        `${verb} ${d.changed} of ${d.scanned} · predictions ${d.dryRun ? "to fill" : "filled"} ` +
+          `${d.predictionsFilled} · declared by hand ${d.declared} (key kept)` +
+          (d.skipped > 0 ? ` · task not found ${d.skipped}` : ""),
+        distLine("before", d.before),
+        distLine("after", d.after),
+        distLine("from", d.classFrom),
+        distLine("predict", d.predicted),
+        `agree    scope ${d.agreement.sameScope} of ${d.agreement.compared}, class ${d.agreement.sameClass} ` +
+          `of ${d.agreement.compared} (prediction vs key, both scopes known)`,
+      );
+      return `${lines.join("\n")}\n`;
+    },
+  };
+}
+
 export function createAttemptCommand(deps: AttemptDeps = realAttemptDeps): Command {
   return {
     name: "attempt",
@@ -1296,6 +1771,7 @@ export function createAttemptCommand(deps: AttemptDeps = realAttemptDeps): Comma
       buildLinkCommand(deps),
       buildListCommand(deps),
       buildShowCommand(deps),
+      buildReclassCommand(deps),
     ],
   };
 }

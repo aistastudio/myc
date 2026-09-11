@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { computeScope, computeTaskClass, INTENTS, isTaskClass } from "./taskclass.ts";
+import {
+  classifyTask,
+  computeScope,
+  computeTaskClass,
+  INTENTS,
+  isTaskClass,
+  pathsInText,
+  pickScopePaths,
+} from "./taskclass.ts";
 
 /**
  * Классификатор отпечатка. Проверяется не «точность» (её тут ~80 % и
@@ -111,5 +119,50 @@ describe("таксономия", () => {
     for (const intent of INTENTS) {
       expect(isTaskClass(computeTaskClass({ title: "x", intent }).taskClass)).toBe(true);
     }
+  });
+});
+
+describe("источники путей для scope (memory-1ax1pmk6mc3q)", () => {
+  test("факт сильнее якорей, якоря сильнее текста, пустой источник пропускается", () => {
+    expect(
+      pickScopePaths({ touched: ["a/x.ts"], anchors: ["b/y.ts"], text: ["c/z.ts"] }),
+    ).toEqual({ paths: ["a/x.ts"], source: "touched" });
+    expect(pickScopePaths({ touched: [], anchors: ["b/y.ts"], text: ["c/z.ts"] })).toEqual({
+      paths: ["b/y.ts"],
+      source: "anchors",
+    });
+    expect(pickScopePaths({ touched: null, anchors: [], text: ["c/z.ts"] })).toEqual({
+      paths: ["c/z.ts"],
+      source: "text",
+    });
+    expect(pickScopePaths({})).toEqual({ paths: [], source: "none" });
+  });
+
+  test("без путей ни в одном источнике — unknown и источник none, а не тихий local", () => {
+    const r = classifyTask({ title: "Исправить", sources: { touched: [], anchors: [], text: [] } });
+    expect(r.taskClass).toBe("fix:unknown");
+    expect(r.scopeSource).toBe("none");
+  });
+
+  test("факт решает и scope, и намерение по путям, когда заголовок молчит", () => {
+    const r = classifyTask({
+      title: "Ыыы",
+      sources: { touched: ["packages/a/src/x.test.ts", "packages/a/src/y.test.ts"] },
+    });
+    expect(r).toMatchObject({ taskClass: "test:module", scopeSource: "touched" });
+  });
+
+  test("пути в тексте: с каталогом и расширением; имя, дробь, адрес и абсолютный путь — не пути", () => {
+    expect(
+      pathsInText(
+        "см. packages/cli/src/commands/attempt.ts:509 и `packages/swarm/src/taskclass.ts`, " +
+          "а ещё anchor.ts, 1.00/0.99/0.94, https://x.dev/a/b.md, /abs/c.ts, ~/d/e.ts, ../f/g.ts, " +
+          "packages/swarm/src/**, @myc/core, bun:sqlite и (.github/workflows/ci.yml).",
+      ),
+    ).toEqual([
+      ".github/workflows/ci.yml",
+      "packages/cli/src/commands/attempt.ts",
+      "packages/swarm/src/taskclass.ts",
+    ]);
   });
 });

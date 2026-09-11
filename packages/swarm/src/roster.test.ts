@@ -10,6 +10,7 @@ import {
   PRICE_STALE_MS,
   Roster,
   RosterError,
+  SCOPE_SOURCES,
   SwarmSchemaError,
   migrationStatements,
   swarmMigrations,
@@ -299,6 +300,7 @@ describe("схема", () => {
       { version: 6, name: "swarm_attempt_run" },
       { version: 7, name: "swarm_attempt_run_session" },
       { version: 8, name: "harness_codex" },
+      { version: 9, name: "swarm_attempt_scope" },
     ]);
   });
 
@@ -531,5 +533,85 @@ describe("миграция 8: перестройка таблиц на стар�
         )
         .run(),
     ).toThrow(/FOREIGN KEY constraint failed/);
+  });
+});
+
+/**
+ * МИГРАЦИЯ 9 НА ЖИВЫХ ДАННЫХ (memory-1ax1pmk6mc3q). Три колонки добавляются
+ * ADD COLUMN, и обещание наката одно: ни одна закрытая попытка не меняет ни
+ * ключа, ни исхода, ни стоимости — новые колонки у старых строк пусты
+ * (NULL = «не записано»), а не заполнены догадкой.
+ */
+describe("миграция 9: происхождение scope и снимок диффа", () => {
+  let old: Database;
+  let oldDir: string;
+
+  beforeEach(() => {
+    oldDir = mkdtempSync(join(tmpdir(), "myc-swarm-v8-"));
+    old = new Database(join(oldDir, "myc.db"), { create: true });
+    old.exec("PRAGMA foreign_keys = ON");
+    ensureSwarmSchema(
+      old,
+      swarmMigrations.filter((m) => m.version <= 8),
+    );
+    old
+      .query(
+        `INSERT INTO swarm_model (model_id, family, harness, created_at, updated_at)
+         VALUES ('p/m', 'm', 'claude', 1, 1)`,
+      )
+      .run();
+    old
+      .query(
+        `INSERT INTO swarm_attempt (attempt_id, task_id, model_id, harness, task_class, class_source,
+                                    started_at, finished_at, verdict, caveats, cost_usd, cost_basis)
+         VALUES ('att_000000000009', 'memory-1', 'p/m', 'claude', 'feature:cross', 'declared',
+                 10, 20, 'accepted', '["tests_weak"]', 0.5, 'priced')`,
+      )
+      .run();
+    old
+      .query(
+        `INSERT INTO swarm_attempt_run (attempt_id, git_head, files_touched, recorded_at)
+         VALUES ('att_000000000009', 'abc', '["a.ts"]', 10)`,
+      )
+      .run();
+  });
+
+  afterEach(() => {
+    old.close();
+    rmSync(oldDir, { recursive: true, force: true });
+  });
+
+  test("старые строки остаются как были, новые колонки у них пусты", () => {
+    ensureSwarmSchema(old);
+    expect(old.query("SELECT * FROM swarm_attempt").get()).toMatchObject({
+      task_class: "feature:cross",
+      class_source: "declared",
+      verdict: "accepted",
+      caveats: '["tests_weak"]',
+      cost_usd: 0.5,
+      cost_basis: "priced",
+      predicted_class: null,
+      scope_source: null,
+    });
+    expect(old.query("SELECT git_head, git_base, files_touched FROM swarm_attempt_run").get()).toEqual({
+      git_head: "abc",
+      git_base: null,
+      files_touched: '["a.ts"]',
+    });
+    expect(old.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  test("CHECK схемы принимает ровно SCOPE_SOURCES", () => {
+    ensureSwarmSchema(old);
+    for (const source of SCOPE_SOURCES) {
+      old.query("UPDATE swarm_attempt SET scope_source = ?1").run(source);
+    }
+    expect(() => old.query("UPDATE swarm_attempt SET scope_source = 'guess'").run()).toThrow(
+      /CHECK constraint failed/,
+    );
+    const sql = (
+      old.query("SELECT sql FROM sqlite_master WHERE name = 'swarm_attempt'").get() as { sql: string }
+    ).sql;
+    for (const source of SCOPE_SOURCES) expect(sql).toContain(`'${source}'`);
   });
 });

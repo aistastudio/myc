@@ -290,11 +290,14 @@ describe("человеческий вывод", () => {
     await json("attempt", "start", id, "--model", "p/big");
     await json("close", id, "--verdict", "accepted", "--caveat", "tests-weak");
     const r = await myc("attempt", "list");
-    const lines = (r.stdout as string).trim().split("\n");
+    const [rows, summary] = (r.stdout as string).trim().split("\n\n");
+    const lines = rows!.split("\n");
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("accepted(tests_weak)");
     expect(lines[0]).toContain("q=0.60");
     expect(lines[0]).not.toContain("TOKENSCACHEREAD");
+    // Под строками — распределение по классам: сколько корзин у роутинга.
+    expect(summary!.split("\n")).toEqual(["classes  fix:unknown 1", "from     none 1"]);
   });
 
   test("пустой список говорит словами, а не пустой таблицей", async () => {

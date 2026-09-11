@@ -7,6 +7,7 @@ import { migration005SwarmAttemptArm } from "./005-swarm-attempt-arm.ts";
 import { migration006SwarmAttemptRun } from "./006-swarm-attempt-run.ts";
 import { migration007SwarmAttemptRunSession } from "./007-swarm-attempt-run-session.ts";
 import { migration008HarnessCodex } from "./008-harness-codex.ts";
+import { migration009SwarmAttemptScope } from "./009-swarm-attempt-scope.ts";
 
 /**
  * Набор миграций роя. Версии — отдельная нумерация от базовой схемы
@@ -22,6 +23,7 @@ export const swarmMigrations: readonly SwarmMigration[] = [
   migration006SwarmAttemptRun,
   migration007SwarmAttemptRunSession,
   migration008HarnessCodex,
+  migration009SwarmAttemptScope,
 ];
 
 export { BOOKKEEPING_DDL, BOOKKEEPING_TABLE } from "./000-bookkeeping.ts";
@@ -35,3 +37,4 @@ export { migration005SwarmAttemptArm } from "./005-swarm-attempt-arm.ts";
 export { migration006SwarmAttemptRun } from "./006-swarm-attempt-run.ts";
 export { migration007SwarmAttemptRunSession } from "./007-swarm-attempt-run-session.ts";
 export { migration008HarnessCodex } from "./008-harness-codex.ts";
+export { migration009SwarmAttemptScope } from "./009-swarm-attempt-scope.ts";

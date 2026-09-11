@@ -342,3 +342,132 @@ describe("жизненный цикл", () => {
     expect(attribution.listAttempts({ open: true }).map((x) => x.taskId)).toEqual(["t2"]);
   });
 });
+
+/**
+ * КЛАСС ПО ФАКТУ (S67, memory-1ax1pmk6mc3q). Пересчёт меняет ключ и его
+ * происхождение — и НИЧЕГО больше: вердикт, оговорки, токены и замороженная
+ * стоимость закрытой попытки обязаны остаться байт в байт.
+ */
+describe("settleClass", () => {
+  test("факт меняет ключ, предсказание на старте сохраняется, исход не трогается", () => {
+    const a = attribution.startAttempt({
+      taskId: "memory-aaaa",
+      modelId: "p/big",
+      taskClass: "fix:unknown",
+      scopeSource: "none",
+      predictedClass: "fix:local",
+    });
+    expect(a.predictedClass).toBe("fix:local");
+    expect(a.scopeSource).toBe("none");
+    now = T0 + 1000;
+    const done = attribution.finishAttempt(a.attemptId, {
+      verdict: "accepted",
+      caveats: ["tests_weak"],
+      tokensIn: 1_000_000,
+      tokensOut: 100_000,
+    });
+    const before = db.query("SELECT * FROM swarm_attempt WHERE attempt_id = ?1").get(a.attemptId) as Record<
+      string,
+      unknown
+    >;
+
+    const r = attribution.settleClass(a.attemptId, { taskClass: "fix:module", scopeSource: "touched" });
+    expect(r.changed).toBe(true);
+    expect(r.record).toMatchObject({
+      taskClass: "fix:module",
+      scopeSource: "touched",
+      predictedClass: "fix:local",
+      verdict: "accepted",
+      caveats: ["tests_weak"],
+      costUsd: done.costUsd,
+      quality: done.quality,
+    });
+    const after = db.query("SELECT * FROM swarm_attempt WHERE attempt_id = ?1").get(a.attemptId) as Record<
+      string,
+      unknown
+    >;
+    for (const col of Object.keys(before)) {
+      if (col === "task_class" || col === "scope_source") continue;
+      expect([col, after[col]]).toEqual([col, before[col]]);
+    }
+
+    // Повторный пересчёт не переписывает предсказание — ни своим ответом, ни новым.
+    attribution.settleClass(a.attemptId, {
+      taskClass: "fix:cross",
+      scopeSource: "touched",
+      predictedClass: "fix:module",
+    });
+    expect(attribution.getAttempt(a.attemptId)!.predictedClass).toBe("fix:local");
+  });
+
+  test("без названного предсказания старт пишет сам ключ", () => {
+    expect(start({ taskClass: "fix:module" }).predictedClass).toBe("fix:module");
+  });
+
+  test("попытка до миграции 9: предсказание дописывается один раз, ключ объявленного не трогается", () => {
+    const derived = start({ taskClass: "fix:unknown" });
+    const declared = attribution.startAttempt({
+      taskId: "memory-bbbb",
+      modelId: "p/big",
+      taskClass: "fix:cross",
+      classSource: "declared",
+    });
+    db.query("UPDATE swarm_attempt SET predicted_class = NULL, scope_source = NULL").run();
+
+    const r = attribution.settleClass(derived.attemptId, {
+      taskClass: "fix:unknown",
+      scopeSource: "none",
+      predictedClass: "fix:local",
+    });
+    expect(r.changed).toBe(true);
+    expect(r.record).toMatchObject({ taskClass: "fix:unknown", scopeSource: "none", predictedClass: "fix:local" });
+
+    expect(attribution.fillPrediction(declared.attemptId, "fix:local")).toBe(true);
+    expect(attribution.fillPrediction(declared.attemptId, "fix:module")).toBe(false);
+    expect(attribution.getAttempt(declared.attemptId)).toMatchObject({
+      taskClass: "fix:cross",
+      classSource: "declared",
+      predictedClass: "fix:local",
+      scopeSource: null,
+    });
+    expect(() => attribution.fillPrediction(declared.attemptId, "всё")).toThrow(AttributionError);
+  });
+
+  test("тот же класс из того же источника — не запись", () => {
+    const a = attribution.startAttempt({
+      taskId: "memory-aaaa",
+      modelId: "p/big",
+      taskClass: "fix:local",
+      scopeSource: "anchors",
+    });
+    expect(attribution.settleClass(a.attemptId, { taskClass: "fix:local", scopeSource: "anchors" }).changed).toBe(
+      false,
+    );
+  });
+
+  test("объявленный руками класс не переписывается выводом из путей", () => {
+    const a = attribution.startAttempt({
+      taskId: "memory-aaaa",
+      modelId: "p/big",
+      taskClass: "feature:cross",
+      classSource: "declared",
+    });
+    const r = attribution.settleClass(a.attemptId, { taskClass: "feature:local", scopeSource: "text" });
+    expect(r.changed).toBe(false);
+    expect(r.record.taskClass).toBe("feature:cross");
+    expect(r.record.scopeSource).toBeNull();
+  });
+
+  test("мусорный класс и источник — отказ до записи", () => {
+    const a = start();
+    expect(() => attribution.settleClass(a.attemptId, { taskClass: "всё", scopeSource: "touched" })).toThrow(
+      AttributionError,
+    );
+    expect(() =>
+      attribution.settleClass(a.attemptId, { taskClass: "fix:local", scopeSource: "guess" as never }),
+    ).toThrow(AttributionError);
+    expect(() => attribution.settleClass("att_000000000000", { taskClass: "fix:local", scopeSource: "text" })).toThrow(
+      /not found/,
+    );
+  });
+});

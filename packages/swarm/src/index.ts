@@ -83,18 +83,35 @@ export {
   type Interval,
 } from "./compare.ts";
 export {
+  classifyTask,
   computeScope,
   computeTaskClass,
   FP_VERSION,
   INTENTS,
   isTaskClass,
+  pathsInText,
+  pickScopePaths,
+  SCOPE_SOURCES,
   SCOPES,
+  type ClassifyInput,
+  type ClassifyResult,
   type Intent,
   type Scope,
+  type ScopePathSources,
+  type ScopeSource,
   type TaskClass,
   type TaskClassInput,
   type TaskClassResult,
 } from "./taskclass.ts";
+export {
+  GIT_TIMEOUT_MS,
+  parseGitBase,
+  snapshotCheckouts,
+  touchedSince,
+  type CheckoutBase,
+  type GitBase,
+  type TouchedKey,
+} from "./touched.ts";
 export { ensureSwarmSchema, SwarmSchemaError, type SwarmSchemaErrorCode } from "./schema.ts";
 // BOOKKEEPING_TABLE публично затем, что `myc doctor --schema` обязан назвать
 // ТРИ версии схемы, а не одну: у swarm свой набор и своя таблица учёта, и

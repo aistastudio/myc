@@ -11,6 +11,8 @@
  * нужные для строки (включая took_ms).
  */
 
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import { REPO_KEY, commentInput, readRepo, repoReasonText } from "@myc/core";
 import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
 import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat } from "@myc/swarm";
@@ -20,6 +22,7 @@ import type { FlagSpec } from "../flags.ts";
 import {
   anchorFlagLine,
   attachAnchorFlag,
+  bindAnchorAt,
   parseTarget,
   type AnchorFlagResult,
   type AnchorTarget,
@@ -561,6 +564,8 @@ interface UpdateData {
   /** Прежний и новый эпик, если менялась иерархия: перенос обязан быть виден. */
   parent_from?: string | null;
   parent_to?: string | null;
+  /** Якорь, привязанный `--anchor`: тот же вид строки, что у create. */
+  anchors?: AnchorFlagResult[];
   took_ms: number;
 }
 
@@ -578,6 +583,7 @@ function renderUpdateHuman(raw: unknown): string {
   if (d.unblocked !== undefined && d.unblocked.length > 0) {
     lines.push(`unblocked ${d.unblocked.join(", ")}   (now ready)`);
   }
+  for (const a of d.anchors ?? []) lines.push(anchorFlagLine(a));
   lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
@@ -668,6 +674,11 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       { name: "acl", value: "string", description: "private|team|restricted|agent" },
       { name: "parent", value: "string", description: "move under this epic" },
       { name: "no-parent", description: "detach from the current epic" },
+      {
+        name: "anchor",
+        value: "string",
+        description: "bind an anchor file[:<a>-<b>]; a missing file, a directory or a path outside the root is refused",
+      },
       AS_FLAG,
     ],
     handler: async (ctx) => {
@@ -675,6 +686,34 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       const idInput = ctx.args[0];
       if (idInput === undefined) {
         return failure("usage.invalid", "id required: myc update <id> [flags]", ExitCode.USAGE);
+      }
+
+      // `--anchor` у update (memory-1ax1pmk6mc3q). Якорь задавался ТОЛЬКО при
+      // создании, и уже существующие задачи исправить было нечем. Здесь, в
+      // отличие от create, мусорный путь — ОТКАЗ, а не намерение в attrs:
+      // узел уже есть, терять нечего, а намерение `pending` с опечаткой дало
+      // бы классу задачи scope по несуществующему файлу.
+      const aRaw = flagStr(ctx, "anchor");
+      let anchorTarget: AnchorTarget | undefined;
+      if (aRaw !== undefined) {
+        anchorTarget = parseTarget(aRaw);
+        if (anchorTarget === undefined || anchorTarget.path.trim().length === 0) {
+          return failure("usage.invalid", `invalid anchor '${aRaw}'; format: file[:a-b]`, ExitCode.USAGE);
+        }
+        const local = resolve(ctx.globals.directory ?? process.cwd(), anchorTarget.path);
+        let isDir = false;
+        try {
+          isDir = statSync(local).isDirectory();
+        } catch {
+          /* файла нет здесь — решит привязка (worktree, основное дерево) */
+        }
+        if (isDir) {
+          return failure(
+            "usage.invalid",
+            `anchor '${anchorTarget.path}' is a directory; an anchor binds a file span`,
+            ExitCode.USAGE,
+          );
+        }
       }
 
       const pRaw = flagStr(ctx, "priority");
@@ -751,6 +790,41 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
           changed.push("estimate");
         }
         if (Object.keys(attrs).length > 0) patch["attrs"] = attrs;
+
+        // Якорь привязывается ДО прочих записей: откажет привязка — не
+        // записано ничего. Тот же путь, что `myc anchor add` (bindAnchorAt).
+        const anchors: AnchorFlagResult[] = [];
+        if (anchorTarget !== undefined) {
+          const bound = await bindAnchorAt(
+            h,
+            node.id,
+            anchorTarget,
+            ctx.globals.directory ?? process.cwd(),
+            ...(flagStr(ctx, "as") !== undefined ? [{ actor: flagStr(ctx, "as")! }] : []),
+          );
+          if (!bound.ok) {
+            if (bound.code === "notfound.file") return failure("notfound.file", bound.msg, ExitCode.NOTFOUND);
+            if (bound.code === "outside.repo") return failure("usage.outside_repo", bound.msg, ExitCode.USAGE);
+            return graphFailure(bound.cause);
+          }
+          const a = bound.anchor;
+          if (a.deferred) {
+            ctx.warn(
+              "anchor.deferred",
+              `crux deferred to the background: ${a.sizeBytes} bytes is over the inline threshold — ` +
+                "the background check (myc anchor check) catches up on precision",
+            );
+          }
+          anchors.push({
+            path: a.path,
+            start: a.start,
+            end: a.end,
+            anchor_id: a.anchorId,
+            state: a.state,
+            ...(a.deferred ? { deferred: true, size_bytes: a.sizeBytes } : {}),
+          });
+          changed.push("anchor");
+        }
 
         // Перенос между эпиками. Ребро `parent` — дерево, а не DAG: у узла в
         // любой момент не больше одного живого родителя. `store.addEdge` сам
@@ -830,7 +904,11 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
 
         let updated: NodeRecord;
         try {
-          updated = h.store.updateNode(node.id, patch);
+          // Только якорь — узел сам не меняется (якорь это свой узел и ребро).
+          updated =
+            Object.keys(patch).length === 0
+              ? (h.store.getNode(node.id) ?? node)
+              : h.store.updateNode(node.id, patch);
         } catch (e) {
           return graphFailure(e);
         }
@@ -867,6 +945,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
           changed,
           ...(unblocked.length > 0 ? { unblocked } : {}),
           ...(parentTo !== undefined ? { parent_from: parentFrom ?? null, parent_to: parentTo } : {}),
+          ...(anchors.length > 0 ? { anchors } : {}),
           took_ms: tookMs(t0),
         };
         return { ok: true, data, meta: { took_ms: data.took_ms } };

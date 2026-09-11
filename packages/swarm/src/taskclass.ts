@@ -206,6 +206,117 @@ export function computeTaskClass(input: TaskClassInput): TaskClassResult {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Откуда берутся пути для оси scope (memory-1ax1pmk6mc3q)
+// ---------------------------------------------------------------------------
+
+/**
+ * Три источника путей, по убыванию силы, и честное «ни одного».
+ *
+ * Якорей почти нет ни у кого (замер 2026-09-06: 0 из 197 задач), и пока ось
+ * scope держалась только на них, класс был `<вид>:unknown` у всех задач
+ * сразу — роутинг по классу вырождался в одну корзину. Источников три, и
+ * первый давший НЕПУСТОЙ список побеждает:
+ *
+ * - `touched` — ФАКТ: файлы, изменившиеся за время попытки (снимок рабочих
+ *   деревьев на старте против их состояния на финише, ./touched.ts). Это не
+ *   намерение, а то, чем задача ОКАЗАЛАСЬ, — поэтому он сильнее всего;
+ * - `anchors` — объявленное: якоря задачи;
+ * - `text` — названное: пути файлов в заголовке и описании задачи.
+ *
+ * КАКИЕ ИЗ НИХ ИДУТ В КЛЮЧ — политика вызывающего (решение S67, CLI
+ * attempt.ts): ключ `task_class` = факт → якоря, предсказание
+ * `predicted_class` = якоря → текст. Текст в ключ не идёт по замеру: из 10
+ * попыток, где он давал scope, с классом, названным координатором после
+ * приёмки, он совпал в одной — задача называет файл-вход, а работа задевает
+ * ещё тесты и соседей. Словарь при этом полный: какие источники кормят
+ * ключ, меняется кодом, а не перестройкой таблицы (CHECK схемы, 009).
+ *
+ * `none` — путей нет ни в одном источнике, и тогда scope `unknown`, а не
+ * тихий `local`: отсутствие данных остаётся видимым.
+ */
+export const SCOPE_SOURCES = ["touched", "anchors", "text", "none"] as const;
+export type ScopeSource = (typeof SCOPE_SOURCES)[number];
+
+export interface ScopePathSources {
+  readonly touched?: readonly string[] | null;
+  readonly anchors?: readonly string[] | null;
+  readonly text?: readonly string[] | null;
+}
+
+function present(paths: readonly string[] | null | undefined): string[] {
+  return [...new Set((paths ?? []).filter((p) => p.trim() !== ""))].sort();
+}
+
+/** Первый непустой источник по порядку силы; пустой список — не ответ. */
+export function pickScopePaths(sources: ScopePathSources): {
+  readonly paths: readonly string[];
+  readonly source: ScopeSource;
+} {
+  for (const source of ["touched", "anchors", "text"] as const) {
+    const paths = present(sources[source]);
+    if (paths.length > 0) return { paths, source };
+  }
+  return { paths: [], source: "none" };
+}
+
+/**
+ * Путь файла в тексте задачи: хотя бы один каталог и расширение с буквы.
+ * Каталог обязателен сознательно: голое `attempt.ts` в тексте — имя, а не
+ * путь, и угадывать, какой из одноимённых файлов имелся в виду, классификатор
+ * не будет (И3: без индекса в горячем пути). Сегмент начинается с буквы,
+ * цифры, `_`, `@`, `-` или с точки перед буквой (`.github/…`), поэтому
+ * дроби вида `1.00/0.99` и хвосты `.1.2` путями не считаются. Перед путём не
+ * может стоять `/`, `.`, `~` или буква: абсолютные пути, `../` и адреса
+ * `https://…/x.md` машинозависимы или вовсе не файлы воркспейса.
+ */
+const PATH_IN_TEXT =
+  /(?<![\w./~-])((?:\.\/)?(?:(?:\.[A-Za-z_]|[A-Za-z0-9_@-])[A-Za-z0-9_@.-]*\/)+(?:\.[A-Za-z_]|[A-Za-z0-9_@-])[A-Za-z0-9_@.-]*\.[A-Za-z][A-Za-z0-9]*)(?::\d+(?:-\d+)?)?(?![A-Za-z0-9_@/-])/g;
+
+/**
+ * Пути файлов, названные в тексте задачи, — без проверки, существуют ли они:
+ * это чистая функция текста, детерминированная, как и весь классификатор.
+ * Проверку на диске делает вызывающий, у которого есть корень воркспейса.
+ */
+export function pathsInText(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(PATH_IN_TEXT)) {
+    const raw = m[1];
+    if (raw !== undefined) out.add(raw.replace(/^\.\//, ""));
+  }
+  return [...out].sort();
+}
+
+export interface ClassifyInput {
+  readonly title: string;
+  readonly type?: string;
+  readonly intent?: string;
+  readonly sources: ScopePathSources;
+}
+
+export interface ClassifyResult extends TaskClassResult {
+  readonly scopeSource: ScopeSource;
+  /** Пути, по которым считан scope, — от корня воркспейса. */
+  readonly scopePaths: readonly string[];
+}
+
+/**
+ * Класс задачи по лучшему из источников путей. Намерение считается прежним
+ * порядком (§2.1.3); пути выбранного источника идут в `computeTaskClass` там,
+ * где раньше шли только якоря, — и для scope, и для намерения по путям,
+ * когда заголовок молчит.
+ */
+export function classifyTask(input: ClassifyInput): ClassifyResult {
+  const picked = pickScopePaths(input.sources);
+  const r = computeTaskClass({
+    title: input.title,
+    ...(input.type !== undefined ? { type: input.type } : {}),
+    ...(input.intent !== undefined ? { intent: input.intent } : {}),
+    anchorPaths: picked.paths,
+  });
+  return { ...r, scopeSource: picked.source, scopePaths: picked.paths };
+}
+
 export function isTaskClass(value: string): value is TaskClass {
   const [intent, scope] = value.split(":");
   return (
