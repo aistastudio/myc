@@ -82,10 +82,27 @@ Before anything else the helper checks, without starting myc, whether there is
 a workspace here (a git worktree is resolved through its main copy), and stays
 silent when there is none or the project wires myc itself: in a project without
 myc the hook costs one node start, and prime never arrives twice. Outside a
-workspace the MCP server offers zero tools and no instructions. The user's
-`statusLine` is never touched (it belongs to orca), and `--hook-mode replace`
-is refused here. The journal is `~/.myc/wire-user.json`; `myc unwire --scope
-user` restores the settings node by node and removes the MCP server.
+workspace the MCP server offers zero tools and no instructions. `--hook-mode
+replace` is refused here. The journal is `~/.myc/wire-user.json`; `myc unwire
+--scope user` restores the settings node by node and removes the MCP server.
+
+With `--status-line` the user layer also gets myc's status line, `myc
+statusline --scope user`: in a myc workspace — a git worktree of one included —
+it is the full line, outside one it prints nothing of its own. The line that was
+there (orca's, which prints nothing and posts the input to orca) is kept in the
+journal, not in our command, and gets the same stdin on every redraw, never
+waited on: orca takes a line whose command mentions its
+`agent-hooks/claude-statusline.sh` for its own and removes it when it
+uninstalls (a foreign line it leaves alone), so ours never carries the word
+`claude-statusline`. A
+project with its own myc line keeps it, and that line hands the input to the
+same recorded line. If another tool replaces the user line after wire, `myc
+doctor --hooks` says so; `myc wire --scope user --status-line` puts ours back
+and makes the new line the previous one, and `myc unwire --scope user` puts the
+previous line back byte for byte. `myc doctor --hooks` checks the whole user
+layer against the journal: myc's hook entries and rules still in
+`~/.claude/settings.json`, the helpers exactly what this build writes (a stale
+one is named with the build that wrote it), the status line, the MCP server.
 
 ## Heavy commands take turns
 

@@ -290,11 +290,12 @@ describe("--scope user: ~/.claude/settings.json", () => {
     expect(claudeCalls()).toEqual([]);
   });
 
-  test("отказы: --status-line, --hook-mode replace, --agents codex, --agents-md — и ничего не записано", async () => {
+  // --status-line больше не отказ (memory-6x0ag4p493pc): его проверки — в
+  // wire-user.statusline.test.ts.
+  test("отказы: --hook-mode replace, --agents codex, --agents-md — и ничего не записано", async () => {
     const original = writeForeign();
     const r = registry();
     const cases: [string[], string][] = [
-      [["--status-line"], "belongs to orca"],
       [["--hook-mode", "replace"], "evict other tools' hooks"],
       [["--agents", "claude,codex"], "Claude Code only"],
       [["--agents-md"], "AGENTS.md is a project file"],

@@ -25,7 +25,7 @@ import { run, type RunResult } from "../index.ts";
 import { openDriver, type CliDriver } from "./store.ts";
 import { Registry } from "../registry.ts";
 import { registerAll } from "../register.ts";
-import type { DoctorData } from "./doctor.ts";
+import { createDoctorCommand, type DoctorData } from "./doctor.ts";
 import { generatedFiles, wireHash } from "./wire.ts";
 import { HOOK_SPECS } from "../hooks/templates.ts";
 
@@ -33,10 +33,16 @@ let dir: string;
 let dbPath: string;
 let registry: Registry;
 
-/** Полный реестр: разделу --hooks нужно знать состав ЭТОЙ сборки. */
+/**
+ * Полный реестр: разделу --hooks нужно знать состав ЭТОЙ сборки. Пользовательский
+ * слой doctor читает из HOME временного каталога: сверка `~/.claude` здесь ни
+ * при чём, и настоящий слой машины (у заказчика он проведён) не должен влиять
+ * на исход. Её тесты — в doctor.user.test.ts.
+ */
 function makeRegistry(): Registry {
   const r = new Registry();
   registerAll(r);
+  r.register(createDoctorCommand(r, { env: { HOME: dir } }));
   return r;
 }
 

@@ -70,12 +70,27 @@ import {
   type HookCounter,
 } from "../hooks/counters.ts";
 import { HOOK_SPECS, type HookEvent } from "../hooks/templates.ts";
+import { CLI_VERSION } from "../index.ts";
+import {
+  isOurStatusLine,
+  orcaClaimsStatusLine,
+  ourUserStatusLineCommand,
+  statusLineCommand,
+} from "../statusline-config.ts";
 import {
   generatedFiles,
+  isUserHookEntry,
+  mycPermissions,
+  readUserJournal,
+  readUserMcp,
   readWireJournal,
+  userGeneratedFiles,
+  userPaths,
   wireHash,
   WIRE_JOURNAL,
   type Journal,
+  type UserJournal,
+  type UserPaths,
 } from "./wire.ts";
 
 function failure(code: string, msg: string, exit: ExitCode, hint?: string): CommandFailure {
@@ -469,6 +484,18 @@ export interface HooksSection {
    * собран из двух источников, и промолчать об этом нельзя (И2).
    */
   readonly split?: string;
+  /** Пользовательский слой Claude Code (`myc wire --scope user`); его пункты — и в `checks`. */
+  readonly user: UserLayerSection;
+}
+
+/**
+ * Пользовательский слой Claude Code: то, что поставил `myc wire --scope user`,
+ * против того, что лежит в `~/.claude` сейчас и что записала бы эта сборка.
+ */
+export interface UserLayerSection {
+  /** Журнал `~/.myc/wire-user.json`; null — его нет (слой не проведён, или журнал не здесь). */
+  readonly journal: string | null;
+  readonly checks: readonly Check[];
 }
 
 interface WireJournal {
@@ -672,6 +699,7 @@ function checkHooks(
   countersDir: string,
   journalDir: string,
   registry: Registry,
+  env: NodeJS.ProcessEnv,
   now: number = Date.now(),
 ): HooksSection {
   const journal = readWireJournal(join(journalDir, WIRE_JOURNAL));
@@ -775,10 +803,12 @@ function checkHooks(
   }
 
   const generated = checkGenerated(dirname(journalDir), journalDir, journal, buildEvents);
+  const user = checkUserLayer(env, registry);
 
   const checks: Check[] = [
     ...reports.map((r) => ({ name: r.event, verdict: r.verdict, detail: r.detail })),
     ...generated.map((g) => ({ name: g.path, verdict: g.verdict, detail: g.detail })),
+    ...user.checks,
   ];
   // Каталоги разошлись — значит команду позвали из git worktree, и вердикт
   // собран из ДВУХ мест. Назвать это обязаны: молчащий диагност, который
@@ -799,7 +829,311 @@ function checkHooks(
     countersDir,
     journalDir,
     ...(split !== undefined ? { split } : {}),
+    user,
   };
+}
+
+// ---------------------------------------------------------------------------
+// --hooks: пользовательский слой (memory-qnyz6bawx19v)
+// ---------------------------------------------------------------------------
+//
+// ЗАЧЕМ. `myc wire --scope user` ставит хуки, правила, helper'ы, скилл, MCP и
+// (с `--status-line`) строку статуса в `~/.claude` — слой, который правят
+// ещё orca, Claude Code (`/config`, «always allow») и человек. Проектная сверка
+// выше этого слоя не видит вовсе: журнал у него свой (`~/.myc/wire-user.json`),
+// и снятый кем-то хук или helper, записанный прежней сборкой, молчали бы до
+// тех пор, пока агент в worktree не остался бы без prime.
+//
+// Сверяется ТРИ стороны, как у проектного слоя: журнал (что ставили), файлы на
+// диске (что стоит) и эта сборка (что она записала бы). `~/.claude.json`
+// только читается: его переписывают работающие сессии.
+
+/** Файл JSON целиком, без записи; broken — не разобрать. */
+function readJsonFile(path: string): { readonly value: Record<string, unknown> | null; readonly broken: boolean } {
+  const text = fileTextOrNull(path);
+  if (text === null) return { value: null, broken: false };
+  try {
+    const v = JSON.parse(text) as unknown;
+    return v !== null && typeof v === "object" && !Array.isArray(v)
+      ? { value: v as Record<string, unknown>, broken: false }
+      : { value: null, broken: true };
+  } catch {
+    return { value: null, broken: true };
+  }
+}
+
+function recordOf(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+function listOf(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+
+/** Команда для отчёта: целиком не печатаем — у orca она на две тысячи знаков. */
+function shortCmd(cmd: string): string {
+  const one = cmd.replace(/\s+/g, " ").trim();
+  return one.length <= 60 ? one : `${one.slice(0, 59)}…`;
+}
+
+/** Чья строка: команда коротко и «(orca's line)», если orca сочтёт её своей. */
+function whoseLine(v: unknown): string {
+  const cmd = statusLineCommand(v);
+  if (cmd === null) return "a line without a command";
+  return `"${shortCmd(cmd)}"${orcaClaimsStatusLine(cmd) ? " (orca's line)" : ""}`;
+}
+
+/** Путь для человека: домашний каталог — `~`. */
+function tildeOf(path: string, home: string): string {
+  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+/** myc, вшитый в helper (`const WIRED_BIN = "…";`) — для журналов без поля `bin`. */
+function wiredBinOf(helperText: string): string | undefined {
+  const m = /^const WIRED_BIN = (".*");$/m.exec(helperText);
+  if (m === null) return undefined;
+  try {
+    const v = JSON.parse(m[1]!) as unknown;
+    return typeof v === "string" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function checkUserLayer(env: NodeJS.ProcessEnv, registry: Registry): UserLayerSection {
+  const paths = userPaths(env);
+  if (paths === null) {
+    return { journal: null, checks: [{ name: "user layer", verdict: "n/a", detail: "HOME is not set — no user layer of Claude Code to check" }] };
+  }
+  const show = (p: string): string => tildeOf(p, paths.home);
+  const j = readUserJournal(paths.journal);
+  if (j === null) {
+    // Без журнала сверять не с чем, и `~/.claude` тогда не читается вовсе:
+    // журнал — единственное свидетельство, что этот слой проводил myc.
+    return {
+      journal: null,
+      checks: [
+        {
+          name: "user layer",
+          verdict: "n/a",
+          detail:
+            `not wired: no ${show(paths.journal)} (\`myc wire --scope user\` wires Claude Code's user layer for agents in git ` +
+            "worktrees; if myc's entries are in ~/.claude/settings.json anyway, it writes the journal again)",
+        },
+      ],
+    };
+  }
+  const settings = readJsonFile(paths.settings);
+
+  const checks: Check[] = [];
+  const helpers = j.settings?.helpers ?? [paths.helper, paths.queueHelper];
+  const rerun = "`myc wire --scope user`";
+
+  // --- настройки: наши записи хуков и правила ------------------------------
+  if (settings.broken) {
+    checks.push({ name: "user:settings", verdict: "unknown", detail: `${show(paths.settings)} is not valid JSON — can't see myc's entries in it` });
+  } else {
+    const value = settings.value ?? {};
+    const hooks = recordOf(value["hooks"]);
+    const buildEvents = HOOK_SPECS.filter((s) => registry.hasTop(s.command)).map((s) => s.claudeEvent);
+    const expected = j.events ?? buildEvents;
+    const hasOurs = (event: string, marks: readonly string[]): boolean => listOf(hooks[event]).some((e) => isUserHookEntry(e, marks));
+    const missing = expected.filter((ev) => !hasOurs(ev, helpers)).map((ev) => `hooks.${ev}`);
+    const queueWired = j.files.some((f) => f.path === paths.queueHelper);
+    if (queueWired && !hasOurs("PreToolUse", [paths.queueHelper])) missing.push("hooks.PreToolUse (the queue hook)");
+    const where = `${expected.join(", ")}${queueWired ? " + the queue hook on PreToolUse" : ""}`;
+    checks.push(
+      missing.length === 0
+        ? { name: "user:hooks", verdict: "ok", detail: `myc's entries in place: ${where}` }
+        : {
+            name: "user:hooks",
+            verdict: "drift",
+            detail:
+              `gone from ${show(paths.settings)}: ${missing.join(", ")} — removed after wire (by hand or by another tool), ` +
+              `so nothing runs myc there; ${rerun} puts them back`,
+            items: missing,
+          },
+    );
+
+    const allow = listOf(recordOf(value["permissions"])["allow"]);
+    const recorded = new Set(j.settings?.permissions ?? []);
+    const absent = mycPermissions(registry).filter((r) => !allow.includes(r));
+    const gone = absent.filter((r) => recorded.has(r));
+    const fresh = absent.filter((r) => !recorded.has(r));
+    checks.push(
+      absent.length === 0
+        ? { name: "user:permissions", verdict: "ok", detail: "every Bash(myc <command>:*) rule of this build is in permissions.allow" }
+        : {
+            name: "user:permissions",
+            verdict: "drift",
+            detail:
+              [
+                gone.length > 0 ? `${gone.length} rules wire added are gone` : "",
+                fresh.length > 0 ? `${fresh.length} rules of this build were never added (commands newer than the wire run)` : "",
+              ]
+                .filter((s) => s.length > 0)
+                .join("; ") + ` — Claude Code asks before those myc commands; ${rerun} adds them`,
+            items: absent,
+          },
+    );
+  }
+
+  // --- helper'ы и скилл: против того, что записала бы ЭТА сборка -------------
+  checks.push(...checkUserFiles(paths, j, registry, env, show));
+
+  // --- строка статуса ---------------------------------------------------------
+  checks.push(checkUserStatusLine(paths, j, settings, show));
+
+  // --- MCP ----------------------------------------------------------------------
+  checks.push(checkUserMcp(paths, j, show));
+
+  return { journal: paths.journal, checks };
+}
+
+function checkUserFiles(
+  paths: UserPaths,
+  j: UserJournal,
+  registry: Registry,
+  env: NodeJS.ProcessEnv,
+  show: (p: string) => string,
+): Check[] {
+  const events = HOOK_SPECS.filter((s) => registry.hasTop(s.command)).map((s) => s.event);
+  const helperOnDisk = fileTextOrNull(paths.helper);
+  // myc, вшитый при wire: из журнала, у старых журналов — из самого helper'а.
+  const bin = j.bin ?? (helperOnDisk !== null ? wiredBinOf(helperOnDisk) : undefined) ?? "myc";
+  const gen = userGeneratedFiles(paths, events, j.hook_output, bin);
+  const expectedByPath = new Map<string, string>([
+    [paths.helper, gen.helper],
+    [paths.queueHelper, gen.queueHelper],
+    [paths.skill, gen.skill],
+  ]);
+  const writtenBy = j.version !== undefined ? `myc ${j.version}` : "an earlier myc";
+  const out: Check[] = [];
+  for (const f of j.files) {
+    const expected = expectedByPath.get(f.path);
+    if (expected === undefined) continue; // .myc.bak и файлы, которых эта сборка не пишет
+    const name = `user:${show(f.path)}`;
+    const text = fileTextOrNull(f.path);
+    if (text === null) {
+      out.push({
+        name,
+        verdict: "drift",
+        detail:
+          "gone: the journal remembers it, but the file is not on disk — the hooks that call it exit quietly, so myc " +
+          "does nothing there; `myc wire --scope user`",
+      });
+      continue;
+    }
+    const actual = wireHash(text);
+    const want = wireHash(expected);
+    if (actual === want) {
+      out.push({ name, verdict: "ok", detail: `up to date: matches what this build (myc ${CLI_VERSION}) writes (${actual})` });
+    } else if (actual === f.hash) {
+      out.push({
+        name,
+        verdict: "drift",
+        detail:
+          `stale: exactly what \`myc wire --scope user\` wrote (${writtenBy}, ${f.hash}), but this build (myc ${CLI_VERSION}) ` +
+          `writes a different one (${want}) — rerun \`myc wire --scope user\``,
+      });
+    } else {
+      out.push({
+        name,
+        verdict: "drift",
+        detail:
+          `changed after we wrote it: on disk (${actual}) is neither what wire wrote (${f.hash}) nor what this build writes ` +
+          `(${want}) — \`myc wire --scope user\` restores ours, the current one goes to .myc.bak`,
+      });
+    }
+  }
+  return out;
+}
+
+function checkUserStatusLine(
+  paths: UserPaths,
+  j: UserJournal,
+  settings: { readonly value: Record<string, unknown> | null; readonly broken: boolean },
+  show: (p: string) => string,
+): Check {
+  const name = "user:statusLine";
+  if (settings.broken) return { name, verdict: "unknown", detail: `${show(paths.settings)} is not valid JSON — can't see the status line` };
+  const current = settings.value?.["statusLine"];
+  const rec = j.status_line;
+  if (rec === undefined) {
+    if (isOurStatusLine(current)) {
+      return {
+        name,
+        verdict: "drift",
+        detail:
+          `myc's line is in ${show(paths.settings)} with no record in ${show(paths.journal)} of the line it replaced — ` +
+          "that line gets no input; `myc wire --scope user --status-line` records what is known",
+      };
+    }
+    return { name, verdict: "n/a", detail: "not installed (`myc wire --scope user --status-line` puts myc's line there)" };
+  }
+  const previous = statusLineCommand(rec.previous) !== null ? `the previous line ${whoseLine(rec.previous)} gets the same input` : "there was no previous line";
+  if (current === undefined) {
+    return {
+      name,
+      verdict: "drift",
+      detail:
+        `gone: myc's line was removed from ${show(paths.settings)} after wire, and the line it replaced gets no input either; ` +
+        "`myc wire --scope user --status-line` puts it back, `myc wire --scope user` forgets it",
+    };
+  }
+  if (!isOurStatusLine(current)) {
+    return {
+      name,
+      verdict: "drift",
+      detail:
+        `no longer myc's: now ${whoseLine(current)} — replaced after wire. \`myc wire --scope user --status-line\` puts ours ` +
+        "back and keeps this one as the previous line (it keeps getting the same input); `myc wire --scope user` accepts it and forgets ours",
+    };
+  }
+  // Наша на месте. Её myc должен существовать: иначе строка пуста, и прежняя
+  // (orca) не получает ввода — при том что всё «стоит».
+  const cmd = statusLineCommand(current) ?? "";
+  if (j.bin !== undefined && cmd === ourUserStatusLineCommand({ command: j.bin }) && j.bin.startsWith("/") && !existsSync(j.bin)) {
+    return {
+      name,
+      verdict: "drift",
+      detail:
+        `myc's line runs ${j.bin}, which is not there — the line is empty and the previous line gets no input; ` +
+        "`myc wire --scope user --status-line` with a myc that exists",
+    };
+  }
+  return { name, verdict: "ok", detail: `myc's line (${shortCmd(cmd)}); ${previous}` };
+}
+
+function checkUserMcp(paths: UserPaths, j: UserJournal, show: (p: string) => string): Check {
+  const name = "user:mcp";
+  const m = j.mcp;
+  const config = m?.config ?? paths.claudeJson;
+  const current = readUserMcp(config);
+  if (current.broken) return { name, verdict: "unknown", detail: `${show(config)} is not valid JSON — can't see whether myc is registered` };
+  const add = "`myc wire --scope user` (it runs `claude mcp add --scope user myc -- <myc> mcp --profile agent`)";
+  if (m === null) {
+    if (current.value !== undefined) {
+      return { name, verdict: "n/a", detail: `a server named myc is registered in ${show(config)}, not by wire — not checked` };
+    }
+    return { name, verdict: "drift", detail: `not registered in the user layer (wire could not do it): agents in git worktrees get no myc tools; ${add}` };
+  }
+  if (current.value === undefined) {
+    return { name, verdict: "drift", detail: `gone: the MCP server myc wire registered is not in ${show(config)} any more — agents in git worktrees get no myc tools; ${add}` };
+  }
+  const command = current.value["command"];
+  const args = listOf(current.value["args"]);
+  if (command !== m.command || JSON.stringify(args) !== JSON.stringify(m.args)) {
+    return {
+      name,
+      verdict: "drift",
+      detail: `changed after wire registered it: now ${[command, ...args].map(String).join(" ")}, wire registered ${[m.command, ...m.args].join(" ")}; ${add}`,
+    };
+  }
+  if (m.command.startsWith("/") && !existsSync(m.command)) {
+    return { name, verdict: "drift", detail: `registered, but ${m.command} is not there — the server does not start; ${add}` };
+  }
+  return { name, verdict: "ok", detail: `registered: ${[m.command, ...m.args].join(" ")}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -877,14 +1211,23 @@ function dbPathOf(ctx: CommandContext): { path: string } | CommandFailure {
   );
 }
 
-export function createDoctorCommand(registry: Registry): Command {
+/**
+ * `env` — откуда брать пользовательский слой (HOME, CLAUDE_CONFIG_DIR,
+ * MYC_HOME): тесты подменяют его, чтобы сверка никогда не читала настоящий
+ * `~/.claude`.
+ */
+export function createDoctorCommand(registry: Registry, overrides: { readonly env?: NodeJS.ProcessEnv } = {}): Command {
+  const env = overrides.env ?? process.env;
   return {
     name: "doctor",
     summary: "check what the database claims against what can be recounted",
     flags: [
       { name: "schema", description: "schema version and object-level diff against this binary" },
       { name: "recount", description: "materialised counters against a recount from the graph" },
-      { name: "hooks", description: "when each hook last fired, and which events are not installed" },
+      {
+        name: "hooks",
+        description: "when each hook last fired, which events are not installed, and the user layer myc wire --scope user put in ~/.claude",
+      },
       { name: "verbose", description: "list every diverging object, node and row, not just counts" },
     ],
     help:
@@ -901,7 +1244,10 @@ export function createDoctorCommand(registry: Registry): Command {
       "declared itself through MYC_HOOK, so 'session-start fired N times' means sessions, not " +
       "hand-typed `myc prime` calls. Is it the current hook: every file myc generates in full is " +
       "hashed against what this build would generate, so a helper installed by an older version " +
-      "is reported as stale by name instead of silently doing nothing.",
+      "is reported as stale by name instead of silently doing nothing. The user layer (`myc wire " +
+      "--scope user`) is checked by ~/.myc/wire-user.json against ~/.claude: myc's hook entries and " +
+      "rules still there, its helpers what this build writes, its status line not replaced by " +
+      "another tool, its MCP server still registered (~/.claude.json is only read).",
     handler: async (ctx: CommandContext): Promise<CommandResult> => {
       const want = {
         schema: ctx.flags["schema"] === true,
@@ -943,7 +1289,7 @@ export function createDoctorCommand(registry: Registry): Command {
         const schema = sections.includes("schema") ? await checkSchema(driver!) : undefined;
         const recount = sections.includes("recount") ? checkRecount(driver!) : undefined;
         const hooks = sections.includes("hooks")
-          ? checkHooks(mycDir, treeMycDir, registry)
+          ? checkHooks(mycDir, treeMycDir, registry, env)
           : undefined;
 
         const checks = [

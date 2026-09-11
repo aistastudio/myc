@@ -23,7 +23,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ExitCode } from "../exit.ts";
@@ -35,11 +35,18 @@ import { CLI_VERSION } from "../index.ts";
 import { HARNESSES, type Harness } from "@myc/swarm";
 import {
   isOurStatusLine,
+  isOurStatusLineCommand,
+  ORCA_STATUSLINE_MARK,
+  orcaClaimsStatusLine,
   ourStatusLineCommand,
+  ourUserStatusLineCommand,
   readStatusLine,
+  recordedUserStatusLine,
   shellQuote,
   STATUSLINE_COMMAND,
   statusLineCommand,
+  USER_JOURNAL,
+  userJournalPath,
   userSettingsPath,
 } from "../statusline-config.ts";
 import {
@@ -858,6 +865,7 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
   let passthrough: StatusLineRecord["passthrough"] = "none";
   let foreignCmd: string | null = null;
   let carrier: unknown = previous;
+  let viaUserLayer = false;
   if (projectCmd !== null && !isOurStatusLine(previous)) {
     passthrough = "project";
     foreignCmd = projectCmd;
@@ -877,6 +885,18 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
       passthrough = "user";
       foreignCmd = userCmd;
       carrier = user.value;
+    } else if (userCmd !== null) {
+      // Пользовательская строка — сама myc (`wire --scope user --status-line`):
+      // на отрисовке `myc statusline` отдаёт ввод той, что она заменила, —
+      // она записана в журнале пользовательского слоя.
+      const recorded = recordedUserStatusLine(o.env)?.previous;
+      const recordedCmd = statusLineCommand(recorded);
+      if (recordedCmd !== null && !isOurStatusLineCommand(recordedCmd)) {
+        passthrough = "user";
+        foreignCmd = recordedCmd;
+        carrier = recorded;
+        viaUserLayer = true;
+      }
     }
   }
 
@@ -911,6 +931,11 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
   const wait = "it is neither awaited nor killed — its output from the last finished run shows above our line";
   if (passthrough === "project") {
     notes.push(`${rel}: statusLine is ours; the previous project line "${shortCommand(foreignCmd ?? "")}" gets the same stdin (--then), ${wait}`);
+  } else if (passthrough === "user" && viaUserLayer) {
+    notes.push(
+      `${rel}: statusLine is ours; the user line is myc's too (myc wire --scope user --status-line), and the line it replaced, ` +
+        `"${shortCommand(foreignCmd ?? "")}", gets the same stdin (read from ${userJournalPath(o.env) ?? "~/.myc/wire-user.json"} on every redraw), ${wait}`,
+    );
   } else if (passthrough === "user") {
     notes.push(
       `${rel}: statusLine is ours; the user line "${shortCommand(foreignCmd ?? "")}" from ${userSettingsPath(o.env)} ` +
@@ -1445,6 +1470,8 @@ export interface WireDeps {
   readonly probeQueue: QueueProbe;
   /** `--scope user`: отвечает ли выбранный myc пустым списком инструментов вне воркспейса. */
   readonly probeMcp: McpProbe;
+  /** `--scope user --status-line`: знает ли выбранный myc `statusline --scope user`. */
+  readonly probeUserStatusLine: UserStatusLineProbe;
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
 }
@@ -1506,6 +1533,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
     probeStatusLine: probeStatusLineBin,
     probeQueue: probeQueueBin,
     probeMcp: probeUserMcpBin,
+    probeUserStatusLine: probeUserStatusLineBin,
     env: process.env,
     platform: process.platform,
     ...overrides,
@@ -1527,7 +1555,9 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       "(~/.claude) instead of the project: for agents in git worktrees and nested repos whose " +
       "project layer has no myc. Its helper exits at once where there is no myc workspace or the " +
       "project wires myc itself; foreign hooks on the same event stay (append is the default, " +
-      "replace is refused); statusLine is never touched; the MCP server is registered with " +
+      "replace is refused); statusLine only with --status-line: myc's line (the full line in a myc " +
+      "workspace, nothing of its own outside one), the line that was there is kept in the journal and " +
+      "keeps getting the same input, and unwire puts it back; the MCP server is registered with " +
       "`claude mcp add --scope user`; the journal is ~/.myc/wire-user.json.",
     handler: (ctx) => {
       // Фоновая проверка обновлений: no-op по умолчанию, при
@@ -1974,8 +2004,18 @@ export function createUnwireCommand(overrides: Partial<Pick<WireDeps, "env" | "p
 //    оставляют чужое байт в байт. Иначе — отказ: проектный wire в этом случае
 //    переформатирует файл с заметкой, но здесь это глобальные настройки
 //    человека, и переписать в них чужие строки, пусть без потери смысла, нельзя.
-// 3. `statusLine` не читается и не пишется вовсе: глобальная строка
-//    принадлежит orca, и orca её перезаписывает. `--status-line` — отказ.
+// 3. `statusLine` — только с `--status-line` (memory-6x0ag4p493pc). Прежде
+//    это был отказ: считалось, что глобальная строка принадлежит orca и orca
+//    её перезапишет. Чтение кода orca (шапка statusline-config.ts) показало
+//    обратное: чужую строку orca не трогает ни установкой, ни снятием, а
+//    видимая строка у агентов в worktree была пустой (orca не печатает). Два
+//    правила: команда нашей строки не содержит `claude-statusline` (иначе
+//    orca сочтёт её своей и при снятии удалит) — и потому прежнюю строку мы
+//    не вшиваем в свою (`--then`), а пишем в журнал; `myc statusline --scope
+//    user` берёт её оттуда на каждой отрисовке и отдаёт тот же stdin. Стоящая
+//    наша строка без флага сохраняется, заменённая кем-то — не трогается
+//    (повторный wire с флагом ставит нашу обратно, а новая чужая становится
+//    прежней); unwire возвращает прежнюю байт в байт.
 // 4. MCP — только через `claude mcp add --scope user`: `~/.claude.json` —
 //    файл состояния, который работающие сессии переписывают сами. Сам файл
 //    myc только ЧИТАЕТ — узнать, стоит ли уже сервер (повтор — «unchanged»).
@@ -1985,7 +2025,7 @@ export function createUnwireCommand(overrides: Partial<Pick<WireDeps, "env" | "p
 //    навсегда. Правило, которое стояло у человека ДО wire, журнал не называет
 //    нашим, и unwire его не трогает.
 
-export const USER_JOURNAL = "wire-user.json";
+export { USER_JOURNAL };
 const USER_MCP_NAME = "myc";
 const USER_MCP_ARGS: readonly string[] = ["mcp", "--profile", "agent"];
 
@@ -2030,7 +2070,8 @@ export function userPaths(env: NodeJS.ProcessEnv): UserPaths | null {
     queueHelper: join(helpersDir, QUEUE_HELPER_MARK),
     skill: join(claudeDir, "skills", "myc", "SKILL.md"),
     claudeJson: join(cfg ?? home, ".claude.json"),
-    journal: join(nonEmpty(env.MYC_HOME) ?? home, ".myc", USER_JOURNAL),
+    // Тот же путь, по которому журнал читает строка статуса на отрисовке.
+    journal: userJournalPath(env) ?? join(home, ".myc", USER_JOURNAL),
   };
 }
 
@@ -2106,6 +2147,47 @@ export const probeUserMcpBin: McpProbe = (bin, env) => {
     return { ok: true };
   } catch (e) {
     return { ok: false, why: `${bin.command} mcp does not start: ${e instanceof Error ? e.message : String(e)}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+/**
+ * Годится ли myc для строки статуса пользовательского слоя: знает ли он
+ * `statusline --scope user` и молчит ли вне воркспейса (выход 0, пустой
+ * вывод). Сборка до memory-6x0ag4p493pc флага не знает — выход 2, и такая
+ * строка в каждой сессии машины была бы пустой, а orca не получала бы ввода.
+ * Запуск в пустом каталоге и без передачи чужой строке (`--no-pass`) —
+ * церемония человека, не горячий путь.
+ */
+export type UserStatusLineProbe = (
+  bin: MycBinChoice,
+  env: NodeJS.ProcessEnv,
+) => { readonly ok: true } | { readonly ok: false; readonly why: string };
+
+export const probeUserStatusLineBin: UserStatusLineProbe = (bin, env) => {
+  if (bin.source === "none") return { ok: false, why: "no myc executable found (MYC_BIN, ~/.myc/bin/myc, PATH)" };
+  const dir = mkdtempSync(join(tmpdir(), "myc-wire-probe-sl-"));
+  const args = [STATUSLINE_COMMAND, "--scope", "user", "--no-pass"];
+  try {
+    const r = Bun.spawnSync([bin.command, ...args], {
+      cwd: dir,
+      env: { ...env, CLAUDE_PROJECT_DIR: dir },
+      stdin: Buffer.from(`${JSON.stringify({ session_id: "myc-wire-probe", cwd: dir, workspace: { current_dir: dir } })}\n`),
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 15_000,
+    });
+    const shown = `${bin.command} ${args.join(" ")}`;
+    if (r.exitCode !== 0) {
+      const err = r.stderr.toString().trim().split("\n")[0] ?? "";
+      return { ok: false, why: `${shown}: exit ${r.exitCode}${err.length > 0 ? ` (${err})` : ""} — an older build` };
+    }
+    const out = r.stdout.toString().trim();
+    if (out.length > 0) return { ok: false, why: `${shown} prints "${shortCommand(out)}" outside a myc workspace — an older build` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, why: `${bin.command} does not start: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2262,6 +2344,27 @@ export interface UserJournal {
   } | null;
   /** Сервер `myc` в пользовательском слое; added — его зарегистрировал wire. */
   readonly mcp: { readonly config: string; readonly command: string; readonly args: readonly string[]; readonly added: boolean } | null;
+  /**
+   * Сборка myc, записавшая журнал (CLI_VERSION), и myc, вшитый в helper и MCP.
+   * По ним `myc doctor --hooks` называет, КЕМ записан устаревший helper, и
+   * собирает то, что записала бы нынешняя сборка. У журналов 0.3.4 полей нет.
+   */
+  readonly version?: string;
+  readonly bin?: string;
+  /** События Claude Code, на которые wire поставил наш хук (с `--hook-mode skip` — не все). */
+  readonly events?: readonly string[];
+  /** Наша строка статуса и та, что стояла до неё (`--status-line`); нет поля — строку не ставили. */
+  readonly status_line?: UserStatusLineRecord;
+}
+
+/**
+ * Что журнал знает о строке статуса пользовательского слоя. `previous` —
+ * `statusLine` ДО нас, дословно; `null` — ключа не было. По нему unwire
+ * возвращает файл побайтно, а `myc statusline` отдаёт прежней тот же ввод
+ * (statusline-config.ts читает это же поле, не импортируя wire).
+ */
+export interface UserStatusLineRecord {
+  readonly previous: unknown;
 }
 
 export function readUserJournal(path: string): UserJournal | null {
@@ -2270,6 +2373,7 @@ export function readUserJournal(path: string): UserJournal | null {
   try {
     const j = JSON.parse(raw) as Partial<UserJournal>;
     if (!isPlainObject(j) || j.scope !== "user" || !Array.isArray(j.files)) return null;
+    const sl = (j as Record<string, unknown>)["status_line"];
     return {
       v: 1,
       scope: "user",
@@ -2279,10 +2383,49 @@ export function readUserJournal(path: string): UserJournal | null {
       dirs: Array.isArray(j.dirs) ? j.dirs : [],
       settings: isPlainObject(j.settings) ? (j.settings as UserJournal["settings"]) : null,
       mcp: isPlainObject(j.mcp) ? (j.mcp as UserJournal["mcp"]) : null,
+      ...(typeof j.version === "string" ? { version: j.version } : {}),
+      ...(typeof j.bin === "string" ? { bin: j.bin } : {}),
+      ...(Array.isArray(j.events) ? { events: j.events.filter((e): e is string => typeof e === "string") } : {}),
+      ...(isPlainObject(sl) ? { status_line: { previous: sl["previous"] ?? null } } : {}),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Файлы пользовательского слоя, которые myc пишет целиком, — ровно то, что
+ * записала бы ЭТА сборка. Один источник на запись (wireUser) и на сверку
+ * свежести (`myc doctor --hooks`): второй список тех же текстов разошёлся бы
+ * с первым молча, и doctor хвалил бы helper, который wire уже не пишет.
+ */
+export function userGeneratedFiles(
+  paths: UserPaths,
+  events: readonly HookEvent[],
+  hookOutput: "json" | "text",
+  mycBin: string,
+): { readonly helper: string; readonly queueHelper: string; readonly skill: string } {
+  return {
+    helper: claudeUserHelper({ events, hookOutput, selfDir: paths.helpersDir, mycBin }),
+    queueHelper: withUserScopeGuard(
+      queueHelper(),
+      paths.helpersDir,
+      QUEUE_HELPER_MARK,
+      "// User-layer copy, generated by `myc wire --scope user --queue-hook`: the same helper behind a guard that " +
+        "lets it act only in a myc workspace whose project does not run its own queue hook.",
+    ),
+    skill: skillMd(),
+  };
+}
+
+/** Запись хука пользовательского слоя — наша: её команда зовёт один из наших helper'ов. */
+export function isUserHookEntry(entry: unknown, helpers: readonly string[]): boolean {
+  return isUserEntry(entry, helpers);
+}
+
+/** Сервер `myc` из `~/.claude.json` — только чтение (файл пишет сам claude). */
+export function readUserMcp(path: string): { readonly value: Record<string, unknown> | undefined; readonly broken: boolean } {
+  return readUserMcpServer(path);
 }
 
 /** Путь для человека: домашний каталог — `~`. */
@@ -2356,6 +2499,101 @@ function planUserMcp(
   return { ...base, state: current.value === undefined ? "add" : "replace", oursBefore };
 }
 
+/**
+ * `statusLine` пользовательского слоя (правило 3 в шапке раздела). Меняет
+ * `value` на месте: присваивание существующему ключу его не двигает, и чужие
+ * байты файла остаются где были.
+ *
+ * Без флага ключ не пишется: наша строка, если стоит, остаётся с прежней
+ * записью журнала; заменённая кем-то — не трогается, запись о нашей
+ * забывается (иначе unwire однажды «вернул бы» то, что уже не наше), и об этом
+ * сказано вслух. С флагом прежней становится то, что стоит СЕЙЧАС, если это не
+ * мы: новая чужая строка (orca поставила свою, человек — свою) не теряется, а
+ * продолжает получать ввод; стоим мы или ключ снят — прежняя из журнала.
+ */
+function planUserStatusLine(
+  value: Record<string, unknown>,
+  o: {
+    readonly want: boolean;
+    readonly recorded: UserStatusLineRecord | undefined;
+    readonly bin: MycBinChoice;
+    readonly rel: string;
+    readonly journal: string;
+  },
+): { readonly record?: UserStatusLineRecord; readonly notes: string[]; readonly node: boolean } | { readonly conflict: string } {
+  const current = value["statusLine"];
+  const ours = isOurStatusLine(current);
+  const notes: string[] = [];
+  const who = (v: unknown): string => {
+    const cmd = statusLineCommand(v);
+    if (cmd === null) return "a line without a command";
+    return `"${shortCommand(cmd)}"${orcaClaimsStatusLine(cmd) ? " (orca's line)" : ""}`;
+  };
+  const noRecord = `${o.rel}: myc's statusLine is there with no record of the previous one in ${o.journal} — unwire will remove it and has nothing to restore`;
+
+  if (!o.want) {
+    if (ours) {
+      if (o.recorded === undefined) notes.push(noRecord);
+      return { record: o.recorded ?? { previous: null }, notes, node: false };
+    }
+    if (o.recorded !== undefined) {
+      notes.push(
+        current === undefined
+          ? `${o.rel}: myc's statusLine was removed after wire — its record is dropped; \`myc wire --scope user --status-line\` puts it back`
+          : `${o.rel}: myc's statusLine was replaced after wire by ${who(current)} — left alone and the record of ours dropped; ` +
+              "`myc wire --scope user --status-line` puts ours back, and that line keeps getting the same input as the previous one",
+      );
+    }
+    return { notes, node: false };
+  }
+
+  let previous: unknown;
+  if (ours) {
+    previous = o.recorded?.previous ?? null;
+    if (o.recorded === undefined) notes.push(noRecord);
+  } else if (current === undefined) {
+    previous = o.recorded?.previous ?? null;
+    if (o.recorded !== undefined) notes.push(`${o.rel}: myc's statusLine was removed after wire — put back`);
+  } else {
+    previous = current;
+    if (o.recorded !== undefined) {
+      notes.push(`${o.rel}: myc's statusLine was replaced after wire by ${who(current)} — ours goes back, and that line becomes the previous one`);
+    }
+  }
+
+  const command = ourUserStatusLineCommand(o.bin);
+  // orca считает своей строку, в команде которой есть `claude-statusline`, и
+  // при снятии удаляет её (statusline-config.ts). Наша такой быть не может.
+  if (command.includes(ORCA_STATUSLINE_MARK)) {
+    return { conflict: `the command "${shortCommand(command)}" contains "${ORCA_STATUSLINE_MARK}", so orca would take it for its own line and remove it` };
+  }
+  // Свою строку узнаём по `myc statusline` в команде. Бинарь с другим именем
+  // дал бы строку, которую повторный wire счёл бы чужой и записал бы прежней.
+  if (!isOurStatusLineCommand(command)) {
+    return { conflict: `${o.bin.command} is not named myc, so its line could not be told from a foreign one — set MYC_BIN to a myc executable` };
+  }
+  const next: Record<string, unknown> = { type: "command", command };
+  // Раскладку и частоту перерисовки задавала прежняя строка (у orca их нет);
+  // стоящей нашей — её собственные, чтобы повтор был байт в байт.
+  const carried = asRecord(ours ? current : previous);
+  for (const key of ["padding", "refreshInterval"]) {
+    if (typeof carried[key] === "number") next[key] = carried[key];
+  }
+  if (!(ours && JSON.stringify(current) === JSON.stringify(next))) value["statusLine"] = next;
+
+  const prevCmd = statusLineCommand(previous);
+  if (prevCmd !== null && !isOurStatusLineCommand(prevCmd)) {
+    notes.push(
+      `${o.rel}: statusLine is myc's (myc statusline --scope user: the full line in a myc workspace, nothing of its own ` +
+        `outside one); the previous line ${who(previous)} is kept in ${o.journal} and gets the same stdin on every redraw — ` +
+        "neither awaited nor killed; unwire puts it back",
+    );
+  } else {
+    notes.push(`${o.rel}: statusLine is myc's; there was no previous line — no one to pass input to`);
+  }
+  return { record: { previous }, notes, node: true };
+}
+
 export interface WireUserData {
   readonly scope: "user";
   readonly home: string;
@@ -2384,13 +2622,7 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
       );
     }
   }
-  if (ctx.flags["status-line"] === true) {
-    return refuse(
-      "--status-line is not available with --scope user: the user-level statusLine belongs to orca, which rewrites " +
-        "it — a myc line there would be overwritten, or would cut orca's line off. Put myc's line into a project " +
-        "(myc wire --status-line): there it passes the same input on to the user line",
-    );
-  }
+  const wantStatusLine = ctx.flags["status-line"] === true;
   if (ctx.flags["agents-md"] === true) return refuse("--agents-md is not available with --scope user: AGENTS.md is a project file");
   const modeRaw = flagStr(ctx, "hook-mode");
   if (modeRaw === "replace") {
@@ -2443,8 +2675,25 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
     queueBin = probe.bin;
   }
 
-  planUserFile(files, paths.helper, claudeUserHelper({ events, hookOutput: outRaw, selfDir: paths.helpersDir, mycBin: bin.command }));
-  planUserFile(files, paths.skill, skillMd());
+  // Строка на myc, который не знает `statusline --scope user`, — хуже, чем
+  // никакой: код выхода не 0, Claude Code не покажет ничего, и прежняя строка
+  // (orca) не получит ввода вовсе. Проверяется запуском, до записи чего-либо.
+  if (wantStatusLine) {
+    const probe = deps.probeUserStatusLine(bin, deps.env);
+    if (!probe.ok) {
+      return failure(
+        "precond.statusline_bin",
+        `nowhere to install the status line: ${probe.why}. A line on that binary would show nothing and cut the ` +
+          "previous line off from its input — nothing written",
+        ExitCode.PRECOND,
+        "MYC_BIN=<path to a fresh myc> myc wire --scope user --status-line",
+      );
+    }
+  }
+
+  const generated = userGeneratedFiles(paths, events, outRaw, bin.command);
+  planUserFile(files, paths.helper, generated.helper);
+  planUserFile(files, paths.skill, generated.skill);
 
   // --- ~/.claude/settings.json ------------------------------------------------
   const settingsText = fileText(paths.settings);
@@ -2481,19 +2730,10 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
         `with ${queueBin.command} (${queueBin.source}); approved without asking only when your own rules allow the original command`,
     );
   }
+  const hookPlacements = placements.length;
   if (queueEntry !== null) {
     placements.push({ event: "PreToolUse", entry: queueEntry });
-    planUserFile(
-      files,
-      paths.queueHelper,
-      withUserScopeGuard(
-        queueHelper(),
-        paths.helpersDir,
-        QUEUE_HELPER_MARK,
-        "// User-layer copy, generated by `myc wire --scope user --queue-hook`: the same helper behind a guard that " +
-          "lets it act only in a myc workspace whose project does not run its own queue hook.",
-      ),
-    );
+    planUserFile(files, paths.queueHelper, generated.queueHelper);
   } else {
     untouched.push(`${show(paths.settings)}:hooks.PreToolUse (needs --queue-hook)`);
   }
@@ -2501,7 +2741,10 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
   const value: Record<string, unknown> = { ...source.value };
   const hooks = asRecord(value["hooks"]);
   const nodes: string[] = [];
-  for (const { event, entry } of placements) {
+  // События, на которых наш хук стоит после этого прогона: журнал, по нему
+  // doctor сверяет, не сняли ли их руками (skip оставляет часть без нашего).
+  const placedEvents: string[] = [];
+  for (const [i, { event, entry }] of placements.entries()) {
     const existing = asArray(hooks[event]);
     const foreign = existing.filter((e) => !isOurs(e));
     const ours = existing.length > foreign.length;
@@ -2509,6 +2752,7 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
       notes.push(`${show(paths.settings)}: hooks.${event} — a foreign hook is there, myc's not installed (--hook-mode skip)`);
       continue;
     }
+    if (i < hookPlacements) placedEvents.push(event);
     let next: unknown[];
     if (ours) {
       // На месте: чужие записи вокруг нашей не двигаются никогда.
@@ -2551,9 +2795,23 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
         "in every project; wire did not write it and leaves it alone — remove it by hand",
     );
   }
+  // --- statusLine (только с --status-line; стоящая наша — сохраняется) ---------
+  const sl = planUserStatusLine(value, {
+    want: wantStatusLine,
+    recorded: prev?.status_line,
+    bin,
+    rel: show(paths.settings),
+    journal: show(paths.journal),
+  });
+  if ("conflict" in sl) {
+    return failure("conflict.status_line", `status line not installed, nothing written: ${sl.conflict}`, ExitCode.CONFLICT);
+  }
+  notes.push(...sl.notes);
+  if (sl.node) nodes.push("statusLine");
+  if (!wantStatusLine && sl.record === undefined) untouched.push(`${show(paths.settings)}:statusLine (needs --status-line)`);
+
   const settingsContent = `${JSON.stringify(value, null, source.indent)}${layout.newline ? "\n" : ""}`;
   const settingsKind: ActionKind = settingsText === settingsContent ? "unchanged" : settingsText === null ? "new" : "merge";
-  untouched.push(`${show(paths.settings)}:statusLine (the user line belongs to orca)`);
 
   // --- MCP ---------------------------------------------------------------------
   const claude = findClaude(deps.env);
@@ -2657,10 +2915,18 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
         added || mcp.state === "unchanged"
           ? { config: paths.claudeJson, command: mcp.server.command, args: mcp.server.args, added }
           : (prev?.mcp ?? null),
+      version: CLI_VERSION,
+      bin: bin.command,
+      events: placedEvents,
+      ...(sl.record !== undefined ? { status_line: sl.record } : {}),
     };
     try {
       mkdirSync(dirname(paths.journal), { recursive: true });
-      writeFileSync(paths.journal, `${JSON.stringify(doc, null, 2)}\n`);
+      // tmp + rename: журнал читает строка статуса на КАЖДОЙ отрисовке
+      // (прежняя строка — отсюда), и половину файла она видеть не должна.
+      const tmp = `${paths.journal}.${process.pid}.tmp`;
+      writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`);
+      renameSync(tmp, paths.journal);
       journal = paths.journal;
     } catch (e) {
       ctx.warn(
@@ -2732,14 +2998,30 @@ function renderWireUser(d: WireUserData): string {
  * Наши узлы из пользовательских настроек: записи хуков, чья команда зовёт
  * наш helper, и правила, которые добавил wire. Контейнер удаляется, только
  * если опустел ИЗ-ЗА НАС и его не было до первого wire.
+ *
+ * Строка статуса не удаляется, а ВОЗВРАЩАЕТСЯ — как у проектного unwire:
+ * стоит наша — на её место прежняя из журнала (присваивание существующему
+ * ключу его не двигает), не было прежней — ключа не будет. Чужая строка,
+ * поставленная после нас, не трогается: она не наша.
  */
 function stripUserSettings(
   value: Record<string, unknown>,
   rec: NonNullable<UserJournal["settings"]>,
+  statusLine: UserStatusLineRecord | undefined,
 ): { readonly value: Record<string, unknown>; readonly nodes: string[] } {
   const out = { ...value };
   const keep = new Set(rec.preexisting);
   const nodes: string[] = [];
+  if (isOurStatusLine(out["statusLine"])) {
+    const prev = statusLine?.previous;
+    if (prev !== undefined && prev !== null) {
+      out["statusLine"] = prev;
+      nodes.push("statusLine (previous restored)");
+    } else {
+      delete out["statusLine"];
+      nodes.push("statusLine");
+    }
+  }
   const hooks = asRecord(out["hooks"]);
   let hooksTouched = false;
   for (const key of Object.keys(hooks)) {
@@ -2803,7 +3085,7 @@ function unwireUser(ctx: CommandContext, env: NodeJS.ProcessEnv): CommandResult 
             `${s.permissions.length} permissions.allow rules Bash(myc <command>:*))`,
         });
       } else {
-        const stripped = stripUserSettings(src.value, s);
+        const stripped = stripUserSettings(src.value, s, j.status_line);
         if (stripped.nodes.length === 0) {
           removed.push(`${s.path} (no myc entries left)`);
         } else if (s.created && Object.keys(stripped.value).length === 0) {

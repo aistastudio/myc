@@ -289,7 +289,7 @@ describe("ctx: заполнение окна контекста от хоста"
   });
 
   test("пример из задачи: длина строки и цена сегмента", () => {
-    const base: Omit<StatuslineData, "line" | "lines" | "took_ms" | "context_pct"> = {
+    const base: Omit<StatuslineData, "line" | "lines" | "took_ms" | "context_pct" | "scope"> = {
       workspace: "/ws",
       repo: "",
       queue: { ready: 61, in_progress: 0, blocked: 34, blocked_by_ancestor: 0 },
