@@ -31,7 +31,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 MB, 10 files, no models pulled at install
-myc --version                     # myc 0.3.5 (schema 1)
+myc --version                     # myc 0.3.6 (schema 1)
 ```
 
 It runs on macOS and Linux; on Windows, use WSL.

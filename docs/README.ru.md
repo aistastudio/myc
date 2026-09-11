@@ -20,7 +20,7 @@
 
 ```bash
 bun install -g @aistastudio/myc   # 3.20 МБ, 10 файлов, модели при установке не тянутся
-myc --version                     # myc 0.3.5 (schema 1)
+myc --version                     # myc 0.3.6 (schema 1)
 ```
 
 Работает на macOS и Linux; на Windows — через WSL.
