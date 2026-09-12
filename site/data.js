@@ -328,8 +328,8 @@ window.MYC_DATA = {
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.4,
-    "unpacked_mb": 12.53,
+    "compressed_mb": 3.41,
+    "unpacked_mb": 12.57,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.7",
+    "version": "0.3.8",
     "date": "2026-09-11"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-09-11",
-    "source": "myc 0.3.6 (schema 1) · 13 epics of this repository's workspace",
+    "as_of": "2026-09-12",
+    "source": "myc 0.3.7 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -458,7 +458,7 @@ window.MYC_DATA = {
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
         "status": "open",
-        "done": 7,
+        "done": 8,
         "total": 10,
         "cancelled": 0,
         "in_progress": 0,
@@ -468,12 +468,6 @@ window.MYC_DATA = {
             "status": "open",
             "priority": 1,
             "title": "Приёмка M3: связь код ↔ знание в обе стороны"
-          },
-          {
-            "id": "memory-5c03r9t5n472",
-            "status": "open",
-            "priority": 2,
-            "title": "Ре-привязка якорей после рефакторинга"
           },
           {
             "id": "memory-g79mpkt53yn3",
@@ -521,17 +515,11 @@ window.MYC_DATA = {
         "title_en": "a machine-wide queue for heavy commands",
         "title_ru": "очередь тяжёлых команд на машине",
         "status": "open",
-        "done": 3,
+        "done": 4,
         "total": 5,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          {
-            "id": "memory-n2tcwbwcwxzb",
-            "status": "open",
-            "priority": 2,
-            "title": "Сегмент очереди в строке статуса: сколько ждут и сколько я уже жду"
-          },
           {
             "id": "memory-40r75txge0fb",
             "status": "open",
@@ -717,8 +705,8 @@ window.MYC_DATA = {
         "title_ru": "общий пул статистики агентов",
         "status": "open",
         "parent": "memory-0dm3hdvdmr5c",
-        "done": 0,
-        "total": 4,
+        "done": 1,
+        "total": 5,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
@@ -945,6 +933,12 @@ window.MYC_DATA = {
             "cmd": "myc recall",
             "en": "Unconfirmed decision candidates written by the compaction hook stay out of recall, search, prime and the MCP tools until a person or distillation confirms them; an explicit remember of the same text confirms one.",
             "ru": "Кандидаты решений, записанные хуком сжатия, не попадают в recall, search, prime и MCP-инструменты, пока их не подтвердит человек или дистилляция; явный remember того же текста подтверждает кандидата."
+          },
+          {
+            "since": "0.3.8",
+            "cmd": "myc review",
+            "en": "myc review lists the decision candidates written at compaction and confirms or rejects them — also through MCP and the web KB; retracted, superseded and cancelled notes stay out of every retrieval path.",
+            "ru": "myc review показывает кандидатов решений, записанных при сжатии, и подтверждает или отклоняет их — и через MCP, и в веб-базе знаний; отозванные, заменённые и отменённые заметки не попадают ни в один путь выдачи."
           }
         ]
       },
@@ -1067,6 +1061,12 @@ window.MYC_DATA = {
             "cmd": "myc code index",
             "en": "The index keeps itself fresh: when its last run is older than 15 minutes, one background refresh per workspace is queued after any command and runs at low priority; the status line says refreshing, queued or stale.",
             "ru": "Индекс сам следит за свежестью: если последний прогон старше 15 минут, после любой команды в очередь ставится одно фоновое обновление на воркспейс с пониженным приоритетом; строка статуса говорит «обновляется», «в очереди» или «устарел»."
+          },
+          {
+            "since": "0.3.8",
+            "cmd": "myc anchor check",
+            "en": "Anchors follow code into other files: a function extracted, a file renamed or a module split is re-attached by the built-in index — git rename, then the same symbol, then the anchored words — and anchor check prints from → to; 43 of 49 moves in this repository's history, no false bindings.",
+            "ru": "Якоря следуют за кодом в другие файлы: вынесенную функцию, переименованный файл или разбитый модуль встроенный индекс привязывает заново — по git rename, затем по тому же символу, затем по словам участка, — и anchor check печатает «откуда → куда»; 43 из 49 переездов в истории этого репозитория, без ложных привязок."
           }
         ]
       },
@@ -1410,11 +1410,6 @@ window.MYC_DATA = {
             "ru": "Приёмка: от символа к решениям и обратно на реальном репозитории — и корректно после рефакторинга."
           },
           {
-            "id": "memory-5c03r9t5n472",
-            "en": "Re-attach anchors after a refactor by finding the moved code, with a confidence threshold and an explicit list of what stayed unresolved.",
-            "ru": "Перепривязка якорей после рефакторинга: поиск переехавшего кода с порогом уверенности и явным списком неразрешённого."
-          },
-          {
             "id": "memory-g79mpkt53yn3",
             "en": "A symbol's fan-in computed in the background and stored, so reading it is a column read with no external call.",
             "ru": "Fan-in символа считается в фоне и хранится числом — читать его значит прочитать колонку, без внешних вызовов."
@@ -1436,11 +1431,6 @@ window.MYC_DATA = {
       {
         "id": "memory-14qyv1gmacef",
         "items": [
-          {
-            "id": "memory-n2tcwbwcwxzb",
-            "en": "A queue segment in the status line: how many are waiting, and how long I have been waiting.",
-            "ru": "Сегмент очереди в строке статуса: сколько ждут и сколько уже жду я."
-          },
           {
             "id": "memory-40r75txge0fb",
             "en": "Slots and lanes from a config file, <code>~/.myc/queue.toml</code>, with a default derived from the number of cores.",
@@ -1655,16 +1645,16 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 3501,
+    "pass": 3625,
     "fail": 0,
     "skip": 16,
-    "files": 228,
-    "assertions": 34607,
-    "seconds": 344.8,
-    "sources": "adc1db1cc4424299",
+    "files": 233,
+    "assertions": 35199,
+    "seconds": 357.6,
+    "sources": "e3fdb46d07e08db2",
     "date": "2026-09-12",
-    "myc": "0.3.7"
+    "myc": "0.3.8"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-11T22:09:42.685Z", assertions: 77 };
-window.MYC_DATA.release = "0.3.7";
+window.MYC_DATA.verified = { at: "2026-09-12T12:13:38.489Z", assertions: 77 };
+window.MYC_DATA.release = "0.3.8";
