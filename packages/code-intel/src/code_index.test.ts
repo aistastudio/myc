@@ -317,7 +317,7 @@ describe("очередь и отказы", () => {
     write("a.ts", "export function stale() {}\n");
     await runCodeIndex(db, baseOpts());
 
-    // Кеш fan_in, посчитанный кем-то (T5) раньше правки.
+    // Число fan_in, положенное пересчётом (fanin.ts) раньше правки.
     db.query("INSERT INTO code_refs (repo_id, name, n_files, n_hits, computed_at) VALUES ('test-repo', 'stale', 3, 7, 1)")
       .run();
 

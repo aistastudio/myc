@@ -13,9 +13,11 @@
  * пустоту. Сценарий пишет argv терминала РУКАМИ, как набрал бы человек, а не
  * выводит его из диспетчера — иначе тест сверял бы диспетчер с самим собой.
  *
- * ПОЧЕМУ ДВА ВОРКСПЕЙСА, А НЕ ОДИН. Чтения кода пишут в базу: `code symbol`
- * кладёт fan_in в кеш `code_refs`. В общей базе второй проход читал бы кеш
- * первого, и сравнение «состояния после» ничего бы не значило. Дерево и
+ * ПОЧЕМУ ДВА ВОРКСПЕЙСА, А НЕ ОДИН. Чтения кода писали в базу: `code symbol`
+ * клал fan_in в кеш `code_refs` (до memory-g79mpkt53yn3 — теперь число кладёт
+ * прогон индекса, а чтение только читает). В общей базе второй проход читал
+ * бы то, что записал первый, и сравнение «состояния после» ничего бы не
+ * значило — и не поймало бы чтение, снова начавшее писать. Дерево и
  * индекс детерминированы (ID не генерируются, пути относительные), поэтому
  * два одинаковых воркспейса дают точное сравнение: A отвечает терминалу, B —
  * инструментам, и после одинаковых вопросов их базы обязаны совпасть.
@@ -237,22 +239,22 @@ interface Outcome {
 }
 
 /**
- * Время и попадание в кеш — цена ответа, а не ответ: `fan_in` второго прогона
- * читается из кеша первого, и в двух дверях порядок прогонов разный.
+ * Время — цена ответа, а не ответ: миллисекунды и момент, когда прогон
+ * индекса посчитал fan_in (`computed_at`), — у двух воркспейсов разные.
  */
 function stripVolatile(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripVolatile);
   if (typeof value !== "object" || value === null) return value;
   const outObj: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    if (k === "took_ms" || k.endsWith("_ms") || k === "cached") continue;
+    if (k === "took_ms" || k.endsWith("_ms") || k === "computed_at") continue;
     outObj[k] = stripVolatile(v);
   }
   return outObj;
 }
 
 function stripVolatileText(text: string): string {
-  return text.replace(/\d+ ms/g, "N ms").replace(/from cache/g, "N ms");
+  return text.replace(/\d+ ms/g, "N ms");
 }
 
 /** `--json` встаёт ДО `--`: после разделителя он был бы литералом. */
@@ -477,7 +479,7 @@ describe("команды кода и инструменты кода: один �
     const ambiguous = tool.find((o) => o.what === "callers неоднозначный")!;
     expect(ambiguous.text).toContain("WARN callers.ambiguous");
 
-    // Итоговая база: те же строки индекса, тот же кеш fan_in, ни одного
+    // Итоговая база: те же строки индекса, те же числа fan_in, ни одного
     // узла и ни одной работы, которых не было бы у соседа.
     const a = dbState(cliDir);
     const b = dbState(mcpDir);

@@ -17,7 +17,8 @@ import { migrate, migrations } from "@myc/store-sqlite";
 import { runCodeIndex, scanCodeIndex, drainCodeIndex } from "./code_index.ts";
 import { grepCode, resolveGrepScope } from "./grep.ts";
 import { repoMap } from "./map.ts";
-import { callGraph, fanIn, fileDefs, fileSkeleton, indexScope, refsTo, symbolDefs } from "./read.ts";
+import { recountFanIn } from "./fanin.ts";
+import { callGraph, fileDefs, fileSkeleton, indexScope, refsTo, storedFanIn, symbolDefs } from "./read.ts";
 import { buildSearchUnits, searchCode, SQL_STAGE_IN } from "./search.ts";
 import { type CodeView, prefixEnd, refsCacheKey, stripPrefix, withPrefix } from "./view.ts";
 
@@ -183,19 +184,25 @@ describe("план запроса части — тот же, что у корн
   });
 });
 
-describe("кеш fan_in: у части свой ключ, и индексатор снимает его вместе с ключом корня", () => {
-  test("счёт части не перетирает счёт корня и снимается переиндексацией", async () => {
-    const part = fanIn(db, A, "shared", join(tree, "a"));
-    const whole = fanIn(db, "", "shared", tree);
+describe("fan_in: у части свой ключ, и индексатор снимает его вместе с ключом корня", () => {
+  test("число части не перетирает число корня, снимается переиндексацией и пишется снова", async () => {
+    recountFanIn(db, { repoId: "", root: tree, parts: ["a"] });
+    const part = storedFanIn(db, A, "shared")!;
+    const whole = storedFanIn(db, "", "shared")!;
     expect(part.files).toBe(2);
     expect(whole.files).toBe(3); // a/core, a/use, b/b (a-b/ab.ts — только объявление)
-    expect(fanIn(db, A, "shared", join(tree, "a")).cached).toBe(true);
-    expect(fanIn(db, "", "shared", tree).n).toBe(whole.n);
+    // a/core: вызов в onlyInA; a/use: import и два вызова. Сосед `a-b/` с
+    // общим началом имени в число части не попал, b/ — тоже.
+    expect(part.n).toBe(4);
+    expect(whole.n).toBe(5);
 
     writeFileSync(join(tree, "b", "src", "b.ts"), `${B}\nexport const again = shared();\n`);
     await runCodeIndex(db, { repoId: "", root: tree });
-    expect(fanIn(db, A, "shared", join(tree, "a")).cached).toBe(false);
-    expect(fanIn(db, "", "shared", tree).cached).toBe(false);
+    expect(storedFanIn(db, A, "shared")).toBeNull();
+    expect(storedFanIn(db, "", "shared")).toBeNull();
+    recountFanIn(db, { repoId: "", root: tree, parts: ["a"] });
+    expect(storedFanIn(db, A, "shared")!.n).toBe(part.n);
+    expect(storedFanIn(db, "", "shared")!.n).toBe(whole.n + 1);
   });
 });
 

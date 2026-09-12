@@ -17,7 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
@@ -265,12 +265,145 @@ describe("myc code symbol — читатель, ради которого инд
     expect(fan["files"]).toBe(1);
   });
 
-  test("--no-fan-in не считает вовсе: чтение корпуса — плата, а не умолчание без выбора", async () => {
+  test("--no-fan-in оставляет число за скобками ответа", async () => {
     await data("code", "index");
     const d = await data("code", "symbol", "fuseRRF", "--no-fan-in");
     expect(d["fan_in"]).toBeUndefined();
+    expect(d["fan_in_pending"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fan_in считает прогон индекса, `code symbol` только читает (S9)
+// ---------------------------------------------------------------------------
+
+/**
+ * memory-g79mpkt53yn3: число кладёт прогон индекса — ручной `code index` и
+ * фоновый `code index --job` из работы `code_refresh`, — а `code symbol` берёт
+ * его поиском по ключу.
+ *
+ * МУТАЦИИ:
+ *   «прогон не считает» (убрать `recountFanIn` из `indexPass`) — краснеют
+ *     «в таблице лежит число» и «фоновый пересчёт»: строк нет;
+ *   «читатель досчитывает сам» (вернуть счёт по требованию, когда строки
+ *     нет) — краснеет «ноль подсчётов при чтении»: число появляется, хотя
+ *     сохранённое удалено;
+ *   «удалить сохранённое» (снять INSERT пересчёта) — краснеет тот же тест:
+ *     числа в ответе нет там, где его обязан был положить прогон.
+ */
+describe("fan_in: считает прогон индекса, `code symbol` только читает", () => {
+  function refs(): Array<{ name: string; n_files: number; n_hits: number }> {
+    const d = db();
+    try {
+      return d.query("SELECT name, n_files, n_hits FROM code_refs WHERE repo_id = '' ORDER BY name").all() as Array<{
+        name: string;
+        n_files: number;
+        n_hits: number;
+      }>;
+    } finally {
+      d.close();
+    }
+  }
+
+  test("после `code index` в таблице лежит число каждого символа, отчёт это называет", async () => {
+    const d = await data("code", "index");
+    expect(d["fan_in"]).toMatchObject({ ran: true, reason: "missing", names: 2 });
+    expect(refs()).toEqual([
+      { name: "callsFuse", n_files: 0, n_hits: 0 },
+      { name: "fuseRRF", n_files: 1, n_hits: 1 },
+    ]);
+    // Второй прогон по неизменённому дереву корпус не читает.
+    expect((await data("code", "index"))["fan_in"]).toMatchObject({ ran: false, reason: "complete", files: 0 });
+    const text = String((await myc("code", "index")).stdout);
+    expect(text).toContain("fan_in    up to date");
   });
 
+  test("ноль подсчётов при чтении: корпус удалён — число прежнее; сохранённое удалено — числа нет", async () => {
+    await data("code", "index");
+    // 1) Файлов на диске нет, индекс помнит определения: читатель, который
+    //    считал бы сам, получил бы 0.
+    rmSync(join(dir, "src"), { recursive: true, force: true });
+    const stored = await data("code", "symbol", "fuseRRF");
+    expect(stored["fan_in"]).toMatchObject({ n: 1, files: 1, source: "text" });
+    // 2) Файлы вернули, сохранённое удалили: числа нет, и оно НЕ досчитано.
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "fuse.ts"), FUSE);
+    const d = db();
+    d.query("DELETE FROM code_refs").run();
+    d.close();
+    const r = await myc("code", "symbol", "fuseRRF", "--json");
+    const e = JSON.parse(String(r.stdout)) as { data: Record<string, unknown>; warn?: Array<{ code: string }> };
+    expect(e.data["fan_in"]).toBeUndefined();
+    expect(String(e.data["fan_in_pending"])).toContain("has not stored");
+    expect((e.warn ?? []).map((w) => w.code)).toContain("code_symbol.fan_in_pending");
+    // И ничего не записал: чтение не заполняет таблицу.
+    expect(refs()).toEqual([]);
+    expect(String((await myc("code", "symbol", "fuseRRF")).stdout)).toContain("fan_in pending");
+  });
+
+  test("правка файла с упоминанием → фоновый прогон (`code_refresh` → `code index --job`) даёт новое число", async () => {
+    const { drainQueueTail } = await import("../drain.ts");
+    await data("code", "index");
+    expect((await data("code", "symbol", "fuseRRF"))["fan_in"]).toMatchObject({ n: 1 });
+
+    writeFileSync(join(dir, "src", "more.ts"), 'import { fuseRRF } from "./fuse.ts";\nexport const twice = fuseRRF([1], [2]).concat(fuseRRF([3], [4]));\n');
+    // Фон: дренаж (как после любой команды) ставит `code_refresh`, захватывает
+    // её и поднимает исполнителя. Исполнитель здесь — та же команда в этом же
+    // процессе, с id работы и держателем, которые дал дренаж.
+    const spawned: Array<{ id: number; holder: string }> = [];
+    const dbPath = join(dir, ".myc", "myc.db");
+    const drained = await drainQueueTail({
+      dbPath,
+      env: { MYC_CODE_INDEX_PERIOD_MS: "0" },
+      spawnCodeIndex: (_db, job) => void spawned.push(job),
+    });
+    expect(drained.codeIndex?.spawned).toBe(true);
+    expect(spawned.length).toBe(1);
+    const job = await data("code", "index", "--job", String(spawned[0]!.id), "--holder", spawned[0]!.holder);
+    expect(job["taken"]).toBe(true);
+    const run0 = (job["runs"] as Array<Record<string, unknown>>)[0]!;
+    expect(run0["fan_in"]).toMatchObject({ ran: true, reason: "missing" });
+    // import + два вызова в more.ts, вызов в callsFuse.
+    expect((await data("code", "symbol", "fuseRRF"))["fan_in"]).toMatchObject({ n: 4, files: 2 });
+  });
+
+  test("шаг дренажа (горячий путь) корпус не читает: модуль пересчёта не грузится статически", () => {
+    const drainSrc = readFileSync(join(import.meta.dir, "..", "drain.ts"), "utf8");
+    expect(drainSrc).not.toContain("@myc/code-intel/fanin");
+    const codeSrc = readFileSync(join(import.meta.dir, "code.ts"), "utf8");
+    expect(codeSrc).not.toMatch(/^import[^;]*["']@myc\/code-intel\/fanin["']/m);
+    expect(codeSrc).toContain('import("@myc/code-intel/fanin")');
+  });
+});
+
+describe("знание с подозрительным якорем помечено и опущено вниз (§7.3)", () => {
+  test("якорь lost — знание suspect и последним; живое знание о том же символе — первым", async () => {
+    const lost = (await data("task", "Старое слияние RRF"))["id"] as string;
+    const live = (await data("task", "Живое слияние RRF"))["id"] as string;
+    // Спаны разные: узел якоря адресуется содержимым.
+    const lostAnchor = (await data("anchor", "add", lost, "src/fuse.ts:4-5"))["anchor_id"] as string;
+    await data("anchor", "add", live, "src/fuse.ts:5-6");
+    await data("code", "index");
+    const d = db();
+    try {
+      // Так якорь выглядит после проверки, не нашедшей своего кода: состояние
+      // и пометка входящих рёбер (anchor.ts, markSuspect).
+      d.query("UPDATE anchors SET state = 'lost' WHERE node_id = ?1").run(lostAnchor);
+      d.query("UPDATE edges SET attrs = json_set(attrs, '$.suspect', 1) WHERE dst = ?1 AND type = 'touches'").run(lostAnchor);
+    } finally {
+      d.close();
+    }
+    const defs = (await data("code", "symbol", "fuseRRF"))["defs"] as Array<Record<string, unknown>>;
+    const knowledge = defs[0]!["knowledge"] as Array<{ id: string; suspect: boolean; state: string }>;
+    expect(knowledge.map((k) => k.id)).toEqual([live, lost]);
+    expect(knowledge.map((k) => k.suspect)).toEqual([false, true]);
+    expect(knowledge[1]!.state).toBe("lost");
+    const text = String((await myc("code", "symbol", "fuseRRF")).stdout);
+    expect(text).toContain("lost · suspect]");
+  });
+});
+
+describe("myc code symbol — отказы с причиной", () => {
   test("несуществующий символ — отказ, называющий просмотренное (§6.3)", async () => {
     await data("code", "index");
     const r = await myc("code", "symbol", "нетТакого");

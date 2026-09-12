@@ -64,12 +64,11 @@ export function withPrefix(view: CodeView, path: string): string {
 }
 
 /**
- * Ключ строк `code_refs` для вида. fan_in живёт по `(repo_id, name)`, и
+ * Ключ кеша `code_refs` для вида. Кеш fan_in живёт по `(repo_id, name)`, и
  * счёт по ЧАСТИ индекса под ключом всего индекса перетёр бы счёт корня.
  * `` в имени каталога не встречается, и индексатор снимает все такие
- * ключи вместе со своим (`invalidateRefs`), а фоновый пересчёт (`fanin.ts`)
- * пишет их вместе со своим: число части не переживает переиндексации так же,
- * как не переживает её число корня.
+ * ключи вместе со своим (`invalidateRefs`), поэтому кеш вида не переживает
+ * переиндексации так же, как не переживает её кеш корня.
  */
 export function refsCacheKey(view: CodeView): string {
   return view.prefix.length === 0 ? view.repoId : `${view.repoId}${REFS_VIEW_SEP}${view.prefix}`;

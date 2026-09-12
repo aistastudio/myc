@@ -1,0 +1,169 @@
+/**
+ * ЧТЕНИЕ индекса кода — вторая половина `code_index.ts`, которой не было.
+ *
+ * Индекс писался фоном, а читать его было некому: `code_files`, `code_defs` и
+ * `code_refs` не спрашивала ни одна команда (memory-m30yh8swnm1d). Здесь —
+ * запросы, на которых стоят читатели: `myc code symbol` (§3.1 «символ →
+ * path:span»), `defsInSpan` для якорей (какой символ держит этот участок) и
+ * `fanIn` (§4.3, T5) со счётом ПО ТРЕБОВАНИЮ.
+ *
+ * Почему `fan_in` не считает индексатор: пересчёт по репозиторию — это проход
+ * по всему содержимому, несовместимый с бюджетом повторного индекса. Поэтому
+ * `code_refs` — КЕШ: индексатор строки изменённых имён удаляет (инвалидация),
+ * а считает их первый спросивший, и результат кладётся обратно. Источник в
+ * ответе подписан всегда (`text`), потому что текстовый счёт — верхняя
+ * оценка: одноимённый символ из другого файла в него попадает (§4.3).
+ *
+ * Запросы идут по префиксам первичных ключей `(repo_id, path, …)`, кроме
+ * поиска по имени — он полный скан `code_defs` по repo_id, и это осознанно:
+ * корпус репозитория — десятки тысяч строк, а второй индекс на (repo, name)
+ * стоил бы записи при каждом разборе файла.
+ *
+ * ССЫЛКИ (`code_ref_sites`, миграция 011, memory-e34bfse29jdw) читаются в
+ * конце файла — `refsTo`/`refsFrom`/`refsIndexed`. Там расклад другой и
+ * обратный: строк не тысячи, а сотни тысяч, и полный скан по имени
+ * недопустим — поэтому у той таблицы индекс по (repo_id, name) есть.
+ *
+ * ЧАСТЬ ИНДЕКСА (`view.ts`, memory-m0md9fybwrdh). Каждый читатель принимает
+ * вместо `repoId` и ВИД — `{repoId, prefix}`: строки берутся из-под префикса,
+ * пути наружу уходят без него. Строка `repoId` — прежний вызов, и для него
+ * исполняется ровно прежний SQL: ответ из корня не меняется ни запросом, ни
+ * планом.
+ */
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Database } from "bun:sqlite";
+import { L1_LANGS } from "./langs.ts";
+import { type CodeView, prefixEnd, type RepoRef, refsCacheKey, stripPrefix, viewOf, withPrefix } from "./view.ts";
+
+/** Определение, как оно лежит в `code_defs` (плюс язык из `code_files`). */
+export interface IndexedDef {
+  readonly path: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly spanStart: number;
+  readonly spanEnd: number;
+  readonly exported: boolean;
+  readonly lang: string;
+}
+
+/** Что индекс вообще видел по этому репозиторию (§6.3: пустая выдача с причиной). */
+export interface IndexScope {
+  readonly files: number;
+  readonly defs: number;
+  /** Файлов по языкам, крупные первыми. */
+  readonly langs: readonly { readonly lang: string; readonly files: number }[];
+  /** Когда последний файл был записан индексом; 0 — индекса нет. */
+  readonly indexedAt: number;
+  /** Файлов уровня L1 (только у них бывают определения). */
+  readonly l1Files: number;
+}
+
+interface DefRow {
+  path: string;
+  name: string;
+  kind: string;
+  span_start: number;
+  span_end: number;
+  exported: number;
+  lang: string | null;
+}
+
+function toDef(r: DefRow, view?: CodeView): IndexedDef {
+  return {
+    path: view === undefined ? r.path : stripPrefix(view, r.path),
+    name: r.name,
+    kind: r.kind,
+    spanStart: r.span_start,
+    spanEnd: r.span_end,
+    exported: r.exported === 1,
+    lang: r.lang ?? "",
+  };
+}
+
+const SQL_BY_NAME = `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
+  FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
+  WHERE d.repo_id = ?1 AND d.name = ?2
+  ORDER BY d.path, d.span_start`;
+
+/**
+ * То же под префиксом вида. Отрезок `path` стоит СРАЗУ за `repo_id` в
+ * первичном ключе `(repo_id, path, name, span_start)`, поэтому скан идёт
+ * только по файлам вложенного репозитория, а не по всему индексу корня:
+ * вопрос из репозитория стоит не дороже, чем из корня, а обычно дешевле.
+ */
+const SQL_BY_NAME_IN = `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
+  FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
+  WHERE d.repo_id = ?1 AND d.name = ?2 AND d.path >= ?3 AND d.path < ?4
+  ORDER BY d.path, d.span_start`;
+
+const SQL_BY_FILE = `SELECT d.path, d.name, d.kind, d.span_start, d.span_end, d.exported, f.lang
+  FROM code_defs d LEFT JOIN code_files f ON f.repo_id = d.repo_id AND f.path = d.path
+  WHERE d.repo_id = ?1 AND d.path = ?2
+  ORDER BY d.span_start`;
+
+/** Определения с этим именем во всём репозитории. Пусто — символ не найден. */
+export function symbolDefs(db: Database, repo: RepoRef, name: string): IndexedDef[] {
+  const v = viewOf(repo);
+  if (v.prefix.length === 0) return (db.query(SQL_BY_NAME).all(v.repoId, name) as DefRow[]).map((r) => toDef(r));
+  return (db.query(SQL_BY_NAME_IN).all(v.repoId, name, v.prefix, prefixEnd(v.prefix)) as DefRow[]).map((r) =>
+    toDef(r, v),
+  );
+}
+
+/** Все определения одного файла — «скелет» файла в терминах индекса. */
+export function fileDefs(db: Database, repo: RepoRef, path: string): IndexedDef[] {
+  const v = viewOf(repo);
+  return (db.query(SQL_BY_FILE).all(v.repoId, withPrefix(v, path)) as DefRow[]).map((r) =>
+    toDef(r, v.prefix.length === 0 ? undefined : v),
+  );
+}
+
+/**
+ * Определения, ПЕРЕСЕКАЮЩИЕ участок — то, чем якорь `file:start-end`
+ * превращается в «функция runAnchorStep», а не в пару чисел. Пересечение, а
+ * не вложение: якорь ставят и на кусок тела функции, и на блок из нескольких.
+ */
+export function defsInSpan(
+  db: Database,
+  repo: RepoRef,
+  path: string,
+  start: number,
+  end: number,
+): IndexedDef[] {
+  return fileDefs(db, repo, path).filter((d) => d.spanStart <= end && d.spanEnd >= start);
+}
+
+/** Состояние индекса по репозиторию: сколько файлов, символов, на чём написано. */
+export function indexScope(db: Database, repo: RepoRef): IndexScope {
+  const v = viewOf(repo);
+  const whole = v.prefix.length === 0;
+  const range = whole ? [] : [v.prefix, prefixEnd(v.prefix)];
+  const files = db
+    .query(
+      whole
+        ? "SELECT lang, count(*) AS n, max(indexed_at) AS at FROM code_files WHERE repo_id = ?1 GROUP BY lang"
+        : "SELECT lang, count(*) AS n, max(indexed_at) AS at FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3 GROUP BY lang",
+    )
+    .all(v.repoId, ...range) as Array<{ lang: string; n: number; at: number }>;
+  const defs = (
+    db
+      .query(
+        whole
+          ? "SELECT count(*) AS n FROM code_defs WHERE repo_id = ?1"
+          : "SELECT count(*) AS n FROM code_defs WHERE repo_id = ?1 AND path >= ?2 AND path < ?3",
+      )
+      .get(v.repoId, ...range) as { n: number }
+  ).n;
+  const langs = files
+    .map((r) => ({ lang: r.lang, files: Number(r.n) }))
+    .sort((a, b) => b.files - a.files || a.lang.localeCompare(b.lang));
+  return {
+    files: langs.reduce((s, l) => s + l.files, 0),
+    defs: Number(defs),
+    langs,
+    indexedAt: files.reduce((mx, r) => Math.max(mx, Number(r.at ?? 0)), 0),
+    l1Files: langs.reduce((s, l) => s + (L1_LANGS.has(l.lang) ? l.files : 0), 0),
+  };
+}

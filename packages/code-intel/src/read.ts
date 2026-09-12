@@ -5,14 +5,15 @@
  * `code_refs` не спрашивала ни одна команда (memory-m30yh8swnm1d). Здесь —
  * запросы, на которых стоят читатели: `myc code symbol` (§3.1 «символ →
  * path:span»), `defsInSpan` для якорей (какой символ держит этот участок) и
- * `fanIn` (§4.3, T5) со счётом ПО ТРЕБОВАНИЮ.
+ * `storedFanIn` (§4.3, T5, S9) — чтение готового числа.
  *
- * Почему `fan_in` не считает индексатор: пересчёт по репозиторию — это проход
- * по всему содержимому, несовместимый с бюджетом повторного индекса. Поэтому
- * `code_refs` — КЕШ: индексатор строки изменённых имён удаляет (инвалидация),
- * а считает их первый спросивший, и результат кладётся обратно. Источник в
- * ответе подписан всегда (`text`), потому что текстовый счёт — верхняя
- * оценка: одноимённый символ из другого файла в него попадает (§4.3).
+ * `fan_in` здесь НЕ СЧИТАЕТСЯ (memory-g79mpkt53yn3): его считает прогон
+ * индекса в фоне (`./fanin.ts`) и кладёт в `code_refs`, а читатель берёт
+ * строку по первичному ключу — ни одного файла, ни одного прохода по корпусу.
+ * Прежде здесь был счёт по требованию с кешем, и «дёшево» было правдой только
+ * у второго спросившего. Источник в ответе подписан всегда (`text`), потому
+ * что текстовый счёт — верхняя оценка: одноимённый символ из другого файла в
+ * него попадает (§4.3).
  *
  * Запросы идут по префиксам первичных ключей `(repo_id, path, …)`, кроме
  * поиска по имени — он полный скан `code_defs` по repo_id, и это осознанно:
@@ -169,118 +170,47 @@ export function indexScope(db: Database, repo: RepoRef): IndexScope {
 }
 
 /**
- * `fan_in` с обязательной подписью источника (§4.3). `cached` говорит, взяли
- * ли из `code_refs` или считали сейчас: без него «дёшево» и «дорого»
- * неразличимы, а разница здесь — два порядка.
+ * `fan_in` символа, как его положил фоновый пересчёт (`./fanin.ts`), с
+ * обязательной подписью источника (§4.3).
  */
-export interface FanInResult {
+export interface StoredFanIn {
+  /** Вхождений `\bNAME\b` по L1-файлам минус строки определений этого имени. */
   readonly n: number;
+  /** В скольких файлах. */
   readonly files: number;
   readonly source: "text";
-  readonly cached: boolean;
-  /** Сколько файлов прочитано этим вызовом (0 — попадание в кеш). */
-  readonly read: number;
-  readonly tookMs: number;
+  /** Когда посчитано (мс эпохи). */
+  readonly computedAt: number;
 }
 
+/** Строка числа — по первичному ключу `(repo_id, name)`; план пришпилен тестом. */
+export const SQL_FAN_IN = "SELECT n_files, n_hits, computed_at FROM code_refs WHERE repo_id = ?1 AND name = ?2";
+
 /**
- * Число вхождений `\bNAME\b` по L1-файлам репозитория за вычетом строк самих
- * определений. Считается по требованию и кладётся в `code_refs`; индексатор
- * эту строку удалит, как только изменится любой файл, где имя встречалось.
+ * ЧТЕНИЕ `fan_in` — поиск по первичному ключу `code_refs (repo_id, name)` и
+ * больше ничего (S9): ни файла, ни прохода по корпусу, ни записи. Это и есть
+ * интерфейс для потребителя из горячего пути (отпечаток задачи в рое).
  *
- * Только L1: fan_in символа — это про код, а не про упоминание имени в
- * README, и читать ради него весь L0-реестр (включая бинарники) незачем.
+ * null — числа нет: индекс изменился, а фоновый пересчёт ещё не дописал его
+ * (или индекс собран сборкой, у которой счёт был по требованию). Считать здесь
+ * взамен нельзя — ровно от этого S9 и уводит; читатель называет «ещё не
+ * посчитано», а досчитает следующий прогон индекса.
+ *
+ * Ключ — вида (`refsCacheKey`): из вложенного репозитория число по ЕГО части
+ * индекса корня, из корня — по всему индексу.
  */
-export function fanIn(
-  db: Database,
-  repo: RepoRef,
-  name: string,
-  root: string,
-  opts: { readonly now?: number; readonly write?: boolean } = {},
-): FanInResult {
-  const t0 = performance.now();
-  const v = viewOf(repo);
-  // Счёт по части индекса кешируется под СВОИМ ключом (`refsCacheKey`), а не
-  // под ключом всего индекса: иначе число вложенного репозитория перетёрло бы
-  // число корня, и наоборот.
-  const cacheKey = refsCacheKey(v);
-  const cached = db
-    .query("SELECT n_files, n_hits FROM code_refs WHERE repo_id = ?1 AND name = ?2")
-    .get(cacheKey, name) as { n_files: number; n_hits: number } | null;
-  if (cached !== null) {
-    return {
-      n: Number(cached.n_hits),
-      files: Number(cached.n_files),
-      source: "text",
-      cached: true,
-      read: 0,
-      tookMs: performance.now() - t0,
-    };
-  }
-
-  // Строки определений вычитаются по (path, span_start): вхождение имени в
-  // собственном объявлении — не входящая ссылка.
-  const defLines = new Map<string, Set<number>>();
-  for (const d of symbolDefs(db, v, name)) {
-    const set = defLines.get(d.path) ?? new Set<number>();
-    set.add(d.spanStart);
-    defLines.set(d.path, set);
-  }
-
-  const word = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
-  const paths = (
-    v.prefix.length === 0
-      ? db.query("SELECT path, lang FROM code_files WHERE repo_id = ?1").all(v.repoId)
-      : db
-          .query("SELECT path, lang FROM code_files WHERE repo_id = ?1 AND path >= ?2 AND path < ?3")
-          .all(v.repoId, v.prefix, prefixEnd(v.prefix))
-  ) as Array<{ path: string; lang: string }>;
-  let hits = 0;
-  let nFiles = 0;
-  let read = 0;
-  for (const p of paths) {
-    if (!L1_LANGS.has(p.lang)) continue;
-    const rel = stripPrefix(v, p.path);
-    let text: string;
-    try {
-      text = readFileSync(join(root, rel), "utf8");
-    } catch {
-      continue; // файл исчез между индексом и вопросом — не повод падать
-    }
-    read++;
-    if (!text.includes(name)) continue;
-    const skip = defLines.get(rel);
-    let inFile = 0;
-    const lines = text.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (skip?.has(i + 1) === true) continue;
-      word.lastIndex = 0;
-      inFile += (lines[i]!.match(word) ?? []).length;
-    }
-    if (inFile > 0) {
-      hits += inFile;
-      nFiles++;
-    }
-  }
-
-  if (opts.write !== false) {
-    try {
-      db.query(
-        `INSERT INTO code_refs (repo_id, name, n_files, n_hits, computed_at) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (repo_id, name) DO UPDATE SET
-           n_files = excluded.n_files, n_hits = excluded.n_hits, computed_at = excluded.computed_at`,
-      ).run(cacheKey, name, nFiles, hits, opts.now ?? Date.now());
-    } catch {
-      // Кеш — ускорение, а не ответ: база под чужой записью не отменяет счёт.
-    }
-  }
+export function storedFanIn(db: Database, repo: RepoRef, name: string): StoredFanIn | null {
+  const row = db.query(SQL_FAN_IN).get(refsCacheKey(viewOf(repo)), name) as {
+    n_files: number;
+    n_hits: number;
+    computed_at: number;
+  } | null;
+  if (row === null) return null;
   return {
-    n: hits,
-    files: nFiles,
+    n: Number(row.n_hits),
+    files: Number(row.n_files),
     source: "text",
-    cached: false,
-    read,
-    tookMs: performance.now() - t0,
+    computedAt: Number(row.computed_at),
   };
 }
 

@@ -15,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
 import { runCodeIndex } from "./code_index.ts";
-import { defsInSpan, fanIn, fileDefs, indexScope, SQL_REFS_TO, symbolDefs } from "./read.ts";
+import { recountFanIn } from "./fanin.ts";
+import { defsInSpan, fileDefs, indexScope, SQL_FAN_IN, SQL_REFS_TO, storedFanIn, symbolDefs } from "./read.ts";
 
 const A = `export function alpha(): number {
   return 1;
@@ -113,33 +114,30 @@ describe("охват индекса (§6.3: пустая выдача с при�
   });
 });
 
-describe("fan_in: счёт по требованию, кеш — в code_refs", () => {
-  test("считает вхождения по L1-файлам за вычетом строки определения", () => {
-    const f = fanIn(db, "r", "alpha", dir);
+describe("fan_in: читатель берёт число, которое положил прогон индекса (S9)", () => {
+  test("до пересчёта — null (не ноль и не подсчёт), после — число с источником", () => {
+    expect(storedFanIn(db, "r", "alpha")).toBeNull();
+    recountFanIn(db, { repoId: "r", root: dir });
     // a.ts: строка определения не считается, два вызова в beta;
     // b.ts: import + вызов; README.md — L0, в счёт не идёт.
-    expect(f.n).toBe(4);
-    expect(f.files).toBe(2);
-    expect(f.source).toBe("text");
-    expect(f.cached).toBe(false);
-    expect(f.read).toBe(2);
+    expect(storedFanIn(db, "r", "alpha")).toMatchObject({ n: 4, files: 2, source: "text" });
   });
 
-  test("второй вызов берёт из кеша и не читает ни одного файла", () => {
-    fanIn(db, "r", "alpha", dir);
-    const again = fanIn(db, "r", "alpha", dir);
-    expect(again.cached).toBe(true);
-    expect(again.read).toBe(0);
-    expect(again.n).toBe(4);
-  });
-
-  test("индексатор инвалидирует кеш: после правки файла счёт пересчитывается", async () => {
-    fanIn(db, "r", "alpha", dir);
+  test("индексатор снимает число: после правки файла его нет до следующего пересчёта", async () => {
+    recountFanIn(db, { repoId: "r", root: dir });
     writeFileSync(join(dir, "src", "b.ts"), `${B}\nexport const extra = alpha();\n`);
     await runCodeIndex(db, { repoId: "r", root: dir, now: Date.now() + 1000 });
-    const after = fanIn(db, "r", "alpha", dir);
-    expect(after.cached).toBe(false);
-    expect(after.n).toBe(5);
+    expect(storedFanIn(db, "r", "alpha")).toBeNull();
+    recountFanIn(db, { repoId: "r", root: dir });
+    expect(storedFanIn(db, "r", "alpha")!.n).toBe(5);
+  });
+
+  test("чтение — поиск по первичному ключу, без скана", async () => {
+    const plan = (db.query(`EXPLAIN QUERY PLAN ${SQL_FAN_IN}`).all("r", "alpha") as Array<{ detail: string }>).map(
+      (r) => r.detail,
+    );
+    expect(plan.join(" | ")).toContain("USING PRIMARY KEY");
+    expect(plan.join(" | ")).not.toMatch(/SCAN code_refs/);
   });
 });
 

@@ -281,6 +281,28 @@ export interface HybridConfig {
   readonly graphTypeWeights: Readonly<Record<string, number>>;
   /** Вес типа ребра, которого нет в graphTypeWeights. */
   readonly graphTypeWeightDefault: number;
+
+  // --- состояние якоря знания (docs/design/01 §7.3, приёмка M3) ---
+  /**
+   * МНОЖИТЕЛЬ ПО СОСТОЯНИЮ ЯКОРЯ. Знание, привязанное к коду, которого на
+   * месте больше нет, не удаляется (устаревшее — не значит неверное), но и
+   * стоять вровень с живым не должно: `stale` — «файл изменился, код не
+   * нашли, индекс ещё не видел правки», `lost` — «не нашли и в других файлах
+   * по индексу, который правку видел». Таблица §7.3: stale × 0.5, lost × 0.2.
+   *
+   * Узел с несколькими якорями берёт ЛУЧШИЙ: знание живо, пока жив хоть один
+   * участок кода, к которому оно привязано, — один удалённый вызов из трёх не
+   * делает решение подозрительным. Узел без якорей — ×1.
+   *
+   * Значения — не калибровка, а таблица спеки; вынесены сюда, чтобы точку
+   * «без понижения» (NO_ANCHOR_WEIGHT_OVERRIDES) можно было снять, не правя код.
+   */
+  readonly anchorStateWeights: Readonly<{ stale: number; lost: number }>;
+  /**
+   * `drifted` — вес × drift (§7.3: найден по сходству или в другом файле,
+   * drift ∈ [0.5, 1]). false — сдвинувшийся якорь весит как `fresh`.
+   */
+  readonly anchorDriftWeight: boolean;
 }
 
 export type HybridProfile = "prime" | "deep" | "balanced";
@@ -366,7 +388,19 @@ export const DEFAULT_HYBRID_CONFIG: HybridConfig = {
   graphHop2Seeds: 12,
   graphTypeWeights: DEFAULT_GRAPH_TYPE_WEIGHTS,
   graphTypeWeightDefault: 1.0,
+
+  anchorStateWeights: Object.freeze({ stale: 0.5, lost: 0.2 }),
+  anchorDriftWeight: true,
 };
+
+/**
+ * «Состояние якоря не влияет на ранг» одной накладкой — точка сравнения и
+ * мутация приёмки M3: с ней знание об удалённом коде стоит вровень с живым.
+ */
+export const NO_ANCHOR_WEIGHT_OVERRIDES: Partial<HybridConfig> = Object.freeze({
+  anchorStateWeights: Object.freeze({ stale: 1, lost: 1 }),
+  anchorDriftWeight: false,
+});
 
 /**
  * «Расширение по графу выключено» одной накладкой — вторая точка замера
@@ -454,7 +488,7 @@ export interface HybridHit {
   readonly id: string;
   /** Позиция в итоговой выдаче, 1 = лучший. */
   readonly rank: number;
-  /** final(d) = score_rrf(d) × boost(d). */
+  /** final(d) = score_rrf(d) × boost(d) × вес состояния якоря (§7.3, ×1 без якорей). */
   readonly score: number;
   /** Чистый RRF до бустов. */
   readonly rrf: number;
@@ -494,6 +528,14 @@ export interface HybridHit {
   readonly updatedAt: number;
   readonly title: string;
   readonly excerpt: string;
+  /**
+   * Состояние лучшего якоря узла, если он не `fresh` (§7.3) — данные для
+   * плашки «код сдвинулся / требует проверки / удалён». Поля нет — якорей нет
+   * или лучший из них свеж.
+   */
+  readonly anchorState?: "drifted" | "stale" | "lost";
+  /** Множитель, которым состояние якоря умножило счёт; поля нет — ×1. */
+  readonly anchorWeight?: number;
 }
 
 /** Что именно проверил триггер — целиком, а не только сработавшее. */
@@ -832,6 +874,27 @@ export function freshnessClockSql(alias: string): string {
     END)`;
 }
 
+/**
+ * Состояния якорей узла одной строкой `state:drift[,state:drift…]` — сырьё
+ * для множителя §7.3 (`anchorWeightOf`). У знания это якоря, к которым от него
+ * идут рёбра `touches`; у самого узла-якоря — его собственная строка.
+ *
+ * Скалярный подзапрос на строку результата, а не соединение: строк здесь —
+ * пул (≤ poolSize) плюс веер обхода, и на каждую это поиск по первичному
+ * ключу `edges (src, type, dst)` префиксом `(src, 'touches')` и по ключу
+ * `anchors.node_id` — единицы микросекунд. У узла без якорей — NULL. План
+ * пришпилен тестом (hybrid.anchor.test.ts): скан `edges` здесь стоил бы
+ * миллисекунды на КАЖДУЮ строку.
+ */
+export function anchorStatesSql(alias: string): string {
+  return `CASE WHEN ${alias}.kind = 'anchor'
+      THEN (SELECT an.state || ':' || an.drift FROM anchors an WHERE an.node_id = ${alias}.id)
+      ELSE (SELECT group_concat(an.state || ':' || an.drift, ',')
+              FROM edges t JOIN anchors an ON an.node_id = t.dst
+             WHERE t.src = ${alias}.id AND t.type = 'touches' AND t.deleted_at IS NULL)
+    END`;
+}
+
 export const hybridQueries = defineQueries({
   // Один оператор = один round-trip: лексический пул + ранг + BM25-скор
   // (нужен триггеру, поэтому отдаём его, а не только ранг) + обход графа на
@@ -983,7 +1046,8 @@ export const hybridQueries = defineQueries({
              n.updated_at  AS updated_at,
              ${freshnessClockSql("n")} AS fresh_at,
              n.title       AS title,
-             n.excerpt     AS excerpt
+             n.excerpt     AS excerpt,
+             ${anchorStatesSql("n")} AS anchors
       -- CROSS JOIN is required here too: nodes has an index on scope, and
       -- the planner is tempted to enter from nodes, reading thousands of the
       -- scope's rows only to look them up in merged. The order "merged first
@@ -1081,7 +1145,8 @@ export const hybridQueries = defineQueries({
              n.updated_at AS updated_at,
              ${freshnessClockSql("n")} AS fresh_at,
              n.title    AS title,
-             n.excerpt  AS excerpt
+             n.excerpt  AS excerpt,
+             ${anchorStatesSql("n")} AS anchors
       FROM nodes n
       WHERE n.id IN (SELECT value FROM json_each(?1))
         AND n.deleted_at IS NULL
@@ -1121,6 +1186,8 @@ interface LexicalRow {
   readonly fresh_at: number;
   readonly title: string;
   readonly excerpt: string;
+  /** anchorStatesSql: `state:drift,…`; NULL — якорей нет. */
+  readonly anchors: string | null;
 }
 
 interface NodeRow {
@@ -1132,6 +1199,7 @@ interface NodeRow {
   readonly fresh_at: number;
   readonly title: string;
   readonly excerpt: string;
+  readonly anchors: string | null;
 }
 
 // ============================ RRF и бусты ===================================
@@ -1219,6 +1287,41 @@ export function boostOf(
   const weights = cfg.layerWeights[cfg.profile] ?? DEFAULT_LAYER_WEIGHTS[cfg.profile];
   const layerW = weights[Math.min(3, Math.max(0, node.layer)) as 0 | 1 | 2 | 3];
   return priority * freshness * layerW;
+}
+
+/** Итог состояния якорей узла: множитель и состояние лучшего якоря (null — свеж или якорей нет). */
+export interface AnchorWeight {
+  readonly weight: number;
+  readonly state: "drifted" | "stale" | "lost" | null;
+}
+
+const NO_ANCHORS: AnchorWeight = Object.freeze({ weight: 1, state: null });
+
+/**
+ * Множитель §7.3 по сырой строке `anchorStatesSql`: лучший якорь узла решает
+ * (см. HybridConfig.anchorStateWeights). Числа — из конфига, ни одного в теле.
+ */
+export function anchorWeightOf(
+  raw: string | null,
+  cfg: Pick<HybridConfig, "anchorStateWeights" | "anchorDriftWeight">,
+): AnchorWeight {
+  if (raw === null || raw.length === 0) return NO_ANCHORS;
+  let best: AnchorWeight | null = null;
+  for (const part of raw.split(",")) {
+    const i = part.indexOf(":");
+    const state = i < 0 ? part : part.slice(0, i);
+    const drift = i < 0 ? Number.NaN : Number(part.slice(i + 1));
+    let w: AnchorWeight;
+    if (state === "stale") w = { weight: cfg.anchorStateWeights.stale, state: "stale" };
+    else if (state === "lost") w = { weight: cfg.anchorStateWeights.lost, state: "lost" };
+    else if (state === "drifted") {
+      const d = cfg.anchorDriftWeight && Number.isFinite(drift) ? Math.min(1, Math.max(0, drift)) : 1;
+      w = { weight: d, state: "drifted" };
+    } else w = NO_ANCHORS;
+    // Лучший — по весу; при равном весе свежий честнее «сдвинувшегося» на 1.0.
+    if (best === null || w.weight > best.weight || (w.weight === best.weight && w.state === null)) best = w;
+  }
+  return best ?? NO_ANCHORS;
 }
 
 /**
@@ -1545,6 +1648,7 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
         fresh_at: row.fresh_at,
         title: row.title,
         excerpt: row.excerpt,
+        anchors: row.anchors,
       };
       const cand: Candidate = map.get(row.id) ?? { id: row.id, node, sources: new Set() };
       if (row.fts_rank !== null) {
@@ -1773,6 +1877,15 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
   const scored = new Map<string, number>();
   const fused: { cand: Candidate; rrf: number; score: number }[] = [];
 
+  // Состояние якоря (§7.3) — множитель рядом с бустом: знание об удалённом
+  // коде находится, но стоит ниже живого аналога.
+  const anchorW = new Map<string, AnchorWeight>();
+  const anchorOf = (cand: Candidate): AnchorWeight => {
+    let w = anchorW.get(cand.id);
+    if (w === undefined) anchorW.set(cand.id, (w = anchorWeightOf(cand.node.anchors, cfg)));
+    return w;
+  };
+
   for (const cand of byId.values()) {
     if (cand.ftsRank === undefined && cand.vecRank === undefined) continue; // чистый граф — ниже
     const rrf = rrfScore({ fts: cand.ftsRank, vec: cand.vecRank }, cfg);
@@ -1782,7 +1895,8 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
         { priority: cand.node.priority, layer: cand.node.layer, updatedAt: cand.node.fresh_at },
         now,
         cfg,
-      );
+      ) *
+      anchorOf(cand).weight;
     scored.set(cand.id, score);
     fused.push({ cand, rrf, score });
   }
@@ -1815,7 +1929,7 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
     if (cand === undefined) continue;
     if (cand.ftsRank !== undefined || cand.vecRank !== undefined) continue;
     const typeWeight = cfg.graphTypeWeights[g.type] ?? cfg.graphTypeWeightDefault;
-    const score = viaScore * decay * g.weight * typeWeight;
+    const score = viaScore * decay * g.weight * typeWeight * anchorOf(cand).weight;
     const prev = expandedById.get(g.id);
     if (prev === undefined) {
       expandedById.set(g.id, { cand, rrf: 0, score, depth: g.depth });
@@ -1852,6 +1966,7 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
       vectorDistanceStd > 0
         ? (vectorDistanceMean - entry.cand.vecDistance) / vectorDistanceStd
         : undefined;
+    const aw = anchorOf(entry.cand);
     return {
       id: entry.cand.id,
       rank: i + 1,
@@ -1869,6 +1984,8 @@ function runHybrid(db: DbDriver, params: HybridSearchParams): HybridResult {
       updatedAt: entry.cand.node.fresh_at,
       title: entry.cand.node.title,
       excerpt: entry.cand.node.excerpt,
+      ...(aw.state !== null ? { anchorState: aw.state } : {}),
+      ...(aw.weight !== 1 ? { anchorWeight: aw.weight } : {}),
     };
   });
 

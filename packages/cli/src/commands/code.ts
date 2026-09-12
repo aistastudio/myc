@@ -154,7 +154,8 @@ export async function codeRepo(
 //               иначе из основной копии с WARN `skeleton.main_copy`: сигнатуры,
 //               нарезанные спанами основной копии из файла ветки, — мусор;
 //   callers   — строки вхождений из основной копии: номера — её;
-//   fan_in    — по основной копии: это статистика индекса, и кеш её общий.
+//   fan_in    — из индекса (его считает прогон по основной копии): файлов
+//               не читает никто из читателей.
 // Коммит worktree не тот, что у основной копии, или в нём правки
 // отслеживаемых файлов — WARN `code_index.worktree_divergent` с обеими
 // ветками у КАЖДОГО читателя: строки и спаны могут не совпасть.
@@ -573,6 +574,21 @@ interface CodeIndexData {
     bytes: number;
     took_ms: number;
   };
+  /**
+   * Фоновый счёт fan_in (memory-g79mpkt53yn3, S9): конец прогона дописывает
+   * число каждого определённого имени в `code_refs`, и `code symbol` его только
+   * читает. `ran: false` с `reason: complete` — все числа на месте (индекс не
+   * менялся), читать корпус было незачем.
+   */
+  fan_in: {
+    ran: boolean;
+    reason: string;
+    names: number;
+    rows: number;
+    files: number;
+    bytes: number;
+    took_ms: number;
+  };
   /** Состояние индекса ПОСЛЕ прогона — то, ради чего команда и звалась. */
   files: number;
   defs: number;
@@ -608,8 +624,12 @@ const INDEX_FLAGS: readonly FlagSpec[] = [
 type ScanResult = Awaited<ReturnType<(typeof import("@myc/code-intel/code-index"))["scanCodeIndex"]>>;
 type DrainResult = Awaited<ReturnType<(typeof import("@myc/code-intel/code-index"))["drainCodeIndex"]>>;
 type SearchResult = ReturnType<(typeof import("@myc/code-intel/search"))["buildSearchUnits"]>;
+/** Итог пересчёта fan_in в проходе; `reason: dry-run` — у прогона без записи. */
+type FanInResult = Omit<ReturnType<(typeof import("@myc/code-intel/fanin"))["recountFanIn"]>, "reason"> & {
+  readonly reason: string;
+};
 
-/** Один проход индекса: скан, разбор изменённого, корпус поиска. */
+/** Один проход индекса: скан, разбор изменённого, корпус поиска, fan_in. */
 interface IndexPass {
   readonly scan: ScanResult;
   readonly drain: Pick<
@@ -617,12 +637,17 @@ interface IndexPass {
     "claimed" | "parsed" | "written" | "cleaned" | "failed" | "batches" | "pooled" | "skipped" | "missing" | "parseMs" | "drainMs"
   >;
   readonly search: Pick<SearchResult, "rebuilt" | "reused" | "removed" | "units" | "bytes" | "tookMs">;
+  readonly fanIn: Pick<FanInResult, "ran" | "reason" | "names" | "rows" | "files" | "bytes" | "tookMs">;
 }
 
 /**
  * Проход, общий для ручного `myc code index` и фонового `--job`: одна
  * последовательность, иначе фон обновлял бы индекс не так, как команда (корпус
  * поиска — ровно тот случай: без него `code search` отвечал бы про удалённый).
+ *
+ * fan_in — последним и тем же правилом (S9, memory-g79mpkt53yn3): число
+ * считает прогон, а не читатель. Шаг дренажа (горячий путь) только поднимает
+ * этот прогон отсоединённым процессом и сам корпуса не читает.
  */
 async function indexPass(
   db: Database,
@@ -644,7 +669,13 @@ async function indexPass(
   const search = dryRun
     ? { rebuilt: 0, reused: 0, removed: 0, units: 0, bytes: 0, tookMs: 0 }
     : buildSearchUnits(db, opts.repoId, opts.root, part);
-  return { scan, drain, search };
+  // Счёт — по ВСЕМУ индексу `repoId`, и у прогона части тоже: правка в части
+  // меняет и число корня, а снимает `invalidateRefs` ключи всех частей разом.
+  const { recountFanIn } = await import("@myc/code-intel/fanin");
+  const fanIn = dryRun
+    ? { ran: false, reason: "dry-run", names: 0, rows: 0, files: 0, bytes: 0, tookMs: 0 }
+    : recountFanIn(db, { repoId: opts.repoId, root: opts.root, parts: scan.gitRepos });
+  return { scan, drain, search, fanIn };
 }
 
 function indexData(
@@ -652,7 +683,7 @@ function indexData(
   root: string,
   into: CodeIndexData["into"],
   dryRun: boolean,
-  { scan, drain, search }: IndexPass,
+  { scan, drain, search, fanIn }: IndexPass,
   scope: { files: number; defs: number; langs: readonly { lang: string; files: number }[] },
   t0: number,
 ): CodeIndexData {
@@ -703,11 +734,35 @@ function indexData(
       bytes: search.bytes,
       took_ms: Math.round(search.tookMs),
     },
+    fan_in: {
+      ran: fanIn.ran,
+      reason: fanIn.reason,
+      names: fanIn.names,
+      rows: fanIn.rows,
+      files: fanIn.files,
+      bytes: fanIn.bytes,
+      took_ms: Math.round(fanIn.tookMs),
+    },
     files: scope.files,
     defs: scope.defs,
     langs: scope.langs.slice(0, 8).map((l) => ({ lang: l.lang, files: l.files })),
     took_ms: Math.round(performance.now() - t0),
   };
+}
+
+/** Строка отчёта `code index` про fan_in: что посчитано, или почему нечего. */
+function fanInLine(f: CodeIndexData["fan_in"]): string {
+  if (f.ran) {
+    return (
+      `fan_in    recounted ${count(f.names, "symbol")} over ${count(f.files, "file")} ` +
+      `(${fmtBytes(f.bytes)}), ${count(f.rows, "row")} written  ${f.took_ms} ms`
+    );
+  }
+  if (f.reason === "complete") return `fan_in    up to date: every symbol has its count  ${f.took_ms} ms`;
+  if (f.reason === "raced") {
+    return "fan_in    not written: the index changed while counting — the run that changed it (or the next) recounts";
+  }
+  return `fan_in    not counted (${f.reason})`;
 }
 
 /**
@@ -807,7 +862,9 @@ function buildCodeIndex(deps: StoreDeps): Command {
       "network, not even in the background; `myc code fetch` does, and only when a human asks. " +
       "Secret-named files (.env and .env.* except templates, *.pem, *.key, keystores, private SSH " +
       "keys, .npmrc/.netrc and other credentials) are never indexed, whatever .gitignore says: " +
-      "the scan line counts them as 'secret-named skipped', and rows left from an older index are removed.",
+      "the scan line counts them as 'secret-named skipped', and rows left from an older index are removed. " +
+      "The run ends by storing every symbol's fan_in (a text count over the L1 corpus) whenever the index " +
+      "changed — so `code symbol` reads the number and never counts.",
     flags: INDEX_FLAGS,
     handler: async (ctx) => {
       const t0 = performance.now();
@@ -963,7 +1020,8 @@ function buildCodeIndex(deps: StoreDeps): Command {
         const each = r.runs.map(
           (d) =>
             `index     ${d.repo.length > 0 ? d.repo : "(workspace root)"}  ${d.root}: files ${d.scan.files}, ` +
-            `unchanged ${d.scan.unchanged}, parsed ${d.drain.parsed}, removed ${d.scan.removed}  ${d.took_ms} ms`,
+            `unchanged ${d.scan.unchanged}, parsed ${d.drain.parsed}, removed ${d.scan.removed}, ` +
+            `fan_in ${d.fan_in.ran ? `recounted ${d.fan_in.names}` : d.fan_in.reason}  ${d.took_ms} ms`,
         );
         return `${[head, ...each].join("\n")}\n`;
       }
@@ -995,6 +1053,7 @@ function buildCodeIndex(deps: StoreDeps): Command {
         `corpus    units ${d.search.units}, files rebuilt ${d.search.rebuilt}, ` +
           `unchanged ${d.search.reused}, removed ${d.search.removed}, text ` +
           `${fmtBytes(d.search.bytes)}  ${d.search.took_ms} ms`,
+        fanInLine(d.fan_in),
         `index     ${count(d.files, "file")}, ${count(d.defs, "symbol")}${langs.length > 0 ? `  [${langs}]` : ""}`,
         `${d.dry_run ? "dry-run: nothing written  " : ""}${d.took_ms} ms`,
       ];
@@ -1017,10 +1076,29 @@ interface SymbolData {
     span_start: number;
     span_end: number;
     exported: boolean;
-    /** Узлы, чьи якоря пересекают спан этого определения. */
-    knowledge: { id: string; kind: string; status: string; title: string; anchor: string; state: string }[];
+    /**
+     * Узлы, чьи якоря пересекают спан этого определения. `suspect` — якорь
+     * `stale`/`lost` или ребро `touches` помечено `attrs.suspect` (§7.3): код,
+     * к которому знание привязали, мог уйти, и спан, совпавший с этим
+     * символом, — возможно, уже чужой код. Такие идут последними.
+     */
+    knowledge: {
+      id: string;
+      kind: string;
+      status: string;
+      title: string;
+      anchor: string;
+      state: string;
+      suspect: boolean;
+    }[];
   }[];
-  fan_in?: { n: number; files: number; source: string; cached: boolean; took_ms: number };
+  /**
+   * Готовое число из индекса (S9): `code symbol` его не считает. `computed_at`
+   * — когда его посчитал прогон индекса.
+   */
+  fan_in?: { n: number; files: number; source: string; computed_at: number; took_ms: number };
+  /** Числа ещё нет — почему (индекс изменился, пересчёт не дописал). */
+  fan_in_pending?: string;
   /** Что просмотрено — §6.3: пустой выдачи без причины не бывает. */
   searched: { files: number; l1_files: number; defs: number; langs: string[] };
   took_ms: number;
@@ -1040,10 +1118,11 @@ SELECT a.node_id AS node_id, a.path AS path, a.span_start AS s, a.span_end AS e,
  * не знание, которое отдают агенту: recall и prime их уже не показывают, и
  * `code symbol` — ещё одна дверь к тем же узлам. Термы — функции
  * @myc/retrieval/review, те же, что у выдачи; закрытая задача остаётся —
- * это история сделанного.
+ * это история сделанного. `suspect` — пометка ребра от проверки якоря (§7.3).
  */
 export const SQL_ANCHOR_OWNERS = `
-SELECT g.src AS id, n.kind AS kind, n.title AS title, n.status AS status
+SELECT g.src AS id, n.kind AS kind, n.title AS title, n.status AS status,
+       json_extract(g.attrs, '$.suspect') AS suspect
   FROM edges g JOIN nodes n ON n.id = g.src
  WHERE g.dst = ?1 AND g.type = 'touches' AND g.deleted_at IS NULL AND n.deleted_at IS NULL
    AND ${liveStatusPredicate("n")} AND ${notPendingPredicate("n")}
@@ -1051,8 +1130,11 @@ SELECT g.src AS id, n.kind AS kind, n.title AS title, n.status AS status
 
 const SYMBOL_FLAGS: readonly FlagSpec[] = [
   { name: "repo", value: "string", description: "repo id to search (default: derived from cwd)" },
-  { name: "no-fan-in", description: "skip the text fan_in count (it reads the L1 corpus)" },
+  { name: "no-fan-in", description: "leave fan_in out of the answer (it is read from the index, never counted here)" },
 ];
+
+/** Якорь в этих состояниях — знание о коде, которого на этом месте может уже не быть (§7.3). */
+const SUSPECT_STATES: ReadonlySet<string> = new Set(["stale", "lost"]);
 
 function buildCodeSymbol(deps: StoreDeps): Command {
   return {
@@ -1063,9 +1145,11 @@ function buildCodeSymbol(deps: StoreDeps): Command {
       "path, kind and span — and, for each span, the tasks and memories whose anchors fall inside it. " +
       "That last part is the answer no code index alone can give: anchors know file:span, the index " +
       "knows symbol→span, and the overlap turns 'lines 507-644' into 'function drainQueueTail, and " +
-      "here is what is known about it'. fan_in is a TEXT count (upper bound, `\\bNAME\\b` over the L1 " +
-      "corpus minus the definition lines) and is always labelled with its source; it is computed on " +
-      "demand and cached in code_refs until the indexer invalidates it.",
+      "here is what is known about it'. Knowledge whose anchor is stale or lost is marked suspect and " +
+      "listed last: the code it was bound to may be gone. fan_in is a TEXT count (upper bound, " +
+      "`\\bNAME\\b` over the L1 corpus minus the definition lines), always labelled with its source; " +
+      "the index run computes and stores it, and this command only reads it — right after the index " +
+      "changed it may not be written yet, and the answer says so instead of counting.",
     flags: SYMBOL_FLAGS,
     handler: async (ctx) => {
       const t0 = performance.now();
@@ -1079,7 +1163,7 @@ function buildCodeSymbol(deps: StoreDeps): Command {
       try {
         const t = await codeTarget(h, flagStr(ctx, "repo"), ctx.globals.directory ?? process.cwd());
         const { repoId, view } = t;
-        const { symbolDefs, indexScope, fanIn } = await import("@myc/code-intel/read");
+        const { symbolDefs, indexScope, storedFanIn } = await import("@myc/code-intel/read");
         const { anchorKeysFor } = await import("./anchor.ts");
         const db = h.driver.database;
         const scope = indexScope(db, view);
@@ -1121,6 +1205,7 @@ function buildCodeSymbol(deps: StoreDeps): Command {
                 kind: string;
                 title: string;
                 status: string;
+                suspect: number | null;
               }>) {
                 knowledge.push({
                   id: o.id,
@@ -1132,9 +1217,15 @@ function buildCodeSymbol(deps: StoreDeps): Command {
                   // печатался бы чужим путём.
                   anchor: `${d.path}:${a.s}-${a.e}`,
                   state: a.state,
+                  suspect: SUSPECT_STATES.has(a.state) || Number(o.suspect ?? 0) === 1,
                 });
               }
             }
+            // Подозрительное — вниз (устойчиво): якорь `lost` остаётся на
+            // прежних строках, и после удаления функции его спан ложится на
+            // СОСЕДНЮЮ — без понижения знание об удалённом коде стояло бы
+            // первым в ответе про чужой символ.
+            knowledge.sort((x, y) => Number(x.suspect) - Number(y.suspect));
             return {
               path: d.path,
               kind: d.kind,
@@ -1154,20 +1245,36 @@ function buildCodeSymbol(deps: StoreDeps): Command {
           took_ms: 0,
         };
         if (defs.length > 0 && !flagBool(ctx, "no-fan-in")) {
-          // Счёт — по ОСНОВНОЙ копии, а не по worktree: fan_in — статистика
-          // индекса и кешируется в нём (`code_refs`), а кеш общий для всех,
-          // кто спрашивает этот индекс, в том числе из основной копии.
-          const f = fanIn(db, view, name.trim(), t.repoRoot);
-          data.fan_in = {
-            n: f.n,
-            files: f.files,
-            source: f.source,
-            cached: f.cached,
-            took_ms: Math.round(f.tookMs),
-          };
+          // ЧТЕНИЕ, НЕ СЧЁТ (S9, memory-g79mpkt53yn3): число положил прогон
+          // индекса (`@myc/code-intel/fanin`) — по основной копии, это
+          // статистика индекса. Здесь один поиск по ключу; ни одного файла.
+          const f0 = performance.now();
+          const f = storedFanIn(db, view, name.trim());
+          if (f !== null) {
+            data.fan_in = {
+              n: f.n,
+              files: f.files,
+              source: f.source,
+              computed_at: f.computedAt,
+              took_ms: Math.round((performance.now() - f0) * 1000) / 1000,
+            };
+          } else {
+            // Считать взамен нельзя — ровно от этого S9 и уводит. Числа нет
+            // между правкой индекса и концом его прогона (или индекс собран
+            // сборкой, у которой счёт был по требованию): сказать, а не
+            // подставить ноль.
+            data.fan_in_pending =
+              "the index changed and its run has not stored the counts yet (or an older myc built it)";
+            ctx.warn(
+              "code_symbol.fan_in_pending",
+              `fan_in of ${name.trim()} is not stored yet: ${data.fan_in_pending} — the next index run ` +
+                "(background refresh or `myc code index`) stores it; this command never counts",
+            );
+          }
         }
         data.took_ms = Math.round(performance.now() - t0);
-        const src = sourceData(t, data.fan_in !== undefined && !data.fan_in.cached ? t.repoRoot : null);
+        // Файлов этот ответ не читает вовсе: fan_in — из индекса.
+        const src = sourceData(t, null);
         if (src !== undefined) data.source = src;
         if (defs.length === 0) {
           return failure(
@@ -1192,15 +1299,17 @@ function buildCodeSymbol(deps: StoreDeps): Command {
         const flags = [def.kind, def.lang, def.exported ? "exported" : ""].filter((s) => s.length > 0);
         out.push(`${def.path}:${def.span_start}-${def.span_end}  ${flags.join(" ")}`);
         for (const k of def.knowledge) {
-          out.push(`    ${k.id}  ${k.kind}  ${k.status}  ${k.title}  [${k.anchor} ${k.state}]`);
+          const mark = k.suspect ? " · suspect" : "";
+          out.push(`    ${k.id}  ${k.kind}  ${k.status}  ${k.title}  [${k.anchor} ${k.state}${mark}]`);
         }
         if (def.knowledge.length === 0) out.push("    no knowledge anchored here");
       }
       if (d.fan_in !== undefined) {
         out.push(
-          `fan_in ${d.fan_in.n} (${d.fan_in.source}, ${count(d.fan_in.files, "file")}` +
-            `${d.fan_in.cached ? ", from cache" : `, ${d.fan_in.took_ms} ms`})`,
+          `fan_in ${d.fan_in.n} (${d.fan_in.source}, ${count(d.fan_in.files, "file")}, stored by the index run)`,
         );
+      } else if (d.fan_in_pending !== undefined) {
+        out.push(`fan_in pending — ${d.fan_in_pending}`);
       }
       out.push(
         `scanned ${count(d.searched.files, "file")}, ${count(d.searched.defs, "symbol")}  ${d.took_ms} ms`,

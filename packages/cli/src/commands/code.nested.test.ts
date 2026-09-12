@@ -288,16 +288,16 @@ describe("из вложенного репозитория: ответ из ин
     expect((deep.data!["defs"] as Array<{ path: string }>).map((d) => d.path)).toEqual(["src/core.ts"]);
   });
 
-  test("fan_in части кешируется под своим ключом и не портит счёт корня", async () => {
+  test("fan_in части лежит под своим ключом и не портит счёт корня; прогон индекса его и пишет", async () => {
     const part = await ok(alpha, "code", "symbol", "resolveIdentity");
     const whole = await ok(ws, "code", "symbol", "resolveIdentity");
     const fp = part.data!["fan_in"] as { n: number; files: number };
     const fw = whole.data!["fan_in"] as { n: number; files: number };
     expect(fp.files).toBe(2); // core.ts (вызов в resolve) + use.ts
     expect(fw.files).toBe(3); // плюс beta.ts
-    // Повтор — из кеша, и число то же.
+    // Оба числа положил прогон индекса корня (alpha — вложенный git): чтение
+    // из репозитория и из корня — два ключа одной таблицы, повтор даёт то же.
     const again = await ok(alpha, "code", "symbol", "resolveIdentity");
-    expect((again.data!["fan_in"] as { cached: boolean; n: number }).cached).toBe(true);
     expect((again.data!["fan_in"] as { n: number }).n).toBe(fp.n);
   });
 });
