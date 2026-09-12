@@ -19,7 +19,10 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { startVizServer, VizDbError, type VizServer } from "@myc/web";
+// Операции записи справка берёт из тех же списков, по которым их принимает
+// сервер (@myc/web mutate.ts): перечень руками уже отставал от кнопок —
+// разбор кандидатов (confirm/reject) появился на странице, а в справке нет.
+import { REVIEW_OPS, startVizServer, VizDbError, WRITE_OPS, type VizServer } from "@myc/web";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 
@@ -146,8 +149,9 @@ export function createVizCommand(deps: VizDeps = realVizDeps): Command {
       `${count[0]!.toUpperCase()}${count.slice(1)} screens — ${VIZ_SCREENS.map(([, h]) => h).join(", ")}; ` +
       "a task opens as a card with its thread. " +
       "Reads go through a connection opened READ-ONLY, so the CLI keeps writing while the page is open. " +
-      "Edits from the page — create a task or a note, change its fields, claim, release, close, reopen, assign, " +
-      "priority, extend, cancel, set or remove a bootstrap block — are not written by the server itself: " +
+      `Edits from the page — create a task or a note, change its fields, ${WRITE_OPS.join(", ")}, ` +
+      `${REVIEW_OPS.join(" or ")} a compaction candidate (myc review), set or remove a bootstrap block — ` +
+      "are not written by the server itself: " +
       "each runs through the same command engine as the terminal (oplog, ACL, field clocks), and an edit " +
       "made against a stale copy is refused, not merged. " +
       "The UI is embedded in the binary: zero external requests.",

@@ -7,9 +7,9 @@
  * открытие своей базой, не трогаю ФС и процесс.
  */
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 // Поиск воркспейса вынесен в ./wsfind.ts и РЕ-ЭКСПОРТИРУЕТСЯ отсюда: его
 // импортируют полтора десятка мест, а платить за граф модулей этого файла
 // ради одного `existsSync` обязан не всякий, кто ищет корень (см. шапку
@@ -790,57 +790,108 @@ export async function openWorkspaceByDir(
   };
 }
 
-/** Один и тот же каталог, даже если пути пришли через разные симлинки. */
-function samePath(a: string, b: string): boolean {
-  if (a === b) return true;
+/**
+ * Путь `p` относительно `root` (POSIX-строкой, `''` — сам корень) или
+ * undefined, если `p` вне корня. Сравниваются пути из РАЗНЫХ источников:
+ * корень воркспейса пришёл из подъёма по cwd, основное дерево worktree — из
+ * файла, который написал git. На macOS это /tmp против /private/tmp у одного
+ * и того же каталога, поэтому при промахе по строке — второй взгляд по realpath.
+ */
+function relUnder(root: string, p: string): string | undefined {
+  const outside = (rel: string): boolean => rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  const direct = relative(root, p);
+  if (!outside(direct)) return direct;
   try {
-    return realpathSync(a) === realpathSync(b);
+    const real = relative(realpathSync(root), realpathSync(p));
+    return outside(real) ? undefined : real;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * git worktree ВНУТРИ дерева воркспейса, в котором лежит `dir`, — где бы он
+ * ни лежал: соседний `wt-collector`, `.claude/worktrees/x` (так их заводят
+ * агенты), `<репозиторий>/.worktrees/y`. Такой worktree поиск воркспейса
+ * находит обычным подъёмом, без ссылки, и `StoreHandle.worktree` у него пуст.
+ *
+ * Подъём от `dir` к корню (сам корень не проверяется: worktree всего
+ * воркспейса находит поиск) до ПЕРВОГО `.git`: каталог — самостоятельный
+ * репозиторий, worktree здесь нет; файл со ссылкой на основное дерево ВНУТРИ
+ * воркспейса — worktree (связь — из `commondir`, `readWorktreeLink`).
+ * worktree чужого репозитория (основное дерево вне воркспейса) не в счёт: его
+ * файлы в воркспейсе единственные. Правило то же, что у якорей
+ * (`inTreeWorktree` в anchor.ts) — файл у них один, и охват с путём якоря
+ * расходиться не имеют права.
+ *
+ * Цена — по одному stat на уровень между `dir` и ближайшим `.git`: из корня —
+ * ни одного, из вложенного репозитория — 1–3.
+ */
+export function inTreeWorktreeLink(wsDir: string, dir: string): WorktreeLink | undefined {
+  const root = resolve(wsDir);
+  let cur = resolve(dir);
+  if (!cur.startsWith(root + sep)) return undefined;
+  while (cur !== root) {
+    let st: ReturnType<typeof statSync> | undefined;
+    try {
+      st = statSync(join(cur, ".git"), { throwIfNoEntry: false });
+    } catch {
+      return undefined; // нечитаемый каталог — охват выводится как без worktree, открытие не падает
+    }
+    if (st !== undefined) {
+      if (!st.isFile()) return undefined;
+      const link = readWorktreeLink(cur);
+      return link !== undefined && relUnder(root, link.mainRoot) !== undefined ? link : undefined;
+    }
+    const up = dirname(cur);
+    if (up === cur) return undefined;
+    cur = up;
+  }
+  return undefined;
 }
 
 /**
  * Охват репозитория (S59), устойчивый к git worktree.
  *
- * Охват выводится из пути ОТНОСИТЕЛЬНО корня воркспейса, а worktree — каталог
- * рядом с основным деревом, а не внутри него. Без пересчёта у обеих форм
- * ломается ровно одно и то же: узлы, заведённые из worktree, получают ЧУЖОЙ
- * охват и перестают быть видимы из основного дерева — раскол графа, только с
- * другой стороны, чем в самом поиске воркспейса.
+ * Охват выводится из пути ОТНОСИТЕЛЬНО корня воркспейса, а путь внутри
+ * worktree — это путь другого каталога, чем основное дерево. Без пересчёта
+ * узлы, заведённые из worktree, получают ЧУЖОЙ охват и перестают быть видимы
+ * из основного дерева — раскол графа, только с другой стороны, чем в самом
+ * поиске воркспейса. Охват worktree — охват его ОСНОВНОГО ДЕРЕВА, где бы
+ * worktree ни лежал.
  *
  * Форма первая — worktree ВНЕ воркспейса (`git worktree add ../wt-feature`).
  * Воркспейс нашёлся через ссылку; путь «откуда позвали» лежит вне его корня и
  * дал бы `outside-workspace`. Переносим путь в основное дерево целиком.
  *
- * Форма вторая — worktree ВНУТРИ воркспейса-экосистемы: `~/src/cherry/.myc`,
- * репозиторий `collector`, рядом с ним его worktree `wt-collector`. Подъём по
- * каталогам нашёл воркспейс сразу, ссылка не понадобилась, и охват вывелся бы
- * из ИМЕНИ КАТАЛОГА — `wt-collector` вместо `collector`. Но это тот же самый
- * репозиторий, и называться охват обязан именем основного дерева.
+ * Форма вторая — worktree ВНУТРИ воркспейса-экосистемы (`inTreeWorktreeLink`):
+ * `~/src/cherry/.myc`, репозиторий `collector`, его worktree рядом
+ * (`wt-collector`) или глубже (`.claude/worktrees/x`). Подъём по каталогам
+ * нашёл воркспейс сразу, ссылка не понадобилась, и охват вывелся бы из ИМЕНИ
+ * ПЕРВОГО КАТАЛОГА — `wt-collector` вместо `collector`, а у `.claude/…` и
+ * вовсе общий `''`, то есть узлы сессии из такого worktree ложились как из
+ * корня, и ready/recall по умолчанию фильтровали её как корень
+ * (memory-5vcctcvga6k0). Путь переносится в основное дерево тем же
+ * `mapIntoMain`, и охват выводится оттуда.
  *
- * Цена: одна лишняя `statSync` и только когда охват вообще получился
- * непустым, то есть в экосистеме из нескольких репозиториев. В одиночном
- * репозитории (охват «все») и при `--db` не делается ни одной.
+ * Цена: подъём до ближайшего `.git` (stat на уровень) — только когда охват
+ * выводится вообще, то есть не при `--db` без корня.
  */
 function deriveRepoAcrossWorktrees(
   repoRoot: string | undefined,
   startDir: string,
   worktree: WorktreeLink | undefined,
 ): RepoDerivation {
-  const from = worktree !== undefined ? mapIntoMain(worktree, startDir) : startDir;
-  const derived = deriveRepo(repoRoot, from, isRepoDir);
-  if (repoRoot === undefined || derived.repo === undefined || derived.repo.length === 0) {
-    return derived;
-  }
-  const link = readWorktreeLink(join(repoRoot, derived.repo));
-  if (link === undefined) return derived;
-  // Сравниваются пути из РАЗНЫХ источников: корень воркспейса пришёл из
-  // подъёма по cwd, основное дерево — из файла, который написал git. На macOS
-  // это /tmp против /private/tmp у одного и того же каталога, поэтому
-  // сравнение идёт по realpath, а не по строкам.
-  if (samePath(dirname(link.mainRoot), repoRoot)) return { ...derived, repo: basename(link.mainRoot) };
-  return derived;
+  if (worktree !== undefined) return deriveRepo(repoRoot, mapIntoMain(worktree, startDir), isRepoDir);
+  if (repoRoot === undefined) return deriveRepo(repoRoot, startDir, isRepoDir);
+  const link = inTreeWorktreeLink(repoRoot, startDir);
+  const mainRel = link !== undefined ? relUnder(repoRoot, link.mainRoot) : undefined;
+  if (link === undefined || mainRel === undefined) return deriveRepo(repoRoot, startDir, isRepoDir);
+  // Основное дерево — в написании КОРНЯ (не git'а): иначе /private/tmp против
+  // /tmp дал бы `outside-workspace` там, где путь внутри воркспейса.
+  const rest = relative(link.worktreeDir, resolve(startDir));
+  const derived = deriveRepo(repoRoot, join(repoRoot, mainRel, rest), isRepoDir);
+  return { ...derived, from: startDir };
 }
 
 /**

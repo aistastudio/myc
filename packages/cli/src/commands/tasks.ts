@@ -15,7 +15,7 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { REPO_KEY, commentInput, readRepo, repoReasonText } from "@myc/core";
 import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
-import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat } from "@myc/swarm";
+import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat, type ClassifyResult } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
@@ -30,11 +30,14 @@ import {
 import {
   attemptFailure,
   caveatArgs,
-  recordedSpend,
+  finishWithFact,
+  keyFromTask,
+  predictFromTask,
+  realProbe,
   resolveModelId,
   swarmOn,
-  taskClassOf,
   tokenArgs,
+  type LaunchProbe,
 } from "./attempt.ts";
 import {
   flagBool,
@@ -1316,6 +1319,8 @@ interface AttributionData {
   attempt_id?: string;
   model_id?: string;
   task_class?: string;
+  /** Чем решён scope ключа: touched (факт) | anchors | none; у объявленного руками нет. */
+  scope_source?: string;
   verdict?: string;
   caveats?: string[];
   quality?: number;
@@ -1385,7 +1390,14 @@ function renderCloseHuman(raw: unknown): string {
 type AttributionPlan =
   | { readonly kind: "none"; readonly skipped?: string; readonly warn?: readonly [string, string] }
   | { readonly kind: "finish"; readonly attempt: AttemptRecord }
-  | { readonly kind: "retro"; readonly modelId: string; readonly taskClass: string };
+  | {
+      readonly kind: "retro";
+      readonly modelId: string;
+      /** Ключ — как у `attempt start`: якоря, иначе `unknown` (снимка у ретро-попытки нет). */
+      readonly key: ClassifyResult;
+      /** Предсказание — тоже как у `attempt start`: якоря, иначе пути из текста. */
+      readonly predictedClass: string;
+    };
 
 interface PreparedAttribution {
   readonly plan: AttributionPlan;
@@ -1479,25 +1491,33 @@ function prepareAttribution(
       },
     };
   }
+  const db = h.driver.database;
   return {
     plan: {
       kind: "retro",
       modelId: canonicalModel,
-      taskClass: taskClassOf(node, h.driver.database, node.id),
+      key: keyFromTask(node, db, node.id),
+      predictedClass: predictFromTask(node, db, node.id, h.wsDir).taskClass,
     },
     canonicalModel,
   };
 }
 
-/** Исполнение плана: одна запись исхода, стоимость замораживается там же. */
-function applyAttribution(
+/**
+ * Исполнение плана: исход, расход и класс по факту — той же функцией, что у
+ * `myc attempt finish` (`finishWithFact`). Своего финиша здесь нет: пока он
+ * был, закрытие с вердиктом оставляло попытке стартовый ключ, а `attempt
+ * finish` той же работе — ключ по тронутым файлам (memory-3hz420r5b0c7).
+ */
+async function applyAttribution(
   ctx: CommandContext,
   h: StoreHandle,
   node: NodeRecord,
-  plan: AttributionPlan,
+  plan: Exclude<AttributionPlan, { readonly kind: "none" }>,
   verdict: string,
   caveats: readonly Caveat[],
-): AttributionData | CommandFailure {
+  probe: Pick<LaunchProbe, "touchedSince">,
+): Promise<AttributionData | CommandFailure> {
   const swarm = swarmOn(h.driver.database);
   const tokens = tokenArgs(ctx);
   const legacyIn = ctx.flags["cost-in"];
@@ -1512,8 +1532,10 @@ function applyAttribution(
         ? plan.attempt.attemptId
         : swarm.attribution.startAttempt({
             taskId: node.id,
-            modelId: (plan as { modelId: string }).modelId,
-            taskClass: (plan as { taskClass: string }).taskClass,
+            modelId: plan.modelId,
+            taskClass: plan.key.taskClass,
+            scopeSource: plan.key.scopeSource,
+            predictedClass: plan.predictedClass,
             actor: h.actor,
             source: "close",
             ...tokens,
@@ -1521,31 +1543,42 @@ function applyAttribution(
     // Расход по ЗАПИСАННОЙ сессии попытки, если координатор не назвал
     // числа руками. Ради этого запись и заводилась: закрытие остаётся
     // одним флагом, а ось цены перестаёт быть пустой.
-    const spend = recordedSpend(ctx, swarm.attribution, attemptId, { tokens });
-    const done = swarm.attribution.finishAttempt(attemptId, {
-      verdict,
-      caveats,
-      retries: typeof retriesFlag === "number" ? retriesFlag : undefined,
-      ...spend.tokens,
-    });
+    const done = await finishWithFact(
+      ctx,
+      { db: h.driver.database, attribution: swarm.attribution },
+      probe,
+      attemptId,
+      { tokens },
+      { verdict, caveats, retries: typeof retriesFlag === "number" ? retriesFlag : undefined },
+      h.wsDir,
+    );
+    const r = done.record;
     return {
       recorded: true,
-      attempt_id: done.attemptId,
-      model_id: done.modelId,
-      task_class: done.taskClass,
-      verdict: done.verdict ?? verdict,
-      caveats: [...done.caveats],
-      quality: done.quality ?? 0,
-      cost_usd: done.costUsd,
-      cost_basis: done.costBasis,
-      spend_via: spend.via,
+      attempt_id: r.attemptId,
+      model_id: r.modelId,
+      task_class: r.taskClass,
+      ...(r.scopeSource !== null ? { scope_source: r.scopeSource } : {}),
+      verdict: r.verdict ?? verdict,
+      caveats: [...r.caveats],
+      quality: r.quality ?? 0,
+      cost_usd: r.costUsd,
+      cost_basis: r.costBasis,
+      spend_via: done.spend.via,
     };
   } catch (e) {
     return attemptFailure(e);
   }
 }
 
-export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
+/**
+ * `probe` — только git: тронутые файлы попытки со снимка на старте. Тестам
+ * он нужен, чтобы подменить мир (`inertProbe`); по умолчанию — настоящий.
+ */
+export function createCloseCommand(
+  deps: StoreDeps = realStoreDeps,
+  probe: Pick<LaunchProbe, "touchedSince"> = realProbe,
+): Command {
   return {
     name: "close",
     summary: "close a task",
@@ -1736,7 +1769,7 @@ export function createCloseCommand(deps: StoreDeps = realStoreDeps): Command {
 
         let attribution: AttributionData | undefined;
         if (verdict !== undefined && prepared.plan.kind !== "none") {
-          const applied = applyAttribution(ctx, h, node, prepared.plan, verdict, caveats);
+          const applied = await applyAttribution(ctx, h, node, prepared.plan, verdict, caveats, probe);
           if ("ok" in applied) {
             // Задача УЖЕ закрыта: отдать ошибку значило бы сказать, что не
             // произошло ничего. Громкая деградация (И2): закрытие состоялось,

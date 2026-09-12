@@ -224,6 +224,36 @@ describe("myc code symbol — читатель, ради которого инд
     expect(knowledge[0]!["title"]).toBe("Переписать слияние RRF");
   });
 
+  /**
+   * Знание о символе — то же, что отдаёт выдача: отменённое, заменённое,
+   * отозванное (HIDDEN_STATUSES) и кандидат хука сжатия сюда не доезжают,
+   * закрытое — история сделанного — остаётся. МУТАЦИЯ: без термов
+   * `liveStatusPredicate`/`notPendingPredicate` в SQL_ANCHOR_OWNERS — пять
+   * узлов вместо двух.
+   */
+  test("знание о символе — без скрытых статусов и без кандидатов", async () => {
+    const ids: Record<string, string> = {};
+    // Спаны разные: узел якоря адресуется содержимым, а все пять пересекают fuseRRF.
+    const spans = { open: "5-6", closed: "4-5", cancelled: "6-7", superseded: "5", candidate: "7" };
+    for (const [k, span] of Object.entries(spans)) {
+      ids[k] = (await data("task", `Слияние RRF: ${k}`))["id"] as string;
+      await data("anchor", "add", ids[k]!, `src/fuse.ts:${span}`);
+    }
+    const d = db();
+    try {
+      for (const st of ["closed", "cancelled", "superseded"]) {
+        d.query("UPDATE nodes SET status = ?2 WHERE id = ?1").run(ids[st]!, st);
+      }
+      d.query(`UPDATE nodes SET attrs = json_set(attrs, '$.state', 'pending_review') WHERE id = ?1`).run(ids["candidate"]!);
+    } finally {
+      d.close();
+    }
+    await data("code", "index");
+    const defs = (await data("code", "symbol", "fuseRRF"))["defs"] as Array<Record<string, unknown>>;
+    const got = (defs[0]!["knowledge"] as Array<{ id: string }>).map((k) => k.id).sort();
+    expect(got).toEqual([ids["open"]!, ids["closed"]!].sort());
+  });
+
   test("fan_in подписан источником и считается по L1-корпусу", async () => {
     await data("code", "index");
     const d = await data("code", "symbol", "fuseRRF");

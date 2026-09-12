@@ -529,6 +529,35 @@ describe("worktree внутри дерева воркспейса", () => {
       git(beta, "worktree", "remove", "--force", inTree);
     }
   });
+
+  /**
+   * memory-5vcctcvga6k0: worktree глубже первого уровня (`.claude/worktrees/x`
+   * — так их заводят агенты). Охват — основное дерево (`beta`), и файлы
+   * читаются в самом worktree, а не в основной копии: охват и чтение обязаны
+   * согласиться, что это worktree. МУТАЦИЯ: `worktreeOf` по одному первому
+   * сегменту (прежнее правило) — строка 2 основной копии вместо 3 ветки и нет
+   * `source.worktree`; `deriveRepoAcrossWorktrees` только первого уровня —
+   * охват `''`.
+   */
+  test("worktree в .claude/worktrees: охват — основное дерево, файлы — из worktree", async () => {
+    const deep = join(ws, ".claude", "worktrees", "agent-b");
+    git(beta, "worktree", "add", "-q", deep, "-b", "wtdeep");
+    writeFileSync(join(deep, "lib", "beta.ts"), `// ветка wtdeep\n${BETA_TS}`);
+    git(deep, "commit", "-qam", "wtdeep shift");
+    try {
+      const e = await ok(join(deep, "lib"), "code", "grep", "betaWork");
+      expect(e.data!["repo"]).toBe("beta");
+      const g = (e.data!["groups"] as Array<{ path: string; hits: Array<{ line: number }> }>)[0]!;
+      expect(g.path).toBe("lib/beta.ts");
+      expect(g.hits[0]!.line).toBe(3); // строка файла ветки: в основной копии — 2
+      const src = e.data!["source"] as { index: { prefix: string }; worktree: { dir: string } };
+      expect(src.index.prefix).toBe("beta/");
+      expect(src.worktree.dir).toBe(deep);
+    } finally {
+      git(beta, "worktree", "remove", "--force", deep);
+      rmSync(join(ws, ".claude"), { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

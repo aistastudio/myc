@@ -30,7 +30,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Database } from "bun:sqlite";
 // Статически — только список языков и вид: `langs.ts` не тянет ни tree-sitter,
 // ни хранилище (он тот же, что грузит `select.ts` ради строки `init`), а
@@ -51,6 +51,7 @@ import {
 // Ближайший индекс живёт в view.ts: его спрашивает и строка статуса, которой
 // тянуть весь этот модуль на каждой перерисовке незачем.
 export { coveringAncestor, coveringIndex };
+import { liveStatusPredicate, notPendingPredicate } from "@myc/retrieval/review";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
@@ -59,11 +60,12 @@ import {
   flagNum,
   flagStr,
   fmtAge,
+  inTreeWorktreeLink,
   realStoreDeps,
   type StoreDeps,
   type StoreHandle,
 } from "./store.ts";
-import { mapIntoWorktree, readWorktreeLink, type WorktreeLink } from "./wsfind.ts";
+import { mapIntoWorktree, type WorktreeLink } from "./wsfind.ts";
 
 /**
  * Ключ отметки последнего ЗАВЕРШЁННОГО прогона код-индекса в `myc_meta`.
@@ -217,24 +219,19 @@ function under(root: string, dir: string): boolean {
 /**
  * Ссылка worktree для код-запроса. Первая форма — worktree ВНЕ воркспейса:
  * её уже нашёл поиск воркспейса (`h.worktree`). Вторая — worktree ВНУТРИ
- * дерева экосистемы (`wt-collector` рядом с `collector`): подъём нашёл
- * воркспейс сам, ссылки в хендле нет, а охват уже переименован в основное
- * дерево (`deriveRepoAcrossWorktrees`) — значит, файлы надо читать не там,
- * куда указывает охват. Одна `stat` первого сегмента, и только когда он не
- * совпал с именем репозитория.
+ * дерева экосистемы, где бы он ни лежал (`wt-collector` рядом с `collector`,
+ * `.claude/worktrees/x`, `collector/.worktrees/y`): подъём нашёл воркспейс
+ * сам, ссылки в хендле нет, а охват уже переименован в основное дерево
+ * (`deriveRepoAcrossWorktrees`) — значит, файлы надо читать не там, куда
+ * указывает охват. Ссылка — тем же правилом, что у охвата
+ * (`inTreeWorktreeLink`): охват и чтение файлов не могут разойтись в том,
+ * worktree это или нет. Цена — stat на уровень до ближайшего `.git`.
  *
  * Годится лишь ссылка, чьё основное дерево СОДЕРЖИТ корень репозитория
  * вопроса: иначе индекс снят с самого этого дерева, и сравнивать не с чем.
  */
-function worktreeOf(h: StoreHandle, cwd: string, repoId: string, repoRoot: string): WorktreeLink | undefined {
-  let link = h.worktree;
-  if (link === undefined) {
-    const rel = relative(h.wsDir, resolve(cwd));
-    if (rel.length === 0 || rel.startsWith("..") || isAbsolute(rel)) return undefined;
-    const first = rel.split(sep)[0]!;
-    if (first === repoId.split("/")[0]) return undefined; // обычный вложенный репозиторий
-    link = readWorktreeLink(join(h.wsDir, first));
-  }
+function worktreeOf(h: StoreHandle, cwd: string, repoRoot: string): WorktreeLink | undefined {
+  const link = h.worktree ?? inTreeWorktreeLink(h.wsDir, resolve(cwd));
   if (link === undefined || !under(link.mainRoot, repoRoot)) return undefined;
   return link;
 }
@@ -267,7 +264,7 @@ export async function codeTarget(
     wsDir: h.wsDir,
     ...(freshness !== undefined ? { freshness } : {}),
   };
-  const link = worktreeOf(h, cwd, repoId, repoRoot);
+  const link = worktreeOf(h, cwd, repoRoot);
   if (link === undefined) return { ...base, fileRoot: repoRoot };
   const { compareWorktree, headLabel } = await import("@myc/code-intel/worktree");
   const cmp = compareWorktree(link.gitDir, link.worktreeDir);
@@ -1037,10 +1034,19 @@ SELECT a.node_id AS node_id, a.path AS path, a.span_start AS s, a.span_end AS e,
  WHERE a.repo_id = ?1 AND a.path = ?2 AND a.span_start <= ?4 AND a.span_end >= ?3
  ORDER BY (a.span_end - a.span_start), a.span_start`;
 
-const SQL_ANCHOR_OWNERS = `
+/**
+ * Владельцы якоря — «что известно об этом символе». Отозванное, заменённое и
+ * отменённое (HIDDEN_STATUSES) и кандидат хука сжатия (`pending_review`) —
+ * не знание, которое отдают агенту: recall и prime их уже не показывают, и
+ * `code symbol` — ещё одна дверь к тем же узлам. Термы — функции
+ * @myc/retrieval/review, те же, что у выдачи; закрытая задача остаётся —
+ * это история сделанного.
+ */
+export const SQL_ANCHOR_OWNERS = `
 SELECT g.src AS id, n.kind AS kind, n.title AS title, n.status AS status
   FROM edges g JOIN nodes n ON n.id = g.src
  WHERE g.dst = ?1 AND g.type = 'touches' AND g.deleted_at IS NULL AND n.deleted_at IS NULL
+   AND ${liveStatusPredicate("n")} AND ${notPendingPredicate("n")}
  ORDER BY n.priority, n.id`;
 
 const SYMBOL_FLAGS: readonly FlagSpec[] = [

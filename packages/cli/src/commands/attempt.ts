@@ -642,8 +642,9 @@ export function predictFromTask(
 }
 
 /**
- * Ключ строкой, как его ждёт ретроспективная попытка `myc close --verdict`:
- * факта у неё нет, значит якоря или `unknown` — ровно как было до S67.
+ * Ключ строкой без факта: якоря или `unknown` — ровно как было до S67. Так
+ * ключ ретроспективной попытки `myc close --verdict` выглядит на старте; на
+ * финише его пересчитывает `finishWithFact`, как у любой попытки.
  */
 export function taskClassOf(node: NodeLike, db: Database, nodeId: string): string {
   return keyFromTask(node, db, nodeId).taskClass;
@@ -1297,6 +1298,90 @@ export function recordedSpend(
   }
 }
 
+/** Исход попытки, как его назвал координатор. */
+export interface FinishOutcome {
+  readonly verdict: string;
+  readonly caveats: readonly Caveat[];
+  readonly retries?: number;
+  readonly note?: string;
+}
+
+export interface FinishedWithFact {
+  /** Попытка ПОСЛЕ пересчёта ключа: класс в ней — уже по факту, если он был. */
+  readonly record: AttemptRecord;
+  readonly spend: ReturnType<typeof recordedSpend>;
+  readonly settled: Settled | { readonly skipped: string };
+}
+
+/**
+ * ФИНИШ ПОПЫТКИ — ОДИН НА ВСЕ ПУТИ: `myc attempt finish` и `myc close
+ * --verdict` (memory-3hz420r5b0c7). Исход, расход, тронутые файлы и ключ
+ * класса по факту (S67) — в этом порядке и только здесь.
+ *
+ * Пока факт считался в теле `attempt finish`, закрытие задачи с вердиктом
+ * закрывало ту же попытку голым `finishAttempt`: `files_touched` не
+ * писался, ключ оставался стартовым (якоря или `unknown`), и одна и та же
+ * работа ложилась в статистику разными классами в зависимости от того,
+ * какой командой координатор её принял.
+ *
+ * ФАКТ — что изменилось со снимка, снятого на старте, в тех деревьях, где
+ * стояла попытка (worktree агента, вложенный репозиторий), а не в каталоге
+ * того, кто финиширует. Попытка без снимка (открыта до миграции 9 или
+ * ретроспективно) факта не имеет: наивный дифф от HEAD записывал всю
+ * несданную работу соседей и здесь не зовётся.
+ *
+ * Вердикт записывается ПЕРВЫМ, и терять его из-за пересчёта ключа нельзя:
+ * сбой пересчёта — громкая деградация (И2), а не отказ. Сбой самой записи
+ * исхода — бросок, как у `finishAttempt`: вызывающий решает, отказ это или WARN.
+ */
+export async function finishWithFact(
+  ctx: CommandContext,
+  swarm: { readonly db: Database; readonly attribution: Attribution },
+  probe: Pick<LaunchProbe, "touchedSince">,
+  attemptId: string,
+  spend: TokenSource,
+  outcome: FinishOutcome,
+  wsDir: string | undefined,
+): Promise<FinishedWithFact> {
+  // Расход по ЗАПИСАННОЙ сессии, если источник не назван руками. Это и есть
+  // ответ на «считать расход без перебора файлов»: стенограмма берётся по
+  // uuid из строки запуска, а не ищется по строке брифа, которую человек
+  // может написать иначе.
+  const recorded = recordedSpend(ctx, swarm.attribution, attemptId, spend);
+  const record = swarm.attribution.finishAttempt(attemptId, {
+    verdict: outcome.verdict,
+    caveats: outcome.caveats,
+    retries: outcome.retries,
+    note: outcome.note,
+    ...recorded.tokens,
+  });
+  const run = swarm.attribution.getRun(attemptId);
+  let touched: string[] | null = null;
+  if (run?.gitBase != null) {
+    const keys = await probe.touchedSince(run.gitBase);
+    if (keys === null) {
+      ctx.warn(
+        "attempt.touched_unknown",
+        `${attemptId}: files touched not measured — the checkout recorded at start ` +
+          `(${run.gitBase.checkouts[0]?.root ?? "?"}) is gone or git did not answer; ` +
+          "the class falls back to anchors, then to paths named in the task",
+      );
+    } else {
+      touched = wsPathsOfTouched(keys);
+      swarm.attribution.recordFilesTouched(attemptId, touched);
+    }
+  }
+  let settled: Settled | { readonly skipped: string };
+  try {
+    settled = settleAttemptClass(swarm.db, swarm.attribution, record, touched, wsDir);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    ctx.warn("attempt.class_not_settled", `${attemptId}: class kept as at start — ${msg}`);
+    settled = { skipped: msg };
+  }
+  return { record: swarm.attribution.getAttempt(attemptId) ?? record, spend: recorded, settled };
+}
+
 function buildFinishCommand(deps: AttemptDeps): Command {
   return {
     name: "finish",
@@ -1352,62 +1437,22 @@ function buildFinishCommand(deps: AttemptDeps): Command {
           }
           attemptId = open.attemptId;
         }
-        // Расход по ЗАПИСАННОЙ сессии, если источник не назван руками.
-        // Это и есть ответ на «считать расход без перебора файлов»:
-        // стенограмма берётся по uuid из строки запуска, а не ищется по
-        // строке брифа, которую человек может написать иначе.
-        const recorded = recordedSpend(ctx, opened.attribution, attemptId, spend);
-        const record = opened.attribution.finishAttempt(attemptId, {
-          verdict,
-          caveats,
-          retries: flagNum(ctx, "retries"),
-          note: flagStr(ctx, "note"),
-          ...recorded.tokens,
-        });
-        // ФАКТ: что изменилось со снимка, снятого на старте, — в тех деревьях,
-        // где стояла попытка (worktree агента, вложенный репозиторий), а не в
-        // каталоге того, кто финиширует. Попытка без снимка (открыта до
-        // миграции 9 или ретроспективно) факта не имеет: наивный дифф от
-        // HEAD записывал всю несданную работу соседей и здесь больше не зовётся.
-        const run = opened.attribution.getRun(attemptId);
-        let touched: string[] | null = null;
-        if (run?.gitBase != null) {
-          const keys = await deps.probe.touchedSince(run.gitBase);
-          if (keys === null) {
-            ctx.warn(
-              "attempt.touched_unknown",
-              `${attemptId}: files touched not measured — the checkout recorded at start ` +
-                `(${run.gitBase.checkouts[0]?.root ?? "?"}) is gone or git did not answer; ` +
-                "the class falls back to anchors, then to paths named in the task",
-            );
-          } else {
-            touched = wsPathsOfTouched(keys);
-            opened.attribution.recordFilesTouched(attemptId, touched);
-          }
-        }
-        // Вердикт уже записан, и терять его из-за пересчёта ключа нельзя: сбой
-        // здесь — громкая деградация (И2), а не отказ команды.
-        let settled: Settled | { readonly skipped: string };
-        try {
-          settled = settleAttemptClass(
-            opened.db,
-            opened.attribution,
-            record,
-            touched,
-            workspaceDirOfDb(dbPathOf(ctx)),
-          );
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          ctx.warn("attempt.class_not_settled", `${attemptId}: class kept as at start — ${msg}`);
-          settled = { skipped: msg };
-        }
+        const done = await finishWithFact(
+          ctx,
+          opened,
+          deps.probe,
+          attemptId,
+          spend,
+          { verdict, caveats, retries: flagNum(ctx, "retries"), note: flagStr(ctx, "note") },
+          workspaceDirOfDb(dbPathOf(ctx)),
+        );
         return {
           ok: true,
           data: {
-            ...withTranscript(attemptView(opened.attribution.getAttempt(attemptId)!), recorded.transcript),
+            ...withTranscript(attemptView(done.record), done.spend.transcript),
             run: runView(opened.attribution.getRun(attemptId)),
-            spendVia: recorded.via,
-            classSettled: settled,
+            spendVia: done.spend.via,
+            classSettled: done.settled,
           },
         };
       } catch (e) {

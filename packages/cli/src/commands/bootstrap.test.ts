@@ -30,6 +30,7 @@ import { createInitCommand } from "./init.ts";
 import {
   autoBlocks,
   BOOTSTRAP_CACHE_VERSION,
+  BOOTSTRAP_LIST_SQL,
   createBootstrapCommand,
   environmentFingerprint,
   isBootstrapKey,
@@ -258,6 +259,35 @@ describe("ручные блоки: L3-заметки, а не файл рядо�
     expect(again.code).toBe(ExitCode.NOTFOUND);
   });
 
+  /**
+   * Скрытое выдачей (HIDDEN_STATUSES) и кандидат хука сжатия — не правило
+   * запуска. МУТАЦИЯ: без термов `liveStatusPredicate`/`notPendingPredicate` в
+   * BOOTSTRAP_LIST_SQL — краснеет этот тест (все три блока в выводе).
+   */
+  test("отозванный, отменённый блок и кандидат на подтверждение — не в bootstrap и не в list", async () => {
+    for (const key of ["gone", "cancelled", "candidate", "alive"]) {
+      await myc("bootstrap", "set", key, `текст блока ${key}`);
+    }
+    const db = new Database(join(dir, ".myc", "myc.db"));
+    try {
+      db.query("UPDATE nodes SET status = 'retracted' WHERE g_topic = 'bootstrap' AND title = 'gone'").run();
+      db.query("UPDATE nodes SET status = 'cancelled' WHERE g_topic = 'bootstrap' AND title = 'cancelled'").run();
+      db.query(
+        `UPDATE nodes SET attrs = json_set(attrs, '$.state', 'pending_review')
+          WHERE g_topic = 'bootstrap' AND title = 'candidate'`,
+      ).run();
+    } finally {
+      db.close();
+    }
+    rmSync(join(dir, ".myc", "bootstrap.cache.json"), { force: true });
+    const text = (await myc("bootstrap")).stdout as string;
+    expect(text).toContain("[manual:alive]");
+    for (const key of ["gone", "cancelled", "candidate"]) expect(text).not.toContain(`[manual:${key}]`);
+    const listed = (await myc("bootstrap", "list")).stdout as string;
+    expect(listed).toContain("alive");
+    expect(listed).not.toContain("candidate");
+  });
+
   test("list печатает ключи, ярус и размер", async () => {
     await myc("bootstrap", "set", "style", "12345");
     const r = await myc("bootstrap", "list");
@@ -284,17 +314,8 @@ describe("ручные блоки: L3-заметки, а не файл рядо�
     await myc("bootstrap", "set", "style", "x");
     const db = new Database(join(dir, ".myc", "myc.db"), { readonly: true });
     try {
-      const plan = db
-        .query(
-          `EXPLAIN QUERY PLAN
-           SELECT id, title, coalesce(body,'') AS body, updated_at
-             FROM nodes
-            WHERE scope = ?1 AND kind = 'note'
-              AND layer >= 2 AND layer = 3
-              AND head_id IS NULL AND deleted_at IS NULL
-              AND g_topic = 'bootstrap'`,
-        )
-        .all("") as Array<{ detail: string }>;
+      // Текст запроса — тот, что исполняет команда, со всеми термами.
+      const plan = db.query(`EXPLAIN QUERY PLAN ${BOOTSTRAP_LIST_SQL}`).all("") as Array<{ detail: string }>;
       const detail = plan.map((p) => p.detail).join(" | ");
       expect(detail).toContain("ix_nodes_prime");
       expect(detail).not.toContain("SCAN nodes");

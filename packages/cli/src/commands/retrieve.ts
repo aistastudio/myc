@@ -61,6 +61,7 @@ import {
   type DaemonVector,
 } from "./embedd.ts";
 import {
+  mapIntoMain,
   openPersonalStore,
   openStore,
   parseWorkspaceToml,
@@ -113,7 +114,12 @@ export interface RetrieveFilters {
   readonly until?: number;
   readonly acl?: readonly string[];
   readonly author?: string;
-  /** Подстрока пути якоря (attrs.anchors[].path). */
+  /**
+   * Файл якоря (`file` или `file:line`, от каталога вызова): узлы, у которых
+   * на нём НАСТОЯЩИЙ якорь (таблица anchors, ребро touches, оба ключа файла —
+   * {@link anchoredBySource}), плюс неудавшиеся намерения `attrs.anchors`
+   * (state=pending) — подстрокой пути, как их набрали.
+   */
   readonly anchor?: string;
   /**
    * Охват S58: session | project | unknown. Не задан — выдаются ВСЕ, и это
@@ -897,6 +903,75 @@ export function emptyReasonOf(
 }
 
 // ---------------------------------------------------------------------------
+// --anchor: узлы с настоящим якорем на файле (memory-1sw246ajrw5h)
+// ---------------------------------------------------------------------------
+
+/** Узлы с якорем на файле вопроса: источник выдачи → id узлов. */
+export type AnchoredIds = ReadonlyMap<string, ReadonlySet<string>>;
+
+/**
+ * Владельцы якорей ОДНОГО ключа `(repo_id, path)` — узлы, от которых к якорю
+ * идёт ребро touches (так же их читает `anchor of`). Индекс
+ * `ix_anchors_file(repo_id, path, span_start)` берёт равенство первых двух
+ * колонок, строка — диапазоном `span_start <= line`; ребро — `ix_edges_dst`.
+ * Сам узел-якорь в ответ не входит: спрашивали знание о файле, а не якоря
+ * (граф расширения приводит их в пул как соседей своих владельцев).
+ */
+const SQL_ANCHORED_FILE = `
+SELECT e.src AS owner
+  FROM anchors a
+  JOIN edges e ON e.dst = a.node_id AND e.type = 'touches' AND e.deleted_at IS NULL
+ WHERE a.repo_id = ?1 AND a.path = ?2`;
+const SQL_ANCHORED_LINE = `${SQL_ANCHORED_FILE} AND a.span_start <= ?3 AND a.span_end >= ?3`;
+
+/**
+ * КТО ПРИВЯЗАН К ФАЙЛУ `--anchor` — по таблице `anchors`, а не по
+ * `attrs.anchors`. Прежний фильтр искал подстроку пути в `attrs.anchors[]`,
+ * а туда пишется только НЕУДАВШАЯСЯ привязка (намерение `state=pending`,
+ * `attachAnchorFlag`): узел с настоящим якорем (узел-якорь, ребро touches) не
+ * находился ни из CLI, ни из MCP `myc_recall`, ни из веба — все три идут сюда.
+ *
+ * Путь вопроса — от каталога вызова (или абсолютный, как у хука) — сводится
+ * к пути от корня КАЖДОГО опрошенного воркспейса тем же правилом, что у
+ * `anchor of`: из worktree вне воркспейса — через основное дерево
+ * (`mapIntoMain`), из worktree внутри — `wsPathOfFile`. Дальше оба ключа
+ * файла (`anchorKeysFor`): якорь, поставленный из корня экосистемы
+ * `('', 'svc/x.ts')`, и из самого репозитория `('svc', 'x.ts')` — один файл.
+ * Файл вне воркспейса источника — у него там якорей нет, пустое множество.
+ *
+ * Цена — два индексных поиска на воркспейс, откуда пришли хиты, и только
+ * когда `--anchor` задан; без флага не делается ничего и не грузится anchor.ts.
+ */
+export async function anchoredBySource(
+  handles: ReadonlyMap<string, StoreHandle>,
+  input: string,
+  cwd: string,
+): Promise<Map<string, Set<string>>> {
+  // Модуль якорей грузится только с флагом: recall без --anchor за него не платит.
+  const { anchorKeysFor, parseTarget, wsPathOfFile } = await import("./anchor.ts");
+  const out = new Map<string, Set<string>>();
+  const target = parseTarget(input);
+  if (target === undefined) return out;
+  const abs = resolve(cwd, target.path);
+  const line = target.whole ? null : target.start;
+  for (const [sourceId, h] of handles) {
+    const ids = new Set<string>();
+    out.set(sourceId, ids);
+    const main = h.worktree !== undefined ? mapIntoMain(h.worktree, abs) : abs;
+    const wsPath = wsPathOfFile(h.wsDir, main);
+    if (wsPath === null) continue;
+    const q = h.driver.database.query(line === null ? SQL_ANCHORED_FILE : SQL_ANCHORED_LINE);
+    for (const k of anchorKeysFor(wsPath)) {
+      const rows = (line === null ? q.all(k.repoId, k.path) : q.all(k.repoId, k.path, line)) as Array<{
+        owner: string;
+      }>;
+      for (const r of rows) ids.add(r.owner);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Отсев по причинам (S59 + И2)
 // ---------------------------------------------------------------------------
 
@@ -979,8 +1054,16 @@ export interface DropKnobs {
  * том, ЧЕЙ это был отсев — а без неё подсказка при пустой выдаче звала
  * крутить не те ручки. Маска — одно целое число на строку, ноль аллокаций;
  * цену этого размена меряет retrieve.drop-latency.test.ts.
+ *
+ * `anchored` — узлы с настоящим якорем на файле `--anchor`, по источнику
+ * (`anchoredBySource`); без него фильтр видит только намерения в attrs.
  */
-export function dropMaskOf(row: RetrieveRow, f: RetrieveFilters, repoWanted: string): number {
+export function dropMaskOf(
+  row: RetrieveRow,
+  f: RetrieveFilters,
+  repoWanted: string,
+  anchored?: AnchoredIds,
+): number {
   let mask = 0;
   if (f.kinds !== undefined && f.kinds.length > 0 && !matchKind(row, f.kinds)) {
     mask |= 1 << D_KIND;
@@ -997,7 +1080,8 @@ export function dropMaskOf(row: RetrieveRow, f: RetrieveFilters, repoWanted: str
   if (f.author !== undefined && (row.author ?? "") !== f.author) mask |= 1 << D_AUTHOR;
   if (f.anchor !== undefined) {
     const needle = f.anchor;
-    if (!(row.anchors ?? []).some((a) => a.includes(needle))) mask |= 1 << D_ANCHOR;
+    const bound = anchored?.get(row.source)?.has(row.id) === true;
+    if (!bound && !(row.anchors ?? []).some((a) => a.includes(needle))) mask |= 1 << D_ANCHOR;
   }
   if (f.reach !== undefined && f.reach.length > 0 && !f.reach.includes(row.reach)) {
     mask |= 1 << D_REACH;
@@ -1508,9 +1592,20 @@ export async function retrieve(
     // Цель фильтра по репозиторию — то же умолчание, что у `myc ready`:
     // каталог вызова. Явный `--repo` сильнее, `--repo all` снимает фильтр.
     const repoWanted = repoTarget(project, f.repo);
+    // Якоря файла — только у воркспейсов, откуда пришли хиты: у прочих
+    // отсеивать нечего.
+    let anchored: AnchoredIds | undefined;
+    if (f.anchor !== undefined) {
+      const withHits = new Map<string, StoreHandle>();
+      for (const hit of hits) {
+        const handle = openedById.get(hit.source);
+        if (handle !== undefined) withHits.set(hit.source, handle);
+      }
+      anchored = await anchoredBySource(withHits, f.anchor, ctx.globals.directory ?? process.cwd());
+    }
     const dropCount = new Array<number>(DROP_REASONS.length).fill(0);
     const filtered = all.filter((row) => {
-      const mask = dropMaskOf(row, f, repoWanted);
+      const mask = dropMaskOf(row, f, repoWanted, anchored);
       if (mask === 0) return true;
       // Ровно один бит — причина названа адресно и её снятие строку вернёт;
       // больше одного — честное «несколько сразу», потому что снятие любого

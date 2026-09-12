@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { migrate, migrations } from "@myc/store-sqlite";
@@ -15,8 +15,9 @@ import { Registry } from "../registry.ts";
 import { createCodeCommand } from "./code.ts";
 import { createDepCommand } from "./dep.ts";
 import { createRememberCommand } from "./remember.ts";
-import { createStatuslineCommand, renderLine, statuslineCachePath, type StatuslineData } from "./statusline.ts";
+import { createStatuslineCommand, queueDbOf, renderLine, statuslineCachePath, type StatuslineData } from "./statusline.ts";
 import { CLASSIFIER_VERSION } from "../statusline-session.ts";
+import { enqueue, mintHolder, openQueue, queueDbPath } from "../run-queue.ts";
 import { createClaimCommand, createCommentCommand, createCreateCommand, createTaskCommand } from "./tasks.ts";
 
 let root: string;
@@ -373,6 +374,7 @@ describe("ctx: заполнение окна контекста от хоста"
         files: 1,
         took_ms: 1,
       },
+      run_queue: null,
       foreign: { source: null, started: false, finished: false, from: null, rc: null, shown: false, waited_ms: 0, window_ms: 0 },
       cache: { stats: "hit", code: "hit" },
     };
@@ -386,6 +388,108 @@ describe("ctx: заполнение окна контекста от хоста"
     expect(renderLine({ ...base, context_pct: 100 }).length).toBe(109);
   });
 });
+
+/**
+ * Сегмент машинной очереди `myc run` (memory-n2tcwbwcwxzb). Очередь — та же
+ * ~/.myc/queue.db, что пишет `myc run`: билеты ставятся её же функциями.
+ *
+ * МУТАЦИИ ПРИЁМКИ: `readRunQueue` считает и мёртвых (без `liveness`) —
+ * краснеют «мёртвый держатель» и «нет очереди»; «mine» по любому ждущему, а
+ * не по сессии — краснеет «только чужие»; сегмент при пустой очереди (без
+ * `return null`) — краснеет «нет очереди».
+ */
+describe("очередь myc run в строке статуса", () => {
+  let home: string;
+  const queueFile = (): string => join(home, ".myc", "queue.db");
+
+  beforeEach(() => {
+    home = join(root, "home");
+    mkdirSync(join(home, ".myc"), { recursive: true });
+    register({ MYC_HOME: home });
+  });
+
+  function ticket(session: string, agoMs: number, pid: number = process.pid): void {
+    const db = openQueue(queueFile());
+    try {
+      enqueue(
+        db,
+        { lane: "heavy", argv: ["bun", "test"], cwd: ws, pid, host: hostname(), session, terminal: "", agentPid: null, actor: "t" },
+        mintHolder(hostname(), pid),
+        1,
+        600_000,
+        Date.now() - agoMs,
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  function rowsInQueue(): number {
+    const db = new Database(queueFile(), { readonly: true });
+    try {
+      return (db.query("SELECT count(*) AS n FROM run_queue").get() as { n: number }).n;
+    } finally {
+      db.close();
+    }
+  }
+
+  test("нет очереди (нет файла или нет живых билетов) — сегмента нет", async () => {
+    const d = await line();
+    expect(d.run_queue).toBeNull();
+    expect(d.line).not.toContain("run queue");
+    ticket("other", 5_000, deadPid());
+    const e = await line();
+    expect(e.run_queue).toBeNull();
+    expect(e.line).not.toContain("run queue");
+  });
+
+  test("выполняется и ждут — последним сегментом; моя сессия ждёт — сколько", async () => {
+    ticket("other-a", 120_000); // первый — выполняется (слот один)
+    ticket("sess-1", 90_000); // мой — ждёт полторы минуты
+    ticket("other-b", 30_000);
+    const d = await line();
+    expect(d.run_queue).toMatchObject({ running: 1, waiting: 2, mine_waiting: "1m" });
+    expect(d.run_queue!.mine_waiting_ms).toBeGreaterThanOrEqual(90_000);
+    expect(d.line.endsWith(" │ no session │ run queue 1 running · 2 waiting (mine 1m)")).toBe(true);
+  });
+
+  test("только чужие билеты — без «mine»", async () => {
+    ticket("other-a", 10_000);
+    ticket("other-b", 5_000);
+    const d = await line();
+    expect(d.run_queue).toEqual({ running: 1, waiting: 1, mine_waiting_ms: null, mine_waiting: null });
+    expect(d.line.endsWith("run queue 1 running · 1 waiting")).toBe(true);
+  });
+
+  test("мёртвый держатель не считается, и строка его не снимает (она не пишет)", async () => {
+    ticket("other-a", 10_000, deadPid()); // держатель умер — слот на деле свободен
+    ticket("sess-1", 5_000);
+    const d = await line();
+    expect(d.run_queue).toMatchObject({ running: 0, waiting: 1, mine_waiting: "5s" });
+    expect(d.line.endsWith("run queue 1 waiting (mine 5s)")).toBe(true);
+    expect(rowsInQueue()).toBe(2); // снимет ждущий `myc run`, не строка статуса
+  });
+
+  test("путь очереди — тот же, что у myc run; без дома в окружении очередь не читается", () => {
+    expect(queueDbOf({ MYC_HOME: home })).toBe(queueDbPath(home));
+    expect(queueDbOf({ HOME: home })).toBe(queueDbPath(home));
+    expect(queueDbOf({})).toBeNull();
+  });
+
+  test("очередь не читается — деградация названа, строка на месте", async () => {
+    writeFileSync(queueFile(), "это не база sqlite, а мусор длиной больше заголовка файла базы данных");
+    const d = await line();
+    expect(d.run_queue).toBeNull();
+    expect(d.degraded.some((x) => x.startsWith("run queue unreadable"))).toBe(true);
+    expect(d.line).toContain("⚠");
+  });
+});
+
+/** pid процесса, которого уже нет: запустили `true` и дождались. */
+function deadPid(): number {
+  const p = Bun.spawnSync(["true"]);
+  return p.pid;
+}
 
 describe("кеш счётчиков базы", () => {
   test("вторая отрисовка — из кеша; запись в оплог — пересчёт", async () => {

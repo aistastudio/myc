@@ -381,6 +381,72 @@ describe("охват репозитория (S59) в worktree не уезжае�
     expect(storedRepo(join(eco, ".myc", "myc.db"), id)).toBe("collector");
     expect(repo).toBeDefined();
   });
+
+  /**
+   * memory-5vcctcvga6k0: worktree не первого уровня — так их заводят агенты
+   * (`.claude/worktrees/x` в корне экосистемы). Первый сегмент `.claude` —
+   * не репозиторий, и охват выводился общим `''`: узлы сессии ложились как
+   * из корня, а ready/recall фильтровали её как корень.
+   *
+   * МУТАЦИЯ ПРИЁМКИ: `deriveRepoAcrossWorktrees` без `inTreeWorktreeLink`
+   * (прежнее «только первый уровень») — краснеют «.claude/worktrees» и
+   * «глубже»: охват `''`, в ready видна задача соседнего репозитория.
+   */
+  test("worktree в .claude/worktrees корня: охват — репозиторий, чей это worktree", async () => {
+    const { eco, repo } = await ecosystem();
+    const deep = join(eco, ".claude", "worktrees", "agent-1");
+    git(repo, "worktree", "add", "-q", deep, "-b", "f3");
+    mkdirSync(join(deep, "src", "inner"), { recursive: true });
+    const db = join(eco, ".myc", "myc.db");
+
+    for (const dir of [deep, join(deep, "src", "inner")]) {
+      const created = await myc(dir, "task", `из ${dir.slice(eco.length)}`, "-p", "P1", "--json");
+      expect(created.code).toBe(0);
+      const id = (JSON.parse(text(created.stdout)) as { data: { id: string } }).data.id;
+      expect([dir.slice(eco.length), storedRepo(db, id)]).toEqual([dir.slice(eco.length), "collector"]);
+    }
+
+    // Фильтр ready по умолчанию — репозиторий worktree: своё видно, соседнее — нет.
+    const api = join(eco, "api");
+    mkdirSync(api);
+    git(api, "init", "-q", "-b", "main");
+    expect((await myc(api, "task", "задача соседа api", "-p", "P1")).code).toBe(0);
+    expect((await myc(repo, "task", "задача collector", "-p", "P1")).code).toBe(0);
+    const ready = text((await myc(deep, "ready")).stdout);
+    expect(ready).toContain("задача collector");
+    expect(ready).not.toContain("задача соседа api");
+  });
+
+  test("worktree корневого репозитория в .claude/worktrees — общий охват; чужой репозиторий — тоже", async () => {
+    const { eco } = await ecosystem();
+    // Корень экосистемы сам — git-репозиторий (как у cherry), вложенные им игнорируются.
+    git(eco, "init", "-q", "-b", "main");
+    writeFileSync(join(eco, ".gitignore"), ".myc/\ncollector/\n.claude/\n");
+    writeFileSync(join(eco, "README.md"), "root\n");
+    git(eco, "add", ".gitignore", "README.md");
+    git(eco, "commit", "-qm", "root");
+    const rootWt = join(eco, ".claude", "worktrees", "root-1");
+    git(eco, "worktree", "add", "-q", rootWt, "-b", "r1");
+
+    // Основное дерево ВНЕ воркспейса: его файлы в воркспейсе единственные,
+    // и охват выводится как у любого каталога корня.
+    const foreign = join(sandbox, "foreign");
+    mkdirSync(foreign);
+    git(foreign, "init", "-q", "-b", "main");
+    writeFileSync(join(foreign, "f"), "f\n");
+    git(foreign, "add", "f");
+    git(foreign, "commit", "-qm", "f");
+    const foreignWt = join(eco, ".claude", "worktrees", "foreign-1");
+    git(foreign, "worktree", "add", "-q", foreignWt, "-b", "g1");
+
+    const db = join(eco, ".myc", "myc.db");
+    for (const dir of [rootWt, foreignWt]) {
+      const created = await myc(dir, "task", `из ${dir.slice(eco.length)}`, "-p", "P1", "--json");
+      expect(created.code).toBe(0);
+      const id = (JSON.parse(text(created.stdout)) as { data: { id: string } }).data.id;
+      expect([dir.slice(eco.length), storedRepo(db, id)]).toEqual([dir.slice(eco.length), ""]);
+    }
+  });
 });
 
 describe("якоря из worktree: путь общий, содержимое своё", () => {

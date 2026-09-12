@@ -8,8 +8,10 @@
  * задач (готово / в работе / заблокировано), код-индекс (файлы, символы,
  * давность последней записи — или «нет индекса», или «индексируется»), память
  * проекта (узлы знания в охвате репозитория) и обращения к myc в ЭТОЙ сессии:
- * сколько полезных из скольких. Деградация — маркер `⚠` сразу после `myc`; нет
- * деградации — нет и маркера.
+ * сколько полезных из скольких. Когда на машине непуста очередь `myc run`, —
+ * последний сегмент `run queue 1 running · 2 waiting (mine 3m)`: сколько
+ * выполняется, сколько ждёт и сколько уже ждёт эта сессия (`readRunQueue`).
+ * Деградация — маркер `⚠` сразу после `myc`; нет деградации — нет и маркера.
  *
  * Ставит её `myc wire --status-line` (без флага wire statusLine не трогает).
  * Ввод — JSON хоста на stdin (схема прочитана из бинаря Claude Code 2.1.267,
@@ -74,14 +76,14 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { defineQueries, reachPredicate, repoPredicate } from "@myc/core";
 import { DEFAULT_MODEL_ID, modelManifestPath } from "@myc/embed/model-id";
 // Подпуть, а не "@myc/retrieval": корень пакета тянет гибрид, вектор и кеш —
 // модули, за загрузку которых строка статуса платила бы на каждой отрисовке.
-import { notPendingPredicate } from "@myc/retrieval/review";
+import { liveStatusPredicate, notPendingPredicate } from "@myc/retrieval/review";
 import type { FlagSpec } from "../flags.ts";
 import { envelopeLine, okEnvelope } from "../envelope.ts";
 import { ExitCode } from "../exit.ts";
@@ -139,6 +141,20 @@ export interface CodeStats {
   /** Фоновое обновление: идёт, ждёт, ждёт повтора, бросило; null — строки нет. */
   readonly refresh: "running" | "queued" | "retry" | "failed" | null;
   readonly queued: number;
+}
+
+/**
+ * Машинная очередь `myc run` (~/.myc/queue.db, эпик memory-14qyv1gmacef):
+ * живые билеты всех полос и сколько уже ждёт эта сессия. Сегмента нет, когда
+ * живых билетов нет (или файла очереди нет вовсе).
+ */
+export interface RunQueuePart {
+  readonly running: number;
+  readonly waiting: number;
+  /** Сколько ждёт самый давний ждущий билет ЭТОЙ сессии, мс; null — сессия не ждёт. */
+  readonly mine_waiting_ms: number | null;
+  /** То же коротко (fmtAge: 12s, 3m, 1h); null — сессия не ждёт. */
+  readonly mine_waiting: string | null;
 }
 
 export interface SessionPart {
@@ -200,6 +216,8 @@ export interface StatuslineData {
   readonly memory: number | null;
   readonly degraded: readonly string[];
   readonly session: SessionPart | null;
+  /** Машинная очередь `myc run`; null — живых билетов нет, сегмента нет. */
+  readonly run_queue: RunQueuePart | null;
   readonly foreign: ForeignPart;
   readonly cache: { readonly stats: "hit" | "miss" | "none"; readonly code: "hit" | "miss" | "none" };
   readonly took_ms: number;
@@ -327,9 +345,11 @@ export function defaultCacheDir(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * Узлы знания — память (note, кроме реплик-комментариев) и решения
  * (`attrs.type = 'decision'` у любого вида: на живой базе решения заведены и
- * задачами). Живые: не отозваны и не заменены. Охват — как у `recall` этой
- * сессии: репозиторий вызова и видимость сессии (чужое сессионное не
- * считается). Кандидаты хука сжатия (`attrs.state = 'pending_review'`, §6.2)
+ * задачами). Живые: статус не из HIDDEN_STATUSES (@myc/retrieval review.ts) —
+ * тот же список, которым recall и prime режут выдачу; своя копия литерала
+ * здесь уже разошлась с ними однажды (memory-0p3d8n1efwtv). Охват — как у
+ * `recall` этой сессии: репозиторий вызова и видимость сессии (чужое
+ * сессионное не считается). Кандидаты хука сжатия (`attrs.state = 'pending_review'`, §6.2)
  * — не знание, пока их не подтвердили, и узлом знания не считаются: recall
  * их не отдаёт, и счётчик, в котором они есть, обещал бы то, чего нет.
  */
@@ -339,7 +359,7 @@ const QS = defineQueries({
     name: "sl_memory",
     sql: `SELECT count(*) AS n FROM nodes
            WHERE scope = ?1 AND kind IN ('note','task') AND deleted_at IS NULL
-             AND status NOT IN ('retracted','superseded','cancelled')
+             AND ${liveStatusPredicate("nodes")}
              AND CASE kind WHEN 'note' THEN coalesce(json_extract(attrs,'$.type'),'') <> 'comment'
                            ELSE json_extract(attrs,'$.type') = 'decision' END
              AND ${repoPredicate("nodes", 2)}
@@ -408,8 +428,103 @@ export function renderLine(d: Omit<StatuslineData, "line" | "lines" | "took_ms" 
     parts.push(d.memory !== null ? count(d.memory, "note") : "notes: ?");
   }
   parts.push(sessionPartText(d.session));
+  // Очередь `myc run` — последней: она бывает не всегда, и её появление не
+  // сдвигает сегменты, к местам которых глаз уже привык.
+  if (d.run_queue !== null) parts.push(runQueueText(d.run_queue));
   const marker = d.degraded.length > 0 ? ` ⚠ ${d.degraded.join(", ")}` : "";
   return `myc${marker} │ ${parts.join(" │ ")}`;
+}
+
+/** `run queue 1 running · 2 waiting (mine 3m)`; пустых частей нет. */
+function runQueueText(q: RunQueuePart): string {
+  const parts: string[] = [];
+  if (q.running > 0) parts.push(`${q.running} running`);
+  if (q.waiting > 0) parts.push(`${q.waiting} waiting${q.mine_waiting !== null ? ` (mine ${q.mine_waiting})` : ""}`);
+  return `run queue ${parts.join(" · ")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Машинная очередь `myc run` (memory-n2tcwbwcwxzb)
+// ---------------------------------------------------------------------------
+
+/**
+ * Файл очереди — из ТОГО ЖЕ окружения, из которого строка берёт всё остальное
+ * (`deps.env`): MYC_HOME, иначе HOME — то же, что `personalHome()` у `myc run`
+ * в настоящем окружении. Окружение без дома (тест в процессе со своим `env`)
+ * очереди не читает вовсе: иначе он видел бы очередь машины, на которой его
+ * гоняют соседние агенты, и строка зависела бы от чужих `myc run`.
+ */
+export function queueDbOf(env: Readonly<Record<string, string | undefined>>): string | null {
+  const home = env.MYC_HOME ?? env.HOME;
+  if (home === undefined || home.length === 0) return null;
+  // Путь — БЕЗ импорта run-queue.ts: модуль грузится, только когда в очереди
+  // есть билеты (см. readRunQueue). Совпадение с `queueDbPath` сверяет тест.
+  return join(home, ".myc", "queue.db");
+}
+
+/**
+ * Колонки билета, которые нужны строке: состояние, чей он и жив ли держатель.
+ * Без `argv`/`cwd` — их показывает `myc queue`, строке они ни к чему.
+ */
+const SQL_RUN_QUEUE = "SELECT state, session, pid, host, lease_expires, enqueued_at FROM run_queue";
+
+/**
+ * Очередь `myc run` глазами строки статуса: сколько выполняется, сколько ждёт
+ * и сколько уже ждёт ЭТА сессия (билет пишет сессию из окружения агента —
+ * CLAUDE_CODE_SESSION_ID, тот же `session_id`, что хост отдаёт строке).
+ *
+ * ТОЛЬКО ЧТЕНИЕ (шапка: строка статуса не пишет). `myc queue` снимает билеты
+ * мёртвых держателей — строка нет: мёртвый (процесса на этой машине нет,
+ * `liveness` из run-queue.ts — то же правило, что у очереди) просто не
+ * считается, а снимет его первый же ждущий `myc run`. Устаревший, но живой
+ * билет считается как есть: слот он держит.
+ *
+ * ЦЕНА — по ступеням, и дорогая только тогда, когда сегмент будет показан.
+ * Файла нет (на машине не звали `myc run`) — один stat. Файл есть — открытие
+ * без создания и без миграций (их делает `myc run`) и один SELECT: bun:sqlite
+ * к этому моменту уже загружен хранилищем, `busy_timeout` короткий — чтение в
+ * WAL писателей не ждёт, а ждать дольше отрисовки незачем. Очередь пуста (так
+ * она стоит почти всегда: файл остаётся и после последнего `myc run`) —
+ * всё. Модуль run-queue.ts (правило живости) грузится только при билетах.
+ * Замер до/после — в отчёте задачи memory-n2tcwbwcwxzb.
+ *
+ * Не прочиталось — бросок: вызывающий называет это деградацией (И2).
+ */
+export async function readRunQueue(path: string | null, session: string, now: number): Promise<RunQueuePart | null> {
+  if (path === null || !existsSync(path)) return null;
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(path, { readwrite: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 20");
+    const rows = db.query(SQL_RUN_QUEUE).all() as Array<{
+      state: string;
+      session: string;
+      pid: number;
+      host: string;
+      lease_expires: number;
+      enqueued_at: number;
+    }>;
+    if (rows.length === 0) return null;
+    const { liveness } = await import("../run-queue.ts");
+    const host = hostname();
+    let running = 0;
+    let waiting = 0;
+    let mine: number | null = null;
+    for (const row of rows) {
+      if (liveness(row, now, host) === "dead") continue;
+      if (row.state === "running") {
+        running++;
+        continue;
+      }
+      waiting++;
+      if (session.length > 0 && row.session === session) mine = Math.max(mine ?? 0, now - row.enqueued_at);
+    }
+    if (running + waiting === 0) return null;
+    const { fmtAge } = await import("./store.ts");
+    return { running, waiting, mine_waiting_ms: mine, mine_waiting: mine === null ? null : fmtAge(mine) };
+  } finally {
+    db.close();
+  }
 }
 
 /** `1 file`, `2 files` — строка читается человеком, а не парсером. */
@@ -519,6 +634,11 @@ export interface StatuslineDeps extends StoreDeps {
   readonly scanBytes: number;
   /** Сборка: часть отпечатка кеша (CLI_VERSION; тесты подменяют). */
   readonly build: string;
+  /**
+   * Файл машинной очереди `myc run`. Не задан — из `env` (`queueDbOf`); null —
+   * очередь не читать.
+   */
+  readonly queueDb?: string | null;
 }
 
 const realDeps = (): StatuslineDeps => ({
@@ -600,7 +720,8 @@ export function createStatuslineCommand(overrides: Partial<StatuslineDeps> = {})
       "reports (ctx N%, from context_window.used_percentage; no segment when the host gives none), tasks ready / in progress / " +
       "blocked, code index files, symbols and age, memory nodes in this repo's reach, and how many " +
       "of THIS session's calls to the tool were useful out of how many (counted from the host's " +
-      "transcript, incrementally). The same stdin bytes go to the statusLine that was there before " +
+      "transcript, incrementally); when the machine-wide `myc run` queue is not empty, how many commands " +
+      "run and wait there and how long THIS session has waited. The same stdin bytes go to the statusLine that was there before " +
       `(${THEN_FLAG}, the user one, or — when the user line is myc's own — the one it replaced, recorded in ` +
       "~/.myc/wire-user.json), detached: never waited for (unless --wait-ms) and never " +
       "killed; the output of its last completed run is printed above ours. --scope user is the line " +
@@ -670,6 +791,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
       memory: null,
       degraded: [],
       session: null,
+      run_queue: null,
       foreign: { source: null, started: false, finished: false, from: null, rc: null, shown: false, waited_ms: 0, window_ms: windowMs, skipped: "nested" },
       cache: { stats: "none", code: "none" },
       took_ms: Math.round((performance.now() - t0) * 10) / 10,
@@ -708,7 +830,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
   const silent: StatuslineData["silent"] =
     scope === "user" && ctx.globals.db === undefined && !inWorkspace(dir) ? "no-workspace" : undefined;
 
-  let body: Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign" | "context_pct" | "scope" | "silent">;
+  let body: Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign" | "context_pct" | "scope" | "silent" | "run_queue">;
   let error: string | undefined;
   try {
     body =
@@ -739,6 +861,19 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     };
   }
 
+  // Очередь `myc run` — про машину, а не про воркспейс: читается и там, где
+  // воркспейса нет, но не у молчащей строки пользовательского слоя.
+  let runQueue: RunQueuePart | null = null;
+  if (silent === undefined) {
+    try {
+      const path = deps.queueDb !== undefined ? deps.queueDb : queueDbOf(deps.env);
+      runQueue = await readRunQueue(path, input.session_id ?? "", now);
+    } catch (e) {
+      const why = e instanceof Error ? e.message.split("\n")[0]!.slice(0, 40) : String(e);
+      body = { ...body, degraded: [...body.degraded, `run queue unreadable: ${why}`] };
+    }
+  }
+
   const got = pass !== null ? await pass : null;
   // Итог чужой: дождались текущего (--wait-ms) — его; иначе последний
   // завершённый из файла. Читается ПОСЛЕ нашей работы: быстрая чужая успевает
@@ -760,7 +895,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     ...(foreign.skipped !== undefined ? { skipped: foreign.skipped } : got?.error !== undefined ? { skipped: got.error } : {}),
   };
   const context_pct = input.context_pct ?? null;
-  const line = silent !== undefined ? "" : renderLine({ ...body, context_pct, foreign: foreignPart });
+  const line = silent !== undefined ? "" : renderLine({ ...body, context_pct, run_queue: runQueue, foreign: foreignPart });
   const lines = [
     ...(foreignPart.shown && result !== null
       ? result.output.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim().length > 0)
@@ -772,6 +907,7 @@ export async function computeStatusline(ctx: CommandContext, deps: StatuslineDep
     ...(silent !== undefined ? { silent } : {}),
     context_pct,
     ...body,
+    run_queue: runQueue,
     foreign: foreignPart,
     line,
     lines,
@@ -787,7 +923,7 @@ async function ownPart(
   dir: string,
   cacheKey: string,
   now: number,
-): Promise<Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign" | "context_pct" | "scope" | "silent">> {
+): Promise<Omit<StatuslineData, "line" | "lines" | "took_ms" | "foreign" | "context_pct" | "scope" | "silent" | "run_queue">> {
   const cachePath = cacheFile(deps.cacheDir, cacheKey);
   const cache = readCache(cachePath, deps.build);
 

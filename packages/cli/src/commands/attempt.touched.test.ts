@@ -297,6 +297,85 @@ describe("класс по факту на attempt finish", () => {
 });
 
 /**
+ * memory-3hz420r5b0c7: `myc close --verdict` закрывает открытую попытку ТОЙ
+ * ЖЕ функцией финиша, что `attempt finish` (`finishWithFact`), — иначе одна
+ * и та же работа ложилась в статистику разными классами в зависимости от
+ * команды приёмки.
+ *
+ * МУТАЦИИ ПРИЁМКИ: applyAttribution зовёт голый `finishAttempt` вместо
+ * `finishWithFact` — краснеют «тот же класс» и «из worktree» (ключ остаётся
+ * стартовым `unknown`, `files_touched` пуст); ретро-попытка без
+ * `predictedClass` — краснеет «ретроспектива» (предсказание = ключ).
+ */
+describe("close --verdict — тот же финиш, что attempt finish", () => {
+  function attemptRow(taskId: string): Record<string, unknown> {
+    const d = db();
+    try {
+      return d
+        .query(
+          `SELECT a.task_class, a.scope_source, a.predicted_class, a.verdict, r.files_touched
+             FROM swarm_attempt a LEFT JOIN swarm_attempt_run r ON r.attempt_id = a.attempt_id
+            WHERE a.task_id = ?1`,
+        )
+        .get(taskId) as Record<string, unknown>;
+    } finally {
+      d.close();
+    }
+  }
+
+  test("тот же класс и тот же источник scope, что у attempt finish той же работы", async () => {
+    const viaFinish = await task(ws, "Добавить опцию экспорта");
+    const f = await attempt(ws, viaFinish, () => put(ws, "packages/core/a.ts", "via-finish\n"));
+
+    const viaClose = await task(ws, "Добавить опцию экспорта");
+    await ok(ws, "attempt", "start", viaClose, "--model", "p/big");
+    put(ws, "packages/core/a.ts", "via-close\n");
+    const c = await ok(ws, "close", viaClose, "--verdict", "accepted");
+
+    expect(f).toMatchObject({ taskClass: "feature:local", scopeSource: "touched" });
+    expect(c.attribution).toMatchObject({
+      recorded: true,
+      task_class: "feature:local",
+      scope_source: "touched",
+      verdict: "accepted",
+    });
+    expect(attemptRow(viaClose)).toMatchObject({
+      task_class: "feature:local",
+      scope_source: "touched",
+      predicted_class: "feature:unknown",
+      files_touched: JSON.stringify(["packages/core/a.ts"]),
+    });
+  });
+
+  test("попытка в worktree, приёмка из корня: дифф там, где стояла попытка", async () => {
+    const id = await task(wtSvc, "Добавить обработчик");
+    await ok(wtSvc, "attempt", "start", id, "--model", "p/big");
+    put(wtSvc, "x.ts", "wt-close-x\n");
+    put(wtSvc, "lib/z.ts", "wt-close-z\n");
+    const c = await ok(ws, "close", id, "--verdict", "accepted", "--caveat", "tests_weak");
+    expect(c.attribution).toMatchObject({ task_class: "feature:module", scope_source: "touched" });
+    expect(attemptRow(id)).toMatchObject({
+      files_touched: JSON.stringify(["svc/lib/z.ts", "svc/x.ts"]),
+      verdict: "accepted",
+    });
+  });
+
+  test("ретроспектива (попытки не было): ключ и предсказание — как у attempt start", async () => {
+    const id = await task(ws, "Добавить опцию", "-b", "Правка в packages/core/b.ts");
+    const c = await ok(ws, "close", id, "--verdict", "accepted", "--model", "p/big");
+    // Снимка нет — факта нет: ключ из якорей (их нет) — unknown; путь из
+    // текста остаётся предсказанием, как у `attempt start` (S67).
+    expect(c.attribution).toMatchObject({ task_class: "feature:unknown", scope_source: "none" });
+    expect(attemptRow(id)).toMatchObject({
+      task_class: "feature:unknown",
+      scope_source: "none",
+      predicted_class: "feature:local",
+      files_touched: null,
+    });
+  });
+});
+
+/**
  * memory-pj163pnxzy3a: у якоря на один файл два ключа — из корня
  * `('', 'svc/x.ts')`, из репозитория `('svc', 'x.ts')`. Класс задачи обязан
  * считаться по пути от корня воркспейса, одному на оба ключа.

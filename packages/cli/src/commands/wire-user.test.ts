@@ -353,7 +353,9 @@ describe("--scope user: ~/.claude/settings.json", () => {
     expect((await myc(r, "wire", "--scope", "user")).code).toBe(0);
     const allow = (JSON.parse(readText(settingsPath())) as Record<string, any>).permissions.allow as string[];
     expect(allow).toEqual(mycPermissions(r));
-    expect(allow).toHaveLength(43);
+    // 44 — с `review` (разбор кандидатов, memory-79mq6fccg0jm): новая команда
+    // получает правило сама, если её нет в ASK_SUBCOMMANDS (wire.ts).
+    expect(allow).toHaveLength(44);
     for (const banned of ["Bash(myc:*)", "Bash(myc run:*)", "Bash(myc statusline:*)", "Bash(myc wire:*)", "Bash(myc unwire:*)"]) {
       expect(allow).not.toContain(banned);
     }

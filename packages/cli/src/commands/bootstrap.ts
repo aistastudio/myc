@@ -43,6 +43,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { JsonValue, NodeRecord, QueryDef } from "@myc/core";
 import { probeGraftPresence } from "@myc/code-intel";
+import { liveStatusPredicate, notPendingPredicate } from "@myc/retrieval/review";
 import { ExitCode } from "../exit.ts";
 import { CLI_VERSION } from "../index.ts";
 import { defaultRegistry } from "../registry.ts";
@@ -807,16 +808,28 @@ function writeCache(
  * ORDER BY нет намеренно: сортировка по не-ведущей колонке индекса дала бы
  * TEMP B-TREE по всем строкам scope (см. память myc-sqlite-tail-query), а
  * блоков тут единицы — дешевле упорядочить в JS.
+ *
+ * Отозванный, заменённый или отменённый блок (HIDDEN_STATUSES) и кандидат
+ * хука сжатия (`pending_review`) — не правило запуска: блок уходит в контекст
+ * КАЖДОЙ сессии, и то, что recall и prime уже не отдают, здесь не всплывает
+ * тоже. Термы — те же функции @myc/retrieval/review, что у выдачи, а не
+ * своя копия литерала (одна такая уже разошлась, memory-0p3d8n1efwtv); оба —
+ * фильтры поверх того же индекса, план не меняется (тест на EXPLAIN).
+ * `set` по ключу скрытого блока заводит новый живой, `rm` его не видит.
  */
-const QL = {
-  bootstrap_list: {
-    name: "bootstrap_list",
-    sql: `SELECT id, title, coalesce(body,'') AS body, updated_at
+export const BOOTSTRAP_LIST_SQL = `SELECT id, title, coalesce(body,'') AS body, updated_at
             FROM nodes
            WHERE scope = ?1 AND kind = 'note'
              AND layer >= 2 AND layer = 3
              AND head_id IS NULL AND deleted_at IS NULL
-             AND g_topic = 'bootstrap'`,
+             AND g_topic = 'bootstrap'
+             AND ${liveStatusPredicate("nodes")}
+             AND ${notPendingPredicate("nodes")}`;
+
+const QL = {
+  bootstrap_list: {
+    name: "bootstrap_list",
+    sql: BOOTSTRAP_LIST_SQL,
     params: ["scope"],
   },
 } as const satisfies Record<string, QueryDef>;

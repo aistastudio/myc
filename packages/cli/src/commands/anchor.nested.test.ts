@@ -271,7 +271,11 @@ describe("anchor add из worktree внутри дерева", () => {
   test("ключ — путь основного дерева, а не .claude/worktrees/…; виден из корня и из alpha", async () => {
     const a = await anchorFrom(wtIn, "src/addin.ts:3-5");
     const b = await anchorFrom(wtRepo, "src/addin.ts:3");
-    expect(keyOf(a)).toEqual({ repo_id: "", path: "alpha/src/addin.ts" });
+    // Охват worktree — репозиторий, чей это worktree, где бы он ни лежал
+    // (memory-5vcctcvga6k0): из `.claude/worktrees/in` — `alpha`, как из самой
+    // alpha. Ключ `('alpha', 'src/addin.ts')` эквивалентен корневому
+    // `('', 'alpha/src/addin.ts')` — читатели спрашивают оба (ниже).
+    expect(keyOf(a)).toEqual({ repo_id: "alpha", path: "src/addin.ts" });
     expect(keyOf(b)).toEqual({ repo_id: "alpha", path: "src/addin.ts" });
     for (const [dir, target] of [
       [ws, "alpha/src/addin.ts"],

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { migrate, migrations } from "@myc/store-sqlite";
-import { startVizServer, WRITE_OPS, type VizServer } from "@myc/web";
+import { REVIEW_OPS, startVizServer, WRITE_OPS, type VizServer } from "@myc/web";
 import { ExitCode } from "../exit.ts";
 import { run } from "../index.ts";
 import { Registry } from "../registry.ts";
@@ -195,6 +195,10 @@ describe("myc viz --help описывает интерфейс, который �
     expect(out).not.toMatch(/read-only (web )?viewer/i);
     expect(out).toContain("same command engine as the terminal");
     for (const op of WRITE_OPS) expect(out).toContain(op);
+    // Разбор кандидатов — те же кнопки записи, что и остальные, и справка
+    // обязана их назвать (список REVIEW_OPS, а не текст руками).
+    for (const op of REVIEW_OPS) expect(out).toContain(op);
+    expect(out).toContain("compaction candidate");
     // Сводка в `myc --help` тоже не про «read-only».
     const top = text((await run(["--help"], { registry })).stdout);
     const line = top.split("\n").find((l) => /^\s+viz\s/.test(l));
