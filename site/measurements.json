@@ -326,8 +326,8 @@
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.41,
-    "unpacked_mb": 12.57,
+    "compressed_mb": 3.42,
+    "unpacked_mb": 12.58,
     "files": 13,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -337,7 +337,7 @@
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.8",
+    "version": "0.3.9",
     "date": "2026-09-11"
   },
   "roadmap": {
@@ -420,15 +420,12 @@
         "key": "M3",
         "title_en": "code intelligence: anchors code <-> knowledge",
         "title_ru": "код: якоря код ↔ знание",
-        "status": "open",
-        "done": 8,
+        "status": "closed",
+        "done": 10,
         "total": 10,
         "cancelled": 0,
         "in_progress": 0,
-        "open": [
-          { "id": "memory-apq1h7wra93w", "status": "open", "priority": 1, "title": "Приёмка M3: связь код ↔ знание в обе стороны" },
-          { "id": "memory-g79mpkt53yn3", "status": "open", "priority": 2, "title": "Фоновый расчёт fan_in символа" }
-        ]
+        "open": []
       },
       {
         "id": "memory-x20k85amw3z9",
@@ -835,6 +832,12 @@
             "cmd": "myc anchor check",
             "en": "Anchors follow code into other files: a function extracted, a file renamed or a module split is re-attached by the built-in index — git rename, then the same symbol, then the anchored words — and anchor check prints from → to; 43 of 49 moves in this repository's history, no false bindings.",
             "ru": "Якоря следуют за кодом в другие файлы: вынесенную функцию, переименованный файл или разбитый модуль встроенный индекс привязывает заново — по git rename, затем по тому же символу, затем по словам участка, — и anchor check печатает «откуда → куда»; 43 из 49 переездов в истории этого репозитория, без ложных привязок."
+          },
+          {
+            "since": "0.3.9",
+            "cmd": "myc code symbol",
+            "en": "fan_in — how often a symbol is mentioned — is counted in the background at the end of every index run and read ready-made; knowledge whose anchor is lost or stale ranks lower in search (lost ×0.2, stale ×0.5) and is marked.",
+            "ru": "fan_in — сколько раз упомянут символ — считается в фоне в конце каждого прогона индекса и читается готовым; знание с потерянным или устаревшим якорем ниже в поиске (потерян ×0.2, устарел ×0.5) и помечено."
           }
         ]
       },
@@ -1070,6 +1073,12 @@
             "cmd": "myc run -- env",
             "en": "myc reads neither the project's <code>.env</code> nor its <code>bunfig.toml</code>, and <code>myc run</code> passes your environment exactly as it was.",
             "ru": "myc не читает ни <code>.env</code>, ни <code>bunfig.toml</code> проекта, а <code>myc run</code> передаёт ваше окружение ровно таким, каким оно было."
+          },
+          {
+            "since": "0.3.9",
+            "cmd": "myc anchor add",
+            "en": "An anchor is never bound to a secret-named file, a directory or a binary: refused before anything is written, so a .env's content never reaches a node.",
+            "ru": "Якорь не ставится на секретный по имени файл, каталог или бинарный файл: отказ до записи узла, и содержимое .env не попадает в узел."
           }
         ]
       },
@@ -1172,16 +1181,6 @@
         "en": "The code index and anchors work; what is open is anchors surviving refactors, and the acceptance itself.",
         "ru": "Индекс кода и якоря работают; открыто выживание якорей при рефакторинге и сама приёмка.",
         "items": [
-          {
-            "id": "memory-apq1h7wra93w",
-            "en": "Acceptance: from a symbol to its decisions and back, on a real repository, correct after a refactor.",
-            "ru": "Приёмка: от символа к решениям и обратно на реальном репозитории — и корректно после рефакторинга."
-          },
-          {
-            "id": "memory-g79mpkt53yn3",
-            "en": "A symbol's fan-in computed in the background and stored, so reading it is a column read with no external call.",
-            "ru": "Fan-in символа считается в фоне и хранится числом — читать его значит прочитать колонку, без внешних вызовов."
-          }
         ]
       },
       {
@@ -1413,14 +1412,14 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 3625,
+    "pass": 3672,
     "fail": 0,
     "skip": 16,
-    "files": 233,
-    "assertions": 35199,
-    "seconds": 357.6,
-    "sources": "e3fdb46d07e08db2",
+    "files": 239,
+    "assertions": 35475,
+    "seconds": 356.4,
+    "sources": "d2b8af601af50b03",
     "date": "2026-09-12",
-    "myc": "0.3.8"
+    "myc": "0.3.9"
   }
 }
