@@ -7,9 +7,9 @@
  * открытие своей базой, не трогаю ФС и процесс.
  */
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 // Поиск воркспейса вынесен в ./wsfind.ts и РЕ-ЭКСПОРТИРУЕТСЯ отсюда: его
 // импортируют полтора десятка мест, а платить за граф модулей этого файла
 // ради одного `existsSync` обязан не всякий, кто ищет корень (см. шапку
@@ -18,11 +18,13 @@ import {
   findMycDir,
   findWorkspaceDb,
   findWorktreeLink,
+  inTreeWorktreeLink,
   isRepoDir,
   mapIntoMain,
   mapIntoWorktree,
   personalHome,
   readWorktreeLink,
+  relUnder,
   workspaceDirOfDb,
   type WorkspaceNotFound,
   type WorktreeLink,
@@ -32,6 +34,7 @@ export {
   findMycDir,
   findWorkspaceDb,
   findWorktreeLink,
+  inTreeWorktreeLink,
   isRepoDir,
   mapIntoMain,
   mapIntoWorktree,
@@ -791,66 +794,6 @@ export async function openWorkspaceByDir(
 }
 
 /**
- * Путь `p` относительно `root` (POSIX-строкой, `''` — сам корень) или
- * undefined, если `p` вне корня. Сравниваются пути из РАЗНЫХ источников:
- * корень воркспейса пришёл из подъёма по cwd, основное дерево worktree — из
- * файла, который написал git. На macOS это /tmp против /private/tmp у одного
- * и того же каталога, поэтому при промахе по строке — второй взгляд по realpath.
- */
-function relUnder(root: string, p: string): string | undefined {
-  const outside = (rel: string): boolean => rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-  const direct = relative(root, p);
-  if (!outside(direct)) return direct;
-  try {
-    const real = relative(realpathSync(root), realpathSync(p));
-    return outside(real) ? undefined : real;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * git worktree ВНУТРИ дерева воркспейса, в котором лежит `dir`, — где бы он
- * ни лежал: соседний `wt-collector`, `.claude/worktrees/x` (так их заводят
- * агенты), `<репозиторий>/.worktrees/y`. Такой worktree поиск воркспейса
- * находит обычным подъёмом, без ссылки, и `StoreHandle.worktree` у него пуст.
- *
- * Подъём от `dir` к корню (сам корень не проверяется: worktree всего
- * воркспейса находит поиск) до ПЕРВОГО `.git`: каталог — самостоятельный
- * репозиторий, worktree здесь нет; файл со ссылкой на основное дерево ВНУТРИ
- * воркспейса — worktree (связь — из `commondir`, `readWorktreeLink`).
- * worktree чужого репозитория (основное дерево вне воркспейса) не в счёт: его
- * файлы в воркспейсе единственные. Правило то же, что у якорей
- * (`inTreeWorktree` в anchor.ts) — файл у них один, и охват с путём якоря
- * расходиться не имеют права.
- *
- * Цена — по одному stat на уровень между `dir` и ближайшим `.git`: из корня —
- * ни одного, из вложенного репозитория — 1–3.
- */
-export function inTreeWorktreeLink(wsDir: string, dir: string): WorktreeLink | undefined {
-  const root = resolve(wsDir);
-  let cur = resolve(dir);
-  if (!cur.startsWith(root + sep)) return undefined;
-  while (cur !== root) {
-    let st: ReturnType<typeof statSync> | undefined;
-    try {
-      st = statSync(join(cur, ".git"), { throwIfNoEntry: false });
-    } catch {
-      return undefined; // нечитаемый каталог — охват выводится как без worktree, открытие не падает
-    }
-    if (st !== undefined) {
-      if (!st.isFile()) return undefined;
-      const link = readWorktreeLink(cur);
-      return link !== undefined && relUnder(root, link.mainRoot) !== undefined ? link : undefined;
-    }
-    const up = dirname(cur);
-    if (up === cur) return undefined;
-    cur = up;
-  }
-  return undefined;
-}
-
-/**
  * Охват репозитория (S59), устойчивый к git worktree.
  *
  * Охват выводится из пути ОТНОСИТЕЛЬНО корня воркспейса, а путь внутри
@@ -864,7 +807,8 @@ export function inTreeWorktreeLink(wsDir: string, dir: string): WorktreeLink | u
  * Воркспейс нашёлся через ссылку; путь «откуда позвали» лежит вне его корня и
  * дал бы `outside-workspace`. Переносим путь в основное дерево целиком.
  *
- * Форма вторая — worktree ВНУТРИ воркспейса-экосистемы (`inTreeWorktreeLink`):
+ * Форма вторая — worktree ВНУТРИ воркспейса-экосистемы (`inTreeWorktreeLink`,
+ * wsfind.ts — одно правило с путём якоря в anchor.ts):
  * `~/src/cherry/.myc`, репозиторий `collector`, его worktree рядом
  * (`wt-collector`) или глубже (`.claude/worktrees/x`). Подъём по каталогам
  * нашёл воркспейс сразу, ссылка не понадобилась, и охват вывелся бы из ИМЕНИ

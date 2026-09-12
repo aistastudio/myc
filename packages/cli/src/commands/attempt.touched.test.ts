@@ -428,9 +428,17 @@ describe("myc update --anchor", () => {
   test("мусорный путь — отказ, и не записано ничего, даже соседние поля", async () => {
     const id = await task(ws, "Починить разбор");
     put(sandbox, "outside.ts", "вне корня\n");
+    // Бинарный и секретный — отказ самой привязки (bindAnchorAt), до любой
+    // записи: своей копии правила «каталог» у update больше нет
+    // (memory-w5vh0x68fg4k), и код отказа у каталога — тот же, что у
+    // `anchor add` и `task --anchor`.
+    writeFileSync(join(ws, "packages", "core", "logo.bin"), new Uint8Array([0x89, 0x50, 0, 0x47, 0x0a]));
+    put(ws, "packages/core/.env", "TOKEN=секрет\n");
     const cases: Array<[string, number, string]> = [
       ["packages/core/нет-такого.ts", ExitCode.NOTFOUND, "notfound.file"],
-      ["packages/core", ExitCode.USAGE, "usage.invalid"],
+      ["packages/core", ExitCode.USAGE, "usage.not_a_file"],
+      ["packages/core/logo.bin", ExitCode.USAGE, "usage.binary_file"],
+      ["packages/core/.env", ExitCode.DENIED, "denied.secret"],
       ["../outside.ts", ExitCode.USAGE, "usage.outside_repo"],
       ["", ExitCode.USAGE, "usage.invalid"],
     ];

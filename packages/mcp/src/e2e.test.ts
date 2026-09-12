@@ -314,4 +314,41 @@ describe("myc mcp: stdio end-to-end", () => {
     },
     60_000,
   );
+
+  test(
+    "myc_show: якорь задачи — путь:спан, состояние и id узла якоря, как в терминале",
+    async () => {
+      // Находка приёмки M3: show печатал у привязанного якоря только id и
+      // статус. MCP читает тот же вывод CLI — проверяется, что место доехало
+      // и в текст инструмента, и в structuredContent.
+      expect((await cli(dir, "init")).code).toBe(0);
+      mkdirSync(join(dir, "src"), { recursive: true });
+      writeFileSync(join(dir, "src", "fuse.ts"), "export function fuse(a: number) {\n  return a;\n}\n");
+      const created = JSON.parse((await cli(dir, "task", "Слияние", "--anchor", "src/fuse.ts:1-3", "--json")).out) as {
+        data: { id: string; anchors: Array<{ anchor_id: string }> };
+      };
+      const task = created.data.id;
+      const anchor = created.data.anchors[0]!.anchor_id;
+
+      const mcp = new McpSession(dir);
+      try {
+        await mcp.request("initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "e2e", version: "0" },
+        });
+        await mcp.notify("notifications/initialized");
+        const show = await mcp.call("myc_show", { ids: [task] });
+        expect(show.result!.isError).toBeUndefined();
+        expect(show.result!.content![0]!.text).toContain(`anchors   src/fuse.ts:1-3 fresh · ${anchor}`);
+        const nodes = show.result!.structuredContent!["nodes"] as Array<{ anchors: unknown[] }>;
+        expect(nodes[0]!.anchors).toEqual([{ path: "src/fuse.ts", start: 1, end: 3, state: "fresh", node_id: anchor }]);
+        // Тот же вопрос из терминала: строка якоря та же.
+        expect((await cli(dir, "show", task)).out).toContain(`anchors   src/fuse.ts:1-3 fresh · ${anchor}`);
+      } finally {
+        await mcp.close();
+      }
+    },
+    60_000,
+  );
 });

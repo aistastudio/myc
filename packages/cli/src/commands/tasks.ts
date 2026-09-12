@@ -11,8 +11,6 @@
  * нужные для строки (включая took_ms).
  */
 
-import { statSync } from "node:fs";
-import { resolve } from "node:path";
 import { REPO_KEY, commentInput, readRepo, repoReasonText } from "@myc/core";
 import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
 import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat, type ClassifyResult } from "@myc/swarm";
@@ -23,7 +21,9 @@ import {
   anchorFlagLine,
   attachAnchorFlag,
   bindAnchorAt,
+  bindFailure,
   parseTarget,
+  refuseNeverBindable,
   type AnchorFlagResult,
   type AnchorTarget,
 } from "./anchor.ts";
@@ -107,7 +107,13 @@ const CREATE_FLAGS: readonly FlagSpec[] = [
   { name: "tag", value: "string", description: "comma-separated tags" },
   { name: "parent", value: "string", description: "parent node id" },
   { name: "dep", value: "string", description: "comma-separated blocker ids" },
-  { name: "anchor", value: "string", description: "file[:<a>-<b>] anchor request" },
+  {
+    name: "anchor",
+    value: "string",
+    description:
+      "bind an anchor file[:<a>-<b>]; a directory, a binary or secret-named file is refused before " +
+      "anything is written; a missing file or a path outside the root stays an intent (WARN)",
+  },
   { name: "reply-to", value: "string", description: "reply to this node: adds a replies_to edge" },
   { name: "assign", value: "string", description: "assignee" },
   { name: "estimate", value: "string", description: "estimate, e.g. 30m, 2h, 1d" },
@@ -271,6 +277,15 @@ function buildCreateCommand(
       if (!opened.ok) return opened.failure;
       const h = opened.handle;
       try {
+        // Заведомо непривязываемый якорь (каталог, бинарный, секретный) —
+        // отказ ДО записи задачи (memory-w5vh0x68fg4k): раньше каталог
+        // проходил stat, задача записывалась, и привязка падала в
+        // internal.unexpected EISDIR уже после неё. Нет файла и путь вне
+        // корня сюда не относятся — они остаются намерением ниже.
+        if (anchor !== undefined) {
+          const refused = await refuseNeverBindable(h, anchor, ctx.globals.directory ?? process.cwd());
+          if (refused !== undefined) return refused;
+        }
         const attrs: Record<string, JsonValue> = {};
         if (spec.type !== undefined) attrs["type"] = spec.type;
         // Явный --repo сильнее выведенного из пути: он и уходит в attrs,
@@ -680,7 +695,9 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       {
         name: "anchor",
         value: "string",
-        description: "bind an anchor file[:<a>-<b>]; a missing file, a directory or a path outside the root is refused",
+        description:
+          "bind an anchor file[:<a>-<b>]; a missing file, a directory, a binary or secret-named file, " +
+          "or a path outside the root is refused, and nothing is written",
       },
       AS_FLAG,
     ],
@@ -695,27 +712,17 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
       // создании, и уже существующие задачи исправить было нечем. Здесь, в
       // отличие от create, мусорный путь — ОТКАЗ, а не намерение в attrs:
       // узел уже есть, терять нечего, а намерение `pending` с опечаткой дало
-      // бы классу задачи scope по несуществующему файлу.
+      // бы классу задачи scope по несуществующему файлу. Каталог, бинарный и
+      // секретный файл отказывает сама привязка (`bindAnchorAt`, ниже) — до
+      // любой записи; своей копии этого правила здесь больше нет
+      // (memory-w5vh0x68fg4k: копия видела каталог только от каталога
+      // вызова, без отображения worktree).
       const aRaw = flagStr(ctx, "anchor");
       let anchorTarget: AnchorTarget | undefined;
       if (aRaw !== undefined) {
         anchorTarget = parseTarget(aRaw);
         if (anchorTarget === undefined || anchorTarget.path.trim().length === 0) {
           return failure("usage.invalid", `invalid anchor '${aRaw}'; format: file[:a-b]`, ExitCode.USAGE);
-        }
-        const local = resolve(ctx.globals.directory ?? process.cwd(), anchorTarget.path);
-        let isDir = false;
-        try {
-          isDir = statSync(local).isDirectory();
-        } catch {
-          /* файла нет здесь — решит привязка (worktree, основное дерево) */
-        }
-        if (isDir) {
-          return failure(
-            "usage.invalid",
-            `anchor '${anchorTarget.path}' is a directory; an anchor binds a file span`,
-            ExitCode.USAGE,
-          );
         }
       }
 
@@ -805,11 +812,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
             ctx.globals.directory ?? process.cwd(),
             ...(flagStr(ctx, "as") !== undefined ? [{ actor: flagStr(ctx, "as")! }] : []),
           );
-          if (!bound.ok) {
-            if (bound.code === "notfound.file") return failure("notfound.file", bound.msg, ExitCode.NOTFOUND);
-            if (bound.code === "outside.repo") return failure("usage.outside_repo", bound.msg, ExitCode.USAGE);
-            return graphFailure(bound.cause);
-          }
+          if (!bound.ok) return bindFailure(bound) ?? graphFailure(bound.cause);
           const a = bound.anchor;
           if (a.deferred) {
             ctx.warn(

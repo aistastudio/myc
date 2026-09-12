@@ -19,7 +19,9 @@
     "./map": "./src/map.ts",
     "./view": "./src/view.ts",
     "./refresh": "./src/refresh.ts",
-    "./worktree": "./src/worktree.ts"
+    "./worktree": "./src/worktree.ts",
+    "./secret-paths": "./src/secret-paths.ts",
+    "./fanin": "./src/fanin.ts"
   },
   "dependencies": {
     "@myc/bench": "workspace:*",

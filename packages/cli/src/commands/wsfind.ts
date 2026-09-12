@@ -12,9 +12,9 @@
  * из @myc/* вернёт ту самую цену обратно и молча.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** ~/.myc по умолчанию; MYC_HOME — явный override (тесты, контейнеры, S41). */
 export function personalHome(): string {
@@ -287,4 +287,75 @@ function remap(from: string, to: string, path: string): string {
   const rest = relative(from, resolve(path));
   if (rest.startsWith("..") || rest.startsWith("/")) return resolve(path);
   return rest.length === 0 ? to : join(to, rest);
+}
+
+/**
+ * Путь `p` относительно `root` (строкой ОС, `''` — сам корень) или
+ * undefined, если `p` вне корня. Сравниваются пути из РАЗНЫХ источников:
+ * корень воркспейса пришёл из подъёма по cwd, основное дерево worktree — из
+ * файла, который написал git. На macOS это /tmp против /private/tmp у одного
+ * и того же каталога, поэтому при промахе по строке — второй взгляд по realpath.
+ */
+export function relUnder(root: string, p: string): string | undefined {
+  const outside = (rel: string): boolean => rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  const direct = relative(root, p);
+  if (!outside(direct)) return direct;
+  try {
+    const real = relative(realpathSync(root), realpathSync(p));
+    return outside(real) ? undefined : real;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * git worktree ВНУТРИ дерева воркспейса, в котором лежит `dir`, — где бы он
+ * ни лежал: соседний `wt-collector`, `.claude/worktrees/x` (так их заводят
+ * агенты), `<репозиторий>/.worktrees/y`. Такой worktree поиск воркспейса
+ * находит обычным подъёмом, без ссылки, и `StoreHandle.worktree` у него пуст.
+ *
+ * ОДНО ПРАВИЛО НА ДВЕ СТОРОНЫ ОДНОГО ФАЙЛА (memory-nm92qfhm12ht). Его зовут
+ * охват репозитория (S59, `deriveRepoAcrossWorktrees` в store.ts, а через него
+ * `worktreeOf` в code.ts) и путь якоря (`fileOf`/`wsPathOfFile` в anchor.ts).
+ * Было две копии — `inTreeWorktreeLink` в store.ts и `inTreeWorktree` в
+ * anchor.ts, — и расходились они уже: `stat` копии якорей не был обёрнут, и
+ * путь вида `src/a.ts/x` (где `a.ts` — файл) ронял `anchor add` в
+ * internal.unexpected ENOTDIR, а копия охвата отвечала «worktree нет». `stat`
+ * с `throwIfNoEntry: false` глушит только ENOENT: ENOTDIR и EACCES он
+ * бросает. Живёт правило здесь, а не в
+ * store.ts, потому что anchor.ts стоит в горячем пути хука и store.ts
+ * статически не тянет (см. шапку этого файла).
+ *
+ * Подъём от `dir` к корню (сам корень не проверяется: worktree всего
+ * воркспейса находит поиск) до ПЕРВОГО `.git`: каталог — самостоятельный
+ * репозиторий, worktree здесь нет; файл со ссылкой на основное дерево ВНУТРИ
+ * воркспейса — worktree (связь — из `commondir`, `readWorktreeLink`).
+ * worktree чужого репозитория (основное дерево вне воркспейса) не в счёт: его
+ * файлы в воркспейсе единственные, и перечень индекса оставляет их себе.
+ *
+ * Цена — по одному stat на уровень между `dir` и ближайшим `.git`: из корня —
+ * ни одного, из вложенного репозитория — 1–3, из хука — ни одного (журнал
+ * отображает потребитель).
+ */
+export function inTreeWorktreeLink(wsDir: string, dir: string): WorktreeLink | undefined {
+  const root = resolve(wsDir);
+  let cur = resolve(dir);
+  if (!cur.startsWith(root + sep)) return undefined;
+  while (cur !== root) {
+    let st: ReturnType<typeof statSync> | undefined;
+    try {
+      st = statSync(join(cur, ".git"), { throwIfNoEntry: false });
+    } catch {
+      return undefined; // ENOTDIR, EACCES — как без worktree: ни охват, ни якорь не падают
+    }
+    if (st !== undefined) {
+      if (!st.isFile()) return undefined;
+      const link = readWorktreeLink(cur);
+      return link !== undefined && relUnder(root, link.mainRoot) !== undefined ? link : undefined;
+    }
+    const up = dirname(cur);
+    if (up === cur) return undefined;
+    cur = up;
+  }
+  return undefined;
 }

@@ -33,7 +33,18 @@
  * помечают входящие рёбра `touches` флагом `attrs.suspect`.
  */
 
-import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  type Stats,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import type {
@@ -48,9 +59,9 @@ import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import {
   findWorkspaceDb,
+  inTreeWorktreeLink,
   mapIntoMain,
   mapIntoWorktree,
-  readWorktreeLink,
   type WorktreeLink,
 } from "./wsfind.ts";
 import { markHookCall } from "../hooks/counters.ts";
@@ -225,58 +236,6 @@ function outsideRoot(rel: string): boolean {
   return rel === ".." || rel.startsWith("../") || isAbsolute(rel);
 }
 
-/** `dir` под `root` или совпадает — по строке, а при симлинках (/tmp ↔ /private/tmp) по realpath. */
-function inside(root: string, dir: string): boolean {
-  const within = (a: string, b: string): boolean => {
-    const rel = relative(a, b);
-    return rel.length === 0 || !outsideRoot(rel.split(sep).join("/"));
-  };
-  if (within(root, dir)) return true;
-  try {
-    return within(realpathSync(root), realpathSync(dir));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * git worktree ВНУТРИ дерева воркспейса, в котором лежит `dir`:
- * `.claude/worktrees/x`, `<репозиторий>/.worktrees/y`, соседний `wt-collector`.
- * Такой worktree поиск воркспейса находит обычным подъёмом, без ссылки, и
- * `h.worktree` у него пуст — а путь файла в нём обязан считаться в основном
- * дереве точно так же, как у worktree вне дерева (`mapIntoMain`). Иначе
- * якорь из него ложится ключом `('', '.claude/worktrees/x/src/a.ts')` — путём,
- * который не совпадёт ни с одним настоящим.
- *
- * Подъём от `dir` до корня воркспейса (сам корень не проверяется: worktree
- * всего воркспейса находит поиск) до ПЕРВОГО `.git`: каталог — это
- * самостоятельный репозиторий, и worktree здесь нет; файл со ссылкой на
- * основное дерево ВНУТРИ воркспейса — worktree. worktree чужого репозитория
- * (основное дерево вне воркспейса) не отображается: его файлы в воркспейсе
- * единственные, и перечень индекса оставляет их себе (`worktreeMainIn`).
- *
- * Цена — по одному stat на уровень между `dir` и ближайшим `.git`: из
- * вложенного репозитория это 1–3 вызова, из корня — ни одного, из хука — ни
- * одного (журнал отображает потребитель, `wsPathOfFile`).
- */
-function inTreeWorktree(wsDir: string, dir: string): WorktreeLink | undefined {
-  const root = resolve(wsDir);
-  let cur = resolve(dir);
-  if (!cur.startsWith(root + sep)) return undefined;
-  while (cur !== root) {
-    const st = statSync(join(cur, ".git"), { throwIfNoEntry: false });
-    if (st !== undefined) {
-      if (!st.isFile()) return undefined;
-      const link = readWorktreeLink(cur);
-      return link !== undefined && inside(root, link.mainRoot) ? link : undefined;
-    }
-    const up = dirname(cur);
-    if (up === cur) return undefined;
-    cur = up;
-  }
-  return undefined;
-}
-
 /**
  * Две стороны одного файла в git worktree.
  *
@@ -294,11 +253,16 @@ function inTreeWorktree(wsDir: string, dir: string): WorktreeLink | undefined {
  * отдаёт `tool_input.file_path`): отображается ФАЙЛ, а не каталог вызова,
  * поэтому и абсолютный путь внутри worktree приезжает в основное дерево.
  * Ссылка — из хендла (worktree вне дерева, его нашёл поиск воркспейса) или по
- * `.git` над файлом (worktree внутри дерева, `inTreeWorktree`).
+ * `.git` над файлом (worktree внутри дерева — `inTreeWorktreeLink` из
+ * wsfind.ts, то же правило, по которому store.ts выводит охват репозитория:
+ * путь якоря и охват узла одного файла расходиться не имеют права). Без неё
+ * якорь из `.claude/worktrees/x` лёг бы ключом
+ * `('', '.claude/worktrees/x/src/a.ts')` — путём, не совпадающим ни с одним
+ * настоящим.
  */
 function fileOf(h: StoreHandle, input: string, cwd: string): { main: string; link: WorktreeLink | undefined } {
   const abs = resolve(cwd, input);
-  const link = h.worktree ?? inTreeWorktree(h.wsDir, dirname(abs));
+  const link = h.worktree ?? inTreeWorktreeLink(h.wsDir, dirname(abs));
   return { main: link === undefined ? abs : mapIntoMain(link, abs), link };
 }
 
@@ -317,6 +281,16 @@ function posixRel(root: string, abs: string): string {
 }
 
 /**
+ * Путь файла от корня воркспейса → в терминах СПРОСИВШЕГО, от корня его
+ * репозитория (`anchorRepo`): якорь, поставленный из корня как `alpha/x.ts`,
+ * из alpha читается `x.ts`. Одно правило у `rm` и `show` — какой бы ключ ни
+ * лежал в строке якоря, печатается один и тот же путь.
+ */
+export function askerPath(h: StoreHandle, wsPath: string): string {
+  return posixRel(anchorRepo(h).repoRoot, join(h.wsDir, wsPath));
+}
+
+/**
  * Абсолютный путь файла (журнал хука, подсказка очереди) → путь от корня
  * воркспейса В ОСНОВНОМ ДЕРЕВЕ; null — файл вне воркспейса. Хук пишет путь
  * как есть и базу не открывает, поэтому worktree внутри дерева (у него
@@ -332,7 +306,7 @@ export function wsPathOfFile(
   const dir = dirname(abs);
   let link = links.get(dir);
   if (!links.has(dir)) {
-    link = inTreeWorktree(wsDir, dir);
+    link = inTreeWorktreeLink(wsDir, dir);
     links.set(dir, link);
   }
   const rel = posixRel(wsDir, link === undefined ? abs : mapIntoMain(link, abs));
@@ -644,14 +618,190 @@ export interface BoundAnchor {
   readonly symbol: string;
 }
 
-export type BindResult =
-  | { readonly ok: true; readonly anchor: BoundAnchor }
-  | {
-      readonly ok: false;
-      readonly code: "notfound.file" | "outside.repo" | "store.error";
-      readonly msg: string;
-      readonly cause?: unknown;
+/**
+ * Отказы, которые НЕ СНИМЕТ НИЧТО, кроме другого пути (memory-w5vh0x68fg4k):
+ * каталог (и вообще не обычный файл), бинарный файл, файл с секретным именем.
+ * Несуществующий файл и путь вне корня сюда НЕ входят: файл может появиться,
+ * а путь вне корня у личного яруса штатен — у `task`/`remember` оба остаются
+ * намерением `pending` (`attachAnchorFlag`), а `anchor add` и `update
+ * --anchor` на них отказывают своими кодами.
+ */
+export type NeverBindableCode = "usage.not_a_file" | "usage.binary_file" | "denied.secret";
+
+export interface BindFailure {
+  readonly ok: false;
+  readonly code: "notfound.file" | "outside.repo" | "store.error" | NeverBindableCode;
+  readonly msg: string;
+  readonly hint?: string;
+  readonly cause?: unknown;
+}
+
+export type BindResult = { readonly ok: true; readonly anchor: BoundAnchor } | BindFailure;
+
+/** Заведомо непривязываемое — отказ ДО записи узла, а не намерение после неё. */
+export function isNeverBindable(code: BindFailure["code"]): code is NeverBindableCode {
+  return code === "usage.not_a_file" || code === "usage.binary_file" || code === "denied.secret";
+}
+
+/**
+ * Отказ привязки → отказ команды. Одна таблица на все входы (`anchor add`,
+ * `update --anchor`, до-записная проверка `task`/`remember`): код ошибки
+ * конверта и выход обязаны совпадать, откуда бы ни пришли. `undefined` — сбой
+ * хранилища: его вызывающий отдаёт своим `graphFailure(cause)`.
+ */
+export function bindFailure(b: BindFailure): CommandFailure | undefined {
+  switch (b.code) {
+    case "notfound.file":
+      return failure("notfound.file", b.msg, ExitCode.NOTFOUND, b.hint);
+    case "outside.repo":
+      return failure("usage.outside_repo", b.msg, ExitCode.USAGE, b.hint);
+    case "usage.not_a_file":
+    case "usage.binary_file":
+      return failure(b.code, b.msg, ExitCode.USAGE, b.hint);
+    case "denied.secret":
+      return failure(b.code, b.msg, ExitCode.DENIED, b.hint);
+    case "store.error":
+      return undefined;
+  }
+}
+
+/** Файл привязки, найденный и проверенный: всё, что решается без записи. */
+interface AnchorFile {
+  readonly ok: true;
+  readonly repoId: string;
+  readonly repoRoot: string;
+  /** Путь в базе — от корня репозитория записи, POSIX. */
+  readonly path: string;
+  /** Файл, который ЧИТАЕТСЯ: копия worktree, если она есть (`localFile`). */
+  readonly abs: string;
+  readonly st: Stats;
+}
+
+/**
+ * NUL в первых байтах файла — то же правило, что у `code grep` (`looksBinary`,
+ * окно git). Читается ТОЛЬКО окно, а не файл: до-записной проверке целиком он
+ * не нужен, а бинарный файл бывает в сотни мегабайт.
+ */
+function probeBinary(abs: string, size: number, window: number, looksBinary: (buf: Uint8Array) => boolean): boolean {
+  const buf = new Uint8Array(Math.min(size, window));
+  if (buf.length === 0) return false;
+  const fd = openSync(abs, "r");
+  try {
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return looksBinary(buf.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * ПЕРВАЯ ПОЛОВИНА ПРИВЯЗКИ — всё, что решается без записи, одним правилом для
+ * `bindAnchorAt` и до-записной проверки `task`/`remember` (`refuseNeverBindable`).
+ * Две копии этого разбора разошлись бы ровно так же, как разошлись три входа
+ * привязки до сведения в `bindAnchorAt`.
+ *
+ * Порядок проверок — от дешёвой к дорогой, и первая не трогает диск вовсе:
+ *
+ *   1. секретное ИМЯ (`isSecretPath` — то же правило, по которому индекс не
+ *      берёт файл и `code grep` отказывает): решается по строке, до stat и тем
+ *      более до чтения — секрет не открывается даже на пробу, и отказ стоит
+ *      и на несуществующем пути (`.env` не привяжется, когда бы ни появился);
+ *   2. путь за корнем — `outside.repo`;
+ *   3. stat: нет файла — `notfound.file`; есть, но не обычный файл (каталог,
+ *      FIFO, устройство) — `usage.not_a_file`. До этой проверки каталог
+ *      проходил stat и падал на `readFileSync` в internal.unexpected EISDIR —
+ *      у `task`/`remember --anchor` уже ПОСЛЕ записи узла;
+ *   4. окно на NUL — `usage.binary_file`: строки бинарного файла не строки, и
+ *      crux из них — мусор, который лестница §7.2 будет честно «проверять».
+ */
+async function resolveAnchorFile(h: StoreHandle, target: AnchorTarget, cwd: string): Promise<AnchorFile | BindFailure> {
+  // Ключ записи — того места, откуда поставили (`anchorRepo`), как и был:
+  // читатели по файлу спрашивают оба ключа (`anchorKeysFor`), и сводить
+  // запись к одному ключу незачем — см. там же, почему.
+  const { repoId, repoRoot } = anchorRepo(h);
+  const file = fileOf(h, target.path, cwd);
+  const path = posixRel(repoRoot, file.main);
+  const { isSecretPath, SECRET_NAMES_LABEL } = await import("@myc/code-intel/secret-paths");
+  if (isSecretPath(path)) {
+    return {
+      ok: false,
+      code: "denied.secret",
+      msg: `${path}: a secret-named file — the code index never reads it, and an anchor is never bound to it`,
+      hint: `secret-named files: ${SECRET_NAMES_LABEL}`,
     };
+  }
+  // ПУТЬ ОБЯЗАН ЛЕЖАТЬ В КОРНЕ. Иначе в `anchors` уезжает строка вида
+  // `../demo/src/fuse.ts` — она резолвится только на этой машине и только из
+  // этого каталога, а `anchor of` по ней не найдётся никогда (запрос идёт по
+  // паре repo_id+path). Ловится это в первую очередь личным ярусом: `myc
+  // remember --global --anchor` открывает воркспейс ~/.myc, у которого код
+  // репозитория не лежит нигде.
+  if (outsideRoot(path)) {
+    return {
+      ok: false,
+      code: "outside.repo",
+      msg: `file outside the root ${repoRoot}: ${path} — an anchor cannot be bound to such a path`,
+    };
+  }
+  const abs = localFile(file.link, file.main);
+  // Один stat вместо existsSync + statSync: строке якоря он нужен всё равно,
+  // а его `size` — то единственное, что требуется знать ДО чтения файла.
+  let st: Stats;
+  try {
+    st = statSync(abs);
+  } catch {
+    return {
+      ok: false,
+      code: "notfound.file",
+      msg: `no such file: ${path} (repo root ${repoRoot})`,
+    };
+  }
+  if (!st.isFile()) {
+    return {
+      ok: false,
+      code: "usage.not_a_file",
+      msg: `${path} is ${st.isDirectory() ? "a directory" : "not a regular file"} — an anchor binds a span of one file`,
+      hint: st.isDirectory() ? `name a file inside it: ${path}/<file>[:<a>-<b>]` : undefined,
+    };
+  }
+  const { BINARY_PROBE_BYTES, looksBinary } = await import("@myc/code-intel/grep");
+  let binary: boolean;
+  try {
+    binary = probeBinary(abs, st.size, BINARY_PROBE_BYTES, looksBinary);
+  } catch {
+    // stat прошёл, а открыть нельзя (права): это не «бинарный», и решит чтение
+    // в `bindAnchorAt` — там же, где и было.
+    binary = false;
+  }
+  if (binary) {
+    return {
+      ok: false,
+      code: "usage.binary_file",
+      msg: `${path} is a binary file (a NUL byte in the first ${BINARY_PROBE_BYTES} bytes, as git decides) — an anchor binds lines of text`,
+    };
+  }
+  return { ok: true, repoId, repoRoot, path, abs, st };
+}
+
+/**
+ * ДО-ЗАПИСНАЯ ПРОВЕРКА `task`/`remember --anchor` (memory-w5vh0x68fg4k).
+ * Отказывает ТОЛЬКО на заведомо непривязываемом (`isNeverBindable`): такой
+ * якорь не довяжет ни фон, ни повторный `anchor add`, и записать узел, а
+ * потом сказать «якоря не будет» — значит оставить задачу с намерением,
+ * которое не исполнится никогда. Отказ приходит раньше `createNode`, поэтому
+ * не записано ничего. Нет файла и путь вне корня отдаются привязке
+ * (`undefined`) — там они намерение `pending` с WARN, как и были.
+ */
+export async function refuseNeverBindable(
+  h: StoreHandle,
+  target: AnchorTarget,
+  cwd: string,
+): Promise<CommandFailure | undefined> {
+  const r = await resolveAnchorFile(h, target, cwd);
+  if (r.ok || !isNeverBindable(r.code)) return undefined;
+  const f = bindFailure(r)!;
+  return { ...f, msg: `anchor refused, nothing written: ${f.msg}` };
+}
 
 const SQL_ANCHOR_INSERT = `INSERT INTO anchors (node_id, repo_id, repo_root, path, lang, symbol,
                       span_start, span_end, file_hash, span_hash, crux, crux_norm,
@@ -751,41 +901,25 @@ export async function bindAnchorAt(
     readonly inlineMaxBytes?: number;
   } = {},
 ): Promise<BindResult> {
-  // Ключ записи — того места, откуда поставили (`anchorRepo`), как и был:
-  // читатели по файлу спрашивают оба ключа (`anchorKeysFor`), и сводить
-  // запись к одному ключу незачем — см. там же, почему.
-  const { repoId, repoRoot } = anchorRepo(h);
-  const file = fileOf(h, target.path, cwd);
-  const path = posixRel(repoRoot, file.main);
-  // ПУТЬ ОБЯЗАН ЛЕЖАТЬ В КОРНЕ. Иначе в `anchors` уезжает строка вида
-  // `../demo/src/fuse.ts` — она резолвится только на этой машине и только из
-  // этого каталога, а `anchor of` по ней не найдётся никогда (запрос идёт по
-  // паре repo_id+path). Ловится это в первую очередь личным ярусом: `myc
-  // remember --global --anchor` открывает воркспейс ~/.myc, у которого код
-  // репозитория не лежит нигде.
-  if (outsideRoot(path)) {
-    return {
-      ok: false,
-      code: "outside.repo",
-      msg: `file outside the root ${repoRoot}: ${path} — an anchor cannot be bound to such a path`,
-    };
-  }
-  const abs = localFile(file.link, file.main);
-  // Один stat вместо existsSync + statSync: строке якоря он нужен всё равно,
-  // а его `size` — то единственное, что требуется знать ДО чтения файла.
-  let st: StatLike;
+  const f = await resolveAnchorFile(h, target, cwd);
+  if (!f.ok) return f;
+  const { repoId, repoRoot, path, abs } = f;
+  const st: StatLike = f.st;
+
+  const deferred = st.size > (opts.inlineMaxBytes ?? anchorInlineMaxBytes());
+  let source: string;
   try {
-    st = statSync(abs);
-  } catch {
+    source = readFileSync(abs, "utf8");
+  } catch (e) {
+    // stat прошёл, чтение нет (права, файл пропал между ними): отказ с
+    // причиной, а не internal.unexpected — у `task`/`remember` узел уже
+    // записан, и привязка становится намерением (`attachAnchorFlag`).
     return {
       ok: false,
       code: "notfound.file",
-      msg: `no such file: ${path} (repo root ${repoRoot})`,
+      msg: `cannot read ${path}: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
-
-  const deferred = st.size > (opts.inlineMaxBytes ?? anchorInlineMaxBytes());
-  const source = readFileSync(abs, "utf8");
   const lang = langOf(path);
   const lines = source.split("\n").length;
   const end = target.whole ? lines : target.end;
@@ -931,15 +1065,7 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
           symbol: S.flagStr(ctx, "symbol") ?? "",
           ...(S.flagStr(ctx, "as") !== undefined ? { actor: S.flagStr(ctx, "as")! } : {}),
         });
-        if (!bound.ok) {
-          if (bound.code === "notfound.file") {
-            return failure("notfound.file", bound.msg, ExitCode.NOTFOUND);
-          }
-          if (bound.code === "outside.repo") {
-            return failure("usage.outside_repo", bound.msg, ExitCode.USAGE);
-          }
-          return S.graphFailure(bound.cause);
-        }
+        if (!bound.ok) return bindFailure(bound) ?? S.graphFailure(bound.cause);
         const a = bound.anchor;
 
         const data: AddData = {
@@ -1020,6 +1146,12 @@ export interface AnchorFlagResult {
  * При УСПЕХЕ `attrs.anchors` НЕ ПИШЕТСЯ: якорь есть в базе настоящий, и
  * вторая его копия в attrs дала бы `show` две строки об одном якоре, а
  * `anchorPathsOf` — один и тот же путь дважды.
+ *
+ * Заведомо непривязываемое (каталог, бинарный, секретный — `isNeverBindable`)
+ * сюда не доходит: его отказывает `refuseNeverBindable` ДО записи узла. Здесь
+ * остаётся то, что может исполниться позже, — нет файла, путь вне корня,
+ * сбой хранилища; довязывает такое намерение `myc anchor add`, который
+ * называет WARN (сам по себе фон намерений из attrs не привязывает).
  */
 export async function attachAnchorFlag(
   h: StoreHandle,
@@ -1050,6 +1182,13 @@ export async function attachAnchorFlag(
     };
   }
   const end = target.whole ? target.start : target.end;
+  if (isNeverBindable(bound.code)) {
+    // Сюда доходит только гонка: до-записная проверка (`refuseNeverBindable`)
+    // файл пропустила, а к привязке он стал каталогом или бинарным. Намерение
+    // не пишется — оно не исполнится никогда, — но причина звучит.
+    warn("anchor.unbound", `anchor not bound: ${bound.msg}; the node is written without an anchor`);
+    return { path: target.path, start: target.start, end, state: "refused", reason: bound.msg };
+  }
   const pending = { path: target.path, start: target.start, end, state: "pending" };
   try {
     h.store.updateNode(nodeId, { attrs: { anchors: [pending] } });
@@ -1074,7 +1213,10 @@ export function anchorFlagLine(a: AnchorFlagResult): string {
         : "";
     return `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state}${later}`;
   }
-  return `anchor    ${a.path}:${span} @— not bound: ${a.reason ?? "no reason given"} (myc anchor add)`;
+  // `refused` — заведомо непривязываемое (гонка после до-записной проверки):
+  // звать `myc anchor add` на тот же путь значило бы звать тот же отказ.
+  const retry = a.state === "refused" ? "" : " (myc anchor add)";
+  return `anchor    ${a.path}:${span} @— not bound: ${a.reason ?? "no reason given"}${retry}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,7 +1252,6 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
         const resolved = S.resolveId(h, idInput);
         if (!resolved.ok) return resolved.failure;
         const node = resolved.node;
-        const { repoRoot } = anchorRepo(h);
         // Файл сравнивается ЛИЧНОСТЬЮ — путём от корня воркспейса, — а не
         // строкой `path` одного ключа: якорь, поставленный из корня, лежит
         // как `alpha/x.ts`, из alpha — как `x.ts`, и `rm` из alpha обязан
@@ -1139,7 +1280,7 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
           h.store.deleteNode(r.node_id);
           db.query("DELETE FROM anchors WHERE node_id = ?1").run(r.node_id);
           // Путь — в терминах спросившего, какой бы ключ ни лежал в строке.
-          removed.push(`${posixRel(repoRoot, join(h.wsDir, ws))}:${spanLabel(r.s, r.e)}`);
+          removed.push(`${askerPath(h, ws)}:${spanLabel(r.s, r.e)}`);
         }
         if (removed.length === 0) {
           return failure("notfound.anchor", `${node.id} has no such anchor`, ExitCode.NOTFOUND);
@@ -1189,12 +1330,28 @@ SELECT a.node_id AS node_id, a.path AS path, a.span_start AS s, a.span_end AS e,
  WHERE a.repo_id = ?1 AND a.path = ?2
  ORDER BY a.span_start, a.span_end`;
 
-const SQL_OF_OWNERS = `
+/**
+ * Владельцы якоря — «кто привязан к этому месту» (memory-nm92qfhm12ht).
+ * Отозванное, заменённое и отменённое (HIDDEN_STATUSES) и кандидат хука
+ * сжатия (`pending_review`) — не знание, которое отдают агенту: recall,
+ * prime и `code symbol` (code.ts SQL_ANCHOR_OWNERS) их уже не показывают, а
+ * `anchor of` отдавал — ещё одна дверь к тем же узлам. Термы — функции
+ * @myc/retrieval/review, те же, что у выдачи, и приходят аргументом: модуль
+ * грузится в обработчике `of`, а не наверху файла (цена хука, шапка модуля).
+ * Закрытая задача остаётся — это история сделанного у этого места.
+ */
+export function sqlOfOwners(R: {
+  readonly liveStatusPredicate: (alias: string) => string;
+  readonly notPendingPredicate: (alias: string) => string;
+}): string {
+  return `
 SELECT g.src AS id, n.kind AS kind, n.title AS title, n.status AS status, n.priority AS priority,
        json_extract(n.attrs,'$.type') AS type
   FROM edges g JOIN nodes n ON n.id = g.src
  WHERE g.dst = ?1 AND g.type = 'touches' AND g.deleted_at IS NULL AND n.deleted_at IS NULL
+   AND ${R.liveStatusPredicate("n")} AND ${R.notPendingPredicate("n")}
  ORDER BY n.priority, n.id`;
+}
 
 interface OwnerRow {
   id: string;
@@ -1298,7 +1455,7 @@ function buildAnchorOf(deps: StoreDeps | undefined): Command {
         const rows = queryAnchorsOfFile(db, posixRel(h.wsDir, main), line);
         const queryMs = performance.now() - q0;
 
-        const owners = db.query(SQL_OF_OWNERS);
+        const owners = db.query(sqlOfOwners(await import("@myc/retrieval/review")));
         let nodes = 0;
         const spans: OfSpan[] = rows.map((r) => {
           const list = owners.all(r.node_id) as OwnerRow[];

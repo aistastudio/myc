@@ -17,6 +17,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   HISTORY_MAX_DEPTH,
   MOVED_FROM_KEY,
@@ -47,11 +48,13 @@ import {
   fmtLease,
   fmtPriority,
   resolveId,
+  mapIntoWorktree,
   tagsOf,
   type StoreDeps,
   type StoreHandle,
   realStoreDeps,
 } from "./store.ts";
+import { askerPath, parseTarget, wsPathOfKey } from "./anchor.ts";
 import { nodeType } from "./tasks.ts";
 
 const RULE = "─".repeat(72);
@@ -122,11 +125,28 @@ interface LinkRef {
 }
 
 interface AnchorRef {
+  /** Путь в терминах спросившего — от корня его репозитория, как у `anchor of`. */
   path?: string;
   start?: number;
   end?: number;
+  /** fresh│drifted│stale│lost у привязанного, pending — у намерения из attrs. */
   state: string;
+  /** Узел якоря; нет — это намерение, привязки не было. */
   node_id?: string;
+  /** Мера сходства у `drifted` (§7.2): доля совпавшего crux, 1 — точное. */
+  drift?: number;
+  /**
+   * Откуда якорь переехал (ступень 3 §7.3, `attrs.moved` узла якоря) —
+   * путь:спан в тех же терминах, что `path`. Без этого поля переезд в
+   * `show` задачи выглядел бы тихой сменой пути.
+   */
+  moved_from?: string;
+  /**
+   * Строки `anchors` на этой машине нет: она локальная проекция (§7.1) и не
+   * приезжает с оплогом, а узел якоря — приезжает. Путь и спан тогда — из
+   * заголовка узла якоря (последнее записанное место), состояние — его статус.
+   */
+  untracked?: true;
 }
 
 interface ShowData {
@@ -249,6 +269,74 @@ function oneLine(h: StoreHandle, id: string): string {
   return parts.join("  ");
 }
 
+const SQL_ANCHOR_ROW = `SELECT repo_id, path, span_start AS s, span_end AS e, state, drift
+  FROM anchors WHERE node_id = ?1`;
+
+/**
+ * ЯКОРЬ ЗАДАЧИ СТРОКОЙ — путь:спан, состояние и откуда переехал. До этого
+ * `show` печатал у привязанного якоря только id его узла и статус: путь не
+ * выводился вовсе, и переезд кода в другой файл (ступень 3 §7.3 кладёт его в
+ * `attrs.moved` узла якоря) был не виден ни здесь, ни в MCP `myc_show`,
+ * который читает этот же вывод.
+ *
+ * Место и состояние — из строки `anchors` (её обновляет лестница §7.2, статус
+ * узла — её зеркало и может отстать, если записать узел не удалось).
+ * Путь — в терминах спросившего (`askerPath`): один файл печатается одинаково,
+ * под каким бы из двух ключей ни лежала строка. Строки нет (другая машина,
+ * §7.1) — место из заголовка узла якоря, и строка об этом говорит.
+ */
+function anchorOf(h: StoreHandle, anchor: NodeRecord): { ref: AnchorRef; file?: string } {
+  const moved = anchor.attrs["moved"];
+  const from =
+    typeof moved === "object" && moved !== null && !Array.isArray(moved)
+      ? (moved as Record<string, JsonValue>)["from"]
+      : undefined;
+  let movedFrom: string | undefined;
+  if (typeof from === "string" && from.length > 0) {
+    // `from` записан путём от корня ВОРКСПЕЙСА со спаном (`applyCheck`).
+    const t = parseTarget(from);
+    movedFrom =
+      t === undefined
+        ? from
+        : `${askerPath(h, t.path)}${t.whole ? "" : `:${t.start === t.end ? t.start : `${t.start}-${t.end}`}`}`;
+  }
+  let row: { repo_id: string; path: string; s: number; e: number; state: string; drift: number } | undefined;
+  try {
+    row = (h.driver.database.query(SQL_ANCHOR_ROW).get(anchor.id) as typeof row | null) ?? undefined;
+  } catch {
+    row = undefined; // схема без таблицы anchors — как строки нет
+  }
+  const tail = movedFrom !== undefined ? { moved_from: movedFrom } : {};
+  if (row !== undefined) {
+    const ws = wsPathOfKey(row.repo_id, row.path);
+    const main = join(h.wsDir, ws);
+    // Читать — копию worktree, если она есть: её агент правит сейчас.
+    const local = h.worktree !== undefined ? mapIntoWorktree(h.worktree, main) : main;
+    return {
+      ref: {
+        path: askerPath(h, ws),
+        start: row.s,
+        end: row.e,
+        state: row.state,
+        node_id: anchor.id,
+        ...(row.state === "drifted" ? { drift: row.drift } : {}),
+        ...tail,
+      },
+      file: existsSync(local) ? local : main,
+    };
+  }
+  const t = parseTarget(anchor.title);
+  return {
+    ref: {
+      ...(t !== undefined ? { path: t.path, start: t.start, end: t.whole ? t.start : t.end } : {}),
+      state: anchor.status,
+      node_id: anchor.id,
+      ...tail,
+      untracked: true,
+    },
+  };
+}
+
 function buildView(
   h: StoreHandle,
   node: NodeRecord,
@@ -261,6 +349,9 @@ function buildView(
   const links: LinkRef[] = [];
   const contradicts: LinkRef[] = [];
   const anchors: AnchorRef[] = [];
+  // Файл для --source у привязанного якоря — абсолютный путь, в выдачу не
+  // уходит: `path` в терминах спросившего от каталога вызова не читается.
+  const anchorFiles = new Map<AnchorRef, string>();
 
   // Иерархия. Ребро `parent` ведёт от ребёнка к родителю, поэтому родитель
   // ищется через edgesFrom, а состав — через edgesTo. До этой правки тип
@@ -327,7 +418,11 @@ function buildView(
       blocks.push({ id: e.dst, status: dst?.status ?? "unknown", closed_at: dst?.closed_at ?? null });
     } else if (e.type === "touches") {
       const dst = h.store.getNode(e.dst);
-      if (dst !== undefined) anchors.push({ state: dst.status, node_id: e.dst });
+      if (dst !== undefined) {
+        const a = anchorOf(h, dst);
+        anchors.push(a.ref);
+        if (a.file !== undefined) anchorFiles.set(a.ref, a.file);
+      }
     } else if (e.type === "contradicts") {
       contradicts.push({ type: "contradicts", id: e.dst });
     } else if (e.type === "relates" || e.type === "derived_from" || e.type === "duplicates" || e.type === "supersedes") {
@@ -438,9 +533,12 @@ function buildView(
   if (withSource) {
     const sources: NonNullable<NodeView["sources"]> = [];
     for (const a of anchors) {
-      if (a.path === undefined || !existsSync(a.path)) continue;
+      // Привязанный — по месту строки якоря; намерение — по пути, как его
+      // набрали. Потерянный (`lost`) не читается: кода по его спану нет.
+      const file = a.node_id !== undefined ? anchorFiles.get(a) : a.path;
+      if (file === undefined || a.path === undefined || a.state === "lost" || !existsSync(file)) continue;
       try {
-        const all = readFileSync(a.path, "utf8").split("\n");
+        const all = readFileSync(file, "utf8").split("\n");
         const start = Math.max(1, a.start ?? 1);
         const end = Math.min(all.length, Math.max(start, a.end ?? start), start + 199);
         sources.push({
@@ -572,11 +670,16 @@ function renderNodeFull(v: NodeView, now: number): string[] {
 
   if (v.anchors.length > 0) {
     const rows = v.anchors.map((a) => {
-      if (a.path !== undefined) {
-        const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
-        return `${a.path}:${span} @— ${a.state}`;
-      }
-      return `${a.node_id} ${a.state}`;
+      const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
+      if (a.node_id === undefined) return `${a.path}:${span} @— ${a.state}`;
+      // Привязанный якорь: место, состояние (у drifted — мера сходства), id
+      // узла якоря и, если код уезжал в другой файл, — откуда.
+      const drift = a.state === "drifted" && a.drift !== undefined ? ` ${a.drift.toFixed(2)}` : "";
+      const where = a.path !== undefined ? `${a.path}:${span}` : "(position unknown)";
+      const bits = [`${where} ${a.state}${drift}`, a.node_id];
+      if (a.moved_from !== undefined) bits.push(`moved from ${a.moved_from}`);
+      if (a.untracked === true) bits.push("not tracked on this machine");
+      return bits.join(" · ");
     });
     lines.push(`anchors   ${rows[0]!}`);
     for (const row of rows.slice(1)) lines.push(`          ${row}`);
@@ -657,7 +760,7 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
     flags: [
       { name: "field", value: "string", description: "comma-separated fields for batch projection" },
       { name: "depth", value: "number", description: "0 (default) | 1 — one-line summaries of neighbours" },
-      { name: "source", description: "read code for pending anchors (IO budget applies)" },
+      { name: "source", description: "read the code at the node's anchors, lost ones excluded (up to 200 lines each)" },
       { name: "chain", description: "full_history: print the whole version chain (§6.3)" },
     ],
     handler: async (ctx) => {

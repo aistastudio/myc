@@ -176,7 +176,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
       properties: {
         ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 20 },
         depth: { type: "integer", enum: [0, 1], default: 0, description: "1 — titles of neighbours along edges" },
-        source: { type: "boolean", default: false, description: "pull in code from fresh anchors" },
+        source: { type: "boolean", default: false, description: "pull in the code at the anchors (not lost ones)" },
         fields: { type: "array", items: { type: "string" }, description: "limit fields — saves tokens" },
         ws: WS,
       },

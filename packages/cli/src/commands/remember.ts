@@ -53,6 +53,7 @@ import {
   anchorFlagLine,
   attachAnchorFlag,
   parseTarget,
+  refuseNeverBindable,
   type AnchorFlagResult,
   type AnchorTarget,
 } from "./anchor.ts";
@@ -198,7 +199,13 @@ function enqueueAll(
 
 const REMEMBER_FLAGS: readonly FlagSpec[] = [
   { name: "tag", value: "string", description: "comma-separated tags" },
-  { name: "anchor", value: "string", description: "file[:<a>-<b>] anchor request" },
+  {
+    name: "anchor",
+    value: "string",
+    description:
+      "bind an anchor file[:<a>-<b>]; a directory, a binary or secret-named file is refused before " +
+      "anything is written; a missing file or a path outside the root stays an intent (WARN)",
+  },
   { name: "layer", value: "string", description: "L0|L1|L2|L3 (default L1)" },
   { name: "acl", value: "string", description: "private|team|restricted|agent" },
   { name: "source", value: "string", description: "provenance: url or file" },
@@ -493,6 +500,17 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
       }
 
       try {
+        // Заведомо непривязываемый якорь (каталог, бинарный, секретный) —
+        // отказ ДО записи факта и до поиска точного дубликата
+        // (memory-w5vh0x68fg4k): раньше каталог проходил stat, узел
+        // записывался, и привязка падала в internal.unexpected EISDIR уже
+        // после него. Текст факта не теряется — он у агента в вызове, а
+        // отказ называет, что поправить. Нет файла и путь вне корня (личный
+        // ярус) — не сюда: они остаются намерением с WARN, как были.
+        if (anchor !== undefined) {
+          const refused = await refuseNeverBindable(h, anchor, ctx.globals.directory ?? process.cwd());
+          if (refused !== undefined) return refused;
+        }
         const { title, body } = splitFact(text);
         const tags = splitList(flagStr(ctx, "tag"));
         const source = flagStr(ctx, "source");

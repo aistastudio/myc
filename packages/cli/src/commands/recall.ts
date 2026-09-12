@@ -4,7 +4,7 @@
  * агентский UX — бюджет символов, дедуп и свёрнутый вывод.
  *
  *   myc recall <запрос> [-n <k>] [--budget <chars>] [--kind ...] [--tag ...]
- *              [--layer L0..L3] [--since <dur>] [--anchor <file>]
+ *              [--layer L0..L3] [--since <dur>] [--anchor <file>[:<line>]]
  *              [--mode hybrid|vec|bm25] [--why]
  *
  * БЮДЖЕТ СИМВОЛОВ ПРЕДСКАЗУЕМ И ГРОМОК. Строки берутся строго по порядку
@@ -85,7 +85,14 @@ const RECALL_FLAGS: readonly FlagSpec[] = [
   { name: "tag", value: "string", description: "comma-separated tags (any match)" },
   { name: "layer", value: "string", description: "L0..L3 or a range like L1..L3" },
   { name: "since", value: "string", description: "only nodes updated within, e.g. 30d, 12h" },
-  { name: "anchor", value: "string", description: "only nodes anchored at this path" },
+  {
+    name: "anchor",
+    value: "string",
+    description:
+      "only nodes anchored at this file: <file> or <file>:<line>, from the current directory or absolute — " +
+      "nodes with a real anchor on it (whether bound from the workspace root or from inside the file's repo " +
+      "or worktree), plus unbound anchor intents (state pending) whose path as typed contains the argument",
+  },
   { name: "mode", value: "string", description: "hybrid (default) | vec | bm25" },
   { name: "why", description: "print why each retrieval branch was or was not used" },
   { name: "reach", value: "string", description: "comma-separated: session,project,unknown (S58)" },
