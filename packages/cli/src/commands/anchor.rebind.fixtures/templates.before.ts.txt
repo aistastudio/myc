@@ -1,0 +1,52 @@
+export function codexNotify(opts: HelperOptions): string {
+  const preCompact = opts.events.includes("pre-compact");
+  return `#!/usr/bin/env node
+// .codex/myc-notify.mjs — ${GENERATED}.
+//
+// У Codex поверхность тоньше: событие приходит одним JSON-аргументом.
+// Настоящего pre-compact в части версий нет вовсе — тогда эпизод пишется по
+// завершении хода, и \`myc doctor --hooks\` сообщает об этом честно, а не
+// делает вид, что контекст защищён.
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const DIR = process.env.CODEX_PROJECT_DIR || process.cwd();
+
+${BIN_LOOKUP}
+
+let ev = {};
+try {
+  const arg = process.argv[2];
+  ev = JSON.parse(arg && arg.trim().startsWith("{") ? arg : readFileSync(0, "utf8") || "{}");
+} catch {}
+
+const type = ev.type ?? ev.event ?? "";
+const transcript = ev["rollout-path"] ?? ev.rollout_path ?? ev.transcript_path ?? "-";
+// S58: чьей сессии принадлежит записанное. Пусто — охват выведется из эпизода.
+const session = ev.session_id ?? ev.conversation_id ?? ev.thread_id ?? "";
+
+let args = null;
+let limit = 1500;
+if (${preCompact ? "true" : "false"} && /compact/i.test(type)) {
+  args = ["absorb-session", "--reason", "compact", "--transcript", transcript, "--agent", "codex", "--session", session];
+  limit = 7500;
+} else if (/turn[-_.]?complete|agent[-_.]?turn|session[-_.]?end/i.test(type)) {
+  args = ["absorb-session", "--reason", "auto", "--transcript", transcript, "--agent", "codex", "--session", session];
+  limit = 2000;
+}
+
+if (!args) process.exit(0);
+
+try {
+  spawnSync(bin(), args, {
+    cwd: DIR,
+    timeout: limit,
+    encoding: "utf8",
+    env: { ...process.env, MYC_HOOK: "codex-notify" },
+  });
+} catch {}
+
+process.exit(0);
+`;
+}

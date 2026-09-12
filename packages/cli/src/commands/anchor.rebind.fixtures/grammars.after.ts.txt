@@ -1,0 +1,43 @@
+// ---------------------------------------------------------------------------
+// Где грамматики лежат
+// ---------------------------------------------------------------------------
+
+/**
+ * Кеш загруженных грамматик: `MYC_GRAMMARS_DIR` или `~/.cache/myc/grammars`.
+ * Рядом с моделями (`~/.cache/myc/models`) и по тем же правилам: кеш общий на
+ * пользователя, а не на репозиторий — одна typescript-грамматика на все
+ * проекты, а не по 2.3 МБ в каждом.
+ */
+export function grammarsCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.MYC_GRAMMARS_DIR;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  return join(homedir(), ".cache", "myc", "grammars");
+}
+
+/**
+ * Каталог грамматик, положенных в сам дистрибутив. Пусть его сегодня не
+ * заполняет никто (в пакет кладётся только рантайм), путь существует затем,
+ * чтобы сборка, решившая приложить грамматики, не требовала правок кода.
+ * Считается ОТ БАНДЛА: в опубликованном пакете этот модуль вшит в
+ * `dist/myc.js`, и `../vendor/...` от него ведёт внутрь пакета.
+ */
+function vendorDir(sub: string): string | null {
+  try {
+    return join(dirname(fileURLToPath(import.meta.url)), "..", "vendor", sub);
+  } catch {
+    return null;
+  }
+}
+
+/** Каталог `tree-sitter-wasms/out` в node_modules — путь разработчика. */
+function nodeModulesGrammarDir(): string | null {
+  try {
+    const pkgJson = Bun.resolveSync(
+      "tree-sitter-wasms/package.json",
+      dirname(fileURLToPath(import.meta.url)),
+    );
+    return join(dirname(pkgJson), "out");
+  } catch {
+    return null;
+  }
+}

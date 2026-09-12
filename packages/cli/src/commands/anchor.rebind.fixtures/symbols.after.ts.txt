@@ -1,0 +1,33 @@
+export class GrammarMissingError extends MissingResourceError {
+  constructor(
+    readonly lang: LangId,
+    readonly searched: readonly string[],
+  ) {
+    const spec = grammarSpecFor(lang);
+    super(
+      `грамматика tree-sitter для "${lang}" не скачана: ${spec.file} ` +
+        `(${formatBytes(spec.bytes)}) нет ни в одном из каталогов [${searched.join(", ")}]`,
+      `myc code fetch ${lang}`,
+    );
+    this.name = "GrammarMissingError";
+  }
+}
+
+/** Каталог рантайма: тот, в котором `tree-sitter.wasm` действительно лежит. */
+function runtimeDir(): string {
+  const path = findRuntime();
+  if (path === null) throw new RuntimeMissingError(runtimeSearchPath());
+  return path.slice(0, path.length - RUNTIME_WASM.length - 1);
+}
+
+/**
+ * Путь к .wasm грамматики языка. Ищется ПОФАЙЛОВО по списку каталогов, а не
+ * складывается из одного «каталога грамматик»: с загрузкой по требованию
+ * typescript лежит в пользовательском кеше, а javascript может остаться в
+ * node_modules разработчика — одной строкой это перестало выражаться.
+ */
+export function grammarPath(lang: LangId): string {
+  const path = findGrammar(lang);
+  if (path === null) throw new GrammarMissingError(lang, grammarSearchPath());
+  return path;
+}

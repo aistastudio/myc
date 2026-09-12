@@ -508,8 +508,15 @@ export interface AnchorStepReport {
   /** Доведено отложенных привязок (S66) — они внутри `checked`. */
   readonly bound: number;
   readonly fresh: number;
+  /** Ре-привязано по сходству (§7.3 шаги 2–3) — в том же файле или в другом. */
+  readonly drifted: number;
+  /** stale + lost: привязка под вопросом (lost — индекс видел изменение и кода не нашёл). */
   readonly stale: number;
+  readonly lost: number;
   readonly moved: number;
+  /** Найдено в ДРУГОМ файле по код-индексу (ступень 3 §7.3) из стольких, сколько там искали. */
+  readonly foundElsewhere: number;
+  readonly searchedElsewhere: number;
   readonly fromDirty: number;
   readonly skippedDebounce: number;
   readonly budgetHit: boolean;
@@ -653,8 +660,12 @@ async function runAnchorStep(driver: CliDriver, opts: AnchorStepOptions): Promis
     checked: data.checked,
     bound: data.bound,
     fresh: data.fresh,
+    drifted: data.drifted,
     stale: data.stale + data.lost,
+    lost: data.lost,
     moved: data.moved,
+    foundElsewhere: data.found_elsewhere,
+    searchedElsewhere: data.searched_elsewhere,
     fromDirty: data.from_dirty,
     skippedDebounce: data.skipped_debounce,
     budgetHit: data.budget_hit,

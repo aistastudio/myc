@@ -1,0 +1,2441 @@
+{
+  "task": "memory-5c03r9t5n472",
+  "spec": "docs/design/01-core-data-model.md §7.3",
+  "repo_head": "5c8a5418139be648378cd98f4fde9e82a8774bda",
+  "generated_at": "2026-09-12T11:42:53.792Z",
+  "command": "bun run bench/rebind-eval.ts",
+  "thresholds": {
+    "local": 0.6,
+    "elsewhere": 0.5,
+    "crux_words_only": 0.65,
+    "min_code_share": 0.25,
+    "candidates": 5
+  },
+  "ground_truth": "definitions (tree-sitter, ≥3 lines) of changed TS/JS files at parent vs child: same name newly in another changed file = moved (file_renamed if git R), same body under a new name (line Jaccard ≥ 0.8) = renamed_symbol, neither = deleted (≤6 per commit); correct = fresh/drifted on the expected file with span overlap ≥ 50% or start within 2 lines",
+  "commits": {
+    "scanned": 77,
+    "with_cases": 13
+  },
+  "cases": {
+    "file_renamed": 18,
+    "renamed_symbol": 8,
+    "moved": 23,
+    "deleted": 21
+  },
+  "variants": {
+    "full": {
+      "relocated": {
+        "total": 49,
+        "correct": 43,
+        "right_file": 1,
+        "copy": 1,
+        "wrong": 1,
+        "unresolved": {
+          "stale": 0,
+          "lost": 3
+        },
+        "rate": 0.878,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 43,
+          "right_file": 1,
+          "copy": 1,
+          "wrong": 1,
+          "unresolved": 1,
+          "rate": 0.915
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 18,
+            "right_file": 1,
+            "copy": 1,
+            "wrong": 1,
+            "unresolved": 2,
+            "rate": 0.783
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 7,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 1,
+            "rate": 0.875
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 26,
+            "rate": 1
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 11,
+            "rate": 0.846
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 6,
+            "rate": 0.6
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "symbol": 18,
+          "local": 2,
+          "text": 4
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 19,
+        "stale": 0,
+        "bound": 2,
+        "plausible": 2,
+        "false_bind": 0,
+        "false_bind_rate": 0
+      },
+      "check_ms_per_anchor": {
+        "p50": 11.47,
+        "max": 64.41
+      },
+      "took_s": 8.3
+    },
+    "no-step3": {
+      "relocated": {
+        "total": 49,
+        "correct": 2,
+        "right_file": 0,
+        "copy": 0,
+        "wrong": 0,
+        "unresolved": {
+          "stale": 47,
+          "lost": 0
+        },
+        "rate": 0.041,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 2,
+          "right_file": 0,
+          "copy": 0,
+          "wrong": 0,
+          "unresolved": 45,
+          "rate": 0.043
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 0,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 23,
+            "rate": 0
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 0,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 18,
+            "rate": 0
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 2,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 6,
+            "rate": 0.25
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 1,
+            "rate": 0.038
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 0,
+            "rate": 0
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 1,
+            "rate": 0.1
+          }
+        },
+        "correct_by_candidate": {
+          "local": 2
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 0,
+        "stale": 21,
+        "bound": 0,
+        "plausible": 0,
+        "false_bind": 0,
+        "false_bind_rate": 0
+      },
+      "check_ms_per_anchor": {
+        "p50": 2.53,
+        "max": 3.97
+      },
+      "took_s": 7.5
+    },
+    "stale-index": {
+      "relocated": {
+        "total": 49,
+        "correct": 21,
+        "right_file": 0,
+        "copy": 0,
+        "wrong": 0,
+        "unresolved": {
+          "stale": 28,
+          "lost": 0
+        },
+        "rate": 0.429,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 21,
+          "right_file": 0,
+          "copy": 0,
+          "wrong": 0,
+          "unresolved": 26,
+          "rate": 0.447
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 0,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 23,
+            "rate": 0
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 3,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 5,
+            "rate": 0.375
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 15,
+            "rate": 0.577
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 3,
+            "rate": 0.231
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 3,
+            "rate": 0.3
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "local": 2
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 0,
+        "stale": 21,
+        "bound": 0,
+        "plausible": 0,
+        "false_bind": 0,
+        "false_bind_rate": 0
+      },
+      "check_ms_per_anchor": {
+        "p50": 4.08,
+        "max": 58.02
+      },
+      "took_s": 6.9
+    },
+    "text-0.50": {
+      "relocated": {
+        "total": 49,
+        "correct": 43,
+        "right_file": 1,
+        "copy": 1,
+        "wrong": 1,
+        "unresolved": {
+          "stale": 0,
+          "lost": 3
+        },
+        "rate": 0.878,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 43,
+          "right_file": 1,
+          "copy": 1,
+          "wrong": 1,
+          "unresolved": 1,
+          "rate": 0.915
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 18,
+            "right_file": 1,
+            "copy": 1,
+            "wrong": 1,
+            "unresolved": 2,
+            "rate": 0.783
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 7,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 1,
+            "rate": 0.875
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 26,
+            "rate": 1
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 11,
+            "rate": 0.846
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 6,
+            "rate": 0.6
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "symbol": 18,
+          "local": 2,
+          "text": 4
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 17,
+        "stale": 0,
+        "bound": 4,
+        "plausible": 3,
+        "false_bind": 1,
+        "false_bind_rate": 0.048
+      },
+      "check_ms_per_anchor": {
+        "p50": 10.68,
+        "max": 76.18
+      },
+      "took_s": 8.3
+    },
+    "text-0.60": {
+      "relocated": {
+        "total": 49,
+        "correct": 43,
+        "right_file": 1,
+        "copy": 1,
+        "wrong": 1,
+        "unresolved": {
+          "stale": 0,
+          "lost": 3
+        },
+        "rate": 0.878,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 43,
+          "right_file": 1,
+          "copy": 1,
+          "wrong": 1,
+          "unresolved": 1,
+          "rate": 0.915
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 18,
+            "right_file": 1,
+            "copy": 1,
+            "wrong": 1,
+            "unresolved": 2,
+            "rate": 0.783
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 7,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 1,
+            "rate": 0.875
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 26,
+            "rate": 1
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 11,
+            "rate": 0.846
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 6,
+            "rate": 0.6
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "symbol": 18,
+          "local": 2,
+          "text": 4
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 18,
+        "stale": 0,
+        "bound": 3,
+        "plausible": 3,
+        "false_bind": 0,
+        "false_bind_rate": 0
+      },
+      "check_ms_per_anchor": {
+        "p50": 10.73,
+        "max": 62.16
+      },
+      "took_s": 8.1
+    },
+    "text-0.70": {
+      "relocated": {
+        "total": 49,
+        "correct": 42,
+        "right_file": 1,
+        "copy": 1,
+        "wrong": 1,
+        "unresolved": {
+          "stale": 0,
+          "lost": 4
+        },
+        "rate": 0.857,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 42,
+          "right_file": 1,
+          "copy": 1,
+          "wrong": 1,
+          "unresolved": 2,
+          "rate": 0.894
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 18,
+            "right_file": 1,
+            "copy": 1,
+            "wrong": 1,
+            "unresolved": 2,
+            "rate": 0.783
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 6,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 2,
+            "rate": 0.75
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 26,
+            "rate": 1
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 10,
+            "rate": 0.769
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 6,
+            "rate": 0.6
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "symbol": 18,
+          "local": 2,
+          "text": 3
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 21,
+        "stale": 0,
+        "bound": 0,
+        "plausible": 0,
+        "false_bind": 0,
+        "false_bind_rate": 0
+      },
+      "check_ms_per_anchor": {
+        "p50": 10.55,
+        "max": 59.12
+      },
+      "took_s": 8.2
+    },
+    "no-code-share": {
+      "relocated": {
+        "total": 49,
+        "correct": 43,
+        "right_file": 1,
+        "copy": 1,
+        "wrong": 1,
+        "unresolved": {
+          "stale": 0,
+          "lost": 3
+        },
+        "rate": 0.878,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 43,
+          "right_file": 1,
+          "copy": 1,
+          "wrong": 1,
+          "unresolved": 1,
+          "rate": 0.915
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 18,
+            "right_file": 1,
+            "copy": 1,
+            "wrong": 1,
+            "unresolved": 2,
+            "rate": 0.783
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 7,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 1,
+            "rate": 0.875
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 26,
+            "rate": 1
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 11,
+            "rate": 0.846
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 6,
+            "rate": 0.6
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "symbol": 18,
+          "local": 2,
+          "text": 4
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 18,
+        "stale": 0,
+        "bound": 3,
+        "plausible": 2,
+        "false_bind": 1,
+        "false_bind_rate": 0.048
+      },
+      "check_ms_per_anchor": {
+        "p50": 10.67,
+        "max": 59.2
+      },
+      "took_s": 8
+    },
+    "before-weak-evidence-rules": {
+      "relocated": {
+        "total": 49,
+        "correct": 43,
+        "right_file": 1,
+        "copy": 1,
+        "wrong": 1,
+        "unresolved": {
+          "stale": 0,
+          "lost": 3
+        },
+        "rate": 0.878,
+        "recoverable": {
+          "note": "code that kept its text on the move: token-bigram similarity to the expected definition >= 0.3",
+          "total": 47,
+          "correct": 43,
+          "right_file": 1,
+          "copy": 1,
+          "wrong": 1,
+          "unresolved": 1,
+          "rate": 0.915
+        },
+        "rewritten_on_move": {
+          "total": 2,
+          "correct": 0,
+          "right_file": 0,
+          "wrong": 0,
+          "unresolved": 2
+        },
+        "by_kind": {
+          "moved": {
+            "total": 23,
+            "correct": 18,
+            "right_file": 1,
+            "copy": 1,
+            "wrong": 1,
+            "unresolved": 2,
+            "rate": 0.783
+          },
+          "file_renamed": {
+            "total": 18,
+            "correct": 18,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 0,
+            "rate": 1
+          },
+          "renamed_symbol": {
+            "total": 8,
+            "correct": 7,
+            "right_file": 0,
+            "copy": 0,
+            "wrong": 0,
+            "unresolved": 1,
+            "rate": 0.875
+          }
+        },
+        "by_body_similarity": {
+          "body ≥ 0.9": {
+            "total": 26,
+            "correct": 26,
+            "rate": 1
+          },
+          "body 0.6–0.9": {
+            "total": 13,
+            "correct": 11,
+            "rate": 0.846
+          },
+          "body < 0.6": {
+            "total": 10,
+            "correct": 6,
+            "rate": 0.6
+          }
+        },
+        "correct_by_candidate": {
+          "rename": 19,
+          "symbol": 18,
+          "local": 2,
+          "text": 4
+        }
+      },
+      "deleted": {
+        "total": 21,
+        "lost": 16,
+        "stale": 0,
+        "bound": 5,
+        "plausible": 3,
+        "false_bind": 2,
+        "false_bind_rate": 0.095
+      },
+      "check_ms_per_anchor": {
+        "p50": 10.48,
+        "max": 60.33
+      },
+      "took_s": 8
+    }
+  },
+  "cases_list": [
+    {
+      "id": 1,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:64-71 Stats",
+      "expected": [
+        "packages/bench/src/index.ts:70-77 Stats"
+      ],
+      "body": 1,
+      "expected_sim": 0.857,
+      "result": "drifted packages/bench/src/index.ts:70-77 via rename",
+      "drift": 1,
+      "token_sim": 0.857,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:64-71",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:70-77 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:70-77 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:70-77 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:70-77 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:70-77 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:70-77 via rename"
+      }
+    },
+    {
+      "id": 2,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:73-76 percentile",
+      "expected": [
+        "packages/bench/src/index.ts:79-82 percentile"
+      ],
+      "body": 1,
+      "expected_sim": 0.947,
+      "result": "drifted packages/bench/src/index.ts:79-82 via rename",
+      "drift": 1,
+      "token_sim": 0.947,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:73-76",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:79-82 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:79-82 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:79-82 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:79-82 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:79-82 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:79-82 via rename"
+      }
+    },
+    {
+      "id": 3,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:78-88 summarize",
+      "expected": [
+        "packages/bench/src/index.ts:84-97 summarize"
+      ],
+      "body": 0.917,
+      "expected_sim": 0.864,
+      "result": "drifted packages/bench/src/index.ts:84-96 via rename",
+      "drift": 0.844,
+      "token_sim": 0.852,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:78-88",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:84-96 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:84-96 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:84-96 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:84-96 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:84-96 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:84-96 via rename"
+      }
+    },
+    {
+      "id": 4,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:98-102 spin",
+      "expected": [
+        "packages/bench/src/index.ts:107-111 spin",
+        "scripts/bench-nightly.ts:51-55 spin"
+      ],
+      "body": 1,
+      "expected_sim": 0.936,
+      "result": "drifted packages/bench/src/index.ts:107-111 via rename",
+      "drift": 1,
+      "token_sim": 0.936,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:98-102",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:107-111 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:107-111 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:107-111 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:107-111 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:107-111 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:107-111 via rename"
+      }
+    },
+    {
+      "id": 5,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:111-123 unitCostNs",
+      "expected": [
+        "packages/bench/src/index.ts:120-132 unitCostNs"
+      ],
+      "body": 1,
+      "expected_sim": 0.965,
+      "result": "drifted packages/bench/src/index.ts:120-132 via rename",
+      "drift": 1,
+      "token_sim": 0.965,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:111-123",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:120-132 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:120-132 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:120-132 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:120-132 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:120-132 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:120-132 via rename"
+      }
+    },
+    {
+      "id": 6,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:129-133 Machine",
+      "expected": [
+        "packages/bench/src/index.ts:138-142 Machine"
+      ],
+      "body": 1,
+      "expected_sim": 0.8,
+      "result": "drifted packages/bench/src/index.ts:138-142 via rename",
+      "drift": 1,
+      "token_sim": 0.8,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:129-133",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:138-142 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:138-142 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:138-142 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:138-142 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:138-142 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:138-142 via rename"
+      }
+    },
+    {
+      "id": 7,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:135-138 machine",
+      "expected": [
+        "packages/bench/src/index.ts:144-147 machine"
+      ],
+      "body": 1,
+      "expected_sim": 0.939,
+      "result": "drifted packages/bench/src/index.ts:144-147 via rename",
+      "drift": 1,
+      "token_sim": 0.939,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:135-138",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:144-147 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:144-147 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:144-147 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:144-147 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:144-147 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:144-147 via rename"
+      }
+    },
+    {
+      "id": 8,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:155-157 isStrict",
+      "expected": [
+        "packages/bench/src/index.ts:174-176 isStrict"
+      ],
+      "body": 1,
+      "expected_sim": 0.857,
+      "result": "drifted packages/bench/src/index.ts:174-176 via rename",
+      "drift": 1,
+      "token_sim": 0.857,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:155-157",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:174-176 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:174-176 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:174-176 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:174-176 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:174-176 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:174-176 via rename"
+      }
+    },
+    {
+      "id": 9,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:165-183 Measured",
+      "expected": [
+        "packages/bench/src/index.ts:184-202 Measured"
+      ],
+      "body": 1,
+      "expected_sim": 0.938,
+      "result": "drifted packages/bench/src/index.ts:184-202 via rename",
+      "drift": 1,
+      "token_sim": 0.938,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:165-183",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:184-202 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:184-202 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:184-202 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:184-202 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:184-202 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:184-202 via rename"
+      }
+    },
+    {
+      "id": 10,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:185-193 MeasureOptions",
+      "expected": [
+        "packages/bench/src/index.ts:204-225 MeasureOptions"
+      ],
+      "body": 0.875,
+      "expected_sim": 0.833,
+      "result": "drifted packages/bench/src/index.ts:204-211 via rename",
+      "drift": 1,
+      "token_sim": 0.857,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:185-193",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:204-211 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:204-211 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:204-211 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:204-211 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:204-211 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:204-211 via rename"
+      }
+    },
+    {
+      "id": 11,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:203-269 measure",
+      "expected": [
+        "packages/bench/src/index.ts:249-326 measure"
+      ],
+      "body": 0.738,
+      "expected_sim": 0.814,
+      "result": "drifted packages/bench/src/index.ts:246-312 via rename",
+      "drift": 0.781,
+      "token_sim": 0.704,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:203-269",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:246-312 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:246-312 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:246-312 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:246-312 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:246-312 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:246-312 via rename"
+      }
+    },
+    {
+      "id": 12,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:277-332 measureAsync",
+      "expected": [
+        "packages/bench/src/index.ts:344-414 measureAsync"
+      ],
+      "body": 0.493,
+      "expected_sim": 0.692,
+      "result": "drifted packages/bench/src/index.ts:338-405 via rename",
+      "drift": 0.719,
+      "token_sim": 0.639,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:277-332",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:338-405 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:338-405 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:338-405 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:338-405 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:338-405 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:338-405 via rename"
+      }
+    },
+    {
+      "id": 13,
+      "commit": "776b2db",
+      "kind": "renamed_symbol",
+      "from": "scripts/bench-guard.ts:283-287 run",
+      "expected": [
+        "packages/bench/src/index.ts:350-354 timed"
+      ],
+      "body": 0.429,
+      "expected_sim": 0.709,
+      "result": "drifted packages/bench/src/index.ts:350-354 via rename",
+      "drift": 0.594,
+      "token_sim": 0.709,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:283-287",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:350-354 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:350-354 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:350-354 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:350-354 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:350-354 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:350-354 via rename"
+      }
+    },
+    {
+      "id": 14,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:338-340 ms",
+      "expected": [
+        "packages/bench/src/index.ts:420-422 ms"
+      ],
+      "body": 1,
+      "expected_sim": 0.864,
+      "result": "drifted packages/bench/src/index.ts:420-422 via rename",
+      "drift": 1,
+      "token_sim": 0.864,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:338-340",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:420-422 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:420-422 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:420-422 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:420-422 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:420-422 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:420-422 via rename"
+      }
+    },
+    {
+      "id": 15,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:347-390 report",
+      "expected": [
+        "packages/bench/src/index.ts:429-476 report"
+      ],
+      "body": 0.857,
+      "expected_sim": 0.846,
+      "result": "drifted packages/bench/src/index.ts:422-472 via rename",
+      "drift": 0.844,
+      "token_sim": 0.83,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:347-390",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:422-472 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:422-472 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:422-472 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:422-472 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:422-472 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:422-472 via rename"
+      }
+    },
+    {
+      "id": 16,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:392-403 verdictWord",
+      "expected": [
+        "packages/bench/src/index.ts:478-489 verdictWord"
+      ],
+      "body": 1,
+      "expected_sim": 0.97,
+      "result": "drifted packages/bench/src/index.ts:478-489 via rename",
+      "drift": 1,
+      "token_sim": 0.97,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:392-403",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:478-489 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:478-489 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:478-489 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:478-489 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:478-489 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:478-489 via rename"
+      }
+    },
+    {
+      "id": 17,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:414-422 expectWithinBudget",
+      "expected": [
+        "packages/bench/src/index.ts:500-508 expectWithinBudget"
+      ],
+      "body": 1,
+      "expected_sim": 0.984,
+      "result": "drifted packages/bench/src/index.ts:500-508 via rename",
+      "drift": 1,
+      "token_sim": 0.984,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:414-422",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:500-508 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:500-508 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:500-508 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:500-508 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:500-508 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:500-508 via rename"
+      }
+    },
+    {
+      "id": 18,
+      "commit": "776b2db",
+      "kind": "file_renamed",
+      "from": "scripts/bench-guard.ts:430-442 expectAheadOfRival",
+      "expected": [
+        "packages/bench/src/index.ts:540-552 expectAheadOfRival"
+      ],
+      "body": 1,
+      "expected_sim": 0.987,
+      "result": "drifted packages/bench/src/index.ts:540-552 via rename",
+      "drift": 1,
+      "token_sim": 0.987,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-guard.ts:430-442",
+        "stale-index": "correct: drifted packages/bench/src/index.ts:540-552 via rename",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:540-552 via rename",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:540-552 via rename",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:540-552 via rename",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:540-552 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:540-552 via rename"
+      }
+    },
+    {
+      "id": 19,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/prime.cache-latency.test.ts:62-65 percentile",
+      "expected": [
+        "packages/bench/src/index.ts:79-82 percentile"
+      ],
+      "body": 0.143,
+      "expected_sim": 0.661,
+      "result": "drifted packages/bench/src/index.ts:79-81 via symbol",
+      "drift": 0.625,
+      "token_sim": 0.645,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/prime.cache-latency.test.ts:62-65 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/prime.cache-latency.test.ts:62-65 via local",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:79-81 via symbol",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:79-81 via symbol",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:79-81 via symbol",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:79-81 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:79-81 via symbol"
+      }
+    },
+    {
+      "id": 20,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/prime.reach-latency.test.ts:94-97 percentile",
+      "expected": [
+        "packages/bench/src/index.ts:79-82 percentile"
+      ],
+      "body": 0.6,
+      "expected_sim": 0.93,
+      "result": "drifted packages/bench/src/index.ts:79-82 via symbol",
+      "drift": 0.969,
+      "token_sim": 0.93,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/prime.reach-latency.test.ts:94-97 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/prime.reach-latency.test.ts:94-97 via local",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:79-82 via symbol"
+      }
+    },
+    {
+      "id": 21,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/ready.repo-latency.test.ts:116-119 percentile",
+      "expected": [
+        "packages/bench/src/index.ts:79-82 percentile"
+      ],
+      "body": 0.6,
+      "expected_sim": 0.93,
+      "result": "drifted packages/bench/src/index.ts:79-82 via symbol",
+      "drift": 0.969,
+      "token_sim": 0.93,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/ready.repo-latency.test.ts:116-119 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/ready.repo-latency.test.ts:116-119 via local",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:79-82 via symbol"
+      }
+    },
+    {
+      "id": 22,
+      "commit": "776b2db",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 pct",
+      "expected": [],
+      "body": 0.167,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/retrieve.drop-latency.test.ts:80-82 via local"
+      }
+    },
+    {
+      "id": 23,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/store.ts:613-615 isRepoDir",
+      "expected": [
+        "packages/cli/src/commands/wsfind.ts:29-31 isRepoDir"
+      ],
+      "body": 1,
+      "expected_sim": 0.88,
+      "result": "drifted packages/cli/src/commands/wsfind.ts:29-31 via symbol",
+      "drift": 1,
+      "token_sim": 0.88,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/store.ts:613-615 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/store.ts:613-615 via local",
+        "text-0.50": "correct: drifted packages/cli/src/commands/wsfind.ts:29-31 via symbol",
+        "text-0.60": "correct: drifted packages/cli/src/commands/wsfind.ts:29-31 via symbol",
+        "text-0.70": "correct: drifted packages/cli/src/commands/wsfind.ts:29-31 via symbol",
+        "no-code-share": "correct: drifted packages/cli/src/commands/wsfind.ts:29-31 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/commands/wsfind.ts:29-31 via symbol"
+      }
+    },
+    {
+      "id": 24,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/store.ts:623-627 workspaceDirOfDb",
+      "expected": [
+        "packages/cli/src/commands/wsfind.ts:39-43 workspaceDirOfDb"
+      ],
+      "body": 1,
+      "expected_sim": 0.94,
+      "result": "drifted packages/cli/src/commands/wsfind.ts:39-43 via symbol",
+      "drift": 1,
+      "token_sim": 0.94,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/store.ts:623-627 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/store.ts:623-627 via local",
+        "text-0.50": "correct: drifted packages/cli/src/commands/wsfind.ts:39-43 via symbol",
+        "text-0.60": "correct: drifted packages/cli/src/commands/wsfind.ts:39-43 via symbol",
+        "text-0.70": "correct: drifted packages/cli/src/commands/wsfind.ts:39-43 via symbol",
+        "no-code-share": "correct: drifted packages/cli/src/commands/wsfind.ts:39-43 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/commands/wsfind.ts:39-43 via symbol"
+      }
+    },
+    {
+      "id": 25,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/store.ts:629-645 findWorkspaceDb",
+      "expected": [
+        "packages/cli/src/commands/wsfind.ts:50-68 findWorkspaceDb"
+      ],
+      "body": 0.789,
+      "expected_sim": 0.95,
+      "result": "drifted packages/cli/src/commands/wsfind.ts:50-67 via symbol",
+      "drift": 1,
+      "token_sim": 0.95,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/store.ts:629-645 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/store.ts:629-645 via local",
+        "text-0.50": "correct: drifted packages/cli/src/commands/wsfind.ts:50-67 via symbol",
+        "text-0.60": "correct: drifted packages/cli/src/commands/wsfind.ts:50-67 via symbol",
+        "text-0.70": "correct: drifted packages/cli/src/commands/wsfind.ts:50-67 via symbol",
+        "no-code-share": "correct: drifted packages/cli/src/commands/wsfind.ts:50-67 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/commands/wsfind.ts:50-67 via symbol"
+      }
+    },
+    {
+      "id": 26,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/store.ts:827-829 personalHome",
+      "expected": [
+        "packages/cli/src/commands/wsfind.ts:20-22 personalHome"
+      ],
+      "body": 1,
+      "expected_sim": 0.85,
+      "result": "drifted packages/cli/src/commands/wsfind.ts:20-22 via symbol",
+      "drift": 1,
+      "token_sim": 0.85,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/store.ts:827-829 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/store.ts:827-829 via local",
+        "text-0.50": "correct: drifted packages/cli/src/commands/wsfind.ts:20-22 via symbol",
+        "text-0.60": "correct: drifted packages/cli/src/commands/wsfind.ts:20-22 via symbol",
+        "text-0.70": "correct: drifted packages/cli/src/commands/wsfind.ts:20-22 via symbol",
+        "no-code-share": "correct: drifted packages/cli/src/commands/wsfind.ts:20-22 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/commands/wsfind.ts:20-22 via symbol"
+      }
+    },
+    {
+      "id": 27,
+      "commit": "776b2db",
+      "kind": "moved",
+      "from": "scripts/bench-latency.ts:102-105 percentile",
+      "expected": [
+        "packages/bench/src/index.ts:79-82 percentile"
+      ],
+      "body": 1,
+      "expected_sim": 0.947,
+      "result": "drifted packages/bench/src/index.ts:79-82 via symbol",
+      "drift": 1,
+      "token_sim": 0.947,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-latency.ts:102-105 via local",
+        "stale-index": "unresolved: stale scripts/bench-latency.ts:102-105 via local",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:79-82 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:79-82 via symbol"
+      }
+    },
+    {
+      "id": 28,
+      "commit": "776b2db",
+      "kind": "deleted",
+      "from": "scripts/bench-latency.ts:120-129 bench",
+      "expected": [],
+      "body": 0.105,
+      "expected_sim": 0,
+      "result": "lost scripts/bench-latency.ts:120-129 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale scripts/bench-latency.ts:120-129 via local",
+        "stale-index": "kept_unbound: stale scripts/bench-latency.ts:120-129 via local",
+        "text-0.50": "kept_unbound: lost scripts/bench-latency.ts:120-129 via local",
+        "text-0.60": "kept_unbound: lost scripts/bench-latency.ts:120-129 via local",
+        "text-0.70": "kept_unbound: lost scripts/bench-latency.ts:120-129 via local",
+        "no-code-share": "kept_unbound: lost scripts/bench-latency.ts:120-129 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost scripts/bench-latency.ts:120-129 via local"
+      }
+    },
+    {
+      "id": 29,
+      "commit": "776b2db",
+      "kind": "deleted",
+      "from": "scripts/bench-latency.ts:140-143 medianOf",
+      "expected": [],
+      "body": 0.067,
+      "expected_sim": 0,
+      "result": "lost scripts/bench-latency.ts:140-143 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale scripts/bench-latency.ts:140-143 via local",
+        "stale-index": "kept_unbound: stale scripts/bench-latency.ts:140-143 via local",
+        "text-0.50": "plausible: drifted packages/bench/src/index.ts:237-239 via text",
+        "text-0.60": "plausible: drifted packages/bench/src/index.ts:237-239 via text",
+        "text-0.70": "kept_unbound: lost scripts/bench-latency.ts:140-143 via local",
+        "no-code-share": "kept_unbound: lost scripts/bench-latency.ts:140-143 via local",
+        "before-weak-evidence-rules": "plausible: drifted packages/bench/src/index.ts:237-239 via text"
+      }
+    },
+    {
+      "id": 30,
+      "commit": "776b2db",
+      "kind": "deleted",
+      "from": "scripts/bench-latency.ts:402-405 readBaseline",
+      "expected": [],
+      "body": 0.2,
+      "expected_sim": 0,
+      "result": "lost scripts/bench-latency.ts:402-405 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale scripts/bench-latency.ts:402-405 via local",
+        "stale-index": "kept_unbound: stale scripts/bench-latency.ts:402-405 via local",
+        "text-0.50": "kept_unbound: lost scripts/bench-latency.ts:402-405 via local",
+        "text-0.60": "kept_unbound: lost scripts/bench-latency.ts:402-405 via local",
+        "text-0.70": "kept_unbound: lost scripts/bench-latency.ts:402-405 via local",
+        "no-code-share": "kept_unbound: lost scripts/bench-latency.ts:402-405 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost scripts/bench-latency.ts:402-405 via local"
+      }
+    },
+    {
+      "id": 31,
+      "commit": "776b2db",
+      "kind": "renamed_symbol",
+      "from": "scripts/bench-latency.ts:407-409 writeBaseline",
+      "expected": [
+        "scripts/bench-latency.ts:427-429 writeBaselineFile"
+      ],
+      "body": 0.2,
+      "expected_sim": 0.658,
+      "result": "drifted scripts/bench-latency.ts:425-428 via local",
+      "drift": 0.625,
+      "token_sim": 0.615,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "correct: drifted scripts/bench-latency.ts:425-428 via local",
+        "stale-index": "correct: drifted scripts/bench-latency.ts:425-428 via local",
+        "text-0.50": "correct: drifted scripts/bench-latency.ts:425-428 via local",
+        "text-0.60": "correct: drifted scripts/bench-latency.ts:425-428 via local",
+        "text-0.70": "correct: drifted scripts/bench-latency.ts:425-428 via local",
+        "no-code-share": "correct: drifted scripts/bench-latency.ts:425-428 via local",
+        "before-weak-evidence-rules": "correct: drifted scripts/bench-latency.ts:425-428 via local"
+      }
+    },
+    {
+      "id": 32,
+      "commit": "c794b87",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/remember.ts:157-161 AnchorRequest",
+      "expected": [],
+      "body": 0.364,
+      "expected_sim": 0,
+      "result": "drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+      "drift": 0.688,
+      "token_sim": 0.706,
+      "verdict": "plausible",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/remember.ts:157-161 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/remember.ts:157-161 via local",
+        "text-0.50": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+        "text-0.60": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/remember.ts:157-161 via local",
+        "no-code-share": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+        "before-weak-evidence-rules": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text"
+      }
+    },
+    {
+      "id": 33,
+      "commit": "c794b87",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/remember.ts:163-169 parseAnchor",
+      "expected": [],
+      "body": 0.027,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/remember.ts:163-169 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/remember.ts:163-169 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/remember.ts:163-169 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/remember.ts:163-169 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/remember.ts:163-169 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/remember.ts:163-169 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/remember.ts:163-169 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/remember.ts:163-169 via local"
+      }
+    },
+    {
+      "id": 34,
+      "commit": "c794b87",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/tasks.ts:134-138 AnchorRequest",
+      "expected": [],
+      "body": 0.364,
+      "expected_sim": 0,
+      "result": "drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+      "drift": 0.688,
+      "token_sim": 0.706,
+      "verdict": "plausible",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/tasks.ts:134-138 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/tasks.ts:134-138 via local",
+        "text-0.50": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+        "text-0.60": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/tasks.ts:134-138 via local",
+        "no-code-share": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text",
+        "before-weak-evidence-rules": "plausible: drifted packages/cli/src/commands/anchor.ts:192-195 via text"
+      }
+    },
+    {
+      "id": 35,
+      "commit": "c794b87",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/tasks.ts:140-146 parseAnchor",
+      "expected": [],
+      "body": 0.027,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/tasks.ts:140-146 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/tasks.ts:140-146 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/tasks.ts:140-146 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/tasks.ts:140-146 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/tasks.ts:140-146 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/tasks.ts:140-146 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/tasks.ts:140-146 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/tasks.ts:140-146 via local"
+      }
+    },
+    {
+      "id": 36,
+      "commit": "c794b87",
+      "kind": "renamed_symbol",
+      "from": "packages/store-sqlite/src/schema-parity.test.ts:38-42 Obj",
+      "expected": [
+        "packages/store-sqlite/src/schema-diff.ts:19-23 SchemaObject"
+      ],
+      "body": 0.667,
+      "expected_sim": 0.778,
+      "result": "lost packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "unresolved",
+      "others": {
+        "no-step3": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+        "stale-index": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+        "text-0.50": "unresolved: lost packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+        "text-0.60": "unresolved: lost packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+        "text-0.70": "unresolved: lost packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+        "no-code-share": "unresolved: lost packages/store-sqlite/src/schema-parity.test.ts:38-42 via local",
+        "before-weak-evidence-rules": "unresolved: lost packages/store-sqlite/src/schema-parity.test.ts:38-42 via local"
+      }
+    },
+    {
+      "id": 37,
+      "commit": "c794b87",
+      "kind": "renamed_symbol",
+      "from": "packages/store-sqlite/src/schema-parity.test.ts:45-47 normalize",
+      "expected": [
+        "packages/store-sqlite/src/schema-diff.ts:30-32 normalizeDdl"
+      ],
+      "body": 0.5,
+      "expected_sim": 0.913,
+      "result": "drifted packages/store-sqlite/src/schema-diff.ts:30-32 via text",
+      "drift": 0.813,
+      "token_sim": 0.913,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:45-47 via local",
+        "stale-index": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:45-47 via local",
+        "text-0.50": "correct: drifted packages/store-sqlite/src/schema-diff.ts:30-32 via text",
+        "text-0.60": "correct: drifted packages/store-sqlite/src/schema-diff.ts:30-32 via text",
+        "text-0.70": "correct: drifted packages/store-sqlite/src/schema-diff.ts:30-32 via text",
+        "no-code-share": "correct: drifted packages/store-sqlite/src/schema-diff.ts:30-32 via text",
+        "before-weak-evidence-rules": "correct: drifted packages/store-sqlite/src/schema-diff.ts:30-32 via text"
+      }
+    },
+    {
+      "id": 38,
+      "commit": "c794b87",
+      "kind": "renamed_symbol",
+      "from": "packages/store-sqlite/src/schema-parity.test.ts:61-68 objects",
+      "expected": [
+        "packages/store-sqlite/src/schema-diff.ts:38-45 schemaObjects"
+      ],
+      "body": 0.6,
+      "expected_sim": 0.871,
+      "result": "drifted packages/store-sqlite/src/schema-diff.ts:38-45 via text",
+      "drift": 0.688,
+      "token_sim": 0.871,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:61-68 via local",
+        "stale-index": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:61-68 via local",
+        "text-0.50": "correct: drifted packages/store-sqlite/src/schema-diff.ts:38-45 via text",
+        "text-0.60": "correct: drifted packages/store-sqlite/src/schema-diff.ts:38-45 via text",
+        "text-0.70": "unresolved: lost packages/store-sqlite/src/schema-parity.test.ts:61-68 via local",
+        "no-code-share": "correct: drifted packages/store-sqlite/src/schema-diff.ts:38-45 via text",
+        "before-weak-evidence-rules": "correct: drifted packages/store-sqlite/src/schema-diff.ts:38-45 via text"
+      }
+    },
+    {
+      "id": 39,
+      "commit": "c794b87",
+      "kind": "renamed_symbol",
+      "from": "packages/store-sqlite/src/schema-parity.test.ts:70-75 columns",
+      "expected": [
+        "packages/store-sqlite/src/schema-diff.ts:48-53 tableColumns"
+      ],
+      "body": 0.714,
+      "expected_sim": 0.938,
+      "result": "drifted packages/store-sqlite/src/schema-diff.ts:48-53 via text",
+      "drift": 0.781,
+      "token_sim": 0.938,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:70-75 via local",
+        "stale-index": "unresolved: stale packages/store-sqlite/src/schema-parity.test.ts:70-75 via local",
+        "text-0.50": "correct: drifted packages/store-sqlite/src/schema-diff.ts:48-53 via text",
+        "text-0.60": "correct: drifted packages/store-sqlite/src/schema-diff.ts:48-53 via text",
+        "text-0.70": "correct: drifted packages/store-sqlite/src/schema-diff.ts:48-53 via text",
+        "no-code-share": "correct: drifted packages/store-sqlite/src/schema-diff.ts:48-53 via text",
+        "before-weak-evidence-rules": "correct: drifted packages/store-sqlite/src/schema-diff.ts:48-53 via text"
+      }
+    },
+    {
+      "id": 40,
+      "commit": "e9f3ac2",
+      "kind": "deleted",
+      "from": "site/build.ts:36-39 headCommit",
+      "expected": [],
+      "body": 0.2,
+      "expected_sim": 0,
+      "result": "lost site/build.ts:36-39 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale site/build.ts:36-39 via local",
+        "stale-index": "kept_unbound: stale site/build.ts:36-39 via local",
+        "text-0.50": "kept_unbound: lost site/build.ts:36-39 via local",
+        "text-0.60": "kept_unbound: lost site/build.ts:36-39 via local",
+        "text-0.70": "kept_unbound: lost site/build.ts:36-39 via local",
+        "no-code-share": "kept_unbound: lost site/build.ts:36-39 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost site/build.ts:36-39 via local"
+      }
+    },
+    {
+      "id": 41,
+      "commit": "a9982e7",
+      "kind": "deleted",
+      "from": "packages/cli/src/hooks/templates.ts:155-206 codexNotify",
+      "expected": [],
+      "body": 0.051,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/hooks/templates.ts:155-206 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/hooks/templates.ts:155-206 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/hooks/templates.ts:155-206 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/hooks/templates.ts:155-206 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/hooks/templates.ts:155-206 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/hooks/templates.ts:155-206 via local",
+        "no-code-share": "false_bind: drifted packages/cli/src/hooks/templates.ts:189-250 via local",
+        "before-weak-evidence-rules": "false_bind: drifted packages/cli/src/hooks/templates.ts:189-250 via local"
+      }
+    },
+    {
+      "id": 42,
+      "commit": "6c7b22c",
+      "kind": "moved",
+      "from": "packages/code-intel/src/code_index.ts:165-169 langOf",
+      "expected": [
+        "packages/code-intel/src/langs.ts:52-56 langOf"
+      ],
+      "body": 1,
+      "expected_sim": 0.952,
+      "result": "drifted packages/code-intel/src/langs.ts:52-56 via symbol",
+      "drift": 1,
+      "token_sim": 0.952,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/code_index.ts:165-169 via local",
+        "stale-index": "unresolved: stale packages/code-intel/src/code_index.ts:165-169 via local",
+        "text-0.50": "correct: drifted packages/code-intel/src/langs.ts:52-56 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/langs.ts:52-56 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/langs.ts:52-56 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/langs.ts:52-56 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/langs.ts:52-56 via symbol"
+      }
+    },
+    {
+      "id": 43,
+      "commit": "6c7b22c",
+      "kind": "moved",
+      "from": "packages/code-intel/src/code_index.ts:175-197 walkFiles",
+      "expected": [
+        "packages/code-intel/src/langs.ts:59-81 walkFiles"
+      ],
+      "body": 0.9,
+      "expected_sim": 0.967,
+      "result": "drifted packages/code-intel/src/langs.ts:59-81 via symbol",
+      "drift": 1,
+      "token_sim": 0.967,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/code_index.ts:175-197 via local",
+        "stale-index": "unresolved: stale packages/code-intel/src/code_index.ts:175-197 via local",
+        "text-0.50": "correct: drifted packages/code-intel/src/langs.ts:59-81 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/langs.ts:59-81 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/langs.ts:59-81 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/langs.ts:59-81 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/langs.ts:59-81 via symbol"
+      }
+    },
+    {
+      "id": 44,
+      "commit": "bcb7d83",
+      "kind": "deleted",
+      "from": "packages/cli/src/hooks/absorb-session.ts:153-157 mycDirOf",
+      "expected": [],
+      "body": 0.077,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/hooks/absorb-session.ts:153-157 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/hooks/absorb-session.ts:153-157 via local"
+      }
+    },
+    {
+      "id": 45,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:8-13 Def",
+      "expected": [
+        "packages/code-intel/src/symbols.ts:54-59 Def"
+      ],
+      "body": 1,
+      "expected_sim": 0.857,
+      "result": "drifted packages/code-intel/src/symbols.ts:54-59 via symbol",
+      "drift": 1,
+      "token_sim": 0.857,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:8-13",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:8-13",
+        "text-0.50": "correct: drifted packages/code-intel/src/symbols.ts:54-59 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/symbols.ts:54-59 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/symbols.ts:54-59 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/symbols.ts:54-59 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/symbols.ts:54-59 via symbol"
+      }
+    },
+    {
+      "id": 46,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:15-19 DefsOptions",
+      "expected": [
+        "packages/code-intel/src/symbols.ts:61-68 DefsOptions"
+      ],
+      "body": 0.6,
+      "expected_sim": 0.5,
+      "result": "drifted packages/code-intel/src/lex.ts:15-20 via text",
+      "drift": 0.813,
+      "token_sim": 0.688,
+      "verdict": "wrong",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:15-19",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:15-19",
+        "text-0.50": "wrong: drifted packages/code-intel/src/lex.ts:15-20 via text",
+        "text-0.60": "wrong: drifted packages/code-intel/src/lex.ts:15-20 via text",
+        "text-0.70": "wrong: drifted packages/code-intel/src/lex.ts:15-20 via text",
+        "no-code-share": "wrong: drifted packages/code-intel/src/lex.ts:15-20 via text",
+        "before-weak-evidence-rules": "wrong: drifted packages/code-intel/src/lex.ts:15-20 via text"
+      }
+    },
+    {
+      "id": 47,
+      "commit": "bcb7d83",
+      "kind": "deleted",
+      "from": "packages/code-intel/src/defs.ts:24-28 DefRule",
+      "expected": [],
+      "body": 0.222,
+      "expected_sim": 0,
+      "result": "lost packages/code-intel/src/defs.ts:24-28",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/code-intel/src/defs.ts:24-28",
+        "stale-index": "kept_unbound: stale packages/code-intel/src/defs.ts:24-28",
+        "text-0.50": "kept_unbound: lost packages/code-intel/src/defs.ts:24-28",
+        "text-0.60": "kept_unbound: lost packages/code-intel/src/defs.ts:24-28",
+        "text-0.70": "kept_unbound: lost packages/code-intel/src/defs.ts:24-28",
+        "no-code-share": "kept_unbound: lost packages/code-intel/src/defs.ts:24-28",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/code-intel/src/defs.ts:24-28"
+      }
+    },
+    {
+      "id": 48,
+      "commit": "bcb7d83",
+      "kind": "deleted",
+      "from": "packages/code-intel/src/defs.ts:30-34 rule",
+      "expected": [],
+      "body": 0.167,
+      "expected_sim": 0,
+      "result": "lost packages/code-intel/src/defs.ts:30-34",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/code-intel/src/defs.ts:30-34",
+        "stale-index": "kept_unbound: stale packages/code-intel/src/defs.ts:30-34",
+        "text-0.50": "kept_unbound: lost packages/code-intel/src/defs.ts:30-34",
+        "text-0.60": "kept_unbound: lost packages/code-intel/src/defs.ts:30-34",
+        "text-0.70": "kept_unbound: lost packages/code-intel/src/defs.ts:30-34",
+        "no-code-share": "kept_unbound: lost packages/code-intel/src/defs.ts:30-34",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/code-intel/src/defs.ts:30-34"
+      }
+    },
+    {
+      "id": 49,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:154-158 Mask",
+      "expected": [
+        "packages/code-intel/src/lex.ts:41-45 Mask"
+      ],
+      "body": 0.667,
+      "expected_sim": 0.765,
+      "result": "drifted packages/code-intel/src/lex.ts:41-45 via symbol",
+      "drift": 0.938,
+      "token_sim": 0.765,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:154-158",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:154-158",
+        "text-0.50": "correct: drifted packages/code-intel/src/lex.ts:41-45 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/lex.ts:41-45 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/lex.ts:41-45 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/lex.ts:41-45 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/lex.ts:41-45 via symbol"
+      }
+    },
+    {
+      "id": 50,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:160-181 regexAllowedBefore",
+      "expected": [
+        "packages/code-intel/src/lex.ts:47-68 regexAllowedBefore"
+      ],
+      "body": 1,
+      "expected_sim": 0.982,
+      "result": "drifted packages/code-intel/src/lex.ts:47-68 via symbol",
+      "drift": 1,
+      "token_sim": 0.982,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:160-181",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:160-181",
+        "text-0.50": "correct: drifted packages/code-intel/src/lex.ts:47-68 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/lex.ts:47-68 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/lex.ts:47-68 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/lex.ts:47-68 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/lex.ts:47-68 via symbol"
+      }
+    },
+    {
+      "id": 51,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:183-185 classifyCode",
+      "expected": [
+        "packages/code-intel/src/lex.ts:70-72 classifyCode"
+      ],
+      "body": 0.5,
+      "expected_sim": 0.741,
+      "result": "drifted packages/code-intel/src/lex.ts:70-72 via symbol",
+      "drift": 0.844,
+      "token_sim": 0.741,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:183-185",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:183-185",
+        "text-0.50": "correct: drifted packages/code-intel/src/lex.ts:70-72 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/lex.ts:70-72 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/lex.ts:70-72 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/lex.ts:70-72 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/lex.ts:70-72 via symbol"
+      }
+    },
+    {
+      "id": 52,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:187-342 classify",
+      "expected": [
+        "packages/code-intel/src/lex.ts:74-229 classify"
+      ],
+      "body": 0.973,
+      "expected_sim": 0.977,
+      "result": "drifted packages/code-intel/src/lex.ts:74-229 via symbol",
+      "drift": 1,
+      "token_sim": 0.977,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:187-342",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:187-342",
+        "text-0.50": "correct: drifted packages/code-intel/src/lex.ts:74-229 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/lex.ts:74-229 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/lex.ts:74-229 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/lex.ts:74-229 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/lex.ts:74-229 via symbol"
+      }
+    },
+    {
+      "id": 53,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:194-199 markCode",
+      "expected": [
+        "packages/code-intel/src/lex.ts:81-86 markCode"
+      ],
+      "body": 1,
+      "expected_sim": 0.94,
+      "result": "drifted packages/code-intel/src/lex.ts:81-86 via symbol",
+      "drift": 1,
+      "token_sim": 0.94,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:194-199",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:194-199",
+        "text-0.50": "correct: drifted packages/code-intel/src/lex.ts:81-86 via symbol",
+        "text-0.60": "correct: drifted packages/code-intel/src/lex.ts:81-86 via symbol",
+        "text-0.70": "correct: drifted packages/code-intel/src/lex.ts:81-86 via symbol",
+        "no-code-share": "correct: drifted packages/code-intel/src/lex.ts:81-86 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/lex.ts:81-86 via symbol"
+      }
+    },
+    {
+      "id": 54,
+      "commit": "bcb7d83",
+      "kind": "deleted",
+      "from": "packages/code-intel/src/defs.ts:344-354 inExpressionPosition",
+      "expected": [],
+      "body": 0.167,
+      "expected_sim": 0,
+      "result": "lost packages/code-intel/src/defs.ts:344-354",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/code-intel/src/defs.ts:344-354",
+        "stale-index": "kept_unbound: stale packages/code-intel/src/defs.ts:344-354",
+        "text-0.50": "kept_unbound: lost packages/code-intel/src/defs.ts:344-354",
+        "text-0.60": "kept_unbound: lost packages/code-intel/src/defs.ts:344-354",
+        "text-0.70": "kept_unbound: lost packages/code-intel/src/defs.ts:344-354",
+        "no-code-share": "kept_unbound: lost packages/code-intel/src/defs.ts:344-354",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/code-intel/src/defs.ts:344-354"
+      }
+    },
+    {
+      "id": 55,
+      "commit": "bcb7d83",
+      "kind": "deleted",
+      "from": "packages/code-intel/src/defs.ts:356-365 lineAt",
+      "expected": [],
+      "body": 0.071,
+      "expected_sim": 0,
+      "result": "lost packages/code-intel/src/defs.ts:356-365",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/code-intel/src/defs.ts:356-365",
+        "stale-index": "kept_unbound: stale packages/code-intel/src/defs.ts:356-365",
+        "text-0.50": "kept_unbound: lost packages/code-intel/src/defs.ts:356-365",
+        "text-0.60": "kept_unbound: lost packages/code-intel/src/defs.ts:356-365",
+        "text-0.70": "kept_unbound: lost packages/code-intel/src/defs.ts:356-365",
+        "no-code-share": "kept_unbound: lost packages/code-intel/src/defs.ts:356-365",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/code-intel/src/defs.ts:356-365"
+      }
+    },
+    {
+      "id": 56,
+      "commit": "bcb7d83",
+      "kind": "deleted",
+      "from": "packages/code-intel/src/defs.ts:367-381 balanceEnd",
+      "expected": [],
+      "body": 0.1,
+      "expected_sim": 0,
+      "result": "lost packages/code-intel/src/defs.ts:367-381",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/code-intel/src/defs.ts:367-381",
+        "stale-index": "kept_unbound: stale packages/code-intel/src/defs.ts:367-381",
+        "text-0.50": "kept_unbound: lost packages/code-intel/src/defs.ts:367-381",
+        "text-0.60": "kept_unbound: lost packages/code-intel/src/defs.ts:367-381",
+        "text-0.70": "kept_unbound: lost packages/code-intel/src/defs.ts:367-381",
+        "no-code-share": "kept_unbound: lost packages/code-intel/src/defs.ts:367-381",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/code-intel/src/defs.ts:367-381"
+      }
+    },
+    {
+      "id": 57,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:658-699 listDefs",
+      "expected": [
+        "packages/code-intel/src/symbols.ts:282-313 listDefs"
+      ],
+      "body": 0.071,
+      "expected_sim": 0.193,
+      "result": "lost packages/code-intel/src/defs.ts:658-699",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "unresolved",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:658-699",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:658-699",
+        "text-0.50": "unresolved: lost packages/code-intel/src/defs.ts:658-699",
+        "text-0.60": "unresolved: lost packages/code-intel/src/defs.ts:658-699",
+        "text-0.70": "unresolved: lost packages/code-intel/src/defs.ts:658-699",
+        "no-code-share": "unresolved: lost packages/code-intel/src/defs.ts:658-699",
+        "before-weak-evidence-rules": "unresolved: lost packages/code-intel/src/defs.ts:658-699"
+      }
+    },
+    {
+      "id": 58,
+      "commit": "bcb7d83",
+      "kind": "moved",
+      "from": "packages/code-intel/src/defs.ts:701-718 findBlockEnd",
+      "expected": [
+        "packages/code-intel/src/symbols.ts:331-364 findBlockEnd"
+      ],
+      "body": 0.051,
+      "expected_sim": 0.152,
+      "result": "lost packages/code-intel/src/defs.ts:701-718",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "unresolved",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.ts:701-718",
+        "stale-index": "unresolved: stale packages/code-intel/src/defs.ts:701-718",
+        "text-0.50": "unresolved: lost packages/code-intel/src/defs.ts:701-718",
+        "text-0.60": "unresolved: lost packages/code-intel/src/defs.ts:701-718",
+        "text-0.70": "unresolved: lost packages/code-intel/src/defs.ts:701-718",
+        "no-code-share": "unresolved: lost packages/code-intel/src/defs.ts:701-718",
+        "before-weak-evidence-rules": "unresolved: lost packages/code-intel/src/defs.ts:701-718"
+      }
+    },
+    {
+      "id": 59,
+      "commit": "bcb7d83",
+      "kind": "file_renamed",
+      "from": "packages/code-intel/src/defs.test.ts:6-11 spanOf",
+      "expected": [
+        "packages/code-intel/src/symbols.test.ts:30-35 spanOf"
+      ],
+      "body": 1,
+      "expected_sim": 0.955,
+      "result": "drifted packages/code-intel/src/symbols.test.ts:30-35 via rename",
+      "drift": 1,
+      "token_sim": 0.955,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/code-intel/src/defs.test.ts:6-11",
+        "stale-index": "correct: drifted packages/code-intel/src/symbols.test.ts:30-35 via rename",
+        "text-0.50": "correct: drifted packages/code-intel/src/symbols.test.ts:30-35 via rename",
+        "text-0.60": "correct: drifted packages/code-intel/src/symbols.test.ts:30-35 via rename",
+        "text-0.70": "correct: drifted packages/code-intel/src/symbols.test.ts:30-35 via rename",
+        "no-code-share": "correct: drifted packages/code-intel/src/symbols.test.ts:30-35 via rename",
+        "before-weak-evidence-rules": "correct: drifted packages/code-intel/src/symbols.test.ts:30-35 via rename"
+      }
+    },
+    {
+      "id": 60,
+      "commit": "68ccb9b",
+      "kind": "deleted",
+      "from": "packages/code-intel/src/symbols.ts:195-211 grammarDir",
+      "expected": [],
+      "body": 0.471,
+      "expected_sim": 0,
+      "result": "lost packages/code-intel/src/symbols.ts:195-211 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/code-intel/src/symbols.ts:195-211 via local",
+        "stale-index": "kept_unbound: stale packages/code-intel/src/symbols.ts:195-211 via local",
+        "text-0.50": "false_bind: drifted packages/code-intel/src/grammars.ts:160-182 via text",
+        "text-0.60": "kept_unbound: lost packages/code-intel/src/symbols.ts:195-211 via local",
+        "text-0.70": "kept_unbound: lost packages/code-intel/src/symbols.ts:195-211 via local",
+        "no-code-share": "kept_unbound: lost packages/code-intel/src/symbols.ts:195-211 via local",
+        "before-weak-evidence-rules": "false_bind: drifted packages/code-intel/src/grammars.ts:160-182 via text"
+      }
+    },
+    {
+      "id": 61,
+      "commit": "5e0f28f",
+      "kind": "moved",
+      "from": "packages/cli/src/hooks/absorb-session.ts:300-304 hookJson",
+      "expected": [
+        "packages/cli/src/hooks/hook-output.ts:47-56 hookJson"
+      ],
+      "body": 0.25,
+      "expected_sim": 0.388,
+      "result": "drifted packages/cli/src/hooks/hook-output.ts:51-53 via symbol",
+      "drift": 0.594,
+      "token_sim": 0.55,
+      "verdict": "right_file",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/hooks/absorb-session.ts:300-304 via local",
+        "stale-index": "unresolved: stale packages/cli/src/hooks/absorb-session.ts:300-304 via local",
+        "text-0.50": "right_file: drifted packages/cli/src/hooks/hook-output.ts:51-53 via symbol",
+        "text-0.60": "right_file: drifted packages/cli/src/hooks/hook-output.ts:51-53 via symbol",
+        "text-0.70": "right_file: drifted packages/cli/src/hooks/hook-output.ts:51-53 via symbol",
+        "no-code-share": "right_file: drifted packages/cli/src/hooks/hook-output.ts:51-53 via symbol",
+        "before-weak-evidence-rules": "right_file: drifted packages/cli/src/hooks/hook-output.ts:51-53 via symbol"
+      }
+    },
+    {
+      "id": 62,
+      "commit": "27bd018",
+      "kind": "renamed_symbol",
+      "from": "packages/cli/src/commands/wire.ts:227-234 hookEntry",
+      "expected": [
+        "packages/cli/src/commands/wire.ts:233-240 claudeHookEntry"
+      ],
+      "body": 1,
+      "expected_sim": 0.969,
+      "result": "drifted packages/cli/src/commands/wire.ts:231-239 via local",
+      "drift": 0.938,
+      "token_sim": 0.948,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local",
+        "stale-index": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local",
+        "text-0.50": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local",
+        "text-0.60": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local",
+        "text-0.70": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local",
+        "no-code-share": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/commands/wire.ts:231-239 via local"
+      }
+    },
+    {
+      "id": 63,
+      "commit": "c139470",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/_mut3probe.ts:31-37 ws",
+      "expected": [],
+      "body": 0.071,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/_mut3probe.ts:31-37",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/_mut3probe.ts:31-37",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/_mut3probe.ts:31-37",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/_mut3probe.ts:31-37",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/_mut3probe.ts:31-37",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/_mut3probe.ts:31-37",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/_mut3probe.ts:31-37",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/_mut3probe.ts:31-37"
+      }
+    },
+    {
+      "id": 64,
+      "commit": "c1133df",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/init.ts:127-134 mycGitignoreContent",
+      "expected": [
+        "packages/cli/src/myc-gitignore.ts:38-45 mycGitignoreContent"
+      ],
+      "body": 1,
+      "expected_sim": 0.948,
+      "result": "drifted packages/cli/src/myc-gitignore.ts:38-45 via symbol",
+      "drift": 1,
+      "token_sim": 0.948,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/init.ts:127-134 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/init.ts:127-134 via local",
+        "text-0.50": "correct: drifted packages/cli/src/myc-gitignore.ts:38-45 via symbol",
+        "text-0.60": "correct: drifted packages/cli/src/myc-gitignore.ts:38-45 via symbol",
+        "text-0.70": "correct: drifted packages/cli/src/myc-gitignore.ts:38-45 via symbol",
+        "no-code-share": "correct: drifted packages/cli/src/myc-gitignore.ts:38-45 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/myc-gitignore.ts:38-45 via symbol"
+      }
+    },
+    {
+      "id": 65,
+      "commit": "c1133df",
+      "kind": "moved",
+      "from": "packages/cli/src/commands/init.ts:142-158 ensureMycGitignore",
+      "expected": [
+        "packages/cli/src/myc-gitignore.ts:55-71 ensureMycGitignore"
+      ],
+      "body": 0.778,
+      "expected_sim": 0.862,
+      "result": "drifted packages/cli/src/myc-gitignore.ts:55-67 via symbol",
+      "drift": 0.938,
+      "token_sim": 0.718,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale packages/cli/src/commands/init.ts:142-158 via local",
+        "stale-index": "unresolved: stale packages/cli/src/commands/init.ts:142-158 via local",
+        "text-0.50": "correct: drifted packages/cli/src/myc-gitignore.ts:55-67 via symbol",
+        "text-0.60": "correct: drifted packages/cli/src/myc-gitignore.ts:55-67 via symbol",
+        "text-0.70": "correct: drifted packages/cli/src/myc-gitignore.ts:55-67 via symbol",
+        "no-code-share": "correct: drifted packages/cli/src/myc-gitignore.ts:55-67 via symbol",
+        "before-weak-evidence-rules": "correct: drifted packages/cli/src/myc-gitignore.ts:55-67 via symbol"
+      }
+    },
+    {
+      "id": 66,
+      "commit": "4caa93f",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/anchor.ts:183-187 repoRelative",
+      "expected": [],
+      "body": 0.143,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/anchor.ts:183-187 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/anchor.ts:183-187 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/anchor.ts:183-187 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/anchor.ts:183-187 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/anchor.ts:183-187 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/anchor.ts:183-187 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/anchor.ts:183-187 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/anchor.ts:183-187 via local"
+      }
+    },
+    {
+      "id": 67,
+      "commit": "4caa93f",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/anchor.ts:201-203 mainCwdOf",
+      "expected": [],
+      "body": 0.143,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/anchor.ts:201-203 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/anchor.ts:201-203 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/anchor.ts:201-203 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/anchor.ts:201-203 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/anchor.ts:201-203 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/anchor.ts:201-203 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/anchor.ts:201-203 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/anchor.ts:201-203 via local"
+      }
+    },
+    {
+      "id": 68,
+      "commit": "4caa93f",
+      "kind": "deleted",
+      "from": "packages/cli/src/commands/anchor.ts:205-207 mainCwd",
+      "expected": [],
+      "body": 0.2,
+      "expected_sim": 0,
+      "result": "lost packages/cli/src/commands/anchor.ts:205-207 via local",
+      "drift": 0,
+      "token_sim": 0,
+      "verdict": "kept_unbound",
+      "others": {
+        "no-step3": "kept_unbound: stale packages/cli/src/commands/anchor.ts:205-207 via local",
+        "stale-index": "kept_unbound: stale packages/cli/src/commands/anchor.ts:205-207 via local",
+        "text-0.50": "kept_unbound: lost packages/cli/src/commands/anchor.ts:205-207 via local",
+        "text-0.60": "kept_unbound: lost packages/cli/src/commands/anchor.ts:205-207 via local",
+        "text-0.70": "kept_unbound: lost packages/cli/src/commands/anchor.ts:205-207 via local",
+        "no-code-share": "kept_unbound: lost packages/cli/src/commands/anchor.ts:205-207 via local",
+        "before-weak-evidence-rules": "kept_unbound: lost packages/cli/src/commands/anchor.ts:205-207 via local"
+      }
+    },
+    {
+      "id": 69,
+      "commit": "1e41c0b",
+      "kind": "moved",
+      "from": "scripts/bench-nightly.ts:51-55 spin",
+      "expected": [
+        "packages/core/src/secrets.test.ts:388-390 spin",
+        "packages/store-sqlite/src/cycle.latency.test.ts:105-107 spin",
+        "packages/store-sqlite/src/queries.test.ts:883-885 spin"
+      ],
+      "body": 0.143,
+      "expected_sim": 0.615,
+      "result": "drifted packages/bench/src/index.ts:108-112 via symbol",
+      "drift": 1,
+      "token_sim": 0.936,
+      "verdict": "copy",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-nightly.ts:51-55 via local",
+        "stale-index": "unresolved: stale scripts/bench-nightly.ts:51-55 via local",
+        "text-0.50": "copy: drifted packages/bench/src/index.ts:108-112 via symbol",
+        "text-0.60": "copy: drifted packages/bench/src/index.ts:108-112 via symbol",
+        "text-0.70": "copy: drifted packages/bench/src/index.ts:108-112 via symbol",
+        "no-code-share": "copy: drifted packages/bench/src/index.ts:108-112 via symbol",
+        "before-weak-evidence-rules": "copy: drifted packages/bench/src/index.ts:108-112 via symbol"
+      }
+    },
+    {
+      "id": 70,
+      "commit": "1e41c0b",
+      "kind": "renamed_symbol",
+      "from": "scripts/bench-nightly.ts:63-82 readiness",
+      "expected": [
+        "packages/bench/src/index.ts:226-245 probeJitter"
+      ],
+      "body": 0.7,
+      "expected_sim": 0.862,
+      "result": "drifted packages/bench/src/index.ts:227-245 via text",
+      "drift": 0.844,
+      "token_sim": 0.882,
+      "verdict": "correct",
+      "others": {
+        "no-step3": "unresolved: stale scripts/bench-nightly.ts:63-82 via local",
+        "stale-index": "unresolved: stale scripts/bench-nightly.ts:63-82 via local",
+        "text-0.50": "correct: drifted packages/bench/src/index.ts:227-245 via text",
+        "text-0.60": "correct: drifted packages/bench/src/index.ts:227-245 via text",
+        "text-0.70": "correct: drifted packages/bench/src/index.ts:227-245 via text",
+        "no-code-share": "correct: drifted packages/bench/src/index.ts:227-245 via text",
+        "before-weak-evidence-rules": "correct: drifted packages/bench/src/index.ts:227-245 via text"
+      }
+    }
+  ]
+}

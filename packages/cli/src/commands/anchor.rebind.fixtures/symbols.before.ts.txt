@@ -1,0 +1,52 @@
+function runtimeDir(): string {
+  const fromEnv = process.env.MYC_TREE_SITTER_DIR;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  try {
+    const pkgJson = Bun.resolveSync(
+      "web-tree-sitter/package.json",
+      dirname(fileURLToPath(import.meta.url)),
+    );
+    return dirname(pkgJson);
+  } catch {
+    throw new Error(
+      "рантайм tree-sitter не найден: пакета web-tree-sitter нет рядом с @myc/code-intel. " +
+        "Укажите каталог с tree-sitter.wasm в MYC_TREE_SITTER_DIR " +
+        "или установите зависимости (bun install)",
+    );
+  }
+}
+
+/**
+ * Каталог с .wasm грамматик.
+ *
+ * `MYC_TREE_SITTER_GRAMMAR_DIR` — не отладочный крючок, а тот же приём, что у
+ * `MYC_ORT_WASM_DIR` в эмбеддере: в собранном бинаре node_modules нет, и
+ * грамматики придут откуда-то ещё. Пока их туда никто не кладёт (это
+ * memory-be3k1np40sag, грамматики по требованию), и здесь важно только одно —
+ * чтобы отсутствие каталога называло себя, а не разваливалось стеком резолвера.
+ *
+ * Через эту же переменную главный поток передаёт путь ВОРКЕРУ пула: искать
+ * заново за границей потока он не может и не должен (`treeSitterDirs`).
+ */
+function grammarDir(): string {
+  const fromEnv = process.env.MYC_TREE_SITTER_GRAMMAR_DIR;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  try {
+    const pkgJson = Bun.resolveSync(
+      "tree-sitter-wasms/package.json",
+      dirname(fileURLToPath(import.meta.url)),
+    );
+    return join(dirname(pkgJson), "out");
+  } catch {
+    throw new Error(
+      "грамматики tree-sitter не найдены: пакета tree-sitter-wasms нет рядом с @myc/code-intel. " +
+        "Укажите каталог с файлами tree-sitter-<язык>.wasm в MYC_TREE_SITTER_GRAMMAR_DIR " +
+        "или установите зависимости (bun install)",
+    );
+  }
+}
+
+/** Путь к .wasm грамматики языка — он же аргумент для загрузки по требованию. */
+export function grammarPath(lang: LangId): string {
+  return join(grammarDir(), `tree-sitter-${LANG_RULES[lang].grammar}.wasm`);
+}

@@ -24,11 +24,13 @@
  *   add   — запись: узел, ребро и строка якоря.
  *   check — фон: лестница §7.2 по батчу.
  *
- * ЧЕГО ЗДЕСЬ НЕТ. `myc anchor repair` (нечёткая ре-привязка winnowing и
- * запрос к graft, §7.3 шаги 2–3) — задача memory-5c03r9t5n472. Пока её нет,
- * `check` честно оставляет ненайденный текст в `stale` и НЕ выдумывает
- * `drifted`: состояние `drifted` означает «нашли в другом месте с известным
- * сходством», и ставить его без меры сходства значило бы врать числом.
+ * РЕ-ПРИВЯЗКА §7.3 (memory-5c03r9t5n472) — внутри `check`, то есть только в
+ * фоне и по ручному вызову. Ступени 1–2 (точный crux, окно по отпечатку в том
+ * же файле) делает `checkAnchor`, ступень 3 (код уехал в ДРУГОЙ файл) —
+ * `rebindElsewhere` по встроенному код-индексу вместо graft. `drifted` ставится
+ * только с мерой сходства (`drift`), переезд между файлами печатается
+ * «откуда → куда» и остаётся в `attrs.moved` узла якоря, а `stale`/`lost`
+ * помечают входящие рёбра `touches` флагом `attrs.suspect`.
  */
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
@@ -74,6 +76,11 @@ async function heavy(): Promise<typeof import("./store.ts")> {
 
 async function engine(): Promise<typeof import("@myc/code-intel/anchors")> {
   return import("@myc/code-intel/anchors");
+}
+
+/** Ступень 3 §7.3 — только `check` и фон; горячим путям этот граф модулей не нужен. */
+async function rebinder(): Promise<typeof import("@myc/code-intel/rebind")> {
+  return import("@myc/code-intel/rebind");
 }
 
 /** Батч пере-проверки за один прогон (§7.5). Дублировать нельзя — только читать. */
@@ -531,6 +538,8 @@ interface AnchorRow {
   span_hash: string;
   crux: string;
   crux_norm: string;
+  /** Отпечаток §7.1, 32×u32 LE; null — якорь поставлен до того, как его начали считать. */
+  fp: Uint8Array | null;
   state: string;
   drift: number;
   mtime_ms: number;
@@ -540,7 +549,10 @@ interface AnchorRow {
   git_ref: string;
 }
 
-function toAnchorLike(r: AnchorRow): import("@myc/code-intel/anchors").AnchorLike {
+function toAnchorLike(
+  r: AnchorRow,
+  fpFromBlob: typeof import("@myc/code-intel/anchors").fpFromBlob,
+): import("@myc/code-intel/anchors").AnchorLike {
   return {
     path: r.path,
     lang: r.lang,
@@ -551,6 +563,8 @@ function toAnchorLike(r: AnchorRow): import("@myc/code-intel/anchors").AnchorLik
     cruxNorm: r.crux_norm,
     mtimeMs: r.mtime_ms,
     sizeBytes: r.size_bytes,
+    fp: fpFromBlob(r.fp),
+    state: r.state as AnchorState,
   };
 }
 
@@ -626,6 +640,8 @@ export interface BoundAnchor {
   readonly deferred: boolean;
   /** Размер файла — то самое число, по которому принято решение. */
   readonly sizeBytes: number;
+  /** Имя символа: названное пользователем или найденное по код-индексу; пусто — нет. */
+  readonly symbol: string;
 }
 
 export type BindResult =
@@ -639,8 +655,51 @@ export type BindResult =
 
 const SQL_ANCHOR_INSERT = `INSERT INTO anchors (node_id, repo_id, repo_root, path, lang, symbol,
                       span_start, span_end, file_hash, span_hash, crux, crux_norm,
-                      state, drift, mtime_ms, size_bytes, bound_at, checked_at)
- VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'fresh',1.0,?13,?14,?15,?16)`;
+                      state, drift, mtime_ms, size_bytes, bound_at, checked_at, fp)
+ VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'fresh',1.0,?13,?14,?15,?16,?17)`;
+
+/**
+ * ИМЯ СИМВОЛА ПО КОД-ИНДЕКСУ, когда его не назвали (§7.1: «от graft или от
+ * пользователя» — graft заменён встроенным индексом). Имя нужно ступени 3
+ * ре-привязки: функцию, вынесенную в другой файл, ищут прежде всего по имени,
+ * а голова crux называет его не всегда (якорь на кусок тела, на док-комментарий).
+ *
+ * Только если индекс видел ТУ ЖЕ версию файла (хеш реестра равен хешу
+ * привязки): спаны отставшего индекса назвали бы соседнюю функцию. Выбор —
+ * определение, НАЧИНАЮЩЕЕСЯ в спане (якорь на функцию), иначе самое тесное,
+ * накрывающее его начало (якорь на кусок тела). Цена — поиск индексов
+ * воркспейса (скачками по первичному ключу) и два поиска по первичному ключу
+ * на ключ файла: десятки микросекунд в бюджете записи 5 мс.
+ */
+async function symbolFromIndex(
+  db: Database,
+  wsPath: string,
+  fileHash: string,
+  start: number,
+  end: number,
+): Promise<string> {
+  try {
+    const { indexRepos } = await import("@myc/code-intel/refresh");
+    for (const r of indexRepos(db)) {
+      if (r.length > 0 && !wsPath.startsWith(`${r}/`)) continue;
+      const path = r.length === 0 ? wsPath : wsPath.slice(r.length + 1);
+      const row = db.query("SELECT file_hash AS h FROM code_files WHERE repo_id = ?1 AND path = ?2").get(r, path) as {
+        h: string;
+      } | null;
+      if (row === null || row.h !== fileHash) continue;
+      const defs = db
+        .query("SELECT name, span_start AS s, span_end AS e FROM code_defs WHERE repo_id = ?1 AND path = ?2 ORDER BY span_start")
+        .all(r, path) as Array<{ name: string; s: number; e: number }>;
+      const head = defs.find((d) => d.s >= start && d.s <= end);
+      if (head !== undefined) return head.name;
+      const cover = defs.filter((d) => d.s <= start && d.e >= start).sort((x, y) => x.e - x.s - (y.e - y.s))[0];
+      if (cover !== undefined) return cover.name;
+    }
+  } catch {
+    // Индекса нет или схема старше — имя остаётся пустым, как было до этой задачи.
+  }
+  return "";
+}
 
 /**
  * ПРИВЯЗКА БЕЗ НОРМАЛИЗАЦИИ — та же строка якоря, минус crux (S66).
@@ -674,6 +733,8 @@ function deferredBinding(
     cruxNorm: "",
     mtimeMs: Math.floor(st.mtimeMs),
     sizeBytes: st.size,
+    // Отпечаток — та же нормализация, что и crux: его снимет фон (`finishBind`).
+    fp: new Uint32Array(0),
   };
 }
 
@@ -734,7 +795,10 @@ export async function bindAnchorAt(
     : E.bindAnchor(source, lang, target.start, end, st);
 
   const now = opts.now ?? Date.now();
-  const symbol = opts.symbol ?? "";
+  const symbol =
+    opts.symbol !== undefined && opts.symbol.length > 0
+      ? opts.symbol
+      : await symbolFromIndex(h.driver.database, wsPathOfKey(repoId, path), b.fileHash, b.spanStart, b.spanEnd);
   try {
     const anchorNode = h.store.createNode({
       kind: "anchor",
@@ -766,6 +830,7 @@ export async function bindAnchorAt(
         // §7.5 идёт по `checked_at ASC`, и недовязанный якорь встаёт первым
         // в очередь фона сам, без отдельного признака приоритета.
         deferred ? 0 : now,
+        b.fp.length > 0 ? E.fpToBlob(b.fp) : null,
       );
     h.store.addEdge(nodeId, "touches", anchorNode.id);
     if (deferred) {
@@ -810,6 +875,7 @@ export async function bindAnchorAt(
         fileHash: b.fileHash,
         deferred,
         sizeBytes: b.sizeBytes,
+        symbol,
       },
     };
   } catch (e) {
@@ -861,9 +927,8 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
         const node = resolved.node;
 
         const { repoId } = anchorRepo(h);
-        const symbol = S.flagStr(ctx, "symbol") ?? "";
         const bound = await bindAnchorAt(h, node.id, target, ctx.globals.directory ?? process.cwd(), {
-          symbol,
+          symbol: S.flagStr(ctx, "symbol") ?? "",
           ...(S.flagStr(ctx, "as") !== undefined ? { actor: S.flagStr(ctx, "as")! } : {}),
         });
         if (!bound.ok) {
@@ -884,7 +949,7 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
           path: a.path,
           start: a.start,
           end: a.end,
-          symbol,
+          symbol: a.symbol,
           state: a.state,
           crux_lines: a.cruxLines,
           file_hash: a.fileHash,
@@ -1299,7 +1364,8 @@ const CHECK_FLAGS: readonly FlagSpec[] = [
   {
     name: "level",
     value: "number",
-    description: "acceptance MUTATION: highest freshness level allowed (1|2|3, default 3)",
+    description:
+      "acceptance MUTATION: highest level allowed (1|2|3|4, default 4; 3 = no search in other files)",
   },
 ];
 
@@ -1313,6 +1379,16 @@ export interface CheckLine {
   level: number;
   moved: boolean;
   reason: string;
+  /** Сходство при ре-привязке (`drifted`); 1 — текст тот же. */
+  drift: number;
+  /**
+   * Переезд в ДРУГОЙ файл (ступень 3 §7.3): откуда и куда — путями от корня
+   * воркспейса, потому что ключ якоря при переезде может смениться.
+   */
+  from_path?: string;
+  to_path?: string;
+  /** Чем найден: `rename` (тот же файл под другим путём), `symbol <имя>`, `text <слова>`. */
+  via?: string;
 }
 
 export interface CheckData {
@@ -1330,6 +1406,16 @@ export interface CheckData {
   skipped_debounce: number;
   /** Доведено отложенных привязок (S66): crux снят фоном, а не записью. */
   bound: number;
+  /**
+   * Ступень 3 §7.3: сколько якорей искали в ДРУГИХ файлах и сколько там
+   * нашли (они же — `by_level["4"]`).
+   */
+  searched_elsewhere: number;
+  found_elsewhere: number;
+  /** Ступень 3 отложена до следующего прогона: бюджета фона осталось меньше половины. */
+  deferred_elsewhere: number;
+  /** Досчитано отпечатков у якорей, поставленных до того, как их начали считать. */
+  fp_filled: number;
   /** Прогон упёрся в бюджет и батч разобран не весь (фон). */
   budget_hit: boolean;
   changed: CheckLine[];
@@ -1363,6 +1449,7 @@ function finishBind(
   row: AnchorRow,
   abs: string,
   bind: typeof import("@myc/code-intel/anchors").bindAnchor,
+  hashTextOf: typeof import("@myc/code-intel/anchors").hashText,
 ): AnchorCheck {
   let source: string;
   let st: StatLike;
@@ -1386,7 +1473,37 @@ function finishBind(
       cruxNorm: "",
       mtimeMs: row.mtime_ms,
       sizeBytes: row.size_bytes,
+      fp: null,
+      elsewhere: false,
       reason: "cannot finish the binding: file not found",
+    };
+  }
+  // Файл изменился между записью и фоном: строки [start, end] теперь — чужой
+  // текст, а какой был свой, неизвестно (crux запись как раз и не сняла).
+  // Довести привязку по новому содержимому значило бы молча посадить якорь на
+  // чужой код — замер на истории (bench/rebind-eval.ts) ловил ровно это на
+  // файлах больше порога. Честно — `stale` с причиной; метка недовязанности
+  // остаётся, и вернись файл к записанному хешу (откат, checkout), следующий
+  // прогон привязку доведёт.
+  const fileHash = hashTextOf(source);
+  if (fileHash !== row.file_hash) {
+    return {
+      state: "stale",
+      level: 3,
+      moved: false,
+      spanStart: row.span_start,
+      spanEnd: row.span_end,
+      drift: 0,
+      fileHash: row.file_hash,
+      spanHash: "",
+      crux: "",
+      cruxNorm: "",
+      mtimeMs: row.mtime_ms,
+      sizeBytes: row.size_bytes,
+      fp: null,
+      elsewhere: false,
+      reason:
+        "the file changed before the background took the crux: the text the anchor was set on is unknown — re-anchor it (myc anchor add)",
     };
   }
   const b = bind(source, row.lang, row.span_start, row.span_end, st);
@@ -1403,8 +1520,89 @@ function finishBind(
     cruxNorm: b.cruxNorm,
     mtimeMs: b.mtimeMs,
     sizeBytes: b.sizeBytes,
+    fp: b.fp,
+    elsewhere: false,
     reason: "binding finished: crux taken from the file",
   };
+}
+
+/**
+ * ОТПЕЧАТОК ЯКОРЯ, ПОСТАВЛЕННОГО ДО ТОГО, КАК ЕГО НАЧАЛИ СЧИТАТЬ. Без него
+ * ре-привязка идёт по отпечатку crux — головы спана, — то есть грубее. Снять
+ * его можно только пока спан на месте: потом текста, с которого он снимается,
+ * уже нет. Поэтому — здесь, на свежем якоре, один раз на якорь: чтение и
+ * нормализация файла (~14 мкс/КБ), после чего колонка заполнена и уровень 1
+ * снова не читает файл. Хеш спана сверяется: снимать отпечаток с чужого
+ * текста значило бы испортить якорь, а не дополнить.
+ */
+function fillFingerprint(
+  row: AnchorRow,
+  abs: string,
+  E: typeof import("@myc/code-intel/anchors"),
+): Uint32Array | null {
+  let source: string;
+  try {
+    source = readFileSync(abs, "utf8");
+  } catch {
+    return null;
+  }
+  const stream = E.normalizeStream(source, row.lang);
+  const text = E.spanNormText(stream, row.span_start, row.span_end);
+  if (E.hashText(text) !== row.span_hash) return null;
+  const fp = E.fingerprint(text);
+  return fp.length > 0 ? fp : null;
+}
+
+/** Состояния, при которых входящие `touches` помечаются `attrs.suspect` (§7.3). */
+function isSuspectState(state: string): boolean {
+  return state === "stale" || state === "lost";
+}
+
+/**
+ * ПОМЕТКА РЁБЕР `touches` (§7.3, `commit`): якорь `stale`/`lost` — все входящие
+ * рёбра получают `attrs.suspect = 1`, чтобы читатель знания видел, что
+ * привязка к коду под вопросом; якорь снова найден — пометка снимается.
+ * Флаг — локальная проекция, как и сама строка `anchors`: в оплог и экспорт
+ * атрибуты рёбер не уходят (export.ts), и на другой машине его выставит её
+ * собственная проверка. Запрос идёт по `ix_edges_dst(dst, type)`.
+ */
+function markSuspect(db: Database, anchorId: string, suspect: boolean): void {
+  if (suspect) {
+    db.query(
+      `UPDATE edges SET attrs = json_set(attrs, '$.suspect', 1)
+        WHERE dst = ?1 AND type = 'touches' AND deleted_at IS NULL
+          AND json_extract(attrs, '$.suspect') IS NOT 1`,
+    ).run(anchorId);
+  } else {
+    db.query(
+      `UPDATE edges SET attrs = json_remove(attrs, '$.suspect')
+        WHERE dst = ?1 AND type = 'touches' AND deleted_at IS NULL
+          AND json_extract(attrs, '$.suspect') IS NOT NULL`,
+    ).run(anchorId);
+  }
+}
+
+/** Куда переехал якорь (ступень 3): новый ключ, корень и путь — для `applyCheck`. */
+interface AnchorMove {
+  readonly repoId: string;
+  readonly repoRoot: string;
+  readonly path: string;
+  readonly lang: string;
+  readonly fromWs: string;
+  readonly toWs: string;
+  readonly via: string;
+}
+
+/**
+ * Ключ якоря после переезда в файл `toWs` (путь от корня воркспейса). Ключ
+ * записи сохраняется, если новый файл лежит в том же репозитории; уехал за
+ * его пределы — ключ корня, под которым лежит любой файл воркспейса. Читатели
+ * по файлу спрашивают оба ключа (`anchorKeysFor`), так что выбор ключа виден
+ * только в самой строке.
+ */
+export function keyAfterMove(repoId: string, toWs: string): { repoId: string; path: string } {
+  if (repoId.length > 0 && toWs.startsWith(`${repoId}/`)) return { repoId, path: toWs.slice(repoId.length + 1) };
+  return { repoId: "", path: toWs };
 }
 
 function applyCheck(
@@ -1413,13 +1611,16 @@ function applyCheck(
   row: AnchorRow,
   r: AnchorCheck,
   now: number,
+  fpToBlob: (fp: Uint32Array) => Uint8Array,
+  move?: AnchorMove,
 ): void {
   db.query(
     `UPDATE anchors
         SET span_start = ?2, span_end = ?3, file_hash = ?4, span_hash = ?5,
             crux = CASE WHEN ?6 = '' THEN crux ELSE ?6 END,
             crux_norm = CASE WHEN ?6 = '' THEN crux_norm ELSE ?7 END,
-            state = ?8, drift = ?9, mtime_ms = ?10, size_bytes = ?11, checked_at = ?12
+            state = ?8, drift = ?9, mtime_ms = ?10, size_bytes = ?11, checked_at = ?12,
+            fp = CASE WHEN ?13 IS NULL THEN fp ELSE ?13 END
       WHERE node_id = ?1`,
   ).run(
     row.node_id,
@@ -1434,13 +1635,43 @@ function applyCheck(
     r.mtimeMs,
     r.sizeBytes,
     now,
+    r.fp !== null && r.fp.length > 0 ? fpToBlob(r.fp) : null,
   );
-  if (r.state !== row.state) {
-    try {
+  if (move !== undefined) {
+    db.query("UPDATE anchors SET repo_id = ?2, repo_root = ?3, path = ?4, lang = ?5 WHERE node_id = ?1").run(
+      row.node_id,
+      move.repoId,
+      move.repoRoot,
+      move.path,
+      move.lang,
+    );
+  }
+  if (isSuspectState(r.state)) markSuspect(db, row.node_id, true);
+  else if (isSuspectState(row.state)) markSuspect(db, row.node_id, false);
+  try {
+    if (move !== undefined) {
+      // Переезд между файлами не должен быть тихой сменой пути: заголовок
+      // узла — новое место, а откуда он приехал, остаётся в `attrs.moved`,
+      // и это видно в `myc show <якорь>` и любому читателю узла.
+      h.store.updateNode(row.node_id, {
+        status: r.state,
+        title: `${move.path}:${spanLabel(r.spanStart, r.spanEnd)}`,
+        ...(r.crux.length > 0 ? { body: r.crux } : {}),
+        attrs: {
+          moved: {
+            from: `${move.fromWs}:${spanLabel(row.span_start, row.span_end)}`,
+            to: `${move.toWs}:${spanLabel(r.spanStart, r.spanEnd)}`,
+            at: now,
+            drift: r.drift,
+            via: move.via,
+          },
+        },
+      });
+    } else if (r.state !== row.state) {
       h.store.updateNode(row.node_id, { status: r.state });
-    } catch {
-      // Узел якоря мог быть удалён вручную: строка обновлена, статус — нет.
     }
+  } catch {
+    // Узел якоря мог быть удалён вручную: строка обновлена, узел — нет.
   }
 }
 
@@ -1498,6 +1729,18 @@ export interface SweepOptions {
    */
   readonly hintPaths?: readonly string[];
   readonly now?: number;
+  /**
+   * Пороги ре-привязки §7.3 — только ради МУТАЦИЙ приёмки (порог 0: «любое
+   * похожее окно становится якорем»). Боевые вызовы их не передают.
+   */
+  readonly rebind?: {
+    readonly localMin?: number;
+    readonly elsewhereMin?: number;
+    /** Порог кандидата только по словам crux (по умолчанию 0.65). */
+    readonly textMin?: number;
+    /** Доля кода в окне без других улик (по умолчанию 0.25). */
+    readonly minCodeShare?: number;
+  };
 }
 
 /**
@@ -1538,7 +1781,8 @@ export const SQL_SWEEP_BATCH = `SELECT * FROM anchors AS a
 
 export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<CheckData> {
   const t0 = performance.now();
-  const { bindAnchor, checkAnchor } = await engine();
+  const E = await engine();
+  const { bindAnchor, checkAnchor } = E;
   const db = h.driver.database;
   const limit = opts.limit ?? ANCHOR_CHECK_BATCH_DEFAULT;
   const repoId = opts.repoId ?? "";
@@ -1547,7 +1791,13 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
   const budgetMs = opts.budgetMs ?? 0;
   const now = opts.now ?? Date.now();
   const dryRun = opts.dryRun === true;
-  const maxLevel = opts.maxLevel ?? 3;
+  const maxLevel = opts.maxLevel ?? 4;
+  // Ступень 3 грузится и спрашивает индексы воркспейса, только если хоть один
+  // якорь батча до неё дошёл: на прогоне, где всё свежо, её цена — ноль.
+  let R: typeof import("@myc/code-intel/rebind") | undefined;
+  let repos: string[] | undefined;
+  // Куда git переименовал пропавшие файлы — один вопрос к git на файл за прогон.
+  const gitRenames = new Map<string, readonly string[]>();
 
   // Журнал грязных файлов — подсказка «сюда раньше», не источник истины:
   // потеряв его целиком, система теряет очерёдность и ничего больше. Пути —
@@ -1589,9 +1839,13 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
     lost: 0,
     moved: 0,
     from_dirty: batch.filter((r) => dirty.has(wsPathOfKey(r.repo_id, r.path))).length,
-    by_level: { "0": 0, "1": 0, "2": 0, "3": 0 },
+    by_level: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0 },
     skipped_debounce: 0,
     bound: 0,
+    searched_elsewhere: 0,
+    found_elsewhere: 0,
+    deferred_elsewhere: 0,
+    fp_filled: 0,
     budget_hit: false,
     changed: [],
     dry_run: dryRun,
@@ -1623,9 +1877,112 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
       }
     }
     const deferred = isDeferredBind(row);
-    const r = deferred
-      ? finishBind(row, abs, bindAnchor)
-      : checkAnchor(toAnchorLike(row), abs, undefined, maxLevel);
+    let r = deferred
+      ? finishBind(row, abs, bindAnchor, E.hashText)
+      : checkAnchor(
+          toAnchorLike(row, E.fpFromBlob),
+          abs,
+          undefined,
+          maxLevel,
+          {
+            ...(opts.rebind?.localMin !== undefined ? { localMin: opts.rebind.localMin } : {}),
+            ...(opts.rebind?.minCodeShare !== undefined ? { minCodeShare: opts.rebind.minCodeShare } : {}),
+          },
+        );
+
+    // Ступень 3 §7.3: в этом файле текста нет (или нет самого файла) — ищем
+    // в других файлах по код-индексу. Найдено — `drifted` с новым путём.
+    // Не найдено — `lost`, если индекс уже видел это изменение, иначе
+    // `stale`: отставший индекс не повод объявлять код удалённым навсегда.
+    let move: AnchorMove | undefined;
+    if (!deferred && r.elsewhere && maxLevel >= 4) {
+      // БЮДЖЕТ ФОНА (§7.5, 20 мс на прогон). Ступень 3 стоит единицы-десятки
+      // миллисекунд (замер bench/rebind-eval.json: ~10 мс на якорь против ~3 мс
+      // без неё): индексные запросы, чтение до пяти файлов, для пропавшего
+      // файла — git. Начатая на остатке бюджета, она перешагнула бы его
+      // многократно. Поэтому в фоне она стартует, только если осталась хотя бы
+      // половина бюджета; иначе якорь НЕ ТРОГАЕТСЯ вовсе — ни состояние, ни
+      // `checked_at`, — и порядок `checked_at ASC` ставит его первым в
+      // следующий прогон, где бюджет у него целый. Ручной `check` бюджета не знает.
+      if (budgetMs > 0 && performance.now() - t0 > budgetMs / 2) {
+        data.budget_hit = true;
+        data.deferred_elsewhere++;
+        continue;
+      }
+      R ??= await rebinder();
+      repos ??= (await import("@myc/code-intel/refresh")).indexRepos(db);
+      data.searched_elsewhere++;
+      const fromWs = wsPathOfKey(row.repo_id, row.path);
+      const res = R.rebindElsewhere(
+        db,
+        {
+          wsPath: fromWs,
+          symbol: row.symbol,
+          spanStart: row.span_start,
+          spanEnd: row.span_end,
+          fileHash: row.file_hash,
+          crux: row.crux,
+          cruxNorm: row.crux_norm,
+          fp: E.fpFromBlob(row.fp),
+          boundAt: row.bound_at,
+          checkedAt: row.checked_at,
+          ...(r.level === 0 ? {} : { disk: { hash: r.fileHash, mtimeMs: r.mtimeMs } }),
+        },
+        {
+          wsDir: opts.wsDir,
+          repos,
+          now,
+          gitRenames,
+          ...(opts.rebind?.elsewhereMin !== undefined ? { minScore: opts.rebind.elsewhereMin } : {}),
+          ...(opts.rebind?.textMin !== undefined ? { textMin: opts.rebind.textMin } : {}),
+          ...(opts.rebind?.minCodeShare !== undefined ? { minCodeShare: opts.rebind.minCodeShare } : {}),
+        },
+      );
+      if (res.found !== null) {
+        const f = res.found;
+        const key = keyAfterMove(row.repo_id, f.wsPath);
+        move = {
+          repoId: key.repoId,
+          repoRoot: key.repoId === row.repo_id && row.repo_root.length > 0 ? row.repo_root : join(opts.wsDir, key.repoId),
+          path: key.path,
+          lang: langOf(key.path),
+          fromWs,
+          toWs: f.wsPath,
+          via: f.via === "rename" ? "rename" : `${f.via} ${f.why}`,
+        };
+        const b = f.binding;
+        r = {
+          state: "drifted",
+          level: 4,
+          moved: true,
+          spanStart: b.spanStart,
+          spanEnd: b.spanEnd,
+          drift: Math.round(f.score * 1000) / 1000,
+          fileHash: b.fileHash,
+          spanHash: b.spanHash,
+          crux: b.crux,
+          cruxNorm: b.cruxNorm,
+          mtimeMs: b.mtimeMs,
+          sizeBytes: b.sizeBytes,
+          fp: b.fp,
+          elsewhere: false,
+          reason: res.reason,
+        };
+        data.found_elsewhere++;
+      } else {
+        r = { ...r, state: res.indexSaw ? "lost" : "stale", reason: `${r.reason}; ${res.reason}` };
+      }
+    }
+
+    // Отпечаток старого якоря — снимается один раз, пока спан на месте.
+    if (!deferred && !dryRun && row.fp === null && r.state === "fresh" && r.fp === null) {
+      const fp = fillFingerprint(row, abs, E);
+      if (fp !== null) {
+        r = { ...r, fp };
+        data.fp_filled++;
+      }
+    }
+
     data.checked++;
     if (deferred && r.state === "fresh") data.bound++;
     data[r.state]++;
@@ -1637,7 +1994,7 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
     if (r.state !== row.state || r.moved || deferred) {
       data.changed.push({
         anchor_id: row.node_id,
-        path: row.path,
+        path: move === undefined ? row.path : move.path,
         from: spanLabel(row.span_start, row.span_end),
         to: spanLabel(r.spanStart, r.spanEnd),
         state: r.state,
@@ -1645,10 +2002,12 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
         level: r.level,
         moved: r.moved,
         reason: r.reason,
+        drift: r.drift,
+        ...(move === undefined ? {} : { from_path: move.fromWs, to_path: move.toWs, via: move.via }),
       });
     }
     if (!dryRun) {
-      applyCheck(db, h, row, r, now);
+      applyCheck(db, h, row, r, now, E.fpToBlob, move);
       // Тело anchor-узла — это crux; у отложенной привязки его не было вовсе
       // (`null`), и `applyCheck` про узлы знает только статус. Без этой
       // строки `show` и `recall` показывали бы пустой якорь навсегда.
@@ -1674,8 +2033,11 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
     help:
       "Level 1 is (mtime, size) — one stat, the file is not read. Level 2 is the content hash: " +
       "a touch that changed nothing stops here. Level 3 compares the normalized span and, if it " +
-      "moved, finds it by its crux text and re-points the anchor. Files marked by the post-edit " +
-      "hook are checked first.",
+      "moved, finds it by its crux text (fresh) or by a fingerprint window of similarity >= 0.60 " +
+      "(drifted). Level 4 looks in OTHER files through the code index — same content, same symbol " +
+      "name, crux words — and re-binds to the best window of similarity >= 0.50 (drifted, printed " +
+      "as from → to); not found anywhere is lost once the index has seen the change, stale until " +
+      "then. Files marked by the post-edit hook are checked first.",
     handler: async (ctx) => {
       const S = await heavy();
       const opened = await (deps ?? S.realStoreDeps).openStore(ctx);
@@ -1694,13 +2056,21 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
             ? { pathPrefix: S.flagStr(ctx, "path")! }
             : {}),
           dryRun: ctx.flags["dry-run"] === true,
-          maxLevel: (levelRaw === 1 || levelRaw === 2 ? levelRaw : 3) as MaxLevel,
+          maxLevel: (levelRaw === 1 || levelRaw === 2 || levelRaw === 3 ? levelRaw : 4) as MaxLevel,
         });
 
         if (data.stale > 0 || data.lost > 0) {
           ctx.warn(
             "anchor.stale",
             `${count(data.stale + data.lost, "anchor")} went stale — the binding no longer points at live code`,
+          );
+        }
+        if (data.found_elsewhere > 0) {
+          // Переезд между файлами — не тихая смена пути: WARN называет его,
+          // строки ниже говорят откуда и куда.
+          ctx.warn(
+            "anchor.moved",
+            `${count(data.found_elsewhere, "anchor")} moved to another file — re-bound by similarity, see from → to below`,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -1717,13 +2087,23 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
       );
       lines.push(
         `levels: 1 ${d.by_level["1"] ?? 0} · 2 ${d.by_level["2"] ?? 0} · 3 ${d.by_level["3"] ?? 0} · no file ${d.by_level["0"] ?? 0} · from dirty log ${d.from_dirty}` +
+          (d.searched_elsewhere > 0 ? ` · other files ${d.found_elsewhere}/${d.searched_elsewhere}` : "") +
           (d.bound > 0 ? ` · bound ${d.bound}` : "") +
+          (d.fp_filled > 0 ? ` · fingerprints ${d.fp_filled}` : "") +
           (d.skipped_debounce > 0 ? ` · debounced ${d.skipped_debounce}` : "") +
           (d.budget_hit ? " · hit the budget" : ""),
       );
       for (const c of d.changed) {
+        const sim = c.state === "drifted" ? ` (similarity ${c.drift})` : "";
+        if (c.from_path !== undefined && c.to_path !== undefined) {
+          // Переезд между файлами: оба пути целиком, а не новый путь молча.
+          lines.push(
+            `${c.anchor_id}  moved ${c.from_path}:${c.from} → ${c.to_path}:${c.to}  ${c.was}→${c.state}${sim}  via ${c.via ?? "?"}`,
+          );
+          continue;
+        }
         const span = c.from === c.to ? c.from : `${c.from} → ${c.to}`;
-        lines.push(`${c.anchor_id}  ${c.path}:${span}  ${c.was}→${c.state}  ${c.reason}`);
+        lines.push(`${c.anchor_id}  ${c.path}:${span}  ${c.was}→${c.state}${sim}  ${c.reason}`);
       }
       lines.push(`${d.took_ms} ms`);
       return `${lines.join("\n")}\n`;

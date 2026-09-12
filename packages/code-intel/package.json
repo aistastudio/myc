@@ -12,6 +12,7 @@
     "./read": "./src/read.ts",
     "./langs": "./src/langs.ts",
     "./anchors": "./src/anchors.ts",
+    "./rebind": "./src/rebind.ts",
     "./grammars": "./src/grammars.ts",
     "./search": "./src/search.ts",
     "./grep": "./src/grep.ts",
