@@ -135,12 +135,16 @@ beforeAll(async () => {
   chmodSync(pkgBin, 0o755);
   binary = join(tmp, "myc");
   mutantBinary = join(tmp, "myc-autoload");
-  await Promise.all([
-    build([process.execPath, "build", "--target=bun", "--minify", "packages/cli/src/main.ts", "--outfile", join(pkg, "dist", "myc.js")]),
-    build(recipe(binary)),
-    build(recipe(mutantBinary, ["--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig"])),
-  ]);
-}, 120_000);
+  // Два `bun build --compile` подряд, а не разом: 2026-09-12 под нагрузкой
+  // один из двух параллельных вернул код 0, а бинаря-мутанта на месте не
+  // оказалось — тест мутации упал на ENOENT, соседи на обычном бинаре прошли.
+  await build([process.execPath, "build", "--target=bun", "--minify", "packages/cli/src/main.ts", "--outfile", join(pkg, "dist", "myc.js")]);
+  await build(recipe(binary));
+  await build(recipe(mutantBinary, ["--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig"]));
+  for (const out of [join(pkg, "dist", "myc.js"), binary, mutantBinary]) {
+    if (!existsSync(out)) throw new Error(`сборка вернула 0, а ${out} нет — дальше тесты мерили бы пустое место`);
+  }
+}, 300_000);
 
 // Метка preload — от каждого запуска своя: упавший тест не подкрашивает соседей.
 beforeEach(() => {
