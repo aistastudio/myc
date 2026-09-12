@@ -14,6 +14,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";import type { Database } from "bun:sqlite";
 import { startVizServer, type VizServer } from "./server.ts";
 import type { RunCli } from "./mutate.ts";
@@ -438,6 +439,84 @@ describe("кандидаты хука сжатия (§6.2, memory-7j8zgjnd0bjz)"
       "kb-confirmed": null,
     });
     expect(kb.counts.pending_review).toBe(1);
+    // Ждёт ли разбора — считает сервер: по нему клиент решает, показать ли
+    // кнопки; отклонённый кандидат помечен, но кнопок не получает.
+    const open = Object.fromEntries(kb.rows.map((r) => [r.id, r.review_open]));
+    expect(open).toEqual({ "kb-cand": true, "kb-cand-no": false, "kb-plain": false, "kb-confirmed": false });
+  }, 90_000);
+});
+
+// ---------------------------------------------------------------------------
+// Разбор кандидата из базы знаний (memory-79mq6fccg0jm): кнопки карточки идут
+// тем же путём записи — `myc review confirm|reject` настоящим процессом.
+// ---------------------------------------------------------------------------
+
+async function hookCandidate(w: Workspace, run: RunCli, decision: string): Promise<string> {
+  const transcript = join(w.dir, `t-${decision.length}-${Date.now()}.jsonl`);
+  const rows = [
+    { type: "user", message: { role: "user", content: "где держим векторы" } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: decision }] } },
+  ];
+  writeFileSync(transcript, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+  await mustRun(run, ["absorb-session", "--transcript", transcript, "--reason", "manual", "--session", "S-web"]);
+  const row = w.db
+    .query<{ id: string }, [string]>("SELECT id FROM nodes WHERE json_extract(attrs,'$.state')='pending_review' AND title = ?1")
+    .get(decision);
+  expect(row).not.toBeNull();
+  return row!.id;
+}
+
+function jobKinds(w: Workspace, id: string): string[] {
+  return w.db
+    .query<{ kind: string }, [string]>("SELECT kind FROM jobs WHERE entity_id = ?1 ORDER BY kind")
+    .all(id)
+    .map((r) => r.kind);
+}
+
+describe("разбор кандидата из базы знаний", () => {
+  // Мутация «убрать confirm из planOp» роняет этот тест (400 unknown op).
+  test("«принять»: POST /op confirm — знание, embed и absorb в очереди, подвал ноль", async () => {
+    const { w, run, url } = await ws();
+    const cand = await hookCandidate(w, run, "Выбрали хранить вектор внутри SQLite, потому что отдельный сервис ломает офлайн");
+    expect((await kbOf(url)).counts.pending_review).toBe(1);
+
+    const res = await post(url, `/api/nodes/${cand}/op`, { op: "confirm" });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+
+    const attrs = JSON.parse(
+      w.db.query<{ attrs: string }, [string]>("SELECT attrs FROM nodes WHERE id = ?1").get(cand)!.attrs,
+    ) as Record<string, unknown>;
+    expect(attrs["state"]).toBe("confirmed");
+    expect(attrs["confirmed_by"]).toBe("kb-tester");
+    // Работа absorb либо ждёт в очереди, либо уже исполнена инлайн-дренажом
+    // того же процесса CLI (drain.ts, 50 мс после команды) — тогда в узле
+    // лежит её вердикт. Третьего исхода — «работы не было» — быть не должно.
+    const kinds = jobKinds(w, cand);
+    expect(kinds).toContain("embed");
+    expect(kinds.includes("absorb") || attrs["absorb"] !== undefined).toBe(true);
+    const kb = await kbOf(url);
+    expect(kb.rows.find((r) => r.id === cand)?.review).toBeNull();
+    expect(kb.counts.pending_review).toBe(0);
+  }, 90_000);
+
+  test("«отклонить»: без причины — 400; с причиной — retracted, причина в узле", async () => {
+    const { w, run, url } = await ws();
+    const cand = await hookCandidate(w, run, "Решили писать кандидатов слоем L2, потому что так их видно в дайджесте");
+    const bare = await post(url, `/api/nodes/${cand}/op`, { op: "reject" });
+    expect(bare.status).toBe(400);
+
+    const res = await post(url, `/api/nodes/${cand}/op`, { op: "reject", reason: "пересказ, а не решение" });
+    expect(res.status).toBe(200);
+    const row = w.db
+      .query<{ status: string; attrs: string }, [string]>("SELECT status, attrs FROM nodes WHERE id = ?1")
+      .get(cand)!;
+    expect(row.status).toBe("retracted");
+    expect((JSON.parse(row.attrs) as Record<string, unknown>)["reject_reason"]).toBe("пересказ, а не решение");
+    expect(res.body.warn ?? []).toEqual([]); // причина записана — не reason.unwritten, как у cancel
+    const kb = await kbOf(url);
+    expect(kb.rows.find((r) => r.id === cand)?.review_open).toBe(false);
+    expect(kb.counts.pending_review).toBe(0);
   }, 90_000);
 });
 

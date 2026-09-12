@@ -17,13 +17,15 @@
  * ПОДТВЕРЖДЕНИЕ = СМЕНА СОСТОЯНИЯ. Фильтр отсекает ровно `state =
  * 'pending_review'`: любое другое значение (или отсутствие ключа) видно. Так
  * подтверждению не нужен второй признак — дистилляция или человек переписывают
- * `attrs.state` ({@link confirmAttrs}), и узел сразу виден везде, без
- * переиндексации. Сегодня подтверждает ЯВНАЯ ЗАПИСЬ того же факта: `myc
- * remember` с текстом кандидата попадает в ветку точного дубликата
- * (remember.ts) и подтверждает его — человек сказал это сам. Дистиллятор
- * (packages/distiller) пока заглушка. Отклонить — `myc update <id> --status
- * retracted`: такой кандидат из выдачи исключён по-прежнему, а из счётчиков
- * «ждёт разбора» выходит.
+ * `attrs.state` ({@link confirmAttrs}), и узел сразу виден лексике, а вектор и
+ * классификацию absorb получает из очереди, как новая заметка
+ * (memory-4c24exck23cw). Разбирает человек или агент командой `myc review`
+ * (packages/cli/src/commands/review.ts: список, `confirm`, `reject`); та же
+ * функция подтверждения стоит за явной записью того же факта — `myc remember`
+ * с текстом кандидата попадает в ветку точного дубликата (remember.ts). Дистиллятор
+ * (packages/distiller) пока заглушка. Отклонение — статус `retracted`
+ * ({@link rejectAttrs}): из выдачи узел уходит по статусу
+ * ({@link HIDDEN_STATUSES}), из «ждёт разбора» — тоже.
  *
  * ФИЛЬТР СТОИТ В SQL, ДО LIMIT — тот же принцип, что у ACL (§2.2) и охвата
  * S58: постфильтр в JS после LIMIT отдал бы окно скана кандидатам, и обычная
@@ -75,11 +77,89 @@ export function confirmAttrs(by: string, at: number): Record<string, JsonValue> 
   return { [REVIEW_STATE_KEY]: CONFIRMED, [CONFIRMED_BY_KEY]: by, [CONFIRMED_AT_KEY]: at };
 }
 
+/**
+ * salience подтверждённого кандидата — умолчание колонки `nodes.salience`
+ * (1.0, packages/store-sqlite/src/migrations/001-init.ts), то есть ровно та,
+ * с которой рождается новая заметка `myc remember`. Хук пишет кандидата с 0 —
+ * «это не факт»; оставь её после подтверждения, и prime (скан по salience
+ * DESC, в DECISIONS три строки) ставил бы подтверждённое решение последним
+ * среди L2, то есть практически никогда не показывал.
+ */
+export const CONFIRMED_SALIENCE = 1;
+
+/**
+ * ОТКЛОНЕНИЕ — статус `retracted` плюс кто, когда и почему в attrs. Состояние
+ * `pending_review` при этом НЕ меняется, и это намеренно: скрывает узел
+ * статус ({@link HIDDEN_STATUSES}), а если отклонение снимут (`myc update
+ * <id> --status active`), узел вернётся в очередь разбора, а не в выдачу
+ * знанием, которого никто не подтверждал. Причина — в строке узла, по тому
+ * же правилу, что кто/когда у подтверждения.
+ */
+export const REJECTED_STATUS = "retracted";
+export const REJECTED_BY_KEY = "rejected_by";
+export const REJECTED_AT_KEY = "rejected_at";
+export const REJECT_REASON_KEY = "reject_reason";
+
+/** Патч attrs отклонения; статус ставится рядом, тем же updateNode. */
+export function rejectAttrs(by: string, at: number, reason: string): Record<string, JsonValue> {
+  return { [REJECTED_BY_KEY]: by, [REJECTED_AT_KEY]: at, [REJECT_REASON_KEY]: reason };
+}
+
 /** Кандидат ли узел — зеркало {@link notPendingPredicate} для JS. */
 export function isPendingReview(
   attrs: Readonly<Record<string, JsonValue>> | Readonly<Record<string, unknown>> | undefined,
 ): boolean {
   return attrs?.[REVIEW_STATE_KEY] === PENDING_REVIEW;
+}
+
+// ---------------------------------------------------------------------------
+// Статусы, которых нет в выдаче (memory-0p3d8n1efwtv)
+// ---------------------------------------------------------------------------
+
+/**
+ * СТАТУСЫ, КОТОРЫЕ ВЫДАЧА СКРЫВАЕТ — одним списком на систему. Заменённая
+ * версия (`superseded`), отозванная заметка (`retracted` — в том числе
+ * отклонённый кандидат) и отменённая задача (`cancelled`) — не знание, которое
+ * отдают агенту: recall, search, MCP, CORE/DECISIONS prime, цели absorb и
+ * счётчик заметок строки статуса смотрят сюда, а не держат свою копию.
+ *
+ * До этого списка пути выдачи отсекали только `superseded` (hybrid, vector,
+ * fts), дайджест prime статуса не смотрел вовсе, а строка статуса уже
+ * считала `NOT IN ('retracted','superseded','cancelled')` — отозванная заметка
+ * доезжала до recall и prime, а счётчик её не видел: поверхности расходились
+ * ровно тем, что у каждой был свой литерал.
+ *
+ * `closed` сюда не входит: закрытая задача — история сделанного, её ищут.
+ * `stale` у документа и `lost` у якоря — тоже: устаревшее не значит неверное.
+ *
+ * Терм стоит в SQL ДО LIMIT, как {@link notPendingPredicate}, и по той же
+ * причине: сто отозванных с лучшим BM25 иначе забили бы окно скана, и живая
+ * заметка не доехала бы вовсе. Цена нулевая сверх уже уплаченной: на каждом
+ * пути строка узла к моменту проверки прочитана (ACL, attrs, title).
+ */
+export const HIDDEN_STATUSES: readonly string[] = Object.freeze(["superseded", "retracted", "cancelled"]);
+
+/** Скрывает ли статус узел из выдачи — зеркало {@link liveStatusPredicate}. */
+export function isHiddenStatus(status: string): boolean {
+  return HIDDEN_STATUSES.includes(status);
+}
+
+const HIDDEN_STATUSES_SQL = HIDDEN_STATUSES.map((s) => `'${s}'`).join(",");
+
+/** SQL-предикат «статус узла не из скрываемых». `alias` — псевдоним nodes. */
+export function liveStatusPredicate(alias: string): string {
+  return `(${alias}.status NOT IN (${HIDDEN_STATUSES_SQL}))`;
+}
+
+/**
+ * Ждёт ли узел разбора — зеркало {@link awaitingReviewPredicate} для JS:
+ * кандидат, которого ещё не отклонили (и не заменили).
+ */
+export function isAwaitingReview(
+  attrs: Readonly<Record<string, JsonValue>> | Readonly<Record<string, unknown>> | undefined,
+  status: string,
+): boolean {
+  return isPendingReview(attrs) && !isHiddenStatus(status);
 }
 
 /**
@@ -99,13 +179,14 @@ export function notPendingClause(alias: string): string {
 
 /**
  * Предикат «узел — кандидат, ещё ждущий разбора»: для счётчиков, которые
- * обязаны назвать скрытое числом (И2). Отклонённый человеком кандидат
- * (`myc update <id> --status retracted`) разбор уже прошёл, поэтому в «ждёт»
- * не входит, хотя из выдачи по-прежнему исключён.
+ * обязаны назвать скрытое числом (И2), и для списка `myc review`. Отклонённый
+ * кандидат (`myc review reject`, статус `retracted`) разбор уже прошёл,
+ * поэтому в «ждёт» не входит, хотя из выдачи по-прежнему исключён. Статусы —
+ * тот же список {@link HIDDEN_STATUSES}, что у выдачи.
  */
 export function awaitingReviewPredicate(alias: string): string {
   return (
     `(json_extract(${alias}.attrs, '$.${REVIEW_STATE_KEY}') = '${PENDING_REVIEW}'` +
-    ` AND ${alias}.status NOT IN ('retracted','superseded'))`
+    ` AND ${liveStatusPredicate(alias)})`
   );
 }

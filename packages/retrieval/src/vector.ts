@@ -33,7 +33,7 @@
 
 import { defineQueries, historyClause, type DbDriver, type Layer } from "@myc/core";
 import type { FtsCaller } from "./fts.ts";
-import { notPendingClause } from "./review.ts";
+import { liveStatusPredicate, notPendingClause } from "./review.ts";
 
 export interface VectorSearchHit {
   readonly id: string;
@@ -164,9 +164,10 @@ export const vectorQueries = defineQueries({
   // строк, глобальный порядок наводит внешний ORDER BY + LIMIT.
   // Живость и ACL — тот же предикат, что у ftsSearch: RRF сольёт оба
   // источника в одну выдачу, разные наборы видимости в неё попадать не должны.
-  // Отсюда же фильтр кандидатов на подтверждение (./review.ts): он стоит до
-  // LIMIT, иначе векторный пул отдавался бы кандидатам, а гидратация гибрида
-  // выбросила бы их уже после отбора.
+  // Отсюда же фильтр кандидатов на подтверждение и скрываемых статусов
+  // (./review.ts): оба стоят до LIMIT, иначе векторный пул отдавался бы
+  // кандидатам и отозванным, а гидратация гибрида выбросила бы их уже после
+  // отбора.
   vectorKnn: {
     name: "vectorKnn",
     sql: `
@@ -183,7 +184,7 @@ export const vectorQueries = defineQueries({
       JOIN nodes n ON n.rowid = knn.node_rowid
       WHERE n.deleted_at IS NULL
        ${historyClause("follow")}
-        AND n.status <> 'superseded'
+        AND ${liveStatusPredicate("n")}
         AND (
           (n.acl = 'private' AND n.owner_id = ?5)
           OR (n.acl = 'team' AND n.team_id = ?6)

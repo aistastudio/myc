@@ -84,7 +84,7 @@ import {
   type ReachInfo,
 } from "@myc/core";
 import type { QueryDef } from "@myc/core";
-import { awaitingReviewPredicate, notPendingClause } from "@myc/retrieval";
+import { awaitingReviewPredicate, liveStatusPredicate, notPendingClause } from "@myc/retrieval";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ExitCode } from "../exit.ts";
@@ -119,14 +119,22 @@ const FOOTER_MAX = 90;
  * Место под строку охвата (S58, S59) в подвале. Она НЕ режется вместе с
  * остальным подвалом: «чужого скрыто 7» — это и есть громкость И2, и
  * обрезать её значит вернуть молчаливую фильтрацию. Поэтому под неё
- * резервируется место, а не остаток. Типичный потолок: «сессия abcdefgh ·
- * чужого скрыто 99999 · без охвата 99999 · 99999 кандидатов скрыто · repo
- * collector · 99999 из других репозиториев скрыто · 99999 без охвата
- * репозитория». Длинное объяснение "путь вне воркспейса: <path>"
- * (repoReasonText) в этот потолок не закладывается — тот же необрезаемый
- * принцип, что и у самой строки охвата.
+ * резервируется место, а не остаток. Типичный потолок: «session abcdefgh ·
+ * 99999 from other sessions hidden · 99999 without reach · 99999 pending
+ * review hidden — myc review · repo collector · 99999 from other repos hidden
+ * · 99999 without repo reach» — 192 символа (без подсказки `myc review` было
+ * 179 при резерве 190; резерв поднят до 195, чтобы потолок с подсказкой и
+ * разделителем « · » по-прежнему в него укладывался). Длинное
+ * объяснение "путь вне воркспейса: <path>" (repoReasonText) в этот потолок не
+ * закладывается — тот же необрезаемый принцип, что и у самой строки охвата.
  */
-const REACH_FOOTER_MAX = 190;
+const REACH_FOOTER_MAX = 195;
+/**
+ * Команда разбора кандидатов в подвале рядом с их числом — одна короткая
+ * строка в уже зарезервированном месте {@link REACH_FOOTER_MAX}, а не новая
+ * секция: секции режутся бюджетом, а число скрытого и путь к нему — нет.
+ */
+const REVIEW_HINT = "myc review";
 /** Сколько символов ключа сессии печатать: он бывает и uuid, и путём. */
 const SESSION_SHORT = 8;
 
@@ -181,6 +189,12 @@ export const primeQueries = defineQueries({
   // строку, а строку прошедших всё равно читает ради title/excerpt — проверка
   // состояния ложится на уже прочитанную строку (замер —
   // prime.pending-latency.test.ts).
+  // СКРЫВАЕМЫЕ СТАТУСЫ (memory-0p3d8n1efwtv) — тем же способом, по той же
+  // причине и в ту же уже прочитанную строку: отозванная заметка L3 с высокой
+  // salience иначе стояла бы в CORE, а сотня таких — в голове окна из 60
+  // строк. Список один на систему (HIDDEN_STATUSES, @myc/retrieval review.ts):
+  // до него скан статуса не смотрел вовсе, и CORE/DECISIONS отдавали то, что
+  // строка статуса уже не считала.
   prime_digest_scan: {
     name: "prime_digest_scan",
     sql: `SELECT nodes.id, nodes.layer, nodes.title, nodes.excerpt, nodes.updated_at,
@@ -188,6 +202,7 @@ export const primeQueries = defineQueries({
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
              AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${notPendingClause("nodes")}
+             AND ${liveStatusPredicate("nodes")}
            ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT ?2`,
     params: ["scope", "lim", "session"],
   },
@@ -198,6 +213,7 @@ export const primeQueries = defineQueries({
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
              AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${repoClause("nodes", 4)}${notPendingClause("nodes")}
+             AND ${liveStatusPredicate("nodes")}
            ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT ?2`,
     params: ["scope", "lim", "session", "repo"],
   },
@@ -413,15 +429,16 @@ function scanDigest(
  * repoX` отдал бы дайджест, посчитанный для repoY. Оба случая — не промах
  * производительности, а обход фильтра охвата (S58/S59) попаданием в кеш.
  *
- * v4 — версия ФОРМЫ payload (v3 добавила поле `repo`, v4 — `pending`): при
- * смене формы версия обязана меняться, иначе старая запись подсунет payload
- * без нового поля. Версия стоит в варианте, а не в имени профиля: профиль —
- * это стык S4 (`prime` и есть `prime`), его нельзя двигать при каждой правке
- * формы. Смена версии заодно выбрасывает дайджесты, посчитанные ДО фильтра
- * кандидатов: иначе попадание в кеш отдало бы их в контекст ещё раз.
+ * v5 — версия ФОРМЫ И ОТБОРА payload (v3 добавила поле `repo`, v4 — `pending`
+ * и фильтр кандидатов, v5 — фильтр скрываемых статусов): при смене формы
+ * версия обязана меняться, иначе старая запись подсунет payload без нового
+ * поля; при смене отбора — тоже, иначе дайджест, посчитанный ДО фильтра,
+ * отдавался бы из кеша, пока в базу никто не пишет (отозванная заметка в CORE
+ * после обновления). Версия стоит в варианте, а не в имени профиля: профиль —
+ * это стык S4 (`prime` и есть `prime`), его нельзя двигать при каждой правке.
  */
 function digestVariant(session: string, repo: string): string {
-  return `v4:${session}:${repo}`;
+  return `v5:${session}:${repo}`;
 }
 
 /**
@@ -857,8 +874,9 @@ function reachFooter(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string 
   if (d.reach_unknown > 0) parts.push(`${d.reach_unknown} without reach`);
   // Кандидаты хука сжатия (§6.2) скрыты как неподтверждённые — это та же
   // громкость И2, что у охвата: фильтр, не названный числом, неотличим от
-  // пустой памяти.
-  if (d.pending_review > 0) parts.push(`${d.pending_review} pending review hidden`);
+  // пустой памяти. Рядом — команда разбора: число без пути к действию
+  // оставляло кандидатов копиться (в базе этого репозитория их было 24).
+  if (d.pending_review > 0) parts.push(`${d.pending_review} pending review hidden — ${REVIEW_HINT}`);
   parts.push(...repoFooterParts(d));
   return parts.join(" · ");
 }

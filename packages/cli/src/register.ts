@@ -76,6 +76,9 @@ export function registerAll(registry: Registry): void {
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("absorb-session", () =>
     import("./hooks/absorb-session.ts").then((m) => m.createAbsorbSessionCommand()));
+  // Разбор того, что пишет absorb-session (кандидаты pending_review), —
+  // рядом с ним, memory-79mq6fccg0jm.
+  lazy("review", () => import("./commands/review.ts").then((m) => m.createReviewCommand()));
   // Очередь тяжёлых команд на машине (эпик memory-14qyv1gmacef): модуль
   // один, команды две — run ставит и исполняет, queue показывает.
   lazy("run", () => import("./commands/run.ts").then((m) => m.createRunCommand()));

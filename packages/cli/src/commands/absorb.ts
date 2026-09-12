@@ -69,7 +69,7 @@ import {
   FingerprintMismatchError,
   type EmbedFingerprint,
 } from "@myc/embed/fingerprint";
-import { notPendingClause } from "@myc/retrieval/review";
+import { isAwaitingReview, isPendingReview, liveStatusPredicate, notPendingClause } from "@myc/retrieval/review";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext } from "../registry.ts";
@@ -163,6 +163,10 @@ const Q = defineQueries({
   // superseded, head_id на кандидата, — а кандидат из выдачи исключён: факт
   // пропал бы из recall и prime целиком. Явная заметка остаётся
   // самостоятельной, кандидат ждёт разбора.
+  // ОТОЗВАННАЯ ЗАМЕТКА (и отклонённый кандидат) — тоже не цель, по той же
+  // причине: дубль уехал бы в неё `superseded`, а её саму выдача не отдаёт
+  // (HIDDEN_STATUSES, @myc/retrieval review.ts) — явно записанное заново
+  // пропало бы вместе с отозванным.
   knn: {
     name: "knn",
     sql: `WITH knn AS (
@@ -172,7 +176,7 @@ const Q = defineQueries({
           )
           SELECT n.id AS id FROM knn JOIN nodes n ON n.rowid = knn.node_rowid
            WHERE n.id <> ?4 AND n.kind = ?5
-             AND n.deleted_at IS NULL${historyClause("follow")} AND n.status <> 'superseded'${notPendingClause("n")}
+             AND n.deleted_at IS NULL${historyClause("follow")} AND ${liveStatusPredicate("n")}${notPendingClause("n")}
            ORDER BY knn.distance ASC LIMIT ?2`,
     params: ["vector", "k", "scope", "self", "kind"],
   },
@@ -181,7 +185,7 @@ const Q = defineQueries({
     sql: `SELECT n.id AS id FROM nodes_fts f JOIN nodes n ON n.rowid = f.rowid
            WHERE nodes_fts MATCH ?1
              AND n.scope = ?2 AND n.id <> ?3 AND n.kind = ?4
-             AND n.deleted_at IS NULL${historyClause("follow")} AND n.status <> 'superseded'${notPendingClause("n")}
+             AND n.deleted_at IS NULL${historyClause("follow")} AND ${liveStatusPredicate("n")}${notPendingClause("n")}
            ORDER BY bm25(nodes_fts) LIMIT ?5`,
     params: ["match", "scope", "self", "kind", "limit"],
   },
@@ -370,7 +374,27 @@ export interface AbsorbNodeResult {
   readonly actions: string[];
   readonly embedded_here: boolean;
   readonly error?: string;
+  /**
+   * Узел не классифицирован вовсе: это кандидат хука сжатия (см.
+   * {@link CANDIDATE_SKIP}). class/quality тогда ничего не значат и в
+   * счётчики прогона не входят.
+   */
+  readonly skipped?: "pending_review";
 }
+
+/**
+ * КАНДИДАТ ХУКА СЖАТИЯ НЕ КЛАССИФИЦИРУЕТСЯ (§6.2, memory-79mq6fccg0jm).
+ * Классификация — это решение, чья версия каноническая. Кандидат, названный
+ * по id, старше найденного дубля, и `canonicalOf` отдал бы ему роль
+ * канонического: явно записанная заметка ушла бы в него `superseded`, а сам
+ * он из выдачи исключён — факт пропал бы целиком. Поэтому кандидат не бывает
+ * ни целью (запросы `knn`/`fts` выше), ни источником: `myc absorb <id>`
+ * отказывает громко, а работа очереди, если она у кандидата окажется, —
+ * пропускается без записи. Подтверждённый кандидат (`myc review confirm`)
+ * получает свою работу absorb заново — уже знанием.
+ */
+export const CANDIDATE_SKIP =
+  "unconfirmed compaction candidate: not knowledge yet, not classified — `myc review confirm` queues absorb for it";
 
 /**
  * Сессия разбора. Экспортирована для дренажа очереди (../drain.ts): он
@@ -619,6 +643,22 @@ export async function absorbOne(s: Session, id: string): Promise<AbsorbNodeResul
   const h = s.h;
   const node = h.store.getNode(id);
   if (node === undefined) throw new Error(`node ${id} not found or deleted`);
+  if (isPendingReview(node.attrs)) {
+    return {
+      id: node.id,
+      class: "new",
+      target: null,
+      cos: null,
+      jac: 0,
+      quality: "lexical",
+      reason: CANDIDATE_SKIP,
+      candidates: 0,
+      related: 0,
+      actions: [],
+      embedded_here: false,
+      skipped: "pending_review",
+    };
+  }
   const rowid = h.driver.one<{ rowid: number }>(Q.node_rowid, [id])?.rowid;
   if (rowid === undefined) throw new Error(`node ${id} has no rowid`);
   const text = nodeAsText(node);
@@ -723,6 +763,10 @@ function renderAbsorbHuman(raw: unknown): string {
   const lines: string[] = [];
   if (d.degraded !== null) lines.push(`DEGRADED  absorb without vectors: ${d.degraded}`);
   for (const n of d.nodes) {
+    if (n.skipped !== undefined) {
+      lines.push(`${n.id}  skipped  ${n.reason}`);
+      continue;
+    }
     const sim =
       n.cos === null ? `jac ${n.jac.toFixed(3)} (lexical)` : `cos ${n.cos.toFixed(3)} jac ${n.jac.toFixed(3)}`;
     const target = n.target === null ? "" : ` → ${n.target}`;
@@ -812,6 +856,21 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
         if (positional !== undefined) {
           const resolved = resolveId(h, positional);
           if (!resolved.ok) return resolved.failure;
+          // Кандидат по id — отказ, а не пропуск (CANDIDATE_SKIP): человек
+          // назвал узел явно, и молча ответить «new» значило бы соврать ему.
+          if (isPendingReview(resolved.node.attrs)) {
+            const awaiting = isAwaitingReview(resolved.node.attrs, resolved.node.status);
+            return {
+              ok: false,
+              code: "precond.pending_review",
+              msg:
+                `${resolved.node.id} is ${awaiting ? "an unconfirmed" : "a rejected"} compaction candidate: ` +
+                "absorb classifies knowledge, and a candidate classified here could become the canonical " +
+                "node of an explicit note",
+              exit: ExitCode.PRECOND,
+              hint: awaiting ? `myc review confirm ${resolved.node.id}` : "myc review",
+            };
+          }
           targets = [{ id: resolved.node.id, jobId: null }];
         } else {
           const rows = h.driver.all<{ id: number; entity_id: string }>(Q.jobs_pull, [
@@ -843,7 +902,7 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
           try {
             const r = await absorbOne(s, t.id);
             nodes.push(r);
-            byClass[r.class]++;
+            if (r.skipped === undefined) byClass[r.class]++;
             if (t.jobId !== null && !dryRun) h.driver.run(Q.job_done, [t.jobId, holder]);
           } catch (e) {
             if (e instanceof FingerprintMismatchError) {
@@ -905,7 +964,7 @@ export function createAbsorbCommand(deps: AbsorbDeps = realAbsorbDeps): Command 
         }
 
         // Деградация — вслух: строка узла (выше), myc_health и meta.degraded[].
-        const degraded = nodes.some((n) => n.quality === "lexical" && n.error === undefined)
+        const degraded = nodes.some((n) => n.quality === "lexical" && n.error === undefined && n.skipped === undefined)
           ? (s.degradedReason ?? "vectors unavailable")
           : null;
         if (!dryRun && nodes.length > 0) {

@@ -539,15 +539,35 @@ describe("кандидат хука сжатия — не цель дедупл�
     return (JSON.parse(node(id).attrs) as Record<string, unknown>)["state"];
   }
 
-  // Кандидат найдётся и лексикой, и (при vec0) вектором: `myc absorb <id>`
-  // кладёт его вектор в nodes_vec. Мутация «снять фильтр» из запроса fts ИЛИ
-  // из запроса knn absorb роняет этот тест: цель — кандидат (класс duplicate
-  // при векторе, related без него), новая заметка уходит в него.
+  /**
+   * Вектор кандидата — прямо в nodes_vec: `myc absorb <id кандидата>` его
+   * больше не кладёт (он отказывает, см. тест ниже), а кандидат с вектором
+   * бывает — старые базы, будущий фон. Без vec0 — ничего: путь лексический.
+   */
+  function embedCandidate(cand: { id: string; rowid: number }, scope: string, topic: string): void {
+    if (!VEC0) return;
+    const v = topicVector(topic);
+    let max = 0;
+    for (const x of v) max = Math.max(max, Math.abs(x));
+    const q = new Int8Array(v.length);
+    for (let i = 0; i < v.length; i++) q[i] = Math.max(-127, Math.min(127, Math.round((127 * v[i]!) / max)));
+    vec((d) => {
+      d.query("DELETE FROM nodes_vec WHERE node_rowid = ?1").run(cand.rowid);
+      d.query(
+        "INSERT INTO nodes_vec (node_rowid, scope, layer, kind, head, embedding) VALUES (?1, ?2, 2, 'note', 1, vec_int8(?3))",
+      ).run(cand.rowid, scope, Buffer.from(q.buffer));
+    });
+  }
+
+  // Кандидат найдётся и лексикой, и (при vec0) вектором. Мутация «снять
+  // фильтр» из запроса fts ИЛИ из запроса knn absorb роняет этот тест: цель —
+  // кандидат (класс duplicate при векторе, related без него), новая заметка
+  // уходит в него.
   test("почти дословный повтор кандидата остаётся самостоятельной заметкой", async () => {
     const other = await remember("beta: рецепт блинов — 200 г муки, 2 яйца, 300 мл молока, щепотка соли.");
     await myc("absorb");
     const cand = candidate(scopeOf(other), ALPHA_OLD);
-    await myc("absorb", cand.id);
+    embedCandidate(cand, scopeOf(other), "alpha");
     const fresh = await remember(
       "alpha: миграции только вперёд, версия целочисленная, таблица schema_migrations с checksum, при расхождении exit 4",
     );
@@ -593,6 +613,108 @@ describe("кандидат хука сжатия — не цель дедупл�
     });
     expect(found).toContain(plain);
     expect(found).not.toContain(cand.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Кандидат как ИСТОЧНИК классификации (memory-79mq6fccg0jm): названный по id
+// или попавший в очередь, он не классифицируется — старше дубля, он стал бы
+// каноническим, и явная заметка ушла бы в него.
+// ---------------------------------------------------------------------------
+
+describe("кандидат хука сжатия — не источник классификации", () => {
+  function candidate(scope: string, title: string): string {
+    const driver = openSqlite({ path: join(dir, ".myc", "myc.db") });
+    try {
+      const store = new GraphStore(driver, { newId: () => generateId(), siteId: "site-test", actor: "hook" });
+      return store.createNode({
+        kind: "note",
+        layer: 2,
+        acl: "private",
+        salience: 0,
+        scope,
+        title,
+        actor: "hook",
+        attrs: { state: "pending_review", extracted_by: "precompact", episode_id: "ep-1", reach: "session", session_id: "S-1" },
+      }).id;
+    } finally {
+      driver.close();
+    }
+  }
+
+  function scopeOf(id: string): string {
+    return (db((d) => d.query("SELECT scope FROM nodes WHERE id = ?1").get(id)) as { scope: string }).scope;
+  }
+
+  // Мутация «убрать отказ по id в команде absorb» роняет этот тест (узел
+  // получает attrs.absorb, а младшая явная заметка — head_id на кандидата).
+  test("`myc absorb <id кандидата>` — отказ precond с командой разбора; кандидат не тронут", async () => {
+    const plain = await remember(ALPHA_OLD);
+    const cand = candidate(scopeOf(plain), `${ALPHA_OLD} (кандидат)`);
+    const { code, env } = await mycJson("absorb", cand);
+    expect(code).toBe(ExitCode.PRECOND);
+    expect(env.error?.code).toBe("precond.pending_review");
+    expect(env.error?.hint).toBe(`myc review confirm ${cand}`);
+    expect(node(cand).absorb).toBeUndefined();
+    expect(node(plain).head_id).toBeNull();
+  });
+
+  // Работа очереди у кандидата (хук её не ставит, но старые базы и чужие
+  // писатели — могут). Мутация «убрать пропуск кандидата в absorbOne» роняет
+  // этот тест: кандидат получает attrs.absorb и класс, счётчики — единицу.
+  test("работа очереди у кандидата: пропуск без записи, работа снята, деградации нет", async () => {
+    const plain = await remember(ALPHA_OLD);
+    await myc("absorb");
+    const cand = candidate(scopeOf(plain), `${ALPHA_OLD} (кандидат из очереди)`);
+    const driver = openSqlite({ path: join(dir, ".myc", "myc.db") });
+    try {
+      driver.database
+        .query("INSERT INTO jobs (kind, entity_id, scope, priority, run_after, payload, created_at) VALUES ('absorb', ?1, ?2, 5, 0, '{}', 0)")
+        .run(cand, scopeOf(plain));
+    } finally {
+      driver.close();
+    }
+    const { env } = await mycJson<AbsorbData>("absorb");
+    const r = env.data.nodes.find((x) => x.id === cand)!;
+    expect(r.skipped).toBe("pending_review");
+    expect(r.actions).toEqual([]);
+    expect(Object.values(env.data.by_class).reduce((a, b) => a + b, 0)).toBe(0);
+    expect(env.data.degraded).toBeNull();
+    expect(node(cand).absorb).toBeUndefined();
+    expect(jobs("absorb")).not.toContain(cand);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Отозванная заметка — не цель дедупликации (memory-0p3d8n1efwtv): дубль ушёл
+// бы в неё superseded, а её саму выдача больше не отдаёт.
+// ---------------------------------------------------------------------------
+
+describe("отозванная заметка — не цель дедупликации", () => {
+  // Мутация «вернуть в запросы fts/knn absorb только <> 'superseded'» роняет
+  // этот тест: цель — отозванная (duplicate при векторе, related без него).
+  test("почти дословный повтор отозванной остаётся самостоятельной живой заметкой", async () => {
+    await remember("beta: рецепт блинов — 200 г муки, 2 яйца, 300 мл молока, щепотка соли.");
+    const gone = await remember(ALPHA_OLD);
+    await myc("absorb"); // у отозванной есть вектор — она была знанием до отзыва
+    const driver = openSqlite({ path: join(dir, ".myc", "myc.db") });
+    try {
+      new GraphStore(driver, { newId: () => generateId(), siteId: "site-test", actor: "tester" }).updateNode(gone, {
+        status: "retracted",
+      });
+    } finally {
+      driver.close();
+    }
+    const fresh = await remember(
+      "alpha: миграции только вперёд, версия целочисленная, таблица schema_migrations с checksum, при расхождении exit 4",
+    );
+    const { env } = await mycJson<AbsorbData>("absorb");
+    const r = env.data.nodes.find((x) => x.id === fresh)!;
+    expect(r.target).not.toBe(gone);
+    const f = node(fresh);
+    expect(f.status).toBe("active");
+    expect(f.head_id).toBeNull();
+    expect(edges()).not.toContainEqual(expect.objectContaining({ src: fresh, dst: gone }));
   });
 });
 

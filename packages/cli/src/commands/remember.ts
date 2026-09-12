@@ -45,7 +45,7 @@ import {
 } from "@myc/core";
 // Подпуть, а не "@myc/retrieval": корень пакета тянет гибрид, вектор и кеш, а
 // у записи бюджет 5 мс на весь процесс (шапка модуля).
-import { confirmAttrs, isPendingReview } from "@myc/retrieval/review";
+import { CONFIRMED_SALIENCE, confirmAttrs, isAwaitingReview, isHiddenStatus } from "@myc/retrieval/review";
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure } from "../registry.ts";
@@ -83,7 +83,7 @@ const QJ = defineQueries({
   // content_hash) — один спуск по уникальному индексу, микросекунды.
   exact_dup: {
     name: "exact_dup",
-    sql: `SELECT id, attrs FROM nodes
+    sql: `SELECT id, attrs, status, salience FROM nodes
            WHERE scope = ?1 AND kind = ?2 AND content_hash = ?3 AND deleted_at IS NULL`,
     params: ["scope", "kind", "content_hash"],
   },
@@ -102,6 +102,67 @@ const JOB_PRIORITY: Readonly<Record<string, number>> = { embed: 3, absorb: 5, an
 interface JobRequest {
   readonly kind: string;
   readonly payload: Record<string, JsonValue>;
+}
+
+/**
+ * Работы нового ЗНАНИЯ: эмбеддинг (без вектора узел не находит векторная
+ * ветка recall) и, если не выключено, классификация absorb. Одна функция на
+ * новую заметку и на подтверждённого кандидата — «как у новой заметки»
+ * (memory-4c24exck23cw) держится кодом, а не соглашением двух веток.
+ */
+function knowledgeJobs(absorb: boolean, reason: string): JobRequest[] {
+  const jobs: JobRequest[] = [{ kind: "embed", payload: { reason } }];
+  if (absorb) jobs.push({ kind: "absorb", payload: { reason } });
+  return jobs;
+}
+
+export interface ConfirmOutcome {
+  /** Поставленные работы: embed и (если не выключено) absorb. */
+  readonly queue: string[];
+  /**
+   * Очередь не записалась. Узел при этом уже подтверждён: это деградация
+   * (вектор и классификация отложены до переиндексации), а не отказ, — и
+   * вызывающий обязан сказать о ней вслух (И2).
+   */
+  readonly queueError?: string;
+}
+
+/**
+ * ПОДТВЕРЖДЕНИЕ КАНДИДАТА ХУКА СЖАТИЯ (§6.2) — одна функция на обе двери:
+ * `myc review confirm` (review.ts) и точный повтор текста в `myc remember`
+ * (ветка дубликата ниже). Три шага, и каждый закрывает свою дыру:
+ *
+ *   1. `attrs.state → confirmed`, кто и когда ({@link confirmAttrs}) — фильтр
+ *      выдачи кандидата больше не отсекает, лексика находит его сразу;
+ *   2. salience → {@link CONFIRMED_SALIENCE}, умолчание новой заметки: хук
+ *      пишет кандидата с 0, и без этого prime ставил бы подтверждённое
+ *      решение последним среди L2;
+ *   3. работы embed и absorb — ровно те, что у новой заметки. Ветка
+ *      дубликата раньше очередь не ставила вовсе, и у бывшего кандидата не
+ *      было ни вектора, ни классификации, пока корпус не переиндексируют —
+ *      векторная ветка recall его не находила (memory-4c24exck23cw).
+ *
+ * Отказ записи узла бросается (graphFailure — у вызывающего); отказ очереди —
+ * нет, он возвращается в {@link ConfirmOutcome.queueError}.
+ */
+export function confirmCandidate(
+  h: StoreHandle,
+  node: { readonly id: string; readonly salience: number },
+  by: string,
+  now: number,
+  absorb: boolean,
+): ConfirmOutcome {
+  h.store.updateNode(node.id, {
+    attrs: confirmAttrs(by, now),
+    ...(node.salience < CONFIRMED_SALIENCE ? { salience: CONFIRMED_SALIENCE } : {}),
+  });
+  const jobs = knowledgeJobs(absorb, "review_confirmed");
+  try {
+    enqueueAll(h, node.id, h.scope, jobs, now);
+    return { queue: jobs.map((j) => j.kind) };
+  } catch (e) {
+    return { queue: [], queueError: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
@@ -257,20 +318,34 @@ export interface RememberData {
   absorb_heuristic: boolean;
   /**
    * ФАЗА 0 absorb: факт уже есть слово в слово — узел не создан, `id` — это
-   * id существующего, у которого вырос seen_count. Очередь пуста.
+   * id существующего, у которого вырос seen_count. Очередь пуста, если этот
+   * повтор не подтвердил кандидата (см. {@link RememberData.review_confirmed}).
    */
   duplicate_of?: string;
   seen_count?: number;
   /**
    * Точный повтор оказался КАНДИДАТОМ хука сжатия (`attrs.state =
    * 'pending_review'`, §6.2): явная запись того же факта — подтверждение, и
-   * эта запись его подтвердила. Без этого поля ответ «duplicate» скрывал бы,
-   * что узел только что стал знанием, которого recall и prime до сих пор не
-   * отдавали.
+   * эта запись его подтвердила (и поставила embed/absorb, как новой заметке).
+   * Без этого поля ответ «duplicate» скрывал бы, что узел только что стал
+   * знанием, которого recall и prime до сих пор не отдавали.
    */
   review_confirmed?: boolean;
+  /**
+   * Точный повтор узла, который выдача СКРЫВАЕТ по статусу (отозван,
+   * заменён; HIDDEN_STATUSES): повтор его не воскрешает — отзыв был
+   * решением, и снимать его одной перезаписью текста (агент мог просто
+   * повторить себя) нельзя. Но и промолчать нельзя: запись «прошла», а факта
+   * в recall и prime нет. Поэтому статус назван здесь и WARN'ом (И2).
+   */
+  hidden_status?: string;
   body_chars: number;
   took_ms: number;
+}
+
+/** Очередь словами: absorb на эвристике помечается (И2, §3.8). */
+function queueWords(d: RememberData): string[] {
+  return d.queue.map((k) => (k === "absorb" && d.absorb_heuristic ? "absorb(heuristic — chat-LLM off)" : k));
 }
 
 /** Охват одной строкой: он обязан быть виден в каждой записи (И2). */
@@ -287,10 +362,13 @@ function renderRememberHuman(raw: unknown): string {
     const confirmed =
       d.review_confirmed === true
         ? " of an unconfirmed compaction candidate — confirmed now, recall and prime return it"
-        : "";
+        : d.hidden_status !== undefined
+          ? ` of a ${d.hidden_status} node — recall and prime do not return it`
+          : "";
+    const queue = d.queue.length > 0 ? ` · queue ${queueWords(d).join(", ")}` : "";
     return (
       `${d.id} duplicate · exact repeat${confirmed}, seen_count ${d.seen_count ?? "?"}${promoted} · ` +
-      `${reachBit(d)} · ${d.took_ms} ms\n`
+      `${reachBit(d)}${queue} · ${d.took_ms} ms\n`
     );
   }
   const head = [d.id, d.kind === "note" ? "memory" : d.kind, `L${d.layer}`];
@@ -301,9 +379,7 @@ function renderRememberHuman(raw: unknown): string {
   if (d.source !== undefined) bits.push(`source ${d.source}`);
   const lines = [`${head.join(" ")} · ${bits.join(" · ")}`];
   for (const a of d.anchors) lines.push(anchorFlagLine(a));
-  const queue = d.queue.map((k) =>
-    k === "absorb" && d.absorb_heuristic ? "absorb(heuristic — chat-LLM off)" : k,
-  );
+  const queue = queueWords(d);
   lines.push(`queue     ${queue.length > 0 ? queue.join(", ") : "—"}`);
   lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
@@ -446,7 +522,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
         // seen_count у существующего, и работа в очередь не ставится. Без
         // этой проверки createNode падал бы на ux_nodes_content с ошибкой
         // «UNIQUE constraint failed», то есть повтор факта был отказом записи.
-        const existing = h.driver.one<{ id: string; attrs: string }>(QJ.exact_dup, [
+        const existing = h.driver.one<{ id: string; attrs: string; status: string; salience: number }>(QJ.exact_dup, [
           h.scope,
           input.kind,
           contentHash(input.kind, title, body),
@@ -497,18 +573,44 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
           // content_hash, то есть попадает СЮДА, в кандидата. Кандидат из
           // выдачи исключён, пока его не подтвердят, — и если здесь только
           // нарастить seen_count, явно записанный факт исчезает из recall и
-          // prime вместе с ним. Явная запись и есть подтверждение человеком:
-          // state → confirmed, кто и когда — в строке узла.
+          // prime вместе с ним. Явная запись и есть подтверждение человеком —
+          // той же функцией, что `myc review confirm`: state → confirmed, кто
+          // и когда в строке узла, и работы embed/absorb, как у новой заметки.
+          // Отклонённого кандидата (retracted) повтор не воскрешает: его
+          // отклонили разбором, и снимать отклонение — отдельное решение.
           let reviewConfirmed = false;
-          if (isPendingReview(existingAttrs)) {
+          let dupQueue: string[] = [];
+          if (isAwaitingReview(existingAttrs, existing.status)) {
             try {
-              h.store.updateNode(existing.id, {
-                attrs: confirmAttrs(flagStr(ctx, "as") ?? h.actor, Date.now()),
-              });
+              const confirmed = confirmCandidate(
+                h,
+                existing,
+                flagStr(ctx, "as") ?? h.actor,
+                Date.now(),
+                ctx.flags["no-absorb"] !== true,
+              );
+              dupQueue = confirmed.queue;
+              if (confirmed.queueError !== undefined) {
+                ctx.warn("degraded.queue", `background queue unavailable: ${confirmed.queueError}`);
+              }
               reviewConfirmed = true;
             } catch (e) {
               return graphFailure(e);
             }
+          }
+          // СКРЫТЫЙ СТАТУС (memory-0p3d8n1efwtv). Отозванное выдача больше не
+          // отдаёт, поэтому точный повтор такого факта без этой строки «прошёл»
+          // бы молча, а в recall и prime его нет. Воскрешать повтором нельзя
+          // (см. RememberData.hidden_status) — называем статус и путь назад.
+          const hiddenStatus = isHiddenStatus(existing.status) ? existing.status : undefined;
+          if (hiddenStatus !== undefined) {
+            ctx.warn(
+              "degraded.hidden",
+              `fact already recorded as ${existing.id} and ${hiddenStatus}: recall and prime do not return it` +
+                (hiddenStatus === "superseded"
+                  ? ` — its current version: myc show ${existing.id}`
+                  : ` — to restore it: myc update ${existing.id} --status active`),
+            );
           }
           const dup: RememberData = {
             id: existing.id,
@@ -521,11 +623,12 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
             acl: acl ?? "team",
             tags,
             anchors: [],
-            queue: [],
-            absorb_heuristic: false,
+            queue: dupQueue,
+            absorb_heuristic: dupQueue.includes("absorb") && !deps.chatLlm(),
             duplicate_of: existing.id,
             seen_count: seen,
             ...(reviewConfirmed ? { review_confirmed: true } : {}),
+            ...(hiddenStatus !== undefined ? { hidden_status: hiddenStatus } : {}),
             body_chars: text.length,
             took_ms: Math.round((performance.now() - t0) * 10) / 10,
           };
@@ -535,7 +638,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
             meta: {
               took_ms: dup.took_ms,
               tier: dup.tier,
-              queue: [],
+              queue: dupQueue,
               duplicate_of: existing.id,
               ...(reviewConfirmed ? { review_confirmed: true } : {}),
               reach: after.reach,
@@ -558,10 +661,7 @@ export function createRememberCommand(deps: RememberDeps = realRememberDeps): Co
 
         // Всё тяжёлое — в очередь, а не в горячий путь (И1).
         const now = Date.now();
-        const jobs: JobRequest[] = [{ kind: "embed", payload: { reason: "remember" } }];
-        if (ctx.flags["no-absorb"] !== true) {
-          jobs.push({ kind: "absorb", payload: { reason: "remember" } });
-        }
+        const jobs = knowledgeJobs(ctx.flags["no-absorb"] !== true, "remember");
         let queue: string[] = jobs.map((j) => j.kind);
         try {
           enqueueAll(h, node.id, h.scope, jobs, now);

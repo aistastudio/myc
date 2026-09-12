@@ -35,8 +35,16 @@ export const KB_KINDS: readonly string[] = ["note", "doc", "fragment", "entity",
  * retrieval нет, поэтому здесь копия строки, а не импорт.
  */
 const PENDING_REVIEW = "pending_review";
-/** Разбор кандидата закончен — отклонён или заменён; в «ждёт» не входит. */
-const REVIEWED_STATUSES = new Set(["retracted", "superseded"]);
+/**
+ * Статусы, которые выдача скрывает, — копия HIDDEN_STATUSES из того же
+ * @myc/retrieval review.ts (зависимости от retrieval у веба нет). Кандидат с
+ * таким статусом разбор прошёл (отклонён, заменён) и в «ждёт» не входит.
+ * Копия, а не своё мнение: совпадение с оригиналом поэлементно сверяет
+ * packages/cli/src/commands/review.test.ts — пакет, зависящий от обоих; строка
+ * статуса, prime и этот подвал обязаны считать одно.
+ */
+export const HIDDEN_STATUSES: readonly string[] = ["superseded", "retracted", "cancelled"];
+const REVIEWED_STATUSES = new Set(HIDDEN_STATUSES);
 
 const ROWS_SQL = `
 SELECT id, kind, title, status, layer, acl, attrs, updated_at
@@ -94,6 +102,7 @@ function toRow(r: RawRow): KbRow {
     repo: repo.repo,
     repo_state: repo.state as KbRepoState,
     review: attrs["state"] === PENDING_REVIEW ? PENDING_REVIEW : null,
+    review_open: attrs["state"] === PENDING_REVIEW && !REVIEWED_STATUSES.has(r.status),
     updated_at: r.updated_at,
   };
 }
@@ -120,7 +129,7 @@ function countsOf(rows: readonly KbRow[]): KbCounts {
     if (r.repo_state === "root") repo.root += 1;
     else if (r.repo_state === "unknown") repo.unknown += 1;
     else repo.by_repo.set(r.repo, (repo.by_repo.get(r.repo) ?? 0) + 1);
-    if (r.review !== null && !REVIEWED_STATUSES.has(r.status)) pending += 1;
+    if (r.review_open) pending += 1;
   }
   return {
     by_kind: topCounts(byKind),

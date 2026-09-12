@@ -350,6 +350,29 @@ episode sess-5jh8je4g050m saved (265 B)
 NEXT     myc show sess-5jh8je4g050m · myc ready --claim
 ```
 
+**Decisions pulled from a compaction are candidates, not facts.** The same hook
+lifts "we decided / because" lines out of the transcript and stores them as
+candidates (`state pending_review`); recall, search, prime and MCP do not
+return them until someone confirms. `prime` names them in its footer —
+`N pending review hidden — myc review` — and `myc review` lists them, this
+session's first, for a person or an agent to settle. Confirming makes the
+candidate knowledge the way a new note is born (embedding and absorb
+classification queued); rejecting retracts it with the reason kept in the node.
+An agent does the same through MCP: `myc_ready` with `review` lists,
+`myc_update` with `confirm` or `reject` settles; the web knowledge base puts
+the two buttons on the candidate's row.
+
+```
+$ myc review
+PENDING REVIEW 2 · 1 in this session's prime · 1 from other sessions · session 3f9c21aa
+$ myc review confirm memory-6k2x…
+$ myc review reject memory-9x1q… --reason "restates the task, not a decision"
+```
+
+A retracted note — a rejected candidate among them — is out of every retrieval
+path, not only replaced versions: superseded, retracted and cancelled are one
+list shared by recall, prime and the status line.
+
 **A status line with what the agent cannot see.** `myc wire --status-line`
 puts one line under Claude Code's prompt — how full the context is, the task
 queue, the code index, the project's memory, and how many of this session's

@@ -28,7 +28,14 @@ import {
   type JsonValue,
   type NodeRecord,
 } from "@myc/core";
-import { PENDING_REVIEW, freshnessClock, isPendingReview, sourceCreatedAt } from "@myc/retrieval";
+import {
+  PENDING_REVIEW,
+  REJECT_REASON_KEY,
+  freshnessClock,
+  isHiddenStatus,
+  isPendingReview,
+  sourceCreatedAt,
+} from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import {
@@ -157,6 +164,8 @@ interface NodeView {
    * права: recall, search и prime его не отдают, и читатель обязан это видеть.
    */
   review?: typeof PENDING_REVIEW;
+  /** Причина отклонения кандидата (`myc review reject --reason`), если он отклонён. */
+  review_reason?: string;
   blocked_by: DepRef[];
   blocks: DepRef[];
   /**
@@ -234,7 +243,7 @@ function oneLine(h: StoreHandle, id: string): string {
   const parts = [n.id];
   if (n.kind === "task") parts.push(fmtPriority(n.priority));
   parts.push(nodeType(n), n.status);
-  if (isPendingReview(n.attrs)) parts.push("unconfirmed");
+  if (isPendingReview(n.attrs)) parts.push(isHiddenStatus(n.status) ? "reviewed" : "unconfirmed");
   if (n.assignee.length > 0) parts.push(`@${n.assignee}`);
   parts.push(n.title);
   return parts.join("  ");
@@ -385,6 +394,9 @@ function buildView(
     updated_at: freshnessClock(node),
     ...(typeof node.attrs["external_ref"] === "string" ? { imported_at: node.created_at } : {}),
     ...(isPendingReview(node.attrs) ? { review: PENDING_REVIEW } : {}),
+    ...(isPendingReview(node.attrs) && typeof node.attrs[REJECT_REASON_KEY] === "string"
+      ? { review_reason: node.attrs[REJECT_REASON_KEY] as string }
+      : {}),
     blocked_by: blockedBy,
     blocks,
     ...(blockedVia.length > 0 ? { blocked_via: blockedVia } : {}),
@@ -468,9 +480,14 @@ function renderNodeFull(v: NodeView, now: number): string[] {
   head.push(`acl ${v.acl}`);
   const lines = [head.join("  "), v.title];
   if (v.review !== undefined) {
+    // Отклонённый кандидат (`myc review reject`) хранит состояние, но разбор
+    // прошёл: строка называет причину, а не зовёт разбирать ещё раз.
     lines.push(
-      `review    unconfirmed compaction candidate (state ${v.review}) — ` +
-        "recall, search and prime do not return it",
+      isHiddenStatus(v.status)
+        ? `review    ${v.status === "retracted" ? "rejected" : v.status} compaction candidate (status ${v.status})` +
+            (v.review_reason !== undefined && v.review_reason.length > 0 ? `: ${v.review_reason}` : "")
+        : `review    unconfirmed compaction candidate (state ${v.review}) — ` +
+            `recall, search and prime do not return it · myc review confirm ${v.id} | myc review reject ${v.id} --reason`,
     );
   }
 

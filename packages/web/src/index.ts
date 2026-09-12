@@ -26,6 +26,7 @@ export {
   httpStatusFor,
   UPDATE_FIELDS,
   WRITE_OPS,
+  REVIEW_OPS,
   type RunCli,
   type WriteOp,
   type WriteOutcome,
@@ -33,7 +34,7 @@ export {
 } from "./mutate.ts";
 export { openReadOnly, VizDbError, type ReadOnlyDb } from "./db.ts";
 export { buildGraph, DEFAULT_NODE_LIMIT, DEFAULT_EDGE_LIMIT } from "./graph.ts";
-export { buildKb, KB_KINDS, KB_LIMIT, type KbOptions } from "./kb.ts";
+export { buildKb, HIDDEN_STATUSES, KB_KINDS, KB_LIMIT, type KbOptions } from "./kb.ts";
 export { buildReady, anchorNorm, freshnessNorm, typeNorm, scoreRow } from "./ready.ts";
 export { buildRouting, type RoutingOptions } from "./routing.ts";
 export { buildTimeline } from "./timeline.ts";

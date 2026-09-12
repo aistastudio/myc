@@ -148,6 +148,8 @@ interface Dom {
   searchPayload: unknown;
   /** `warn[]` конверта `GET /api/search` — деградация, которую обязан показать экран (И2). */
   searchWarn: { code: string; msg: string }[];
+  /** Ответ на `GET /api/kb` — тест подменяет ради строк базы знаний (кандидаты хука сжатия). */
+  kbPayload: unknown;
   /**
    * Одноразовая подмена ответа на следующий `POST /api/nodes/:id` — тело
    * записывается в `posts` как обычно, но в ответ уходит это вместо
@@ -499,6 +501,18 @@ function installDom(hash: string, graphNodes = 0, opts: { readOnly?: boolean } =
     bootstrapBlocks: [],
     searchPayload: defaultSearchPayload(),
     searchWarn: [],
+    kbPayload: {
+      rows: [],
+      total: 0,
+      shown: 0,
+      counts: {
+        by_kind: [],
+        by_layer: [],
+        reach: { project: 0, session: 0, unknown: 0 },
+        repo: { root: 0, unknown: 0, by_repo: [] },
+      },
+      took_ms: 1,
+    },
   };
 
   const docListeners = new Map<string, Array<(e: any) => void>>();
@@ -655,19 +669,8 @@ function installDom(hash: string, graphNodes = 0, opts: { readOnly?: boolean } =
             }
         : path === "/api/ready"
           ? { rows: [], blocked: 0, weights: {}, took_ms: 1 }
-          : path === "/api/kb"
-            ? {
-                rows: [],
-                total: 0,
-                shown: 0,
-                counts: {
-                  by_kind: [],
-                  by_layer: [],
-                  reach: { project: 0, session: 0, unknown: 0 },
-                  repo: { root: 0, unknown: 0, by_repo: [] },
-                },
-                took_ms: 1,
-              }
+          : path === "/api/kb" || path.startsWith("/api/kb?")
+            ? dom.kbPayload
             : path === "/api/oplog"
               ? { rows: [], total: 0, took_ms: 1 }
               : { nodes: 0, edges: 0, degraded: [], took_ms: 1 };
@@ -1580,5 +1583,96 @@ describe("бутстрап: редактор обязательного конт
   test("обрезки нет — баннер скрыт, а не показывает пустые списки", async () => {
     const dom = await boot("#bootstrap", 0, { readOnly: false });
     expect(dom.el("bootstrap-cut").hidden).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// База знаний: разбор кандидата хука сжатия (memory-79mq6fccg0jm)
+// ---------------------------------------------------------------------------
+
+describe("база знаний: кнопки кандидата", () => {
+  function kbRow(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id,
+      kind: "note",
+      subtype: null,
+      title: `решили что-то ${id}`,
+      status: "active",
+      layer: 2,
+      acl: "private",
+      tags: [],
+      reach: "session",
+      session: "S-1",
+      repo: "",
+      repo_state: "unknown",
+      review: "pending_review",
+      review_open: true,
+      updated_at: 1,
+      ...over,
+    };
+  }
+
+  function kbPayload(rows: Record<string, unknown>[]): unknown {
+    return {
+      rows,
+      total: rows.length,
+      shown: rows.length,
+      counts: {
+        by_kind: [{ key: "note", n: rows.length }],
+        by_layer: [{ key: "L2", n: rows.length }],
+        reach: { project: 0, session: rows.length, unknown: 0 },
+        pending_review: rows.filter((r) => r["review_open"] === true).length,
+        repo: { root: 0, unknown: rows.length, by_repo: [] },
+      },
+      took_ms: 1,
+    };
+  }
+
+  async function kbScreen(rows: Record<string, unknown>[], readOnly: boolean): Promise<Dom> {
+    const dom = await boot("#graph", 0, { readOnly });
+    dom.kbPayload = kbPayload(rows);
+    dom.goto("#kb");
+    await settle();
+    return dom;
+  }
+
+  const button = (dom: Dom, label: string): StubEl | undefined =>
+    dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === label);
+
+  // Мутация «убрать бар разбора из renderKbRow» роняет этот тест.
+  test("«принять» шлёт POST /op {op:'confirm'} — тот же путь записи, что `myc review confirm`", async () => {
+    const dom = await kbScreen([kbRow("cand-1")], false);
+    const accept = button(dom, "принять");
+    expect(accept).toBeDefined();
+    accept!.fire("click");
+    await settle();
+    expect(dom.posts).toEqual([{ path: "/api/nodes/cand-1/op", body: { op: "confirm" } }]);
+  });
+
+  test("«отклонить» требует причину и шлёт её", async () => {
+    const dom = await kbScreen([kbRow("cand-2")], false);
+    button(dom, "отклонить")!.fire("click");
+    await settle();
+    expect(dom.posts.length).toBe(0); // без причины не уходит
+    const reason = dom.findCreated((e) => e.tagName === "INPUT" && (e.attrs.get("placeholder") ?? "").startsWith("причина"));
+    expect(reason).toBeDefined();
+    reason!.value = "пересказ задачи, не решение";
+    // Кнопка отправки причины в опбаре вешается через `onclick` (переназначается
+    // на каждую операцию), а не addEventListener — зовём его так же, как браузер.
+    (button(dom, "подтвердить") as unknown as { onclick: () => void }).onclick();
+    await settle();
+    expect(dom.posts).toEqual([
+      { path: "/api/nodes/cand-2/op", body: { op: "reject", reason: "пересказ задачи, не решение" } },
+    ]);
+  });
+
+  test("отклонённый кандидат помечен и кнопок не получает; read-only — тоже без кнопок", async () => {
+    const dom = await kbScreen([kbRow("cand-3", { status: "retracted", review_open: false })], false);
+    expect(button(dom, "принять")).toBeUndefined();
+    expect(dom.findCreated((e) => e.textContent === "[кандидат · отклонён]")).toBeDefined();
+
+    const ro = await kbScreen([kbRow("cand-4")], true);
+    expect(button(ro, "принять")).toBeUndefined();
+    expect(ro.findCreated((e) => e.textContent === "[кандидат · не подтверждён]")).toBeDefined();
   });
 });

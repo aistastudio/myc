@@ -6,7 +6,7 @@
 // RRF комбинирует источники по рангу, а не по несопоставимым шкалам скоров.
 
 import { defineQueries, historyClause, type DbDriver, type Layer } from "@myc/core";
-import { notPendingClause } from "./review.ts";
+import { liveStatusPredicate, notPendingClause } from "./review.ts";
 
 export interface FtsSearchHit {
   readonly id: string;
@@ -51,7 +51,8 @@ export const ftsQueries = defineQueries({
     name: "ftsSearch",
     // Фильтры — внутри CTE источника, до ранжирования (§2.2: иначе top-N
     // источника вымывается фильтром уже после отбора). head_id IS NULL и
-    // status <> 'superseded' убирают старые версии и снятые с учёта узлы,
+    // liveStatusPredicate убирают старые версии и снятые с учёта узлы —
+    // заменённые, отозванные, отменённые (HIDDEN_STATUSES, ./review.ts),
     // notPendingClause — кандидатов на подтверждение (./review.ts, §6.2);
     // GROUP BY node_id страхует от дублей, если строка nodes_fts когда-либо
     // окажется не 1:1 с rowid узла.
@@ -64,7 +65,7 @@ export const ftsQueries = defineQueries({
         WHERE nodes_fts MATCH ?1
           AND n.deleted_at IS NULL
          ${historyClause("follow")}
-          AND n.status <> 'superseded'
+          AND ${liveStatusPredicate("n")}
           AND n.scope IN (SELECT value FROM json_each(?2))
           AND n.layer BETWEEN ?3 AND ?4
           AND (

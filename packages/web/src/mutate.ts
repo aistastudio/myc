@@ -228,6 +228,30 @@ export const WRITE_OPS = [
 ] as const;
 export type WriteOp = (typeof WRITE_OPS)[number];
 
+/**
+ * Разбор кандидатов хука сжатия (memory-79mq6fccg0jm) — кнопки карточки
+ * кандидата в «базе знаний», тем же путём записи, что у терминала и MCP:
+ * `myc review confirm|reject`. Подтверждение ставит embed и absorb, как новой
+ * заметке; отклонение пишет причину в сам узел — поэтому, в отличие от
+ * reopen/cancel, здесь нет reason.unwritten.
+ *
+ * Отдельным списком, а не в WRITE_OPS, и это долг, а не замысел: WRITE_OPS
+ * дословно перечисляет справка `myc viz` (viz.test.ts сверяет каждое имя), а
+ * правка её текста — вне границ этой задачи. Когда справка их назовёт, список
+ * сольётся с WRITE_OPS.
+ */
+export const REVIEW_OPS = ["confirm", "reject"] as const;
+export type ReviewOp = (typeof REVIEW_OPS)[number];
+
+function planReview(id: string, op: ReviewOp, body: Body): WritePlan | WriteOutcome {
+  if (op === "confirm") return { argv: ["review", "confirm", id], clockFields: [] };
+  const reason = str(body, "reason")?.trim();
+  if (reason === undefined || reason.length === 0) {
+    return bad("для reject обязателен 'reason'", "причина пишется в узел: её прочтёт тот, кто встретит кандидата снова");
+  }
+  return { argv: ["review", "reject", id, "--reason", reason], clockFields: [] };
+}
+
 /** Какой операцией берётся статус, который прислали полем (S54). */
 const STATUS_ROUTE: Readonly<Record<string, string>> = {
   in_progress: "claim — «в работе» берётся арендой, иначе задачу считают своей двое",
@@ -600,13 +624,15 @@ export function planUpdate(id: string, body: Body): WritePlan | WriteOutcome {
 /** POST /api/nodes/<id>/op — переходы состояния, как у myc_update в MCP. */
 export function planOp(id: string, body: Body): WritePlan | WriteOutcome {
   const op = str(body, "op");
-  if (op === undefined) return bad("нужен 'op'", `операции: ${WRITE_OPS.join(", ")}`);
+  const known = [...WRITE_OPS, ...REVIEW_OPS].join(", ");
+  if (op === undefined) return bad("нужен 'op'", `операции: ${known}`);
   const gap = OP_GAPS[op];
   if (gap !== undefined) {
     return refuse(501, "unsupported.op", `операция '${op}' не реализована: ${gap}`);
   }
+  if ((REVIEW_OPS as readonly string[]).includes(op)) return planReview(id, op as ReviewOp, body);
   if (!(WRITE_OPS as readonly string[]).includes(op)) {
-    return bad(`неизвестная операция '${op}'`, `допустимы ${WRITE_OPS.join(", ")}`);
+    return bad(`неизвестная операция '${op}'`, `допустимы ${known}`);
   }
 
   const leaseRaw = body["lease_minutes"];

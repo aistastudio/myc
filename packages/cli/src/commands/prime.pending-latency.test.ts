@@ -31,7 +31,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrations } from "@myc/store-sqlite";
-import { notPendingClause } from "@myc/retrieval";
+import { liveStatusPredicate, notPendingClause } from "@myc/retrieval";
 import { expectCostAtMost, expectWithinBudget, measure, report } from "@myc/bench";
 import { primeQueries } from "./prime.ts";
 
@@ -89,6 +89,12 @@ async function build(visible: "foreign97" | "all"): Promise<Stand> {
 
 const scanSql = primeQueries.prime_digest_scan.sql;
 const scanNoFilter = scanSql.replace(notPendingClause("nodes"), "");
+/**
+ * Тот же скан без терма скрываемых статусов (memory-0p3d8n1efwtv) — соперник
+ * для цены этого терма. Он ложится на ту же уже прочитанную строку, что и
+ * терм кандидатов, поэтому потолок — тот же SCAN_MAX_COST_RATIO.
+ */
+const scanNoStatus = scanSql.replace(`\n             AND ${liveStatusPredicate("nodes")}`, "");
 const countSql = primeQueries.prime_pending_count.sql;
 const countsSql = primeQueries.prime_reach_counts.sql;
 
@@ -146,6 +152,42 @@ describe("структура", () => {
       expect(n).toBe(pendingIds.size);
     }
   });
+});
+
+describe("терм скрываемых статусов (memory-0p3d8n1efwtv)", () => {
+  test("мутант собран, и план скана с термом и без него один и тот же", () => {
+    expect(scanNoStatus).not.toBe(scanSql);
+    const planOf = (sql: string): string[] =>
+      A.db
+        .query<{ detail: string }, (string | number)[]>(`EXPLAIN QUERY PLAN ${sql}`)
+        .all(SCOPE, 60, OWN)
+        .map((r) => r.detail);
+    expect(planOf(scanSql)).toEqual(planOf(scanNoStatus));
+  });
+
+  test("A: цена терма статуса в скане — против того же скана без него", () => {
+    const q = A.db.query(scanSql);
+    const q0 = A.db.query(scanNoStatus);
+    const m = measure(
+      `status: скан дайджеста @${N}, 97% чужих`,
+      () => { q.all(SCOPE, 60, OWN); },
+      { warmup: 30, iters: 100, rival: () => { q0.all(SCOPE, 60, OWN); }, rivalLabel: "тот же скан без терма status" },
+    );
+    report(m);
+    expectCostAtMost(m, SCAN_MAX_COST_RATIO);
+  }, 120_000);
+
+  test("B, видно всё: цена терма статуса в скане", () => {
+    const q = B.db.query(scanSql);
+    const q0 = B.db.query(scanNoStatus);
+    const m = measure(
+      `status: скан дайджеста @${N}, всё L2/L3 видно`,
+      () => { q.all(SCOPE, 60, OWN); },
+      { warmup: 30, iters: 100, rival: () => { q0.all(SCOPE, 60, OWN); }, rivalLabel: "тот же скан без терма status" },
+    );
+    report(m);
+    expectCostAtMost(m, SCAN_MAX_COST_RATIO);
+  }, 120_000);
 });
 
 describe(`бюджет (И1, prime p99 ${PRIME_BUDGET_MS} мс)`, () => {

@@ -1460,6 +1460,11 @@ const OP_LABELS: readonly (readonly [string, string, boolean])[] = [
   ["закрыть", "close", true],
   ["вернуть", "reopen", true],
   ["отменить", "cancel", true],
+  // Разбор кандидата хука сжатия (`myc review confirm|reject`): «принять» —
+  // не «подтвердить», потому что «подтвердить» уже подписана кнопка
+  // отправки причины в этом же баре.
+  ["принять", "confirm", false],
+  ["отклонить", "reject", true],
 ];
 
 const LEASE_MINUTES = [30, 60, 120, 240] as const;
@@ -1943,10 +1948,18 @@ function kbReachMark(row: KbRow): HTMLElement {
  */
 function kbReviewMark(row: KbRow): HTMLElement | null {
   if (row.review === null) return null;
+  if (!row.review_open) {
+    // Разбор прошёл — отклонён (retracted) или заменён: в выдаче его нет по
+    // статусу, в «ждёт» — тоже. Метка остаётся, иначе строка читалась бы
+    // обычной заметкой со странным статусом.
+    const done = el("span", "kreach kreach-unknown", `[кандидат · отклонён]`);
+    done.title = `кандидат хука сжатия, разбор окончен (статус ${row.status}): recall, search и prime его не отдают`;
+    return done;
+  }
   const mark = el("span", "kreach kreach-unknown", "[кандидат · не подтверждён]");
   mark.title =
     "кандидат хука сжатия (state pending_review): recall, search и prime его не отдают, " +
-    "пока его не подтвердит дистилляция или человек; отклонить — myc update <id> --status retracted";
+    "пока его не подтвердят — кнопками ниже или `myc review confirm|reject <id>`";
   return mark;
 }
 
@@ -1985,6 +1998,11 @@ function renderKbRow(row: KbRow): HTMLElement {
   if (review !== null) top.append(review);
   top.append(el("span", "kage", `${fmtAge(Date.now() - row.updated_at)} назад`));
   box.append(top);
+  // Кандидат, ждущий разбора, разбирается прямо в списке: принять — знание
+  // (recall и prime его отдают, embed и absorb в очереди), отклонить — с
+  // причиной, она пишется в узел. Бар вне строки-заголовка: клик по нему не
+  // раскрывает карточку.
+  if (writeEnabled && row.review_open) box.append(opBar(row.id, ["confirm", "reject"], () => void loadKb()));
 
   const detail = el("div", "krow-detail");
   detail.hidden = true;

@@ -48,7 +48,7 @@ import {
   type SearchResultCache,
 } from "./cache.ts";
 import { analyzeFtsQuery } from "./fts.ts";
-import { notPendingClause } from "./review.ts";
+import { liveStatusPredicate, notPendingClause } from "./review.ts";
 import { vectorSearch, type VectorSearchOutcome, type VectorSearchParams } from "./vector.ts";
 
 // ============================ конфигурация ==================================
@@ -860,7 +860,7 @@ export const hybridQueries = defineQueries({
         WHERE nodes_fts MATCH ?1
           AND n.deleted_at IS NULL
          ${historyClause("follow")}
-          AND n.status <> 'superseded'
+          AND ${liveStatusPredicate("n")}
           AND n.scope IN (SELECT value FROM json_each(?2))
           AND n.layer BETWEEN ?3 AND ?4
           AND ${ACL_PREDICATE}${notPendingClause("n")}
@@ -988,14 +988,15 @@ export const hybridQueries = defineQueries({
       -- the planner is tempted to enter from nodes, reading thousands of the
       -- scope's rows only to look them up in merged. The order "merged first
       -- (a hundred rows), then seek by id" is an order of magnitude faster.
-      -- The candidate filter (./review.ts) repeats here for the same reason
-      -- ACL does: graph hops enter through edges, not through matches, and a
-      -- pending_review candidate one edge away must not ride in on a seed.
+      -- The candidate filter and the hidden-status term (./review.ts) repeat
+      -- here for the same reason ACL does: graph hops enter through edges, not
+      -- through matches, and a pending_review candidate or a retracted note
+      -- one edge away must not ride in on a seed.
       FROM merged m
       CROSS JOIN nodes n ON n.id = m.node_id
       WHERE n.deleted_at IS NULL
        ${historyClause("follow")}
-        AND n.status <> 'superseded'
+        AND ${liveStatusPredicate("n")}
         AND n.scope IN (SELECT value FROM json_each(?2))
         AND n.layer BETWEEN ?3 AND ?4
         AND ${ACL_PREDICATE}${notPendingClause("n")}
@@ -1058,7 +1059,7 @@ export const hybridQueries = defineQueries({
         FROM nodes n
         WHERE n.deleted_at IS NULL
          ${historyClause("follow")}
-          AND n.status <> 'superseded'
+          AND ${liveStatusPredicate("n")}
           AND n.scope IN (SELECT value FROM json_each(?1))
           AND n.layer BETWEEN ?2 AND ?3
           AND ${aclPredicate(4)}${notPendingClause("n")}
@@ -1085,7 +1086,7 @@ export const hybridQueries = defineQueries({
       WHERE n.id IN (SELECT value FROM json_each(?1))
         AND n.deleted_at IS NULL
        ${historyClause("follow")}
-        AND n.status <> 'superseded'
+        AND ${liveStatusPredicate("n")}
         AND n.scope IN (SELECT value FROM json_each(?2))
         AND n.layer BETWEEN ?3 AND ?4
         AND ${ACL_PREDICATE}${notPendingClause("n")}

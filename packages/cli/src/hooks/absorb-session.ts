@@ -39,6 +39,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { redactSecrets, type JsonValue } from "@myc/core";
 import { HARNESSES } from "@myc/swarm";
+// Подпуть, а не корень @myc/retrieval: хуку нужны две константы, а не гибрид.
+import { PENDING_REVIEW, REVIEW_STATE_KEY } from "@myc/retrieval/review";
 import {
   defineQueries,
   episodeSessionKey,
@@ -231,7 +233,10 @@ function writeCandidates(
         body: line.length > 120 ? line : null,
         actor: handle.actor,
         attrs: {
-          state: "pending_review",
+          // Ключ и значение — те же константы, которыми фильтр выдачи
+          // (@myc/retrieval review.ts) узнаёт кандидата: переименуй одно без
+          // другого, и кандидаты молча потекли бы агенту фактами.
+          [REVIEW_STATE_KEY]: PENDING_REVIEW,
           extracted_by: "precompact",
           episode_id: episodeId,
           agent,

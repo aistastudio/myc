@@ -62,6 +62,10 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
         tag: { type: "array", items: { type: "string" }, maxItems: 1 },
         lease_minutes: { type: "integer", default: 30, minimum: 5, maximum: 480 },
         why: { type: "boolean", default: false, description: "explain the sort order" },
+        // Разбор кандидатов хука сжатия (memory-79mq6fccg0jm) — не новым
+        // инструментом, а режимом очереди: «что ждёт действия» и есть ready,
+        // а действие — myc_update. Налог в tools/list — одна строка, не тул.
+        review: { type: "boolean", default: false, description: "compaction candidates awaiting myc_update confirm/reject, not tasks" },
         ws: WS,
       },
       additionalProperties: false,
@@ -71,7 +75,8 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
     name: "myc_update",
     description:
       "Every task state change in one tool: claim, release, close, reopen, " +
-      "assign, priority, note, extend. close and reopen require a reason — " +
+      "assign, priority, note, extend; confirm/reject a compaction candidate. " +
+      "close, reopen and reject require a reason — " +
       "it goes into project memory and later sessions see it.",
     inputSchema: {
       type: "object",
@@ -80,7 +85,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
         id: { type: "string" },
         op: {
           type: "string",
-          enum: ["claim", "release", "close", "reopen", "assign", "priority", "note", "extend"],
+          enum: ["claim", "release", "close", "reopen", "assign", "priority", "note", "extend", "confirm", "reject"],
           // Отмена (cancel) агенту намеренно не выдана: она решает, нужна ли
           // работа вообще, и терминальна — отменённый блокер выпускает зависимые
           // задачи в очередь. Сказано здесь, а не только в отказе, чтобы агент
@@ -89,7 +94,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
             "cancel is left out on purpose: cancelling is a human judgment, " +
             "say in your report that the work is not needed",
         },
-        reason: { type: "string", description: "required for close and reopen" },
+        reason: { type: "string", description: "required for close, reopen, reject" },
         outcome: { type: "string", enum: ["done", "wontfix", "duplicate", "superseded"], default: "done" },
         duplicate_of: { type: "string", description: "canonical node for outcome=duplicate" },
         assignee: { type: "string" },

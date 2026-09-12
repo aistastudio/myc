@@ -275,6 +275,13 @@ export interface KbRow {
    * целиком, — но помечен: recall, search и prime его не отдают.
    */
   readonly review: "pending_review" | null;
+  /**
+   * Кандидат ещё ждёт разбора: `review` есть, а статус не из скрываемых
+   * (отклонённый — `retracted` — разбор прошёл). Считается сервером, а не
+   * клиентом: список статусов живёт в kb.ts, а клиент импортирует только типы.
+   * По нему интерфейс решает, показать ли кнопки «принять/отклонить».
+   */
+  readonly review_open: boolean;
   readonly updated_at: number;
 }
 

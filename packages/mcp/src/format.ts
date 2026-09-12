@@ -193,3 +193,37 @@ export function rememberText(d: {
   lines.push(`${d.took_ms} ms`);
   return `${lines.join("\n")}\n`;
 }
+
+/** review confirm/reject: renderAction (packages/cli/src/commands/review.ts). */
+export function reviewText(d: {
+  items: {
+    id: string;
+    title: string;
+    outcome: "confirmed" | "already_confirmed" | "rejected" | "already_rejected";
+    by: string;
+    queue: string[];
+    reason?: string;
+  }[];
+  changed: number;
+  absorb_heuristic: boolean;
+  took_ms: number;
+}): string {
+  const queueOf = (q: readonly string[]): string =>
+    q.length === 0
+      ? "—"
+      : q.map((k) => (k === "absorb" && d.absorb_heuristic ? "absorb(heuristic — chat-LLM off)" : k)).join(", ");
+  const lines = d.items.map((it) => {
+    switch (it.outcome) {
+      case "confirmed":
+        return `${it.id} confirmed · recall and prime return it now · queue ${queueOf(it.queue)}`;
+      case "already_confirmed":
+        return `${it.id} already confirmed by ${it.by || "?"} · nothing to do`;
+      case "rejected":
+        return `${it.id} rejected · status retracted · reason: ${it.reason ?? ""}`;
+      case "already_rejected":
+        return `${it.id} already rejected by ${it.by || "?"} · nothing to do`;
+    }
+  });
+  lines.push(`${d.changed} changed · ${d.took_ms} ms`);
+  return `${lines.join("\n")}\n`;
+}

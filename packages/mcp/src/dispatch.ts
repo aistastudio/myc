@@ -26,6 +26,7 @@ import {
   depText,
   readyClaimText,
   rememberText,
+  reviewText,
   updateText,
   warnBlock,
   fmtAge,
@@ -312,6 +313,24 @@ async function toolReady(deps: DispatchDeps, args: Args): Promise<CallToolResult
   const id = optStr(args, "id");
   const filters = readyFilters(args);
 
+  // Очередь разбора кандидатов хука сжатия (memory-79mq6fccg0jm) — та же
+  // команда, что у человека (`myc review`), текст дословно. Кандидат — не
+  // задача: брать его арендой и фильтровать как задачу нечем, и молча
+  // проигнорировать такие параметры значило бы ответить на другой вопрос.
+  if (optBool(args, "review")) {
+    if (claim || id !== undefined || filters.length > 0) {
+      throw new ToolError(
+        "usage.invalid",
+        "'review' lists compaction candidates, not tasks: claim, id, kind, priority, tag and why do not apply",
+        `confirm or reject a candidate: myc_update {op:"confirm"|"reject", id}`,
+      );
+    }
+    const argv = ["review", "--limit", String(n)];
+    const [text, env] = await Promise.all([runText(deps.runCli, argv), runJson(deps.runCli, argv)]);
+    if (!env.ok) return envelopeFailure(env);
+    return textResult(text, { ...env.data, meta: metaOf(env) });
+  }
+
   if (!claim) {
     if (id !== undefined) {
       throw new ToolError("usage.invalid", "'id' only makes sense with claim=true");
@@ -373,7 +392,18 @@ async function toolReady(deps: DispatchDeps, args: Args): Promise<CallToolResult
   });
 }
 
-const UPDATE_OPS = ["claim", "release", "close", "reopen", "assign", "priority", "note", "extend"] as const;
+const UPDATE_OPS = [
+  "claim",
+  "release",
+  "close",
+  "reopen",
+  "assign",
+  "priority",
+  "note",
+  "extend",
+  "confirm",
+  "reject",
+] as const;
 
 /**
  * Операции, намеренно НЕ выданные агенту, и причина по каждой.
@@ -541,6 +571,39 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
           lease_until: null,
           meta: storeMeta(h, t0),
         });
+      });
+    }
+
+    // Разбор кандидата хука сжатия — команда `myc review` (memory-79mq6fccg0jm),
+    // ОДНИМ --json-прогоном (мутация). Подтверждение ставит embed и absorb,
+    // как новой заметке; отклонение пишет причину в сам узел.
+    case "confirm": {
+      const env = await runJson(deps.runCli, ["review", "confirm", id]);
+      if (!env.ok) return envelopeFailure(env);
+      const d = env.data as unknown as Parameters<typeof reviewText>[0];
+      const item = d.items[0];
+      return textResult(`${warnBlock(env.warn ?? [])}${reviewText(d)}`, {
+        id: item?.id ?? id,
+        review: "confirmed",
+        changed: d.changed > 0,
+        queued: item?.queue ?? [],
+        meta: metaOf(env),
+      });
+    }
+
+    case "reject": {
+      const reason = reqStr(args, "reason");
+      const env = await runJson(deps.runCli, ["review", "reject", id, "--reason", reason]);
+      if (!env.ok) return envelopeFailure(env);
+      const d = env.data as unknown as Parameters<typeof reviewText>[0];
+      const item = d.items[0];
+      return textResult(`${warnBlock(env.warn ?? [])}${reviewText(d)}`, {
+        id: item?.id ?? id,
+        review: "rejected",
+        status: "retracted",
+        changed: d.changed > 0,
+        reason,
+        meta: metaOf(env),
       });
     }
 
