@@ -84,7 +84,14 @@ import {
   type ReachInfo,
 } from "@myc/core";
 import type { QueryDef } from "@myc/core";
-import { awaitingReviewPredicate, liveStatusPredicate, notPendingClause } from "@myc/retrieval";
+import {
+  anchorsAlivePredicate,
+  anchorsAllLostSql,
+  awaitingReviewPredicate,
+  liveStatusPredicate,
+  lostAnchorOwnersSql,
+  notPendingClause,
+} from "@myc/retrieval";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ExitCode } from "../exit.ts";
@@ -124,11 +131,13 @@ const FOOTER_MAX = 90;
  * review hidden — myc review · repo collector · 99999 from other repos hidden
  * · 99999 without repo reach» — 192 символа (без подсказки `myc review` было
  * 179 при резерве 190; резерв поднят до 195, чтобы потолок с подсказкой и
- * разделителем « · » по-прежнему в него укладывался). Длинное
+ * разделителем « · » по-прежнему в него укладывался). Число знания с
+ * потерянным кодом (§7.3) — « · 99999 with code gone hidden», ещё 30: потолок
+ * 222, резерв 225. Длинное
  * объяснение "путь вне воркспейса: <path>" (repoReasonText) в этот потолок не
  * закладывается — тот же необрезаемый принцип, что и у самой строки охвата.
  */
-const REACH_FOOTER_MAX = 195;
+const REACH_FOOTER_MAX = 225;
 /**
  * Команда разбора кандидатов в подвале рядом с их числом — одна короткая
  * строка в уже зарезервированном месте {@link REACH_FOOTER_MAX}, а не новая
@@ -195,26 +204,51 @@ export const primeQueries = defineQueries({
   // строк. Список один на систему (HIDDEN_STATUSES, @myc/retrieval review.ts):
   // до него скан статуса не смотрел вовсе, и CORE/DECISIONS отдавали то, что
   // строка статуса уже не считала.
+  // ЗНАНИЕ, ЧЕЙ КОД ПОТЕРЯН ЦЕЛИКОМ (§7.3: `lost` — «не попадает в prime»,
+  // memory-d81a4d4hn8ef) — тоже до LIMIT окна и по той же причине, но НЕ в
+  // том же WHERE. Порядок (layer DESC, salience DESC) индекс (layer ASC,
+  // salience DESC) не даёт, и SQLite сортирует каждую группу слоя целиком:
+  // все термы внутреннего WHERE считаются на КАЖДОЙ строке нужных групп. Там,
+  // где L3 меньше окна (живая база: L3 39, L2 48), это вся L2 — тысячи строк
+  // на 100k, а терм якорей — поиск по edges на строку (~1 мкс). Прямым термом
+  // замер дал ×3.1 к скану (8.1 против 2.6 мс, L3 40, L2 4960), при L3 200 —
+  // ×1.8. Поэтому внутри сортируется только rowid, а терм стоит СНАРУЖИ
+  // сопрограммы и считается лишь на строках, дошедших до окна по порядку:
+  // ×1.12 и ×1.31 на тех же стендах (prime.lost-latency.test.ts).
+  //   `LIMIT -1` внутри — не украшение: подзапрос с LIMIT SQLite не
+  // сплющивает во внешний запрос и не выбрасывает его ORDER BY, иначе терм
+  // вернулся бы в общий WHERE (правило 19 flattener'а). CROSS JOIN держит
+  // порядок цикла «окно снаружи, строка узла внутри», поэтому строки выходят в
+  // порядке сортировки; тест сверяет окно с тем же фильтром прямым термом под
+  // ORDER BY (тот и есть оракул порядка).
   prime_digest_scan: {
     name: "prime_digest_scan",
-    sql: `SELECT nodes.id, nodes.layer, nodes.title, nodes.excerpt, nodes.updated_at,
-                 ${reachColumns("nodes")}
+    sql: `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
+                 ${reachColumns("n")}
+            FROM (SELECT nodes.rowid AS rid
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
              AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${notPendingClause("nodes")}
              AND ${liveStatusPredicate("nodes")}
-           ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT ?2`,
+           ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT -1) w
+           CROSS JOIN nodes n ON n.rowid = w.rid
+           WHERE ${anchorsAlivePredicate("n")}
+           LIMIT ?2`,
     params: ["scope", "lim", "session"],
   },
   prime_digest_scan_repo: {
     name: "prime_digest_scan_repo",
-    sql: `SELECT nodes.id, nodes.layer, nodes.title, nodes.excerpt, nodes.updated_at,
-                 ${reachColumns("nodes")}, ${repoColumns("nodes")}
+    sql: `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
+                 ${reachColumns("n")}, ${repoColumns("n")}
+            FROM (SELECT nodes.rowid AS rid
             FROM nodes INDEXED BY ix_nodes_prime_reach
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
              AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${repoClause("nodes", 4)}${notPendingClause("nodes")}
              AND ${liveStatusPredicate("nodes")}
-           ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT ?2`,
+           ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT -1) w
+           CROSS JOIN nodes n ON n.rowid = w.rid
+           WHERE ${anchorsAlivePredicate("n")}
+           LIMIT ?2`,
     params: ["scope", "lim", "session", "repo"],
   },
   // И2: скрытое и неопределённое обязано быть НАЗВАНО ЧИСЛОМ, иначе фильтр
@@ -256,6 +290,26 @@ export const primeQueries = defineQueries({
            WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
              AND nodes.deleted_at IS NULL${reachClause("nodes", 2)}
              AND ${awaitingReviewPredicate("nodes")}`,
+    params: ["scope", "session"],
+  },
+  // Сколько знания скан спрятал как потерявшее код целиком (§7.3, И2) — те,
+  // что прошли бы охват, фильтр кандидатов и статусов: у каждого скрытого одна
+  // причина в подвале, кандидат с потерянным якорем уже назван кандидатом.
+  // Счёт идёт ОТ ПОТЕРЯННЫХ ЯКОРЕЙ (ix_anchors_check), а не от всех L2/L3:
+  // от узлов это ~1 мкс на каждую видимую строку (5.6 мс на 100k, ×4.2 к
+  // prime_pending_count), от якорей — ~2–4 мкс на каждый lost-якорь базы
+  // (2.1 мс при 493 lost, ×1.55), а при их отсутствии — один спуск по
+  // индексу. Охват репозитория не применяется — как у prime_pending_count:
+  // оси считаются независимо (см. prime_repo_counts).
+  prime_lost_count: {
+    name: "prime_lost_count",
+    sql: `SELECT count(*) AS n
+            FROM nodes
+           WHERE nodes.id IN (${lostAnchorOwnersSql()})
+             AND nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
+             AND nodes.deleted_at IS NULL${reachClause("nodes", 2)}${notPendingClause("nodes")}
+             AND ${liveStatusPredicate("nodes")}
+             AND ${anchorsAllLostSql("nodes")} = 1`,
     params: ["scope", "session"],
   },
   prime_repo_counts: {
@@ -331,6 +385,8 @@ interface DigestPayload {
   readonly repo: RepoMemSummary;
   /** Кандидаты на подтверждение (§6.2), скрытые из этого дайджеста (И2). */
   readonly pending: number;
+  /** Знание, у которого все якоря `lost` (§7.3), скрытое из дайджеста (И2). */
+  readonly lost: number;
 }
 
 const DIGEST_SCAN_LIMIT = 60;
@@ -381,6 +437,7 @@ function scanDigest(
     unknown: repoCounts?.repo_unknown ?? 0,
   };
   const pending = h.driver.one<{ n: number }>(QP.prime_pending_count, [h.scope, session])?.n ?? 0;
+  const lost = h.driver.one<{ n: number }>(QP.prime_lost_count, [h.scope, session])?.n ?? 0;
 
   const needle = focus?.trim().toLowerCase();
   const matches = (title: string, excerpt: string): boolean =>
@@ -417,7 +474,7 @@ function scanDigest(
     }
     if (core.length >= CORE_LIMIT && decisions.length >= DECISIONS_LIMIT) break;
   }
-  return { core, decisions, reach, repo: repoSummary, pending };
+  return { core, decisions, reach, repo: repoSummary, pending, lost };
 }
 
 /**
@@ -429,16 +486,21 @@ function scanDigest(
  * repoX` отдал бы дайджест, посчитанный для repoY. Оба случая — не промах
  * производительности, а обход фильтра охвата (S58/S59) попаданием в кеш.
  *
- * v5 — версия ФОРМЫ И ОТБОРА payload (v3 добавила поле `repo`, v4 — `pending`
- * и фильтр кандидатов, v5 — фильтр скрываемых статусов): при смене формы
- * версия обязана меняться, иначе старая запись подсунет payload без нового
- * поля; при смене отбора — тоже, иначе дайджест, посчитанный ДО фильтра,
- * отдавался бы из кеша, пока в базу никто не пишет (отозванная заметка в CORE
- * после обновления). Версия стоит в варианте, а не в имени профиля: профиль —
- * это стык S4 (`prime` и есть `prime`), его нельзя двигать при каждой правке.
+ * v6 — версия ФОРМЫ И ОТБОРА payload (v3 добавила поле `repo`, v4 — `pending`
+ * и фильтр кандидатов, v5 — фильтр скрываемых статусов, v6 — `lost` и фильтр
+ * знания с потерянным кодом): при смене формы версия обязана меняться, иначе
+ * старая запись подсунет payload без нового поля; при смене отбора — тоже,
+ * иначе дайджест, посчитанный ДО фильтра, отдавался бы из кеша, пока в базу
+ * никто не пишет (отозванная заметка в CORE после обновления). Версия стоит в
+ * варианте, а не в имени профиля: профиль — это стык S4 (`prime` и есть
+ * `prime`), его нельзя двигать при каждой правке.
+ *
+ * Смена состояния якоря кеш инвалидирует сама: проверка якорей пишет новое
+ * состояние и в `anchors`, и статусом узла-якоря через GraphStore — то есть в
+ * оплог того же скоупа (applyCheck в anchor.ts), и seq дайджеста двигается.
  */
 function digestVariant(session: string, repo: string): string {
-  return `v5:${session}:${repo}`;
+  return `v6:${session}:${repo}`;
 }
 
 /**
@@ -544,6 +606,13 @@ export interface PrimeData {
    * (`retracted`) не считаются: их разбор уже закончен.
    */
   readonly pending_review: number;
+  /**
+   * Знание L2/L3, у которого ВСЕ якоря `lost` (§7.3: «код удалён или
+   * переписан» — вес × 0.2 в поиске, в prime не попадает), прошедшее бы охват,
+   * фильтр кандидатов и статусов. Узел без якорей и с хоть одним живым якорем
+   * видно как прежде.
+   */
+  readonly anchor_lost_hidden: number;
   readonly degraded: readonly string[];
   readonly focus?: string;
   readonly format: "agent" | "md" | "json";
@@ -697,6 +766,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
                 reach: { hidden: 0, unknown: 0 },
                 repo: { hidden: 0, unknown: 0 },
                 pending: 0,
+                lost: 0,
               },
               cache: "miss" as const,
             }
@@ -710,6 +780,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
         let memRepoHidden = digested.payload.repo.hidden;
         let memRepoUnknown = digested.payload.repo.unknown;
         let pendingReview = digested.payload.pending;
+        let anchorLost = digested.payload.lost;
 
         if (!empty) {
           try {
@@ -728,6 +799,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
                 memRepoHidden += personalDigest.repo.hidden;
                 memRepoUnknown += personalDigest.repo.unknown;
                 pendingReview += personalDigest.pending;
+                anchorLost += personalDigest.lost;
               } finally {
                 personal.close();
               }
@@ -766,6 +838,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
           mem_repo_unknown: memRepoUnknown,
           mem_repo_foreign: memRepoHidden,
           pending_review: pendingReview,
+          anchor_lost_hidden: anchorLost,
           degraded,
           ...(focus !== undefined ? { focus } : {}),
           format,
@@ -811,6 +884,7 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
             mem_repo_unknown: memRepoUnknown,
             mem_repo_foreign: memRepoHidden,
             pending_review: pendingReview,
+            anchor_lost_hidden: anchorLost,
             degraded: degraded.length > 0 ? degraded : undefined,
           },
         };
@@ -877,6 +951,10 @@ function reachFooter(d: Omit<PrimeData, "chars" | "truncated" | "cut">): string 
   // пустой памяти. Рядом — команда разбора: число без пути к действию
   // оставляло кандидатов копиться (в базе этого репозитория их было 24).
   if (d.pending_review > 0) parts.push(`${d.pending_review} pending review hidden — ${REVIEW_HINT}`);
+  // Знание, чей код удалён или переписан (все якоря `lost`, §7.3), — та же
+  // громкость: его нет в CORE/DECISIONS, но оно не стёрто, recall его находит
+  // с пометкой `code gone`, и число здесь говорит, что искать есть что.
+  if (d.anchor_lost_hidden > 0) parts.push(`${d.anchor_lost_hidden} with code gone hidden`);
   parts.push(...repoFooterParts(d));
   return parts.join(" · ");
 }

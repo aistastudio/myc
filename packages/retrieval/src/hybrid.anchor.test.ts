@@ -7,7 +7,10 @@
  *   NO_ANCHOR_WEIGHT_OVERRIDES (состояние не влияет на ранг) — краснеет
  *     «ниже живого аналога»: два одинаковых узла снова вровень;
  *   «худший якорь решает» вместо лучшего — краснеет «несколько якорей»;
- *   скан `edges` в подзапросе (снять условие на `src`) — краснеет план.
+ *   скан `edges` в подзапросе (снять условие на `src`) — краснеет план;
+ *   `min` → `max` в anchorsAllLostSql («хоть один lost» вместо «все lost») —
+ *     краснеет «prime прячет ровно то, что поиск помечает lost» на [lost, fresh];
+ *   `IS NOT 1` → `= 0` в anchorsAlivePredicate — там же краснеет «без якорей».
  *
  * Бюджет: подзапрос состояний — на каждую строку результата; его цена
  * меряется против того же лексического прохода без колонки, чередуясь
@@ -20,11 +23,14 @@ import { expectCostAtMost, expectWithinBudget, measure, report } from "@myc/benc
 import { migration001Init, openSqlite, type SqliteDriver } from "@myc/store-sqlite";
 import type { FtsCaller } from "./fts.ts";
 import {
+  anchorsAlivePredicate,
+  anchorsAllLostSql,
   anchorStatesSql,
   anchorWeightOf,
   DEFAULT_HYBRID_CONFIG,
   hybridQueries,
   hybridSearch,
+  lostAnchorOwnersSql,
   NO_ANCHOR_WEIGHT_OVERRIDES,
   type HybridConfig,
 } from "./hybrid.ts";
@@ -158,6 +164,100 @@ describe("знание с подозрительным якорем: найде�
     expect(anchorWeightOf(null, DEFAULT_HYBRID_CONFIG)).toEqual({ weight: 1, state: null });
     expect(anchorWeightOf("fresh:1.0,drifted:1.0", DEFAULT_HYBRID_CONFIG)).toEqual({ weight: 1, state: null });
     expect(anchorWeightOf("drifted:0.64", DEFAULT_HYBRID_CONFIG)).toEqual({ weight: 0.64, state: "drifted" });
+  });
+});
+
+describe("prime прячет ровно то, что поиск помечает lost (§7.3: lost — «не попадает в prime»)", () => {
+  // Сочетания якорей одного узла. Предикат prime и пометка поиска обязаны
+  // совпадать на каждом: иначе prime прятал бы знание, которое recall
+  // показывает живым, или наоборот.
+  const CASES: ReadonlyArray<readonly [string, readonly string[], boolean]> = [
+    // [имя, состояния якорей, спрятан ли в prime]
+    ["без якорей", [], false],
+    ["fresh", ["fresh"], false],
+    ["lost", ["lost"], true],
+    ["lost+lost", ["lost", "lost"], true],
+    ["lost+fresh", ["lost", "fresh"], false],
+    ["lost+stale", ["lost", "stale"], false],
+    ["lost+drifted", ["lost", "drifted"], false],
+    ["stale", ["stale"], false],
+    ["drifted", ["drifted"], false],
+  ];
+
+  function stand(): { db: SqliteDriver; ids: Map<string, string> } {
+    const db = freshDb();
+    const ids = new Map<string, string>();
+    CASES.forEach(([name, states], i) => {
+      const id = `k-${i}`;
+      ids.set(name, id);
+      node(db, id, `Узел ${name}`, "тело");
+      for (const s of states) anchor(db, id, s, s === "drifted" ? 0.7 : 1);
+    });
+    // Отвязанный якорь (ребро touches удалено) якорем узла больше не считается:
+    // lost + отвязанный fresh — это «все живые якоря lost».
+    node(db, "k-unbound", "Узел lost+отвязанный fresh", "тело");
+    anchor(db, "k-unbound", "lost");
+    const unbound = anchor(db, "k-unbound", "fresh");
+    db.database.query("UPDATE edges SET deleted_at = 1 WHERE src = 'k-unbound' AND dst = ?1").run(unbound);
+    ids.set("lost+отвязанный fresh", "k-unbound");
+    return { db, ids };
+  }
+
+  test("на каждом сочетании: предикат prime == «лучший якорь lost» у поиска", () => {
+    const { db, ids } = stand();
+    const q = db.database.query<{ all_lost: number | null; alive: number; raw: string | null }, [string]>(
+      `SELECT ${anchorsAllLostSql("n")} AS all_lost, ${anchorsAlivePredicate("n")} AS alive,
+              ${anchorStatesSql("n")} AS raw
+         FROM nodes n WHERE n.id = ?1`,
+    );
+    const expected = new Map<string, boolean>([
+      ...CASES.map(([name, , hidden]) => [name, hidden] as const),
+      ["lost+отвязанный fresh", true],
+    ]);
+    for (const [name, id] of ids) {
+      const r = q.get(id)!;
+      const searchLost = anchorWeightOf(r.raw, DEFAULT_HYBRID_CONFIG).state === "lost";
+      // Ровно 1 у видимого, ровно 0 у спрятанного: NULL в WHERE — тоже отсев.
+      expect({ name, alive: r.alive }).toEqual({ name, alive: expected.get(name)! ? 0 : 1 });
+      expect({ name, alive: r.alive }).toEqual({ name, alive: searchLost ? 0 : 1 });
+      // NULL — «якорей нет», а не «все lost»: предикат обязан их пропускать.
+      if (name === "без якорей") expect(r.all_lost).toBeNull();
+    }
+    db.close();
+  });
+
+  test("владельцы lost-якорей: узлы с хоть одним lost по живому ребру, без дублей в счёте", () => {
+    const { db, ids } = stand();
+    const owners = db.database
+      .query<{ src: string }, []>(`SELECT DISTINCT src FROM (${lostAnchorOwnersSql()}) ORDER BY src`)
+      .all()
+      .map((r) => r.src);
+    const want = ["lost", "lost+lost", "lost+fresh", "lost+stale", "lost+drifted", "lost+отвязанный fresh"]
+      .map((n) => ids.get(n)!)
+      .sort();
+    expect(owners).toEqual(want);
+    // Счёт скрытого — владельцы, у которых все якоря lost: ровно три узла,
+    // хотя у «lost+lost» два потерянных якоря (IN не удваивает).
+    const hidden = db.database
+      .query<{ n: number }, []>(
+        `SELECT count(*) AS n FROM nodes WHERE nodes.id IN (${lostAnchorOwnersSql()}) AND ${anchorsAllLostSql("nodes")} = 1`,
+      )
+      .get()!.n;
+    expect(hidden).toBe(3);
+    db.close();
+  });
+
+  test("план владельцев: lost-якоря по ix_anchors_check, рёбра по ix_edges_dst; скана нет", () => {
+    const db = freshDb();
+    const plan = (
+      db.database.query(`EXPLAIN QUERY PLAN ${lostAnchorOwnersSql()}`).all() as Array<{ detail: string }>
+    )
+      .map((r) => r.detail)
+      .join(" | ");
+    expect(plan).toMatch(/SEARCH an USING (COVERING )?INDEX ix_anchors_check \(state=\?\)/);
+    expect(plan).toMatch(/SEARCH t USING (COVERING )?INDEX ix_edges_dst \(dst=\? AND type=\?\)/);
+    expect(plan).not.toMatch(/SCAN (t|an|edges|anchors)\b/);
+    db.close();
   });
 });
 

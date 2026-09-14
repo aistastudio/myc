@@ -45,6 +45,14 @@
  * чужой, `--repo all` снимает фильтр. Число строк без охвата репозитория
  * стоит в подвале: невыведенный охват обязан быть виден, а не выглядеть
  * общим (И2).
+ *
+ * ПЛАШКА СОСТОЯНИЯ ЯКОРЯ (docs/design/01 §7.3) — ПОЧЕМУ строка ниже. Знание,
+ * привязанное к коду, которого на месте нет, гибрид понижает (stale × 0.5,
+ * lost × 0.2, drifted × сходство), и без плашки это понижение молчаливо.
+ * Строка несёт `[code moved ×0.64]`, `[code unverified ×0.5]` или
+ * `[code gone ×0.2]` перед заголовком — в префиксе, поэтому плашку не срезает
+ * и свёртка по бюджету; у свежего якоря и у узла без якорей её нет вовсе.
+ * Для `code gone` подвал добавляет число и что с этим делать — отвязать.
  */
 
 import { REACH_VALUES, reachTag, repoTag, resolveSession } from "@myc/core";
@@ -186,8 +194,33 @@ function sourceSuffix(row: RetrieveRow): string {
 }
 
 /**
+ * Что показываем по состоянию якоря — столбец «Что показываем» таблицы §7.3:
+ * `drifted` — «сдвинулось», `stale` — «требует проверки», `lost` — «код удалён
+ * или переписан».
+ */
+const ANCHOR_BADGE: Readonly<Record<NonNullable<RetrieveRow["anchor_state"]>, string>> = Object.freeze({
+  drifted: "code moved",
+  stale: "code unverified",
+  lost: "code gone",
+});
+
+/** Подсказка к `code gone` в подвале: §7.3 предлагает такое знание отвязать. */
+const UNBIND_HINT = "myc anchor rm <id>";
+
+/**
+ * Плашка состояния якоря перед заголовком; пусто — якорь свеж или его нет.
+ * Множитель печатается, только когда он есть (у `drifted` со сходством 1.0
+ * понижения нет, и `×1` было бы шумом).
+ */
+function anchorBadge(row: RetrieveRow): string {
+  if (row.anchor_state === undefined) return "";
+  const weight = row.anchor_weight !== undefined ? ` ×${row.anchor_weight}` : "";
+  return `[${ANCHOR_BADGE[row.anchor_state]}${weight}] `;
+}
+
+/**
  * Всё, кроме заголовка: ранг, confidence, id, тип, слой (+источник), охват
- * сессии, охват репозитория, дата.
+ * сессии, охват репозитория, дата и плашка состояния якоря.
  */
 function headPrefix(row: RetrieveRow, session: string): string {
   const conf = confidenceCell(row);
@@ -200,7 +233,9 @@ function headPrefix(row: RetrieveRow, session: string): string {
   const repo = repoTag({ repo: row.repo, state: row.repo_state, by: "recorded" })
     .slice(0, REPO_CELL)
     .padEnd(4);
-  return `${row.rank}. ${conf} ${row.id} ${row.type} ${layer} ${reach} ${repo} ${fmtDate(row.updated_at)}  `;
+  // Плашка — не колонка: у подавляющего большинства строк её нет, и ширина
+  // под неё на каждой строке была бы оплатой бюджетом за пустоту.
+  return `${row.rank}. ${conf} ${row.id} ${row.type} ${layer} ${reach} ${repo} ${fmtDate(row.updated_at)}  ${anchorBadge(row)}`;
 }
 
 function headLine(row: RetrieveRow, session: string): string {
@@ -279,6 +314,13 @@ export interface RecallData {
   repo: string;
   /** Сколько строк выдачи без записанного охвата репозитория (S59, И2). */
   unknown_repo: number;
+  /**
+   * Сколько строк выдачи — знание, чей код удалён или переписан (лучший якорь
+   * `lost`, §7.3): подвал называет число и подсказывает отвязать. Строки самих
+   * узлов-якорей плашку несут, но сюда не входят: `myc anchor rm` принимает
+   * id знания, а по id якоря ответил бы «якоря нет».
+   */
+  anchor_lost: number;
   /**
    * Отсев ПО ПРИЧИНАМ (И2). Подвал советует ОДНУ ручку — самую весомую;
    * здесь лежат все числа, которыми этот совет проверяется. Агент, которому
@@ -363,6 +405,7 @@ function renderRecallHuman(raw: unknown): string {
   if (d.unknown_reach > 0) footer.push(`${d.unknown_reach} without reach`);
   if (d.repo.length > 0) footer.push(`repo ${d.repo}`);
   if (d.unknown_repo > 0) footer.push(`${d.unknown_repo} without repo reach`);
+  if (d.anchor_lost > 0) footer.push(`${d.anchor_lost} code gone — unbind: ${UNBIND_HINT}`);
   if (d.deduped > 0) footer.push(`${d.deduped} ${d.deduped === 1 ? "duplicate" : "duplicates"} collapsed`);
   if (collapsed.length > 0) footer.push(`${collapsed.length} collapsed by budget`);
   if (dropped.length > 0) footer.push(`${dropped.length} not shown (budget)`);
@@ -565,6 +608,7 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
         unknown_reach: o.rows.filter((r) => r.reach === "unknown").length,
         repo: o.repo,
         unknown_repo: o.rows.filter((r) => r.repo_state === "unknown").length,
+        anchor_lost: o.rows.filter((r) => r.anchor_state === "lost" && r.kind !== "anchor").length,
         drops: o.drops,
         why: ctx.flags["why"] === true ? whyLines(o.mode_used) : undefined,
         took_ms: o.took_ms,
@@ -599,6 +643,7 @@ export function createRecallCommand(deps: RetrieveDeps = realRecallDeps): Comman
           repo: o.repo.length > 0 ? o.repo : null,
           federation: o.federation,
           unknown_repo: base.unknown_repo,
+          anchor_lost: base.anchor_lost,
           partial: o.partial,
           omitted: o.omitted,
           ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),

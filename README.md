@@ -255,6 +255,13 @@ under different keys; `code symbol` reads both.
 Anchors tie knowledge to a span and follow the code as it moves; that half is
 language-agnostic and was verified on Python as well as TypeScript.
 
+When the code is no longer where the anchor put it, the knowledge is not
+deleted — it ranks lower and says why. `recall` marks the row
+`[code moved ×0.64]`, `[code unverified ×0.5]` or `[code gone ×0.2]`: the
+multiplier is the one its score was taken down by (drifted × similarity,
+stale × 0.5, lost × 0.2). Knowledge whose every anchor is lost stays out of
+`prime`, and the footer counts it: `N with code gone hidden`.
+
 ## Migration from beads
 
 ```bash

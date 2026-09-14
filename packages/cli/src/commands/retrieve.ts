@@ -252,6 +252,20 @@ export interface RetrieveRow {
   readonly repo: string;
   /** Состояние охвата репозитория: repo | root | unknown. */
   readonly repo_state: RepoInfo["state"];
+  /**
+   * Состояние лучшего якоря узла, если он не `fresh` (docs/design/01 §7.3):
+   * `drifted` — код сдвинулся или переехал, `stale` — файл изменился и код не
+   * найден, требует проверки, `lost` — код удалён или переписан. ПОЧЕМУ строка
+   * стоит ниже: гибрид умножил её счёт на {@link anchor_weight}. Поля нет —
+   * якорей нет или лучший свеж.
+   */
+  readonly anchor_state?: "drifted" | "stale" | "lost";
+  /**
+   * Множитель §7.3, которым состояние якоря умножило счёт (stale 0.5, lost
+   * 0.2, drifted — сходство), до сотых. Поля нет — ×1 (у `drifted` со
+   * сходством 1.0 его тоже нет: сдвиг есть, понижения нет).
+   */
+  readonly anchor_weight?: number;
   // --- только при fullFields ---
   readonly created_at?: number;
   readonly acl?: string;
@@ -1575,6 +1589,13 @@ export async function retrieve(
         reach_by: reachInfo.by,
         repo: repoInfo.repo,
         repo_state: repoInfo.state,
+        // Состояние якоря едет из хита гибрида (§7.3): без него выдача
+        // понижала строку молча, и ни recall, ни --json, ни MCP не могли
+        // сказать, почему знание стоит ниже живого аналога.
+        ...(h.anchorState !== undefined ? { anchor_state: h.anchorState } : {}),
+        ...(h.anchorWeight !== undefined
+          ? { anchor_weight: Math.round(h.anchorWeight * 100) / 100 }
+          : {}),
         ...(full !== undefined
           ? {
               // та же дата создания, что в карточке show: у ввезённого — источник

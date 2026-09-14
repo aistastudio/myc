@@ -231,10 +231,11 @@ describe("digest_cache между процессами", () => {
       .filter((r) => r.profile === "prime")
       .map((r) => r.variant)
       .sort();
-    // v5 — версия формы и отбора payload (prime.ts, digestVariant: v4 добавила
+    // v6 — версия формы и отбора payload (prime.ts, digestVariant: v4 добавила
     // поле `pending`, memory-7j8zgjnd0bjz; v5 — фильтр скрываемых статусов,
-    // memory-0p3d8n1efwtv).
-    expect(variants).toEqual(["v5:sessionA:", "v5:sessionB:"]);
+    // memory-0p3d8n1efwtv; v6 — `lost` и фильтр знания с потерянным кодом,
+    // memory-d81a4d4hn8ef).
+    expect(variants).toEqual(["v6:sessionA:", "v6:sessionB:"]);
   });
 
   test("шесть процессов промахиваются ОДНОВРЕМЕННО: запись кеша не рвёт ответ", async () => {
