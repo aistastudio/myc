@@ -291,9 +291,13 @@ describe("anchor add из worktree внутри дерева", () => {
 // ---------------------------------------------------------------------------
 
 describe("anchor check помечает оба якоря файла при его правке", () => {
+  // Спаны РАЗНЫЕ (3-5 и 3-6): тот же спан из двух ключей — теперь один общий
+  // якорь с двумя владельцами (memory-s32xpa09ytpb, anchor.shared.test.ts), а
+  // здесь проверяется, что правка файла помечает ДВЕ строки под двумя ключами.
   const checkMarksBoth = async (file: string, from: string): Promise<void> => {
     const a = await anchorFrom(ws, `alpha/src/${file}.ts:3-5`);
-    const b = await anchorFrom(alpha, `src/${file}.ts:3-5`);
+    const b = await anchorFrom(alpha, `src/${file}.ts:3-6`);
+    expect(a).not.toBe(b);
     writeFileSync(join(alpha, "src", `${file}.ts`), rewritten(file));
     const d = (await myc(from, "anchor", "check")).env.data!;
     const changed = (d["changed"] as Array<{ anchor_id: string; state: string }>).filter(
@@ -345,8 +349,9 @@ describe("touch из любого места ставит пометку, кот
   // запрос грязной половины батча — пометка, сравнённая с одним ключом,
   // отдала бы ему один якорь, а второе место занял бы чужой старый.
   const touchSeenBy = async (file: string, touchFrom: string, touchArg: string, checkFrom: string): Promise<void> => {
+    // Спаны разные — см. checkMarksBoth: две строки под двумя ключами.
     await anchorFrom(ws, `alpha/src/${file}.ts:3-5`);
-    await anchorFrom(alpha, `src/${file}.ts:3-5`);
+    await anchorFrom(alpha, `src/${file}.ts:3-6`);
     await ok(touchFrom, "anchor", "touch", touchArg);
     const d = (await ok(checkFrom, "anchor", "check", "--limit", "2")).data!;
     expect(d["checked"]).toBe(2);

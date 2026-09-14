@@ -136,6 +136,13 @@ interface AnchorRef {
   /** Мера сходства у `drifted` (§7.2): доля совпавшего crux, 1 — точное. */
   drift?: number;
   /**
+   * Имя символа из строки якоря (`anchors.symbol`: названное `--symbol` или
+   * найденное по код-индексу при привязке). Приёмка M3: show задачи обязан
+   * называть, К ЧЕМУ привязано знание, а не только путь:спан. Нет поля —
+   * символ не известен (индекса не было, строки нет на этой машине).
+   */
+  symbol?: string;
+  /**
    * Откуда якорь переехал (ступень 3 §7.3, `attrs.moved` узла якоря) —
    * путь:спан в тех же терминах, что `path`. Без этого поля переезд в
    * `show` задачи выглядел бы тихой сменой пути.
@@ -269,11 +276,11 @@ function oneLine(h: StoreHandle, id: string): string {
   return parts.join("  ");
 }
 
-const SQL_ANCHOR_ROW = `SELECT repo_id, path, span_start AS s, span_end AS e, state, drift
+const SQL_ANCHOR_ROW = `SELECT repo_id, path, span_start AS s, span_end AS e, state, drift, symbol
   FROM anchors WHERE node_id = ?1`;
 
 /**
- * ЯКОРЬ ЗАДАЧИ СТРОКОЙ — путь:спан, состояние и откуда переехал. До этого
+ * ЯКОРЬ ЗАДАЧИ СТРОКОЙ — путь:спан, символ, состояние и откуда переехал. До этого
  * `show` печатал у привязанного якоря только id его узла и статус: путь не
  * выводился вовсе, и переезд кода в другой файл (ступень 3 §7.3 кладёт его в
  * `attrs.moved` узла якоря) был не виден ни здесь, ни в MCP `myc_show`,
@@ -300,7 +307,9 @@ function anchorOf(h: StoreHandle, anchor: NodeRecord): { ref: AnchorRef; file?: 
         ? from
         : `${askerPath(h, t.path)}${t.whole ? "" : `:${t.start === t.end ? t.start : `${t.start}-${t.end}`}`}`;
   }
-  let row: { repo_id: string; path: string; s: number; e: number; state: string; drift: number } | undefined;
+  let row:
+    | { repo_id: string; path: string; s: number; e: number; state: string; drift: number; symbol: string }
+    | undefined;
   try {
     row = (h.driver.database.query(SQL_ANCHOR_ROW).get(anchor.id) as typeof row | null) ?? undefined;
   } catch {
@@ -317,6 +326,7 @@ function anchorOf(h: StoreHandle, anchor: NodeRecord): { ref: AnchorRef; file?: 
         path: askerPath(h, ws),
         start: row.s,
         end: row.e,
+        ...(row.symbol.length > 0 ? { symbol: row.symbol } : {}),
         state: row.state,
         node_id: anchor.id,
         ...(row.state === "drifted" ? { drift: row.drift } : {}),
@@ -672,11 +682,13 @@ function renderNodeFull(v: NodeView, now: number): string[] {
     const rows = v.anchors.map((a) => {
       const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
       if (a.node_id === undefined) return `${a.path}:${span} @— ${a.state}`;
-      // Привязанный якорь: место, состояние (у drifted — мера сходства), id
-      // узла якоря и, если код уезжал в другой файл, — откуда.
+      // Привязанный якорь: место и символ (в той же форме, что `anchor of` и
+      // `anchor add`: `путь:спан (символ)`), состояние (у drifted — мера
+      // сходства), id узла якоря и, если код уезжал в другой файл, — откуда.
       const drift = a.state === "drifted" && a.drift !== undefined ? ` ${a.drift.toFixed(2)}` : "";
       const where = a.path !== undefined ? `${a.path}:${span}` : "(position unknown)";
-      const bits = [`${where} ${a.state}${drift}`, a.node_id];
+      const sym = a.symbol !== undefined ? ` (${a.symbol})` : "";
+      const bits = [`${where}${sym} ${a.state}${drift}`, a.node_id];
       if (a.moved_from !== undefined) bits.push(`moved from ${a.moved_from}`);
       if (a.untracked === true) bits.push("not tracked on this machine");
       return bits.join(" · ");

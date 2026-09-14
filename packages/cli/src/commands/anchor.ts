@@ -15,6 +15,24 @@
  * допускает единственную строку на узел — то есть узел ЕСТЬ якорь. Привязать
  * второй якорь к задаче значит завести второй anchor-узел, а не вторую строку.
  *
+ * ЯКОРЬ ОБЩИЙ, ВЛАДЕЛЬЦЕВ У НЕГО СКОЛЬКО УГОДНО (memory-s32xpa09ytpb). Якорь —
+ * это КОД, а не чья-то привязка к нему: баг и решение про одну функцию — два
+ * владельца одного узла якоря, два ребра `touches` к нему. Второй владелец
+ * того же участка переиспользует узел (`bindAnchorAt`, «тот же участок» —
+ * `samePlace`), а не заводит второй: второй узел с тем же (title, crux) не
+ * пускает `ux_nodes_content`, и раньше это было internal.unexpected UNIQUE.
+ * Следствия, и все они — по построению, а не отдельными правилами:
+ *
+ *   rm      снимает РЕБРО; узел и строку — только когда живых владельцев не
+ *           осталось (`buildAnchorRm`);
+ *   check   одна строка — одна проверка: переезд (§7.3) двигает узел, и все
+ *           владельцы видят новое место вместе, потому что это их общий код;
+ *   suspect пометка лежит на КАЖДОМ ребре, но ставится и снимается по
+ *           состоянию якоря для всех входящих разом (`markSuspect`): владелец,
+ *           знание которого о живом коде, и владелец, знание которого о
+ *           пропавшем, у одного якоря не бывают;
+ *   of      и `code symbol` перечисляют входящие рёбра — то есть всех.
+ *
  * ЦЕНА КАЖДОЙ ПОДКОМАНДЫ РАЗНАЯ, И ЭТО ГЛАВНОЕ В ФАЙЛЕ:
  *
  *   touch — ХОЛОДНЫЙ ПУТЬ РЕДАКТОРА. База не открывается вовсе: подъём к
@@ -47,6 +65,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
+import type { JsonValue } from "@myc/core";
 import type {
   AnchorBinding,
   AnchorCheck,
@@ -569,6 +588,10 @@ export interface AddData {
   /** Файл больше порога S66: crux снимет фон, а не эта команда. */
   deferred: boolean;
   size_bytes: number;
+  /** Узел якоря уже был — у участка другой владелец (memory-s32xpa09ytpb). */
+  reused: boolean;
+  /** Живых владельцев у якоря после привязки, включая этот узел. */
+  owners: number;
   took_ms: number;
 }
 
@@ -616,6 +639,10 @@ export interface BoundAnchor {
   readonly sizeBytes: number;
   /** Имя символа: названное пользователем или найденное по код-индексу; пусто — нет. */
   readonly symbol: string;
+  /** Узел якоря уже был: этот узел стал ещё одним владельцем участка. */
+  readonly reused: boolean;
+  /** Живых владельцев после привязки, включая этот узел. */
+  readonly owners: number;
 }
 
 /**
@@ -630,7 +657,7 @@ export type NeverBindableCode = "usage.not_a_file" | "usage.binary_file" | "deni
 
 export interface BindFailure {
   readonly ok: false;
-  readonly code: "notfound.file" | "outside.repo" | "store.error" | NeverBindableCode;
+  readonly code: "notfound.file" | "outside.repo" | "store.error" | "conflict.anchor" | NeverBindableCode;
   readonly msg: string;
   readonly hint?: string;
   readonly cause?: unknown;
@@ -660,6 +687,8 @@ export function bindFailure(b: BindFailure): CommandFailure | undefined {
       return failure(b.code, b.msg, ExitCode.USAGE, b.hint);
     case "denied.secret":
       return failure(b.code, b.msg, ExitCode.DENIED, b.hint);
+    case "conflict.anchor":
+      return failure(b.code, b.msg, ExitCode.CONFLICT, b.hint);
     case "store.error":
       return undefined;
   }
@@ -803,10 +832,125 @@ export async function refuseNeverBindable(
   return { ...f, msg: `anchor refused, nothing written: ${f.msg}` };
 }
 
+/**
+ * `ON CONFLICT DO NOTHING` — не небрежность, а гонка двух процессов на одном
+ * участке: второй, получив отказ `ux_nodes_content`, находит узел первого и
+ * вставляет ему строку (`adopt`), а первый вставляет свою следом. Строки
+ * описывают один и тот же файл в одно и то же мгновение — какая из двух
+ * останется, безразлично, а вторая не имеет права уронить команду.
+ */
 const SQL_ANCHOR_INSERT = `INSERT INTO anchors (node_id, repo_id, repo_root, path, lang, symbol,
                       span_start, span_end, file_hash, span_hash, crux, crux_norm,
                       state, drift, mtime_ms, size_bytes, bound_at, checked_at, fp)
- VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'fresh',1.0,?13,?14,?15,?16,?17)`;
+ VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'fresh',1.0,?13,?14,?15,?16,?17)
+ ON CONFLICT(node_id) DO NOTHING`;
+
+/**
+ * Якоря ТОГО ЖЕ МЕСТА — ключ файла и спан целиком. Три равенства по
+ * `ix_anchors_file(repo_id, path, span_start)`, `span_end` — фильтром по уже
+ * суженному. Спрашивается под обоими ключами файла (`anchorKeysFor`): якорь из
+ * корня на `alpha/x.ts` и привязка изнутри alpha к `x.ts` — одно место.
+ */
+const SQL_SAME_PLACE = `SELECT a.* FROM anchors a JOIN nodes n ON n.id = a.node_id
+ WHERE a.repo_id = ?1 AND a.path = ?2 AND a.span_start = ?3 AND a.span_end = ?4
+   AND n.kind = 'anchor' AND n.scope = ?5 AND n.deleted_at IS NULL
+ ORDER BY a.bound_at, a.node_id`;
+
+/**
+ * Живой узел якоря с тем же (title, crux) — тот самый, из-за которого
+ * `createNode` упал бы на `ux_nodes_content`. Условие повторяет предикат
+ * частичного индекса дословно, иначе планировщик его не возьмёт.
+ */
+const SQL_ANCHOR_BY_CONTENT = `SELECT id FROM nodes
+ WHERE scope = ?1 AND kind = 'anchor' AND content_hash = ?2
+   AND deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL`;
+
+/**
+ * Живые владельцы якоря: живые рёбра `touches` от неудалённых узлов. Статус
+ * владельца не спрашивается — закрытая задача и отозванный факт остаются
+ * историей этого места, и снимать из-под них якорь `rm` соседа не вправе.
+ */
+const SQL_OWNERS = `SELECT count(*) AS n FROM edges g JOIN nodes n ON n.id = g.src
+ WHERE g.dst = ?1 AND g.type = 'touches' AND g.deleted_at IS NULL AND n.deleted_at IS NULL`;
+
+const SQL_OWNS = `SELECT 1 AS x FROM edges
+ WHERE src = ?1 AND type = 'touches' AND dst = ?2 AND deleted_at IS NULL`;
+
+function ownersOf(db: Database, anchorId: string): number {
+  return (db.query(SQL_OWNERS).get(anchorId) as { n: number }).n;
+}
+
+/**
+ * «ТОТ ЖЕ УЧАСТОК» — то место, привязка к которому обязана вернуть уже
+ * существующий якорь, а не завести второй. Место — файл (любым из двух его
+ * ключей) и спан целиком; текст — одно из трёх, по убыванию силы:
+ *
+ *   1. хеш нормализованного спана равен — текст тот же дословно;
+ *   2. голова спана (crux) та же — это то, по чему лестница §7.2 сама нашла
+ *      бы якорь на месте (`findNormalized`), когда тело функции поправили, а
+ *      проверка ещё не прошла: баг и решение про одну функцию обычно
+ *      записываются как раз вокруг правки её тела;
+ *   3. хеш ФАЙЛА тот же, а строка либо недовязана (S66), либо свежа — файл не
+ *      менялся, значит и текст на спане тот же. Это единственный путь для
+ *      отложенной привязки: crux у неё ещё нет.
+ *
+ * `stale`/`lost` здесь не исключены намеренно: их `span_hash` и crux — текст,
+ * который ПРОПАЛ, и если он совпал с тем, что лежит на месте сейчас, текст
+ * вернулся — якорь снова жив, и новый владелец это только что доказал.
+ */
+function samePlace(db: Database, scope: string, wsPath: string, b: AnchorBinding): AnchorRow | undefined {
+  const rows: AnchorRow[] = [];
+  const q = db.query(SQL_SAME_PLACE);
+  for (const k of anchorKeysFor(wsPath)) {
+    rows.push(...(q.all(k.repoId, k.path, b.spanStart, b.spanEnd, scope) as AnchorRow[]));
+  }
+  if (rows.length === 0) return undefined;
+  return (
+    (b.spanHash.length > 0 ? rows.find((r) => r.span_hash === b.spanHash) : undefined) ??
+    (b.cruxNorm.length > 0 ? rows.find((r) => r.crux_norm === b.cruxNorm) : undefined) ??
+    rows.find(
+      (r) => r.file_hash === b.fileHash && (isDeferredBind(r) || r.state === "fresh" || r.state === "drifted"),
+    )
+  );
+}
+
+/** Строка якоря узла; undefined — строки на этой машине нет (узел приехал с оплогом, §7.1). */
+function anchorRowOf(db: Database, anchorId: string): AnchorRow | undefined {
+  return (db.query("SELECT * FROM anchors WHERE node_id = ?1").get(anchorId) as AnchorRow | null) ?? undefined;
+}
+
+/**
+ * НАМЕРЕНИЕ ИСПОЛНЕНО. `task`/`remember --anchor`, не сумев привязать, кладут
+ * намерение в `attrs.anchors` (`attachAnchorFlag`), а WARN советует `myc
+ * anchor add`. Раньше совет, даже исполнившись, оставлял намерение на месте:
+ * `show` печатал и настоящий якорь, и строку «pending» на тот же файл. Файл
+ * сравнивается личностью (путь от корня воркспейса), путь намерения — от
+ * каталога вызова, как его и набрали.
+ */
+function dropIntents(h: StoreHandle, nodeId: string, wsPath: string, cwd: string): void {
+  // Сначала точечный вопрос по первичному ключу: у почти всех узлов намерений
+  // нет, и собирать ради этого узел целиком (attrs, поля) — цена на каждой
+  // привязке ни за что.
+  const has = h.driver.database
+    .query("SELECT 1 AS x FROM nodes WHERE id = ?1 AND json_extract(attrs, '$.anchors') IS NOT NULL")
+    .get(nodeId);
+  if (has === null) return;
+  const node = h.store.getNode(nodeId);
+  const raw = node?.attrs["anchors"];
+  if (!Array.isArray(raw) || raw.length === 0) return;
+  const keep = raw.filter((a) => {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) return true;
+    const p = (a as Record<string, unknown>)["path"];
+    if (typeof p !== "string" || p.length === 0) return true;
+    return posixRel(h.wsDir, fileOf(h, p, cwd).main) !== wsPath;
+  });
+  if (keep.length === raw.length) return;
+  try {
+    h.store.updateNode(nodeId, { attrs: { anchors: keep.length > 0 ? keep : null } });
+  } catch {
+    // Узел якоря привязан; не снятое намерение — только лишняя строка show.
+  }
+}
 
 /**
  * ИМЯ СИМВОЛА ПО КОД-ИНДЕКСУ, когда его не назвали (§7.1: «от graft или от
@@ -929,78 +1073,61 @@ export async function bindAnchorAt(
     : E.bindAnchor(source, lang, target.start, end, st);
 
   const now = opts.now ?? Date.now();
+  const db = h.driver.database;
+  const wsPath = wsPathOfKey(repoId, path);
+  const named = opts.symbol !== undefined && opts.symbol.length > 0 ? opts.symbol : "";
   const symbol =
-    opts.symbol !== undefined && opts.symbol.length > 0
-      ? opts.symbol
-      : await symbolFromIndex(h.driver.database, wsPathOfKey(repoId, path), b.fileHash, b.spanStart, b.spanEnd);
+    named.length > 0 ? named : await symbolFromIndex(db, wsPath, b.fileHash, b.spanStart, b.spanEnd);
+  const c: BindCtx = { h, E, nodeId, cwd, repoId, repoRoot, path, lang, wsPath, b, deferred, st, now, symbol, named };
   try {
-    const anchorNode = h.store.createNode({
-      kind: "anchor",
-      scope: h.scope,
-      status: "fresh",
-      title: `${path}:${spanLabel(b.spanStart, b.spanEnd)}`,
-      body: b.crux.length > 0 ? b.crux : null,
-      actor: opts.actor ?? h.actor,
-    });
-    h.driver.database
-      .query(SQL_ANCHOR_INSERT)
-      .run(
-        anchorNode.id,
-        repoId,
-        repoRoot,
-        path,
-        lang,
-        symbol,
-        b.spanStart,
-        b.spanEnd,
-        b.fileHash,
-        b.spanHash,
-        b.crux,
-        b.cruxNorm,
-        b.mtimeMs,
-        b.sizeBytes,
-        now,
-        // `checked_at = 0` у отложенной привязки — не украшение: порядок
-        // §7.5 идёт по `checked_at ASC`, и недовязанный якорь встаёт первым
-        // в очередь фона сам, без отдельного признака приоритета.
-        deferred ? 0 : now,
-        b.fp.length > 0 ? E.fpToBlob(b.fp) : null,
-      );
-    h.store.addEdge(nodeId, "touches", anchorNode.id);
-    if (deferred) {
-      // Работа в очереди — чтобы фон случился на СЛЕДУЮЩЕЙ команде, а не
-      // через период §7.5 (300 с). Потеря очереди привязку не теряет:
-      // `checked_at = 0` доведёт её периодом, просто позже.
-      //
-      // `run_after` СДВИНУТ НА ДЕБАУНС ФАЙЛА, и это не осторожность, а
-      // наблюдение живьём: якорь обычно ставят на файл, который агент правит
-      // прямо сейчас, а фон такой файл не трогает (§7.5, дебаунс 2 с). Работа
-      // при этом СНИМАЛАСЬ БЫ ВСЁ РАВНО — строки очереди завершаются после
-      // прогона независимо от того, что он успел, — и подсказка сгорала бы в
-      // прогоне, который заведомо не мог её выполнить: привязка ждала бы
-      // периода 300 с. Сдвиг ровно на окно дебаунса от mtime ФАЙЛА, а не от
-      // «сейчас»: на давно не менявшемся файле он равен нулю и ничего не
-      // откладывает.
-      try {
-        const { jobs } = await import("@myc/store-sqlite");
-        jobs.enqueue(h.driver.database, "anchor_check", {
-          entityId: anchorNode.id,
-          scope: h.scope,
-          // Путь от корня ВОРКСПЕЙСА, а не от репозитория записи: фон
-          // выводит из подсказки оба ключа файла (`anchorKeysFor`), и `x.ts`
-          // из вложенного репозитория иначе значил бы файл `x.ts` в корне.
-          payload: { path: wsPathOfKey(repoId, path) },
-          now,
-          runAfter: Math.max(now, Math.floor(st.mtimeMs) + ANCHOR_DEBOUNCE_MS),
-        });
-      } catch {
-        /* очередь недоступна — см. выше, привязку доведёт период */
-      }
+    // Тот же участок уже под якорем — ещё один владелец, а не второй узел.
+    const same = samePlace(db, h.scope, wsPath, b);
+    if (same !== undefined) return await joinAnchor(c, same);
+
+    // Узел с тем же (title, crux) есть, но того же участка под ним не нашлось:
+    // строки нет на этой машине, или она на месте, а текст с тех пор правили,
+    // или место другое. Разбор — `settleClash`; второго узла с той же
+    // личностью индекс не пустит, поэтому решается ДО записи.
+    const { contentHash } = await import("@myc/core");
+    const body = b.crux.length > 0 ? b.crux : null;
+    const clashOf = (title: string): string | undefined =>
+      (db.query(SQL_ANCHOR_BY_CONTENT).get(h.scope, contentHash("anchor", title, body)) as { id: string } | null)
+        ?.id;
+    let title = `${path}:${spanLabel(b.spanStart, b.spanEnd)}`;
+    const clash = clashOf(title);
+    if (clash !== undefined) {
+      const s = await settleClash(c, clash, title, clashOf);
+      if (s.done !== undefined) return s.done;
+      title = s.title;
     }
+
+    let anchorId: string;
+    try {
+      anchorId = h.store.createNode({
+        kind: "anchor",
+        scope: h.scope,
+        status: "fresh",
+        title,
+        body,
+        actor: opts.actor ?? h.actor,
+      }).id;
+    } catch (e) {
+      // ГОНКА ДВУХ ПРОЦЕССОВ на одном участке: между поиском и записью другой
+      // записал тот же узел. Его узел и есть наш якорь — второй проход разбора.
+      const late = isContentClash(e) ? clashOf(title) : undefined;
+      if (late === undefined) throw e;
+      const s = await settleClash(c, late, title, clashOf);
+      if (s.done !== undefined) return s.done;
+      throw e;
+    }
+    insertRow(c, anchorId);
+    h.store.addEdge(nodeId, "touches", anchorId);
+    if (deferred) await enqueueBind(c, anchorId);
+    dropIntents(h, nodeId, wsPath, cwd);
     return {
       ok: true,
       anchor: {
-        anchorId: anchorNode.id,
+        anchorId,
         path,
         start: b.spanStart,
         end: b.spanEnd,
@@ -1010,6 +1137,9 @@ export async function bindAnchorAt(
         deferred,
         sizeBytes: b.sizeBytes,
         symbol,
+        reused: false,
+        // Узел только что заведён, и ребро к нему одно — наше.
+        owners: 1,
       },
     };
   } catch (e) {
@@ -1020,6 +1150,260 @@ export async function bindAnchorAt(
       cause: e,
     };
   }
+}
+
+/** Всё, что привязка знает к моменту записи: одно на создание, присоединение и разбор. */
+interface BindCtx {
+  readonly h: StoreHandle;
+  readonly E: typeof import("@myc/code-intel/anchors");
+  readonly nodeId: string;
+  readonly cwd: string;
+  readonly repoId: string;
+  readonly repoRoot: string;
+  /** Путь в базе — от корня репозитория записи. */
+  readonly path: string;
+  readonly lang: string;
+  /** Путь от корня воркспейса — личность файла, одна на оба ключа. */
+  readonly wsPath: string;
+  readonly b: AnchorBinding;
+  readonly deferred: boolean;
+  readonly st: StatLike;
+  readonly now: number;
+  /** Символ записи: названный или найденный по индексу. */
+  readonly symbol: string;
+  /** Символ, названный пользователем (`--symbol`); пусто — не назван. */
+  readonly named: string;
+}
+
+function isContentClash(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  return m.includes("UNIQUE") && m.includes("content_hash");
+}
+
+function insertRow(c: BindCtx, anchorId: string): void {
+  const { b } = c;
+  c.h.driver.database
+    .query(SQL_ANCHOR_INSERT)
+    .run(
+      anchorId,
+      c.repoId,
+      c.repoRoot,
+      c.path,
+      c.lang,
+      c.symbol,
+      b.spanStart,
+      b.spanEnd,
+      b.fileHash,
+      b.spanHash,
+      b.crux,
+      b.cruxNorm,
+      b.mtimeMs,
+      b.sizeBytes,
+      c.now,
+      // `checked_at = 0` у отложенной привязки — не украшение: порядок
+      // §7.5 идёт по `checked_at ASC`, и недовязанный якорь встаёт первым
+      // в очередь фона сам, без отдельного признака приоритета.
+      c.deferred ? 0 : c.now,
+      b.fp.length > 0 ? c.E.fpToBlob(b.fp) : null,
+    );
+}
+
+/**
+ * Работа в очереди — чтобы фон случился на СЛЕДУЮЩЕЙ команде, а не через
+ * период §7.5 (300 с). Потеря очереди привязку не теряет: `checked_at = 0`
+ * доведёт её периодом, просто позже.
+ *
+ * `run_after` СДВИНУТ НА ДЕБАУНС ФАЙЛА, и это не осторожность, а наблюдение
+ * живьём: якорь обычно ставят на файл, который агент правит прямо сейчас, а
+ * фон такой файл не трогает (§7.5, дебаунс 2 с). Работа при этом СНИМАЛАСЬ БЫ
+ * ВСЁ РАВНО — строки очереди завершаются после прогона независимо от того, что
+ * он успел, — и подсказка сгорала бы в прогоне, который заведомо не мог её
+ * выполнить: привязка ждала бы периода 300 с. Сдвиг ровно на окно дебаунса от
+ * mtime ФАЙЛА, а не от «сейчас»: на давно не менявшемся файле он равен нулю и
+ * ничего не откладывает.
+ */
+async function enqueueBind(c: BindCtx, anchorId: string): Promise<void> {
+  try {
+    const { jobs } = await import("@myc/store-sqlite");
+    jobs.enqueue(c.h.driver.database, "anchor_check", {
+      entityId: anchorId,
+      scope: c.h.scope,
+      // Путь от корня ВОРКСПЕЙСА, а не от репозитория записи: фон выводит из
+      // подсказки оба ключа файла (`anchorKeysFor`), и `x.ts` из вложенного
+      // репозитория иначе значил бы файл `x.ts` в корне.
+      payload: { path: c.wsPath },
+      now: c.now,
+      runAfter: Math.max(c.now, Math.floor(c.st.mtimeMs) + ANCHOR_DEBOUNCE_MS),
+    });
+  } catch {
+    /* очередь недоступна — см. выше, привязку доведёт период */
+  }
+}
+
+/** Привязка как результат проверки: новый владелец только что прочитал файл. */
+function checkOf(b: AnchorBinding): AnchorCheck {
+  return {
+    state: "fresh",
+    level: 3,
+    moved: false,
+    spanStart: b.spanStart,
+    spanEnd: b.spanEnd,
+    drift: 1,
+    fileHash: b.fileHash,
+    spanHash: b.spanHash,
+    crux: b.crux,
+    cruxNorm: b.cruxNorm,
+    mtimeMs: b.mtimeMs,
+    sizeBytes: b.sizeBytes,
+    fp: b.fp.length > 0 ? b.fp : null,
+    elsewhere: false,
+    reason: "the text is at the anchor's place: re-bound by a new owner",
+  };
+}
+
+/**
+ * ЕЩЁ ОДИН ВЛАДЕЛЕЦ СУЩЕСТВУЮЩЕГО ЯКОРЯ. Привязка только что прочитала файл и
+ * нашла текст якоря на его месте — это и есть проверка, и её результат
+ * пишется той же `applyCheck`, что пишет лестница: `stale` с вернувшимся
+ * текстом становится `fresh`, а свежий якорь, у которого тело поправили до
+ * проверки, получает новый хеш спана. Так новый владелец не видит у только
+ * что поставленного якоря чужой вердикт, а старый — выигрывает проверку даром.
+ *
+ * Отложенная привязка (S66) crux не снимает и проверкой не является. Если
+ * недовязанная строка описывает УЖЕ ДРУГОЙ файл (хеш разошёлся), фон объявил
+ * бы её `stale` с советом «поставьте якорь заново» — а новая привязка ровно
+ * это и есть: строка переставляется на текущее содержимое и снова ждёт фон.
+ *
+ * Пометка `suspect` выравнивается по итоговому состоянию на ВСЕХ входящих
+ * рёбрах разом (`markSuspect`): у одного якоря владельцы с разным вердиктом
+ * не бывают, и ребро, воскрешённое с чужой старой пометкой, её теряет.
+ */
+async function joinAnchor(c: BindCtx, row: AnchorRow, inserted = false): Promise<BindResult> {
+  const { h, b } = c;
+  const db = h.driver.database;
+  let state = row.state as AnchorState;
+  let deferred = isDeferredBind(row);
+  let enqueue = inserted && deferred;
+  let crux = row.crux;
+  if (!c.deferred) {
+    if (row.state !== "fresh" || row.span_hash !== b.spanHash || row.crux_norm !== b.cruxNorm) {
+      applyCheck(db, h, row, checkOf(b), c.now, c.E.fpToBlob);
+      if (b.crux.length > 0) crux = b.crux;
+      // Тело узла — crux; у недовязанной строки его не было вовсе.
+      if (deferred && b.crux.length > 0) {
+        try {
+          h.store.updateNode(row.node_id, { body: b.crux });
+        } catch {
+          // Узел с таким телом уже есть — строка довязана, тело нет.
+        }
+      }
+      state = "fresh";
+      deferred = false;
+    }
+  } else if (deferred && row.file_hash !== b.fileHash) {
+    db.query(
+      `UPDATE anchors SET file_hash = ?2, mtime_ms = ?3, size_bytes = ?4, state = 'fresh', drift = 1.0,
+                          checked_at = 0 WHERE node_id = ?1`,
+    ).run(row.node_id, b.fileHash, b.mtimeMs, b.sizeBytes);
+    if (row.state !== "fresh") {
+      try {
+        h.store.updateNode(row.node_id, { status: "fresh" });
+      } catch {
+        // Узел якоря мог быть удалён вручную: строка обновлена, узел — нет.
+      }
+    }
+    state = "fresh";
+    enqueue = true;
+  }
+  // Символ у якоря один. Названный пользователем — сильнее записанного; иначе
+  // записанный остаётся, а пустой заполняется найденным по индексу.
+  const symbol = c.named.length > 0 ? c.named : row.symbol.length > 0 ? row.symbol : c.symbol;
+  if (symbol !== row.symbol) db.query("UPDATE anchors SET symbol = ?2 WHERE node_id = ?1").run(row.node_id, symbol);
+  if (db.query(SQL_OWNS).get(c.nodeId, row.node_id) === null) h.store.addEdge(c.nodeId, "touches", row.node_id);
+  markSuspect(db, row.node_id, isSuspectState(state));
+  if (enqueue) await enqueueBind(c, row.node_id);
+  dropIntents(h, c.nodeId, c.wsPath, c.cwd);
+  return {
+    ok: true,
+    anchor: {
+      anchorId: row.node_id,
+      path: c.path,
+      start: b.spanStart,
+      end: b.spanEnd,
+      state,
+      cruxLines: crux.length === 0 ? 0 : crux.split("\n").length,
+      fileHash: b.fileHash,
+      deferred,
+      sizeBytes: b.sizeBytes,
+      symbol,
+      // Узел был и до этой привязки — даже когда строку ему вставили только что.
+      reused: true,
+      owners: ownersOf(db, row.node_id),
+    },
+  };
+}
+
+/**
+ * РАЗБОР СОВПАВШЕЙ ЛИЧНОСТИ: живой узел якоря с тем же (title, crux), под
+ * которым `samePlace` участка не нашёл. Случаев три:
+ *
+ *   строки нет  — узел приехал с оплогом (§7.1: строка — локальная проекция).
+ *                 Его личность и есть наша: строка вставляется, узел
+ *                 присоединяется (`adopt`). Иначе на второй машине второй
+ *                 владелец падал бы на том же индексе;
+ *   то же место — файл и спан те же, а текст разошёлся: crux совпал (он часть
+ *                 личности), тело поправили, проверка ещё не прошла. Это тот же
+ *                 якорь — присоединение с перепроверкой;
+ *   другое место — заголовок узла отстал от строки (переезд внутри файла его
+ *                 не переписывает) или совпал у двух разных файлов (ключ
+ *                 вложенного репозитория: `x.ts` из alpha и `x.ts` из корня).
+ *                 Присоединяться нельзя — знание уехало бы на чужой код. Узлу
+ *                 возвращается заголовок его настоящего места (путь от корня
+ *                 воркспейса — один на оба ключа), а если и после этого
+ *                 заголовки совпали, заголовок от корня воркспейса берёт
+ *                 новый якорь. Не развелись и так — отказ с именем
+ *                 мешающего якоря, а не internal.unexpected.
+ */
+async function settleClash(
+  c: BindCtx,
+  clashId: string,
+  title: string,
+  clashOf: (title: string) => string | undefined,
+): Promise<{ readonly done: BindResult; readonly title?: undefined } | { readonly done?: undefined; readonly title: string }> {
+  const db = c.h.driver.database;
+  const row = anchorRowOf(db, clashId);
+  if (row === undefined) {
+    insertRow(c, clashId);
+    const adopted = anchorRowOf(db, clashId);
+    if (adopted !== undefined) return { done: await joinAnchor(c, adopted, true) };
+  } else {
+    const where = wsPathOfKey(row.repo_id, row.path);
+    if (where === c.wsPath && row.span_start === c.b.spanStart && row.span_end === c.b.spanEnd) {
+      return { done: await joinAnchor(c, row) };
+    }
+    const place = `${where}:${spanLabel(row.span_start, row.span_end)}`;
+    if (place !== title) {
+      try {
+        c.h.store.updateNode(clashId, { title: place });
+      } catch {
+        // Заголовок настоящего места занят ещё одним узлом — ниже второй способ.
+      }
+    }
+    if (clashOf(title) === undefined) return { title };
+    const ws = `${c.wsPath}:${spanLabel(c.b.spanStart, c.b.spanEnd)}`;
+    if (ws !== title && clashOf(ws) === undefined) return { title: ws };
+    return {
+      done: {
+        ok: false,
+        code: "conflict.anchor",
+        msg:
+          `anchor ${clashId} already has the same title and crux, but it is bound to ${place}, ` +
+          `not to ${c.wsPath}:${spanLabel(c.b.spanStart, c.b.spanEnd)} — the store keeps one anchor node per (title, crux)`,
+        hint: `bind a different span of ${c.path}, or unbind ${clashId} first`,
+      },
+    };
+  }
+  return { title };
 }
 
 function buildAnchorAdd(deps: StoreDeps | undefined): Command {
@@ -1081,6 +1465,8 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
           file_hash: a.fileHash,
           deferred: a.deferred,
           size_bytes: a.sizeBytes,
+          reused: a.reused,
+          owners: a.owners,
           took_ms: Math.round((performance.now() - t0) * 10) / 10,
         };
         if (a.deferred) {
@@ -1101,9 +1487,12 @@ function buildAnchorAdd(deps: StoreDeps | undefined): Command {
       const crux = d.deferred
         ? `crux      deferred to the background: ${kb(d.size_bytes)} > ${kb(anchorInlineMaxBytes())} · ${d.file_hash}`
         : `crux      ${count(d.crux_lines, "line")} · ${d.file_hash}`;
+      // Общий якорь называется вслух: без этого второй владелец не узнал бы,
+      // что участок уже под якорем, а `rm` его не снимет, пока владельцы есть.
+      const shared = d.owners > 1 ? ` · shared anchor, ${count(d.owners, "owner")}` : "";
       return (
-        `${d.anchor_id} anchor fresh · ${d.path}:${spanLabel(d.start, d.end)}${sym}\n` +
-        `touches   ${d.node_id}\n` +
+        `${d.anchor_id} anchor ${d.state} · ${d.path}:${spanLabel(d.start, d.end)}${sym}\n` +
+        `touches   ${d.node_id}${shared}\n` +
         `${crux}\n` +
         `${d.took_ms} ms\n`
       );
@@ -1133,6 +1522,8 @@ export interface AnchorFlagResult {
   readonly deferred?: boolean;
   /** Размер файла в байтах — число, по которому принято решение. */
   readonly size_bytes?: number;
+  /** Якорь общий: столько у него живых владельцев, включая этот узел. Нет — владелец один. */
+  readonly owners?: number;
 }
 
 /**
@@ -1172,14 +1563,7 @@ export async function attachAnchorFlag(
           `the write stayed within budget, the background check (myc anchor check) catches up on precision`,
       );
     }
-    return {
-      path: a.path,
-      start: a.start,
-      end: a.end,
-      anchor_id: a.anchorId,
-      state: a.state,
-      ...(a.deferred ? { deferred: true, size_bytes: a.sizeBytes } : {}),
-    };
+    return anchorFlagResult(a);
   }
   const end = target.whole ? target.start : target.end;
   if (isNeverBindable(bound.code)) {
@@ -1187,6 +1571,13 @@ export async function attachAnchorFlag(
     // файл пропустила, а к привязке он стал каталогом или бинарным. Намерение
     // не пишется — оно не исполнится никогда, — но причина звучит.
     warn("anchor.unbound", `anchor not bound: ${bound.msg}; the node is written without an anchor`);
+    return { path: target.path, start: target.start, end, state: "refused", reason: bound.msg };
+  }
+  if (bound.code === "conflict.anchor") {
+    // Тот же (title, crux) у якоря на ДРУГОМ месте (`settleClash`): повтор той
+    // же привязки упрётся в то же, и намерение с советом `myc anchor add`
+    // было бы ровно тем «не привяжется никогда», ради которого задача.
+    warn("anchor.unbound", `anchor not bound: ${bound.msg}; the node is written without an anchor — ${bound.hint ?? ""}`);
     return { path: target.path, start: target.start, end, state: "refused", reason: bound.msg };
   }
   const pending = { path: target.path, start: target.start, end, state: "pending" };
@@ -1203,6 +1594,19 @@ export async function attachAnchorFlag(
   return { path: target.path, start: target.start, end, state: "pending", reason: bound.msg };
 }
 
+/** Привязанный якорь в выдаче `task`/`remember`/`update`: одна форма на три входа. */
+export function anchorFlagResult(a: BoundAnchor): AnchorFlagResult {
+  return {
+    path: a.path,
+    start: a.start,
+    end: a.end,
+    anchor_id: a.anchorId,
+    state: a.state,
+    ...(a.deferred ? { deferred: true, size_bytes: a.sizeBytes } : {}),
+    ...(a.owners > 1 ? { owners: a.owners } : {}),
+  };
+}
+
 /** Строка вывода. Одна на `remember` и `task` — расходиться им больше нечем. */
 export function anchorFlagLine(a: AnchorFlagResult): string {
   const span = a.start === a.end ? `${a.start}` : `${a.start}-${a.end}`;
@@ -1211,7 +1615,8 @@ export function anchorFlagLine(a: AnchorFlagResult): string {
       a.deferred === true
         ? ` · crux deferred to the background (${kb(a.size_bytes ?? 0)} > ${kb(anchorInlineMaxBytes())})`
         : "";
-    return `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state}${later}`;
+    const shared = a.owners !== undefined && a.owners > 1 ? ` · shared anchor, ${count(a.owners, "owner")}` : "";
+    return `anchor    ${a.path}:${span} → ${a.anchor_id} ${a.state}${later}${shared}`;
   }
   // `refused` — заведомо непривязываемое (гонка после до-записной проверки):
   // звать `myc anchor add` на тот же путь значило бы звать тот же отказ.
@@ -1226,6 +1631,11 @@ export function anchorFlagLine(a: AnchorFlagResult): string {
 export interface RmData {
   removed: string[];
   node_id: string;
+  /**
+   * Якоря, с которых снято только ребро этого узла: у участка остались другие
+   * владельцы (memory-s32xpa09ytpb), и узел со строкой живут дальше.
+   */
+  kept: Array<{ anchor_id: string; owners: number }>;
   took_ms: number;
 }
 
@@ -1270,6 +1680,7 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
           .all(node.id) as Array<{ node_id: string; repo_id: string; path: string; s: number; e: number }>;
 
         const removed: string[] = [];
+        const kept: RmData["kept"] = [];
         for (const r of rows) {
           const ws = wsPathOfKey(r.repo_id, r.path);
           if (wantWs !== undefined && ws !== wantWs) continue;
@@ -1277,8 +1688,18 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
             continue;
           }
           h.store.removeEdge(node.id, "touches", r.node_id);
-          h.store.deleteNode(r.node_id);
-          db.query("DELETE FROM anchors WHERE node_id = ?1").run(r.node_id);
+          // ЯКОРЬ ОБЩИЙ: снимается привязка ЭТОГО узла, а якорь — только
+          // когда живых владельцев не осталось. Раньше `rm` удалял узел и
+          // строку сразу и тем снимал якорь из-под соседа: у версии знания,
+          // заменённой absorb (ребро touches копируется на новую), `rm` на
+          // одной версии отвязывал и другую.
+          const others = ownersOf(db, r.node_id);
+          if (others > 0) {
+            kept.push({ anchor_id: r.node_id, owners: others });
+          } else {
+            h.store.deleteNode(r.node_id);
+            db.query("DELETE FROM anchors WHERE node_id = ?1").run(r.node_id);
+          }
           // Путь — в терминах спросившего, какой бы ключ ни лежал в строке.
           removed.push(`${askerPath(h, ws)}:${spanLabel(r.s, r.e)}`);
         }
@@ -1288,6 +1709,7 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
         const data: RmData = {
           removed,
           node_id: node.id,
+          kept,
           took_ms: Math.round((performance.now() - t0) * 10) / 10,
         };
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -1299,7 +1721,8 @@ function buildAnchorRm(deps: StoreDeps | undefined): Command {
     },
     renderHuman: (raw) => {
       const d = raw as RmData;
-      return `unbound ${d.removed.length}: ${d.removed.join(", ")} · ${d.took_ms} ms\n`;
+      const kept = d.kept.map((k) => `\nkept      ${k.anchor_id}: ${count(k.owners, "other owner")} still bound`).join("");
+      return `unbound ${d.removed.length}: ${d.removed.join(", ")} · ${d.took_ms} ms${kept}\n`;
     },
   };
 }
@@ -1573,6 +1996,11 @@ export interface CheckData {
   deferred_elsewhere: number;
   /** Досчитано отпечатков у якорей, поставленных до того, как их начали считать. */
   fp_filled: number;
+  /**
+   * Довязано намерений `attrs.anchors` к якорю, который уже стоял на том же
+   * месте, — след отказа UNIQUE до общего якоря (`finishIntents`).
+   */
+  intents_bound: number;
   /** Прогон упёрся в бюджет и батч разобран не весь (фон). */
   budget_hit: boolean;
   changed: CheckLine[];
@@ -1885,6 +2313,12 @@ export interface SweepOptions {
    * корня воркспейса (так пишет `bindAnchorAt`).
    */
   readonly hintPaths?: readonly string[];
+  /**
+   * Довязка намерений (`finishIntents`): `once` — один раз на базу, отметкой в
+   * `myc_meta` (фон: его бюджет не платит за скан узлов на каждом прогоне),
+   * `always` — на каждом вызове (ручной `anchor check`: спросили про сейчас).
+   */
+  readonly intents?: "once" | "always";
   readonly now?: number;
   /**
    * Пороги ре-привязки §7.3 — только ради МУТАЦИЙ приёмки (порог 0: «любое
@@ -2003,6 +2437,7 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
     found_elsewhere: 0,
     deferred_elsewhere: 0,
     fp_filled: 0,
+    intents_bound: 0,
     budget_hit: false,
     changed: [],
     dry_run: dryRun,
@@ -2178,8 +2613,112 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
     }
   }
 
+  // Намерения — после батча: у лестницы бюджет первый, а недоделанная
+  // довязка отметку не ставит и повторится следующим прогоном.
+  if (!dryRun) {
+    const once = (opts.intents ?? "once") === "once";
+    const swept = once && db.query(SQL_META_GET).get(ANCHOR_INTENTS_SWEPT_KEY) !== null;
+    if (!swept && (budgetMs === 0 || performance.now() - t0 < budgetMs / 2)) {
+      data.intents_bound = finishIntents(h);
+      db.query(SQL_META_SET).run(ANCHOR_INTENTS_SWEPT_KEY, String(now));
+    }
+  }
+
   data.took_ms = Math.round((performance.now() - t0) * 10) / 10;
   return data;
+}
+
+/** Отметка однократной довязки намерений в `myc_meta` — локальная, как и строки `anchors`. */
+export const ANCHOR_INTENTS_SWEPT_KEY = "anchor_intents_swept_at";
+
+const SQL_META_GET = "SELECT value FROM myc_meta WHERE key = ?1";
+const SQL_META_SET = `INSERT INTO myc_meta (key, value) VALUES (?1, ?2)
+ ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
+
+/** Узлы с намерениями якоря. Скан таблицы — поэтому `finishIntents` и зовётся раз на базу. */
+const SQL_INTENT_OWNERS = `SELECT id, scope, created_at, attrs FROM nodes
+ WHERE deleted_at IS NULL AND json_extract(attrs, '$.anchors') IS NOT NULL`;
+
+/**
+ * Якорь, стоявший на месте намерения ДО его владельца. `created_at <=` — не
+ * украшение: при отказе UNIQUE узел, из-за которого отказ, уже существовал, а
+ * якорь, поставленный на то же место ПОСЛЕ, мог сесть на код, которого в
+ * момент намерения там не было (файл дописали, строки съехали).
+ */
+const SQL_ANCHOR_BY_TITLE = `SELECT n.id AS id FROM nodes n
+ WHERE n.kind = 'anchor' AND n.scope = ?1 AND n.title = ?2 AND n.deleted_at IS NULL AND n.created_at <= ?3
+   AND EXISTS (SELECT 1 FROM anchors a WHERE a.node_id = n.id)`;
+
+/**
+ * ДОВЯЗКА НАМЕРЕНИЙ, ОСТАВЛЕННЫХ UNIQUE (memory-s32xpa09ytpb). До общего якоря
+ * второй владелец участка падал на `ux_nodes_content`, и `task`/`remember
+ * --anchor` оставляли намерение `pending` с советом `myc anchor add`, который
+ * падал так же. Теперь его есть чем исполнить — и смыслом того отказа: на
+ * месте намерения УЖЕ стоял якорь с тем же (title, crux). Намерение хранит
+ * путь и спан, то есть ровно title того узла; присоединение к нему — то, что
+ * сделала бы привязка в тот момент, а лестница с тех пор вела этот узел за
+ * кодом, так что знание приезжает туда, где этот код сейчас.
+ *
+ * Чего здесь НЕТ, намеренно: привязки намерения к ТЕКУЩЕМУ тексту по его
+ * строкам. Crux намерения не записан, и строки [start, end] сегодня — чужой
+ * код; довести такую привязку значило бы молча посадить знание не туда —
+ * тот же довод, что у `finishBind`. Такое намерение остаётся `pending`, и
+ * WARN при записи уже назвал `myc anchor add`.
+ *
+ * Кандидат обязан быть ОДИН: два якоря с тем же заголовком — два разных
+ * crux, и какой из них был причиной отказа, по намерению не узнать.
+ */
+function finishIntents(h: StoreHandle): number {
+  const db = h.driver.database;
+  const byTitle = db.query(SQL_ANCHOR_BY_TITLE);
+  let bound = 0;
+  const owners = db.query(SQL_INTENT_OWNERS).all() as Array<{
+    id: string;
+    scope: string;
+    created_at: number;
+    attrs: string;
+  }>;
+  for (const o of owners) {
+    let list: unknown;
+    try {
+      list = (JSON.parse(o.attrs) as Record<string, unknown>)["anchors"];
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(list)) continue;
+    const keep: unknown[] = [];
+    for (const a of list) {
+      const r = typeof a === "object" && a !== null && !Array.isArray(a) ? (a as Record<string, unknown>) : undefined;
+      const path = r?.["path"];
+      const start = r?.["start"];
+      const end = r?.["end"];
+      if (r?.["state"] !== "pending" || typeof path !== "string" || typeof start !== "number" || typeof end !== "number") {
+        keep.push(a);
+        continue;
+      }
+      const ids = byTitle.all(o.scope, `${path}:${spanLabel(start, end)}`, o.created_at) as Array<{ id: string }>;
+      const anchorId = ids.length === 1 ? ids[0]!.id : undefined;
+      if (anchorId === undefined) {
+        keep.push(a);
+        continue;
+      }
+      try {
+        if (db.query(SQL_OWNS).get(o.id, anchorId) === null) h.store.addEdge(o.id, "touches", anchorId);
+        const row = anchorRowOf(db, anchorId);
+        markSuspect(db, anchorId, row !== undefined && isSuspectState(row.state));
+        bound++;
+      } catch {
+        keep.push(a);
+      }
+    }
+    if (keep.length === list.length) continue;
+    try {
+      h.store.updateNode(o.id, { attrs: { anchors: keep.length > 0 ? (keep as JsonValue[]) : null } });
+    } catch {
+      // Ребро есть, намерение осталось — `show` покажет обе строки, и только.
+    }
+  }
+  return bound;
 }
 
 function buildAnchorCheck(deps: StoreDeps | undefined): Command {
@@ -2214,6 +2753,7 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
             : {}),
           dryRun: ctx.flags["dry-run"] === true,
           maxLevel: (levelRaw === 1 || levelRaw === 2 || levelRaw === 3 ? levelRaw : 4) as MaxLevel,
+          intents: "always",
         });
 
         if (data.stale > 0 || data.lost > 0) {
@@ -2247,6 +2787,7 @@ function buildAnchorCheck(deps: StoreDeps | undefined): Command {
           (d.searched_elsewhere > 0 ? ` · other files ${d.found_elsewhere}/${d.searched_elsewhere}` : "") +
           (d.bound > 0 ? ` · bound ${d.bound}` : "") +
           (d.fp_filled > 0 ? ` · fingerprints ${d.fp_filled}` : "") +
+          (d.intents_bound > 0 ? ` · intents bound ${d.intents_bound}` : "") +
           (d.skipped_debounce > 0 ? ` · debounced ${d.skipped_debounce}` : "") +
           (d.budget_hit ? " · hit the budget" : ""),
       );

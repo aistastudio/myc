@@ -19,6 +19,7 @@ import type { Command, CommandContext, CommandFailure } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import {
   anchorFlagLine,
+  anchorFlagResult,
   attachAnchorFlag,
   bindAnchorAt,
   bindFailure,
@@ -821,14 +822,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
                 "the background check (myc anchor check) catches up on precision",
             );
           }
-          anchors.push({
-            path: a.path,
-            start: a.start,
-            end: a.end,
-            anchor_id: a.anchorId,
-            state: a.state,
-            ...(a.deferred ? { deferred: true, size_bytes: a.sizeBytes } : {}),
-          });
+          anchors.push(anchorFlagResult(a));
           changed.push("anchor");
         }
 

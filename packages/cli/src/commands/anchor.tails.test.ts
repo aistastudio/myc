@@ -202,8 +202,8 @@ describe("заведомо непривязываемый якорь — отк�
 
 describe("anchor of: владельцы — только живое знание", () => {
   test("отменённое, отозванное и кандидат не отдаются; закрытое — отдаётся", async () => {
-    // Спаны у владельцев РАЗНЫЕ: второй узел на тот же file:span сейчас падает
-    // на ux_nodes_content — отдельный дефект memory-s32xpa09ytpb.
+    // Спаны у владельцев разные: так в выдаче пять якорей, а не один общий
+    // (тот же file:span — один узел якоря, anchor.shared.test.ts).
     const id = async (span: string, ...args: string[]): Promise<string> => {
       const d = await data(...args);
       await data("anchor", "add", d["id"] as string, `src/fuse.ts:${span}`);
@@ -356,13 +356,17 @@ describe("show: переезд кода в другой файл виден у �
 
     const fuseSpan = `3-${3 + FUSE_FN.split("\n").length - 1}`;
     const human = text((await myc(dir, "show", task)).stdout);
-    expect(human).toContain(`anchors   src/fuse.ts:${fuseSpan} drifted 1.00 · ${anchor} · moved from src/rank.ts:${span}`);
+    // Символ — из строки якоря (индекс был при привязке): memory-nv6hzkg6t28j.
+    expect(human).toContain(
+      `anchors   src/fuse.ts:${fuseSpan} (fuseRanked) drifted 1.00 · ${anchor} · moved from src/rank.ts:${span}`,
+    );
     const view = await data("show", task);
     expect(view["anchors"]).toEqual([
       {
         path: "src/fuse.ts",
         start: 3,
         end: 3 + FUSE_FN.split("\n").length - 1,
+        symbol: "fuseRanked",
         state: "drifted",
         node_id: anchor,
         drift: 1,
