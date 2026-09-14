@@ -11,7 +11,7 @@ const server = startVizServer({ dbPath: dbPath!, dir: dir!, port: 0 });
 const res = await fetch(`http://localhost:${server.port}/api/nodes/${id}`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ title: "переименовано без бинаря" }),
+  body: JSON.stringify({ title: "renamed without the binary" }),
 });
 const body = (await res.json()) as { ok?: boolean; error?: { code?: string } };
 process.stdout.write(JSON.stringify({ ok: body.ok === true, code: body.error?.code ?? null }));

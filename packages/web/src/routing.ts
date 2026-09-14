@@ -80,7 +80,7 @@ export function buildRouting(db: ReadOnlyDb, opts: RoutingOptions = {}): Routing
     return emptyPayload(minAttempts, [
       {
         code: "swarm.missing",
-        msg: "таблицы swarm_attempt нет — атрибуция ещё не заводилась ни для одной попытки",
+        msg: "no swarm_attempt table — attribution has not been started for a single attempt",
       },
     ], t0);
   }
@@ -95,19 +95,19 @@ export function buildRouting(db: ReadOnlyDb, opts: RoutingOptions = {}): Routing
   if (report.classes.length === 0) {
     degraded.push({
       code: "swarm.no_attribution",
-      msg: "атрибуции нет: ни одной закрытой попытки",
+      msg: "no attribution: not a single closed attempt",
     });
   }
   for (const cls of report.classes) {
     if (cls.answer === "single_arm") {
       degraded.push({
         code: `routing.single_arm.${cls.taskClass}`,
-        msg: `${cls.taskClass}: сравнивать не с чем — ${cls.why}`,
+        msg: `${cls.taskClass}: nothing to compare — ${cls.why}`,
       });
     } else if (cls.answer === "insufficient_attempts") {
       degraded.push({
         code: `routing.insufficient_attempts.${cls.taskClass}`,
-        msg: `${cls.taskClass}: наблюдений не хватает — ${cls.why}`,
+        msg: `${cls.taskClass}: not enough observations — ${cls.why}`,
       });
     } else if (cls.answer === "no_cost_data") {
       degraded.push({
@@ -117,7 +117,7 @@ export function buildRouting(db: ReadOnlyDb, opts: RoutingOptions = {}): Routing
     } else if (cls.separationPending) {
       degraded.push({
         code: `routing.separation_pending.${cls.taskClass}`,
-        msg: `${cls.taskClass}: разница не подтверждена — ${cls.why}`,
+        msg: `${cls.taskClass}: difference not confirmed — ${cls.why}`,
       });
     }
   }

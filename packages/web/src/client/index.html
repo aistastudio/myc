@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,52 +12,52 @@
 <header class="bar">
   <div class="brand"><span class="dot"></span><b>myc</b> viz</div>
   <nav class="tabs" id="tabs">
-    <button class="tab" data-tab="graph" aria-selected="true">Граф</button>
-    <button class="tab" data-tab="ready" aria-selected="false">Очередь</button>
-    <button class="tab" data-tab="board" aria-selected="false">Доска</button>
-    <button class="tab" data-tab="kb" aria-selected="false">База знаний</button>
-    <button class="tab" data-tab="timeline" aria-selected="false">Таймлайн</button>
-    <button class="tab" data-tab="search" aria-selected="false">Поиск</button>
-    <button class="tab" data-tab="routing" aria-selected="false">Роутинг</button>
-    <button class="tab" data-tab="decisions" aria-selected="false">Решения</button>
-    <button class="tab" data-tab="bootstrap" aria-selected="false">Бутстрап</button>
-    <button class="tab" data-tab="health" aria-selected="false">Здоровье</button>
+    <button class="tab" data-tab="graph" aria-selected="true">Graph</button>
+    <button class="tab" data-tab="ready" aria-selected="false">Ready</button>
+    <button class="tab" data-tab="board" aria-selected="false">Board</button>
+    <button class="tab" data-tab="kb" aria-selected="false">Knowledge base</button>
+    <button class="tab" data-tab="timeline" aria-selected="false">Timeline</button>
+    <button class="tab" data-tab="search" aria-selected="false">Search</button>
+    <button class="tab" data-tab="routing" aria-selected="false">Routing</button>
+    <button class="tab" data-tab="decisions" aria-selected="false">Decisions</button>
+    <button class="tab" data-tab="bootstrap" aria-selected="false">Bootstrap</button>
+    <button class="tab" data-tab="health" aria-selected="false">Health</button>
   </nav>
   <div class="bar-right">
-    <span class="ro" title="просмотрщик открыл базу только на чтение">read-only</span>
+    <span class="ro" title="the viewer opened the database read-only">read-only</span>
     <span class="meta" id="boot">—</span>
-    <button class="theme" id="theme" title="тема: авто / светлая / тёмная">авто</button>
+    <button class="theme" id="theme" title="theme: auto / light / dark">auto</button>
   </div>
 </header>
 
 <main>
-  <!-- ГРАФ -->
+  <!-- GRAPH -->
   <section class="panel" id="panel-graph">
     <div class="graph-wrap">
       <canvas id="canvas"></canvas>
       <div class="overlay-tl">
         <div class="chip" id="graph-stat">—</div>
-        <div class="chip" id="graph-layout">лэйаут: —</div>
+        <div class="chip" id="graph-layout">layout: —</div>
       </div>
       <div class="overlay-bl" id="legend"></div>
-      <div class="hint" id="graph-hint">колесо — зум, перетаскивание — панорама, клик по узлу — карточка</div>
+      <div class="hint" id="graph-hint">wheel — zoom, drag — pan, click a node — card</div>
       <div class="tooltip" id="tooltip" hidden></div>
       <aside class="node-card" id="node-card" hidden></aside>
       <div class="empty" id="graph-empty" hidden></div>
     </div>
     <div class="graph-controls">
-      <input class="search" id="graph-search" type="search" placeholder="поиск по id и заголовку" autocomplete="off">
-      <button id="graph-fit">вписать</button>
-      <button id="graph-relayout">пересчитать лэйаут</button>
-      <label class="toggle"><input type="checkbox" id="graph-edges" checked> рёбра</label>
-      <label class="toggle"><input type="checkbox" id="graph-labels"> подписи</label>
+      <input class="search" id="graph-search" type="search" placeholder="search by id and title" autocomplete="off">
+      <button id="graph-fit">fit</button>
+      <button id="graph-relayout">re-run layout</button>
+      <label class="toggle"><input type="checkbox" id="graph-edges" checked> edges</label>
+      <label class="toggle"><input type="checkbox" id="graph-labels"> labels</label>
     </div>
   </section>
 
-  <!-- ОЧЕРЕДЬ -->
+  <!-- READY -->
   <section class="panel" id="panel-ready" hidden>
     <div class="head">
-      <h2>Очередь ready</h2>
+      <h2>Ready queue</h2>
       <div class="sub" id="ready-sub">—</div>
     </div>
     <div class="task-new" id="task-new"></div>
@@ -66,19 +66,19 @@
     <div class="empty" id="ready-empty" hidden></div>
   </section>
 
-  <!-- ДОСКА -->
+  <!-- BOARD -->
   <section class="panel" id="panel-board" hidden>
     <div class="head">
-      <h2>Доска задач</h2>
+      <h2>Task board</h2>
       <div class="sub" id="board-sub">—</div>
     </div>
     <div class="board-cols" id="board-cols"></div>
   </section>
 
-  <!-- БАЗА ЗНАНИЙ -->
+  <!-- KNOWLEDGE BASE -->
   <section class="panel" id="panel-kb" hidden>
     <div class="head">
-      <h2>База знаний</h2>
+      <h2>Knowledge base</h2>
       <div class="sub" id="kb-sub">—</div>
     </div>
     <div class="task-new" id="kb-new"></div>
@@ -88,10 +88,10 @@
     <div class="empty" id="kb-empty" hidden></div>
   </section>
 
-  <!-- ТАЙМЛАЙН -->
+  <!-- TIMELINE -->
   <section class="panel" id="panel-timeline" hidden>
     <div class="head">
-      <h2>Таймлайн оплога</h2>
+      <h2>Oplog timeline</h2>
       <div class="sub" id="timeline-sub">—</div>
     </div>
     <div class="spark" id="timeline-spark"></div>
@@ -99,15 +99,15 @@
     <div class="empty" id="timeline-empty" hidden></div>
   </section>
 
-  <!-- ПОИСК -->
+  <!-- SEARCH -->
   <section class="panel" id="panel-search" hidden>
     <div class="head">
-      <h2>Поиск</h2>
+      <h2>Search</h2>
       <div class="sub" id="search-sub">—</div>
     </div>
     <div class="search-form">
-      <input class="search" id="search-query" type="search" placeholder="запрос — тот же myc recall" autocomplete="off">
-      <button id="search-go">искать</button>
+      <input class="search" id="search-query" type="search" placeholder="query — the same as myc recall" autocomplete="off">
+      <button id="search-go">search</button>
     </div>
     <div class="cards" id="search-degraded"></div>
     <div class="rows" id="search-rows"></div>
@@ -115,10 +115,10 @@
     <div class="empty" id="search-empty" hidden></div>
   </section>
 
-  <!-- РОУТИНГ -->
+  <!-- ROUTING -->
   <section class="panel" id="panel-routing" hidden>
     <div class="head">
-      <h2>Роутинг: модель × класс задачи</h2>
+      <h2>Routing: model × task class</h2>
       <div class="sub" id="routing-sub">—</div>
     </div>
     <div class="cards" id="routing-degraded"></div>
@@ -126,31 +126,31 @@
     <div class="empty" id="routing-empty" hidden></div>
   </section>
 
-  <!-- РЕШЕНИЯ -->
+  <!-- DECISIONS -->
   <section class="panel" id="panel-decisions" hidden>
     <div class="head">
-      <h2>Решения: цепочки и противоречия</h2>
+      <h2>Decisions: chains and contradictions</h2>
       <div class="sub" id="decisions-sub">—</div>
     </div>
     <div class="cards" id="decisions-degraded"></div>
-    <h3>Открытые противоречия</h3>
+    <h3>Open contradictions</h3>
     <div class="rows" id="decisions-contradictions"></div>
     <div class="empty" id="decisions-contradictions-empty" hidden></div>
-    <h3>Цепочки решений</h3>
+    <h3>Decision chains</h3>
     <div class="rows" id="decisions-chains"></div>
     <div class="empty" id="decisions-empty" hidden></div>
   </section>
 
-  <!-- БУТСТРАП -->
+  <!-- BOOTSTRAP -->
   <section class="panel bootstrap-panel" id="panel-bootstrap" hidden>
     <div class="head">
-      <h2>Бутстрап: обязательный контекст запуска агента</h2>
+      <h2>Bootstrap: required agent launch context</h2>
       <div class="sub" id="bootstrap-sub">—</div>
     </div>
     <div class="bootstrap-body">
       <div class="bootstrap-cut" id="bootstrap-cut" hidden></div>
       <pre class="bootstrap-preview" id="bootstrap-preview">—</pre>
-      <h3>Ручные блоки</h3>
+      <h3>Manual blocks</h3>
       <div class="task-new" id="bootstrap-new"></div>
       <div class="bootstrap-blocks" id="bootstrap-blocks"></div>
       <div class="empty" id="bootstrap-empty" hidden></div>
@@ -158,10 +158,10 @@
     </div>
   </section>
 
-  <!-- ЗДОРОВЬЕ -->
+  <!-- HEALTH -->
   <section class="panel" id="panel-health" hidden>
     <div class="head">
-      <h2>Здоровье</h2>
+      <h2>Health</h2>
       <div class="sub" id="health-sub">—</div>
     </div>
     <div class="cards" id="health-cards"></div>
@@ -173,10 +173,10 @@
   <div class="modal-box">
     <h3 id="board-modal-title">—</h3>
     <div class="modal-released" id="board-modal-released"></div>
-    <input class="modal-reason" id="board-modal-reason" type="text" placeholder="причина — её прочитают следующие сессии">
+    <input class="modal-reason" id="board-modal-reason" type="text" placeholder="reason — later sessions will read it">
     <div class="modal-actions">
-      <button class="rbtn primary" id="board-modal-confirm">подтвердить</button>
-      <button class="rbtn" id="board-modal-cancel">не надо</button>
+      <button class="rbtn primary" id="board-modal-confirm">submit</button>
+      <button class="rbtn" id="board-modal-cancel">never mind</button>
     </div>
   </div>
 </div>

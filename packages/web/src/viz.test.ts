@@ -234,7 +234,7 @@ describe("таймлайн", () => {
     expect(t.rows[0]!.seq).toBeGreaterThan(t.rows[49]!.seq);
     expect(t.rows[0]!.value!.length).toBeLessThanOrEqual(161);
     // Заголовок узла подтягивается, когда узел ещё жив.
-    expect(t.rows[0]!.title).toBe("узел 1");
+    expect(t.rows[0]!.title).toBe("node 1");
   });
 });
 

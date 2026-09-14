@@ -132,7 +132,7 @@ export async function runWrite(
     out = await runCli([...argv, "--json"]);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return refuse(500, "write.engine", `путь записи не отработал: ${msg}`);
+    return refuse(500, "write.engine", `write path failed: ${msg}`);
   }
 
   const line = out.stdout.trim().split("\n").filter((l) => l.length > 0).pop() ?? "";
@@ -145,14 +145,14 @@ export async function runWrite(
     return refuse(
       500,
       "write.envelope",
-      `путь записи вернул не конверт (код ${out.code}): ${line.slice(0, 200)}`,
+      `write path returned no envelope (code ${out.code}): ${line.slice(0, 200)}`,
     );
   }
 
   const degraded = env.meta?.degraded ?? [];
   const warn = env.warn ?? [];
   if (!env.ok || env.error !== undefined) {
-    const err = env.error ?? { code: "write.failed", msg: "команда отказала без кода", exit: 1 };
+    const err = env.error ?? { code: "write.failed", msg: "command refused without a code", exit: 1 };
     return {
       ok: false,
       status: httpStatusFor(err.exit),
@@ -260,18 +260,18 @@ function planReview(id: string, op: ReviewOp, body: Body): WritePlan | WriteOutc
   if (op === "confirm") return { argv: ["review", "confirm", id], clockFields: [] };
   const reason = str(body, "reason")?.trim();
   if (reason === undefined || reason.length === 0) {
-    return bad("для reject обязателен 'reason'", "причина пишется в узел: её прочтёт тот, кто встретит кандидата снова");
+    return bad("reject requires 'reason'", "the reason is written into the node: whoever meets this candidate again reads it");
   }
   return { argv: ["review", "reject", id, "--reason", reason], clockFields: [] };
 }
 
 /** Какой операцией берётся статус, который прислали полем (S54). */
 const STATUS_ROUTE: Readonly<Record<string, string>> = {
-  in_progress: "claim — «в работе» берётся арендой, иначе задачу считают своей двое",
-  blocked: "никакой: blocked вычисляется из открытых блокеров, поставить его нельзя",
-  closed: "close — закрытие требует причины и сообщает, кого разблокировало",
-  open: "release — вернуть в очередь можно только сняв аренду",
-  cancelled: "cancel — отмена обязана сообщить, кого выпустила в очередь",
+  in_progress: "claim — in_progress is taken with a lease, otherwise two agents consider the task theirs",
+  blocked: "none: blocked is computed from open blockers and cannot be set",
+  closed: "close — closing requires a reason and reports what it unblocked",
+  open: "release — a task returns to the queue only by dropping its lease",
+  cancelled: "cancel — a cancel must report what it released into the queue",
 };
 
 /**
@@ -282,8 +282,8 @@ const STATUS_ROUTE: Readonly<Record<string, string>> = {
  * развести поверхности ещё раз, поэтому отказ громкий и с причиной.
  */
 const OP_GAPS: Readonly<Record<string, string>> = {
-  note: "заметка к узлу требует ребра replies_to, а команды CLI для произвольных рёбер нет; " +
-    "MCP пишет его мимо CLI — сводить поверхности к одному пути нужно там, а не третьей веткой здесь",
+  note: "a note on a node needs a replies_to edge, and the CLI has no command for arbitrary edges; " +
+    "MCP writes it bypassing the CLI — the surfaces must be unified there, not with a third branch here",
   /**
    * Комментарий (W13, memory-tje3kp7avp13) — та же дыра, что у note, тем же
    * доводом: узел kind='message' создать можно (`myc create --kind message`
@@ -297,9 +297,9 @@ const OP_GAPS: Readonly<Record<string, string>> = {
    * parent. Нужна команда вида `myc dep add <id> replies-to <id>` или
    * `--reply-to` у `myc msg` — это правка packages/cli, не этого файла.
    */
-  comment: "комментарий к узлу требует ребра replies_to, а команды CLI для произвольных рёбер нет " +
-    "(dep add умеет только blocks/blocked-by); create --parent сюда не годится — исказил бы " +
-    "прогресс эпика в board.ts. Нужна команда CLI для ребра replies_to",
+  comment: "a comment on a node needs a replies_to edge, and the CLI has no command for arbitrary edges " +
+    "(dep add only knows blocks/blocked-by); create --parent does not fit here — it would distort " +
+    "the epic progress in board.ts. A CLI command for the replies_to edge is needed",
 };
 
 /**
@@ -311,17 +311,17 @@ const OP_GAPS: Readonly<Record<string, string>> = {
  * мы не строим: отказ громкий, с причиной и именем того, кто может её снять.
  */
 const FIELD_GAPS: Readonly<Record<string, string>> = {
-  type: "движок не умеет менять attrs.type существующего узла: у myc update нет такого флага; " +
-    "тип выбирается при создании (--kind task|bug|epic|chore), а до правки на живом узле " +
-    "нужен флаг в packages/cli — не третья ветка записи здесь",
-  layer: "слой существующего узла общим путём не меняется: у myc update нет флага слоя; " +
-    "слой ставится при создании (--layer у myc remember) или подъёмом L0→L2/L3 — " +
-    "новым узлом с ребром derived_from, а не правкой этого",
-  reach: "охват сессии (S58) записывается при создании (--reach у myc remember); " +
-    "готовый факт поднимается до проектного явным решением — точный повтор " +
-    "с --reach project; менять охват задним числом движок не умеет",
-  repo: "охват репозитория (S59) пишется при создании (--repo у myc create) и выводится " +
-    "из пути вызова; у myc update флага охвата нет — задним числом он не меняется",
+  type: "the engine cannot change attrs.type of an existing node: myc update has no such flag; " +
+    "the type is chosen at creation (--kind task|bug|epic|chore), and editing it on a live node " +
+    "needs a flag in packages/cli — not a third write branch here",
+  layer: "the layer of an existing node does not change through the shared write path: myc update has no layer flag; " +
+    "the layer is set at creation (--layer on myc remember) or raised L0→L2/L3 — " +
+    "by a new node with a derived_from edge, not by editing this one",
+  reach: "session reach (S58) is recorded at creation (--reach on myc remember); " +
+    "a fact is promoted to project reach by an explicit decision — an exact repeat " +
+    "with --reach project; the engine cannot change reach after the fact",
+  repo: "repo reach (S59) is written at creation (--repo on myc create) and derived " +
+    "from the call path; myc update has no reach flag — it does not change after the fact",
 };
 
 /**
@@ -332,12 +332,12 @@ const FIELD_GAPS: Readonly<Record<string, string>> = {
  * бы CLI-алиасы (task, bug, memory…), а не суть — вида в пути записи нет.
  */
 const KIND_GAPS: Readonly<Record<string, string>> = {
-  fragment: "у myc create нет --kind fragment: вид ядра есть, пути записи в CLI нет " +
-    "(фрагменты рождаются агентскими путями — absorb, импорт); " +
-    "третью ветку записи здесь не строим",
-  entity: "у myc create нет --kind entity: вид ядра есть, пути записи в CLI нет " +
-    "(сущности рождаются агентскими путями — absorb, импорт); " +
-    "третью ветку записи здесь не строим",
+  fragment: "myc create has no --kind fragment: the core kind exists, but the CLI has no write path for it " +
+    "(fragments are born on agent paths — absorb, import); " +
+    "no third write branch is built here",
+  entity: "myc create has no --kind entity: the core kind exists, but the CLI has no write path for it " +
+    "(entities are born on agent paths — absorb, import); " +
+    "no third write branch is built here",
 };
 
 /**
@@ -373,7 +373,7 @@ type Body = Record<string, unknown>;
 function reasonWarn(op: string, reason: string): WriteWarn {
   return {
     code: "reason.unwritten",
-    msg: `причина ${op} не сохранена в графе: «${reason.slice(0, 120)}»`,
+    msg: `the ${op} reason is not saved in the graph: "${reason.slice(0, 120)}"`,
   };
 }
 
@@ -389,25 +389,25 @@ function bad(msg: string, hint?: string): WriteOutcome {
 /** Значение поля в аргумент CLI: числа и списки приводятся здесь, а не в CLI. */
 function fieldArg(key: string, value: unknown): { ok: true; text: string } | { ok: false; msg: string } {
   if (key === "tags") {
-    if (!Array.isArray(value)) return { ok: false, msg: "'tags' — массив строк" };
+    if (!Array.isArray(value)) return { ok: false, msg: "'tags' must be an array of strings" };
     const tags = value.map((t) => (typeof t === "string" ? t.trim() : ""));
-    if (tags.some((t) => t.length === 0)) return { ok: false, msg: "пустой тег в 'tags'" };
+    if (tags.some((t) => t.length === 0)) return { ok: false, msg: "empty tag in 'tags'" };
     if (tags.some((t) => t.includes(","))) {
-      return { ok: false, msg: "запятая внутри тега неотличима от разделителя списка" };
+      return { ok: false, msg: "a comma inside a tag is indistinguishable from the list separator" };
     }
     return { ok: true, text: tags.join(",") };
   }
   if (key === "priority") {
     if (typeof value === "number") return { ok: true, text: String(value) };
     if (typeof value === "string") return { ok: true, text: value };
-    return { ok: false, msg: "'priority' — P0..P3, 0..3 или число" };
+    return { ok: false, msg: "'priority' must be P0..P3, 0..3 or a number" };
   }
-  if (typeof value !== "string") return { ok: false, msg: `'${key}' — строка` };
+  if (typeof value !== "string") return { ok: false, msg: `'${key}' must be a string` };
   if (key === "body" && value === "-") {
     // '-' у CLI означает «читать stdin»; в сервере это повисший на stdin
     // процесс, а не правка. Отказ громкий, потому что вариант «молча
     // подставить пустое тело» стёр бы текст узла.
-    return { ok: false, msg: "тело '-' у CLI означает чтение stdin и в HTTP не имеет смысла" };
+    return { ok: false, msg: "body '-' means stdin for the CLI and makes no sense over HTTP" };
   }
   return { ok: true, text: value };
 }
@@ -417,9 +417,9 @@ function fieldArg(key: string, value: unknown): { ok: true; text: string } | { o
  * Проверяется здесь, чтобы отказ пришёл до движка с внятной подсказкой.
  */
 function layerArg(value: unknown): { ok: true; text: string } | { ok: false; msg: string } {
-  if (typeof value !== "string") return { ok: false, msg: "'layer' — строка L0..L3" };
+  if (typeof value !== "string") return { ok: false, msg: "'layer' must be a string L0..L3" };
   const m = /^L?([0-3])$/i.exec(value.trim());
-  if (!m) return { ok: false, msg: `неверный слой '${value}'; допустимы L0..L3` };
+  if (!m) return { ok: false, msg: `invalid layer '${value}'; allowed: L0..L3` };
   return { ok: true, text: `L${m[1]}` };
 }
 
@@ -445,17 +445,17 @@ const REACH_CHOICES: readonly string[] = ["session", "project"];
 function planCreateNote(body: Body): WritePlan | WriteOutcome {
   const title = str(body, "title")?.trim();
   if (title === undefined || title.length === 0) {
-    return bad("нужен 'title'", "POST /api/nodes {kind: 'note', title, body?, tags?…}");
+    return bad("missing 'title'", "POST /api/nodes {kind: 'note', title, body?, tags?…}");
   }
   if (title === "-") {
     // '-' у CLI означает «читать stdin»; заметка с таким текстом повесила бы
     // сервер на stdin вместо записи. Отказ громкий — молча подставить пустое
     // значило бы стереть факт.
-    return bad("текст '-' у CLI означает чтение stdin и в HTTP не имеет смысла");
+    return bad("text '-' means stdin for the CLI and makes no sense over HTTP");
   }
   const bodyText = str(body, "body");
   if (bodyText === "-") {
-    return bad("тело '-' у CLI означает чтение stdin и в HTTP не имеет смысла");
+    return bad("body '-' means stdin for the CLI and makes no sense over HTTP");
   }
   // Помни: splitFact у remember берёт первую строку в заголовок, ВЕСЬ текст —
   // в тело. Собранный здесь текст twin-команда ввела бы сама.
@@ -466,8 +466,8 @@ function planCreateNote(body: Body): WritePlan | WriteOutcome {
     return refuse(
       422,
       "precond.use_op",
-      "статус при создании не задаётся: заметка рождается active",
-      "статусы заметки (active/superseded/retracted) меняет общий путь myc update",
+      "status is not set at creation: a note is born active",
+      "note statuses (active/superseded/retracted) are changed by the shared path myc update",
     );
   }
   const tags = body["tags"];
@@ -505,7 +505,7 @@ function planCreateNote(body: Body): WritePlan | WriteOutcome {
   const reach = body["reach"];
   if (reach !== undefined && reach !== null) {
     if (typeof reach !== "string" || !REACH_CHOICES.includes(reach)) {
-      return bad(`'reach' — ${REACH_CHOICES.join(" | ")}`, "session по умолчанию; project — явное решение");
+      return bad(`'reach' must be ${REACH_CHOICES.join(" | ")}`, "session by default; project is an explicit decision");
     }
     argv.push("--reach", reach);
   }
@@ -519,8 +519,8 @@ function planCreateNote(body: Body): WritePlan | WriteOutcome {
   );
   if (unknown.length > 0) {
     return bad(
-      `заметке чужие поля: ${unknown.join(", ")}`,
-      "у myc remember нет флагов приоритета, исполнителя, оценки, родителя и зависимостей",
+      `fields foreign to a note: ${unknown.join(", ")}`,
+      "myc remember has no flags for priority, assignee, estimate, parent or dependencies",
     );
   }
   return { argv, clockFields: [] };
@@ -532,18 +532,18 @@ export function planCreate(body: Body): WritePlan | WriteOutcome {
   if (kind === "note") return planCreateNote(body);
   const gap = kind !== undefined ? KIND_GAPS[kind] : undefined;
   if (gap !== undefined) {
-    return refuse(501, "unsupported.kind", `вид '${kind}' не создаётся: ${gap}`);
+    return refuse(501, "unsupported.kind", `kind '${kind}' cannot be created: ${gap}`);
   }
   const title = str(body, "title")?.trim();
   if (title === undefined || title.length === 0) {
-    return bad("нужен 'title'", "POST /api/nodes {title, kind?, body?, priority?, tags?}");
+    return bad("missing 'title'", "POST /api/nodes {title, kind?, body?, priority?, tags?}");
   }
   if (body["status"] !== undefined) {
     return refuse(
       422,
       "precond.use_op",
-      "статус при создании не задаётся: узел рождается в начальном статусе своей шкалы",
-      "смена статуса — POST /api/nodes/<id>/op",
+      "status is not set at creation: a node is born in the initial status of its scale",
+      "status changes go through POST /api/nodes/<id>/op",
     );
   }
   const argv: string[] = ["create", title];
@@ -576,8 +576,8 @@ export function planUpdate(id: string, body: Body): WritePlan | WriteOutcome {
       422,
       "precond.use_op",
       route !== undefined
-        ? `статус '${wanted}' не назначается записью: ${route}`
-        : `статус записью не назначается; операции: ${WRITE_OPS.join(", ")}`,
+        ? `status '${wanted}' is not assigned by a write: ${route}`
+        : `status is not assigned by a write; operations: ${WRITE_OPS.join(", ")}`,
       `POST /api/nodes/${id}/op {"op":"…"}`,
     );
   }
@@ -596,7 +596,7 @@ export function planUpdate(id: string, body: Body): WritePlan | WriteOutcome {
   for (const key of Object.keys(body)) {
     const gap = FIELD_GAPS[key];
     if (gap !== undefined) {
-      return refuse(501, "unsupported.field", `поле '${key}' не пишется: ${gap}`);
+      return refuse(501, "unsupported.field", `field '${key}' is not written: ${gap}`);
     }
   }
   // Иерархия — РЕБРО, а не поле: у `parent` нет строки в field_clock (рёбра
@@ -611,7 +611,7 @@ export function planUpdate(id: string, body: Body): WritePlan | WriteOutcome {
     } else if (typeof parentRaw === "string") {
       argv.push("--parent", parentRaw.trim());
     } else {
-      return bad("'parent' — id эпика строкой либо пустая строка, чтобы вынуть из эпика");
+      return bad("'parent' must be an epic id string, or an empty string to leave the epic");
     }
     // Ребро не поле: своих часов у него нет, и в clockFields ему не место.
     // Но проверка «есть ли что делать» ниже смотрит именно туда, поэтому
@@ -624,12 +624,12 @@ export function planUpdate(id: string, body: Body): WritePlan | WriteOutcome {
   );
   if (unknown.length > 0) {
     return bad(
-      `неизвестные поля: ${unknown.join(", ")}`,
-      `правятся ${UPDATE_FIELDS.join(", ")}`,
+      `unknown fields: ${unknown.join(", ")}`,
+      `editable: ${UPDATE_FIELDS.join(", ")}`,
     );
   }
   if (clockFields.length === 0 && !hierarchyTouched) {
-    return bad("нечего обновлять: ни одного поля", `поля: ${UPDATE_FIELDS.join(", ")}, parent`);
+    return bad("nothing to update: no fields", `fields: ${UPDATE_FIELDS.join(", ")}, parent`);
   }
   return { argv, clockFields };
 }
@@ -638,14 +638,14 @@ export function planUpdate(id: string, body: Body): WritePlan | WriteOutcome {
 export function planOp(id: string, body: Body): WritePlan | WriteOutcome {
   const op = str(body, "op");
   const known = [...WRITE_OPS, ...REVIEW_OPS].join(", ");
-  if (op === undefined) return bad("нужен 'op'", `операции: ${known}`);
+  if (op === undefined) return bad("missing 'op'", `operations: ${known}`);
   const gap = OP_GAPS[op];
   if (gap !== undefined) {
-    return refuse(501, "unsupported.op", `операция '${op}' не реализована: ${gap}`);
+    return refuse(501, "unsupported.op", `operation '${op}' is not implemented: ${gap}`);
   }
   if ((REVIEW_OPS as readonly string[]).includes(op)) return planReview(id, op as ReviewOp, body);
   if (!(WRITE_OPS as readonly string[]).includes(op)) {
-    return bad(`неизвестная операция '${op}'`, `допустимы ${known}`);
+    return bad(`unknown operation '${op}'`, `allowed: ${known}`);
   }
 
   const leaseRaw = body["lease_minutes"];
@@ -655,7 +655,7 @@ export function planOp(id: string, body: Body): WritePlan | WriteOutcome {
       : leaseRaw === undefined
         ? 30
         : undefined;
-  if (lease === undefined) return bad("'lease_minutes' — целое от 5 до 480");
+  if (lease === undefined) return bad("'lease_minutes' must be an integer from 5 to 480");
 
   switch (op as WriteOp) {
     case "claim":
@@ -674,7 +674,7 @@ export function planOp(id: string, body: Body): WritePlan | WriteOutcome {
     case "close": {
       const reason = str(body, "reason")?.trim();
       if (reason === undefined || reason.length === 0) {
-        return bad("для close обязателен 'reason'", "причина уходит в память проекта");
+        return bad("close requires 'reason'", "the reason goes into the project memory");
       }
       const argv = ["close", id, "--reason", reason];
       const outcome = str(body, "outcome");
@@ -690,14 +690,14 @@ export function planOp(id: string, body: Body): WritePlan | WriteOutcome {
       // guardTaskStatus не пропустит его при живой чужой аренде.
       const reason = str(body, "reason")?.trim();
       if (reason === undefined || reason.length === 0) {
-        return bad("для reopen обязателен 'reason'");
+        return bad("reopen requires 'reason'");
       }
       return { argv: ["update", id, "--status", "open"], clockFields: [], warn: [reasonWarn("reopen", reason)] };
     }
     case "cancel": {
       const reason = str(body, "reason")?.trim();
       if (reason === undefined || reason.length === 0) {
-        return bad("для cancel обязателен 'reason'", "отмена — суждение, и его причину читают потом");
+        return bad("cancel requires 'reason'", "a cancel is a judgment, and its reason is read later");
       }
       return {
         argv: ["update", id, "--status", "cancelled"],
@@ -707,12 +707,12 @@ export function planOp(id: string, body: Body): WritePlan | WriteOutcome {
     }
     case "assign": {
       const assignee = str(body, "assignee");
-      if (assignee === undefined) return bad("для assign нужен 'assignee'");
+      if (assignee === undefined) return bad("assign requires 'assignee'");
       return { argv: ["update", id, "--assign", assignee], clockFields: ["assignee"] };
     }
     case "priority": {
       const priority = body["priority"];
-      if (priority === undefined) return bad("для priority нужен 'priority'");
+      if (priority === undefined) return bad("priority requires 'priority'");
       const arg = fieldArg("priority", priority);
       if (!arg.ok) return bad(arg.msg);
       return { argv: ["update", id, "--priority", arg.text], clockFields: ["priority"] };
@@ -762,7 +762,7 @@ export function checkIfMatch(
 ): WriteOutcome | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object" || Array.isArray(raw)) {
-    return bad("'if_match' — объект {поле: часы}");
+    return bad("'if_match' must be an object {field: clock}");
   }
   const declared = raw as Record<string, unknown>;
   const current = nodeClocks(db, id);
@@ -771,12 +771,12 @@ export function checkIfMatch(
   for (const [key, expected] of Object.entries(declared)) {
     const spec = FIELDS[key];
     if (spec === undefined) {
-      return bad(`if_match: неизвестное поле '${key}'`, `поля: ${UPDATE_FIELDS.join(", ")}`);
+      return bad(`if_match: unknown field '${key}'`, `fields: ${UPDATE_FIELDS.join(", ")}`);
     }
     if (!plan.clockFields.includes(spec.clock)) {
       return bad(
-        `if_match: поле '${key}' в этом запросе не пишется`,
-        "часы объявляются только для полей запроса — остальные сводит CRDT",
+        `if_match: field '${key}' is not written by this request`,
+        "clocks are declared only for the request's fields — CRDT merges the rest",
       );
     }
     const actual = current[spec.clock] ?? null;
@@ -787,8 +787,8 @@ export function checkIfMatch(
   return refuse(
     409,
     "conflict.version",
-    `узел ${id} изменился с момента чтения по полям: ${stale.map((s) => s.field).join(", ")}`,
-    "перечитать GET /api/nodes/<id>, свести правку и повторить",
+    `node ${id} changed since it was read, fields: ${stale.map((s) => s.field).join(", ")}`,
+    "re-read GET /api/nodes/<id>, merge the edit and retry",
     { conflicts: stale, clk: current },
   );
 }
@@ -824,19 +824,19 @@ export function aclDenial(
   );
   if (row === undefined) return undefined; // «нет узла» скажет общий путь записи
   const deny = (why: string): WriteOutcome =>
-    refuse(403, "denied.acl", `${id}: ${why} (принципал ${principal})`);
+    refuse(403, "denied.acl", `${id}: ${why} (principal ${principal})`);
 
   switch (row.acl) {
     case "private":
-      return row.owner_id === principal ? undefined : deny("узел приватный, владелец другой");
+      return row.owner_id === principal ? undefined : deny("the node is private and owned by someone else");
     case "agent":
-      return row.agent_id === principal ? undefined : deny("узел закреплён за другим агентом");
+      return row.agent_id === principal ? undefined : deny("the node is pinned to another agent");
     case "restricted": {
       const grant = db.one<{ n: number }>(
         "SELECT count(*) AS n FROM acl_grants WHERE node_id = ?1 AND principal = ?2",
         [id, principal],
       );
-      return (grant?.n ?? 0) > 0 ? undefined : deny("узел ограничен, гранта нет");
+      return (grant?.n ?? 0) > 0 ? undefined : deny("the node is restricted and there is no grant");
     }
     default:
       return undefined; // team — общий доступ внутри воркспейса

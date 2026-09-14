@@ -128,7 +128,7 @@ function intParam(url: URL, name: string, fallback: number, max: number): number
 
 export function startVizServer(opts: VizServerOptions): VizServer {
   if (!existsSync(opts.dbPath)) {
-    throw new VizDbError("db.missing", `нет файла базы: ${opts.dbPath}`);
+    throw new VizDbError("db.missing", `no database file: ${opts.dbPath}`);
   }
   const workspace = loadWorkspace(opts.dir);
   // Ярус (S41) — свойство пути базы, считается один раз на старте.
@@ -188,18 +188,18 @@ export function startVizServer(opts: VizServerOptions): VizServer {
   ): Promise<Response> => {
     if (!writable) {
       stats.errors++;
-      return fail(405, "method.not_allowed", "просмотрщик поднят только на чтение");
+      return fail(405, "method.not_allowed", "the viewer is running read-only");
     }
     let body: Record<string, unknown>;
     try {
       const parsed: unknown = await request.json();
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        throw new Error("тело — JSON-объект");
+        throw new Error("the body must be a JSON object");
       }
       body = parsed as Record<string, unknown>;
     } catch (e) {
       stats.errors++;
-      return fail(400, "usage.body", `тело запроса не разобрано: ${e instanceof Error ? e.message : String(e)}`);
+      return fail(400, "usage.body", `request body not parsed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const built = plan(body);
@@ -255,12 +255,12 @@ export function startVizServer(opts: VizServerOptions): VizServer {
           : write(request, (body) => planBootstrapRm(key, body));
       }
       stats.errors++;
-      return fail(404, "notfound", `нет маршрута POST ${url.pathname}`);
+      return fail(404, "notfound", `no route POST ${url.pathname}`);
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       stats.errors++;
-      return fail(405, "method.not_allowed", `метод ${request.method} не обслуживается`);
+      return fail(405, "method.not_allowed", `method ${request.method} is not served`);
     }
 
     try {
@@ -274,7 +274,7 @@ export function startVizServer(opts: VizServerOptions): VizServer {
           const card = buildCard(db, id);
           if (card === undefined) {
             stats.errors++;
-            return fail(404, "notfound.node", `нет узла ${nodeWithOp[1]}`);
+            return fail(404, "notfound.node", `no node ${nodeWithOp[1]}`);
           }
           return json(card);
         }
@@ -282,7 +282,7 @@ export function startVizServer(opts: VizServerOptions): VizServer {
           const view = readNodeView(db, id);
           if (view === undefined) {
             stats.errors++;
-            return fail(404, "notfound.node", `нет узла ${nodeWithOp[1]}`);
+            return fail(404, "notfound.node", `no node ${nodeWithOp[1]}`);
           }
           return json(view);
         }
@@ -307,7 +307,7 @@ export function startVizServer(opts: VizServerOptions): VizServer {
       if (url.pathname === "/api/search") {
         const q = url.searchParams.get("q") ?? "";
         if (q.trim().length === 0) {
-          return fail(400, "usage.invalid", "нужен запрос: /api/search?q=<текст>");
+          return fail(400, "usage.invalid", "a query is required: /api/search?q=<text>");
         }
         const strParam = (name: string): string | undefined => url.searchParams.get(name) ?? undefined;
         const numParam = (name: string): number | undefined => {
@@ -414,7 +414,7 @@ export function startVizServer(opts: VizServerOptions): VizServer {
         });
       }
       stats.errors++;
-      return fail(404, "notfound", `нет маршрута ${url.pathname}`);
+      return fail(404, "notfound", `no route ${url.pathname}`);
     } catch (error) {
       stats.errors++;
       const msg = error instanceof Error ? error.message : String(error);

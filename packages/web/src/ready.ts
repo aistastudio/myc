@@ -64,7 +64,7 @@ export function anchorNorm(states: readonly string[] | undefined): {
   norm: number;
   label: string;
 } {
-  if (states === undefined || states.length === 0) return { norm: 0.5, label: "нет якорей" };
+  if (states === undefined || states.length === 0) return { norm: 0.5, label: "none" };
   if (states.every((s) => s === "fresh")) return { norm: 1.0, label: "fresh" };
   if (states.some((s) => s === "stale" || s === "lost")) return { norm: 0.2, label: "stale" };
   return { norm: 0.6, label: "drifted" };
@@ -127,8 +127,8 @@ export function scoreRow(
   const terms: ReadyTerm[] = [
     { key: "priority", label: `P${row.priority}`, weight: weights.priority, norm: nPri, value: r2(weights.priority * nPri) },
     { key: "unblocks", label: `unblocks ${unblocks}`, weight: weights.unblocks, norm: nUnb, value: r2(weights.unblocks * nUnb) },
-    { key: "freshness", label: `свежесть ${fmtAge(age)}`, weight: weights.freshness, norm: nFresh, value: r2(weights.freshness * nFresh) },
-    { key: "anchors", label: `якоря ${anchor.label}`, weight: weights.anchors, norm: anchor.norm, value: r2(weights.anchors * anchor.norm) },
+    { key: "freshness", label: `freshness ${fmtAge(age)}`, weight: weights.freshness, norm: nFresh, value: r2(weights.freshness * nFresh) },
+    { key: "anchors", label: `anchors ${anchor.label}`, weight: weights.anchors, norm: anchor.norm, value: r2(weights.anchors * anchor.norm) },
     { key: "type", label: type, weight: weights.type, norm: nType, value: r2(weights.type * nType) },
   ];
 

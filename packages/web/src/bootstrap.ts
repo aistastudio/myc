@@ -120,12 +120,12 @@ function bad(msg: string, hint?: string): WriteOutcome {
 export function planBootstrapSet(key: string, body: Body): WritePlan | WriteOutcome {
   const text = body["text"];
   if (typeof text !== "string" || text.length === 0) {
-    return bad("нужен 'text'", "POST /api/bootstrap/<key> {text: string, global?: boolean}");
+    return bad("missing 'text'", "POST /api/bootstrap/<key> {text: string, global?: boolean}");
   }
   if (text === "-") {
     // У CLI '-' означает «читать stdin»; в HTTP это подвесило бы запись на
     // stdin процесса вместо правки — тот же отказ, что у mutate.ts.
-    return bad("текст '-' у CLI означает чтение stdin и в HTTP не имеет смысла");
+    return bad("text '-' means stdin for the CLI and makes no sense over HTTP");
   }
   const global = body["global"];
   if (global !== undefined && typeof global !== "boolean") {
@@ -141,7 +141,7 @@ export function planBootstrapSet(key: string, body: Body): WritePlan | WriteOutc
 export function planBootstrapRm(key: string, body: Body): WritePlan | WriteOutcome {
   const op = body["op"];
   if (op !== "rm") {
-    return bad(op === undefined ? "нужен 'op'" : `неизвестная операция '${String(op)}'`, "допустима rm");
+    return bad(op === undefined ? "missing 'op'" : `unknown operation '${String(op)}'`, "allowed: rm");
   }
   const global = body["global"];
   if (global !== undefined && typeof global !== "boolean") {

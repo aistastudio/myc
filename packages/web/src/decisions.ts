@@ -199,7 +199,7 @@ export function buildDecisions(db: ReadOnlyDb, opts: DecisionsOptions = {}): Dec
   if (anyTruncated) {
     degraded.push({
       code: "decisions.chain_truncated",
-      msg: "у части цепочек версий больше бюджета чтения — показаны не целиком",
+      msg: "some version chains exceed the read budget — shown truncated",
     });
   }
 
@@ -207,7 +207,7 @@ export function buildDecisions(db: ReadOnlyDb, opts: DecisionsOptions = {}): Dec
   if (chains.length > limit) {
     degraded.push({
       code: "decisions.limit",
-      msg: `решений больше лимита чтения (${limit}) — часть цепочек не показана`,
+      msg: `more decisions than the read limit (${limit}) — some chains are not shown`,
     });
     clipped = chains.slice(0, limit);
   }

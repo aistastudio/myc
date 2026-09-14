@@ -117,7 +117,7 @@ describe("приёмка W2: недопустимое значение отве�
       expect(res.body.ok).toBe(false);
       expect(res.body.error?.code).toBe("usage.invalid");
       // отказ приходит и от HTTP-поверхности, и от движка — оба называют поле
-      expect(/риоритет|priority/.test(res.body.error?.msg ?? "")).toBe(true);
+      expect(/priority/.test(res.body.error?.msg ?? "")).toBe(true);
     }
     expect(await fieldOf(url, id, "priority")).toBe(2);
   }, 90_000);
@@ -150,7 +150,7 @@ describe("приёмка W2: недопустимое значение отве�
     const id = await makeNode(run, "тегированная", ["--tag", "была"]);
     const comma = await post(url, `/api/nodes/${id}`, { tags: ["a", "b,c"] });
     expect(comma.status).toBe(400);
-    expect(comma.body.error?.msg).toContain("запятая");
+    expect(comma.body.error?.msg).toContain("comma inside a tag");
     for (const bad of [42, ["a", ""], "a,b"]) {
       const res = await post(url, `/api/nodes/${id}`, { tags: bad });
       expect([JSON.stringify(bad), res.status]).toEqual([JSON.stringify(bad), 400]);

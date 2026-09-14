@@ -82,7 +82,7 @@ export function seedGraph(db: Database, opts: SeedOptions): void {
       `${p}-${i}`,
       kind,
       i % 4,
-      `узел ${i}`,
+      `node ${i}`,
       status,
       i % 4,
       `h${seq++}-${i}`,

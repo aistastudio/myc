@@ -261,7 +261,7 @@ describe("конкурентная правка", () => {
       if_match: { body: null },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error?.msg).toContain("не пишется");
+    expect(res.body.error?.msg).toContain("is not written by this request");
   }, 60_000);
 });
 
@@ -281,7 +281,7 @@ describe("статус зарабатывается, а не назначает�
   test("blocked и closed записью статуса тоже отказ", async () => {
     const { run, url } = await ws();
     const id = await makeTask(run, "задача");
-    for (const [status, word] of [["blocked", "блокер"], ["closed", "close"]] as const) {
+    for (const [status, word] of [["blocked", "blockers"], ["closed", "close"]] as const) {
       const res = await post(url, `/api/nodes/${id}`, { status });
       expect(res.status).toBe(422);
       expect(res.body.error?.code).toBe("precond.use_op");

@@ -55,7 +55,7 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   if (!hasNodes) {
     degraded.push({
       code: "schema.missing",
-      msg: "в базе нет таблицы nodes — схема не накатана; `myc init` или `myc doctor --schema`",
+      msg: "the database has no nodes table — the schema is not applied; `myc init` or `myc doctor --schema`",
     });
   }
 
@@ -69,8 +69,8 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
     degraded.push({
       code: "schema.version_unknown",
       msg: hasSchemaMigrations
-        ? "таблица schema_migrations пуста — ни одной миграции не накатано"
-        : "в базе нет таблицы schema_migrations — версию схемы прочитать нельзя",
+        ? "schema_migrations is empty — not a single migration applied"
+        : "the database has no schema_migrations table — the schema version cannot be read",
     });
   }
 
@@ -81,12 +81,12 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   if (walBytes >= WAL_HARD_LIMIT_BYTES) {
     degraded.push({
       code: "wal.hard_limit",
-      msg: `WAL ${(walBytes / 1048576).toFixed(1)} МБ — выше жёсткого потолка 32 МБ; нужен checkpoint`,
+      msg: `WAL ${(walBytes / 1048576).toFixed(1)} MB — above the hard ceiling of 32 MB; a checkpoint is needed`,
     });
   } else if (walBytes >= WAL_SOFT_LIMIT_BYTES) {
     degraded.push({
       code: "wal.soft_limit",
-      msg: `WAL ${(walBytes / 1048576).toFixed(1)} МБ — выше мягкого потолка 8 МБ`,
+      msg: `WAL ${(walBytes / 1048576).toFixed(1)} MB — above the soft ceiling of 8 MB`,
     });
   }
 
@@ -152,23 +152,23 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   if (embedModel.length === 0) {
     embedState = "off";
     embedDetail =
-      "myc_meta.embed_fingerprint пуст — ни одного вектора ещё не записано, поиск идёт по FTS";
+      "myc_meta.embed_fingerprint is empty — no vector written yet, search runs on FTS";
     degraded.push({
       code: "embeddings.off",
       msg:
-        "модель эмбеддингов ни разу не записала вектор (myc_meta.embed_fingerprint пуст) — " +
-        "векторная ветка поиска и absorb-косинус недоступны, семантика урезана до FTS",
+        "the embedding model has never written a vector (myc_meta.embed_fingerprint is empty) — " +
+        "the vector branch of search and the absorb cosine are unavailable, semantics cut down to FTS",
     });
   } else if (embedFailed > 0) {
     embedState = "degraded";
-    embedDetail = `${embedModel}${embedDim !== null ? ` dim=${embedDim}` : ""} · ${embedFailed} задач исчерпали попытки`;
+    embedDetail = `${embedModel}${embedDim !== null ? ` dim=${embedDim}` : ""} · ${embedFailed} jobs exhausted their attempts`;
     degraded.push({
       code: "embeddings.failed",
-      msg: `${embedFailed} задач эмбеддинга исчерпали попытки — часть узлов останется без вектора`,
+      msg: `${embedFailed} embedding jobs exhausted their attempts — some nodes will stay without a vector`,
     });
   } else {
     embedState = "ok";
-    embedDetail = `${embedModel}${embedDim !== null ? ` dim=${embedDim}` : ""} · очередь ${embedPending}`;
+    embedDetail = `${embedModel}${embedDim !== null ? ` dim=${embedDim}` : ""} · queue ${embedPending}`;
   }
 
   // --- векторное расширение ---------------------------------------------
@@ -184,20 +184,21 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   if (!vecApplied) {
     degraded.push({
       code: "vector.unavailable",
-      msg: "расширение sqlite-vec (vec0) не загружалось: векторный набор миграций не накатан — векторный поиск выключен, остальные поверхности работают",
+      msg: "the sqlite-vec extension (vec0) was never loaded: vector migrations are not applied — " +
+        "vector search is off, the other surfaces work",
     });
   }
   const vecDetail = vecApplied
-    ? `набор миграций применён (v${vecVersions.join(", v")})` +
+    ? `migrations applied (v${vecVersions.join(", v")})` +
       (vecLoadedHere
-        ? ` · vec0 загружен в процессе просмотрщика · ${vecRows ?? 0} векторов`
-        : " · vec0 в процессе просмотрщика не загружен (он его не грузит)")
-    : "векторный набор миграций не накатан";
+        ? ` · vec0 loaded in the viewer process · ${vecRows ?? 0} vectors`
+        : " · vec0 not loaded in the viewer process (the viewer does not load it)")
+    : "vector migrations are not applied";
 
   // --- FTS ---------------------------------------------------------------
   const ftsAvailable = db.has("nodes_fts");
   if (!ftsAvailable && hasNodes) {
-    degraded.push({ code: "fts.missing", msg: "нет таблицы nodes_fts — полнотекстовый поиск выключен" });
+    degraded.push({ code: "fts.missing", msg: "no nodes_fts table — full-text search is off" });
   }
 
   // --- очередь фоновых работ --------------------------------------------
@@ -211,7 +212,7 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
     ? counts(db, "SELECT kind AS key, count(*) AS n FROM jobs GROUP BY kind ORDER BY n DESC")
     : [];
   if (jobsFailed > 0) {
-    degraded.push({ code: "jobs.failed", msg: `${jobsFailed} фоновых задач исчерпали попытки` });
+    degraded.push({ code: "jobs.failed", msg: `${jobsFailed} background jobs exhausted their attempts` });
   }
 
   // --- якоря -------------------------------------------------------------
@@ -227,7 +228,7 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   if (stale > 0) {
     degraded.push({
       code: "anchor.stale",
-      msg: `${stale} якорей протухло — привязка к коду больше не указывает на живой участок; myc anchor repair`,
+      msg: `${stale} anchors stale — the binding no longer points at live code; myc anchor repair`,
     });
   }
 
@@ -299,7 +300,7 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
     },
     fts: {
       available: ftsAvailable,
-      detail: ftsAvailable ? "nodes_fts на месте" : "таблицы nodes_fts нет",
+      detail: ftsAvailable ? "nodes_fts present" : "no nodes_fts table",
     },
     jobs: { pending: jobsPending, failed: jobsFailed, by_kind: jobsByKind },
     anchors: { total: anchorsTotal, by_state: anchorsByState },

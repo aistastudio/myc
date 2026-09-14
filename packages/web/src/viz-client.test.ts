@@ -315,7 +315,7 @@ function defaultRoutingPayload(): unknown {
         cheapest: "cheap/high",
         separationPending: false,
         answer: "ok",
-        why: "2 рук неотличимы по результату, из них дешевле cheap/high",
+        why: "2 arms are indistinguishable on result; the cheapest is cheap/high ($0.0200 vs $0.0200 per attempt)",
       },
       {
         taskClass: "feature:cross",
@@ -341,7 +341,7 @@ function defaultRoutingPayload(): unknown {
         cheapest: null,
         separationPending: false,
         answer: "single_arm",
-        why: "наблюдения есть только у opus/high; сравнивать не с чем",
+        why: "only opus/high has observations; nothing to compare with",
       },
     ],
     coverage: {
@@ -359,7 +359,7 @@ function defaultRoutingPayload(): unknown {
     degraded: [
       {
         code: "routing.single_arm.feature:cross",
-        msg: "feature:cross: сравнивать не с чем — наблюдения есть только у opus/high; сравнивать не с чем",
+        msg: "feature:cross: nothing to compare — only opus/high has observations; nothing to compare with",
       },
     ],
     took_ms: 2,
@@ -409,7 +409,7 @@ function defaultDecisionsPayload(): unknown {
 /** `data` конверта `GET /api/bootstrap` — та же форма, что `renderBootstrap` (packages/cli). */
 function defaultBootstrapPreview(): unknown {
   return {
-    text: "# MYC BOOTSTRAP v1 · ws=t · auto 1 · manual 0 · fp deadbeef\n[auto:myc] стенд\n# 40 body chars / 2000 budget · 1 мс · cache off\n",
+    text: "# MYC BOOTSTRAP v1 · ws=t · auto 1 · manual 0 · fp deadbeef\n[auto:myc] стенд\n# 40 body chars / 2000 budget · 1 ms · cache off\n",
     chars: 90,
     body_chars: 40,
     budget: 2000,
@@ -802,7 +802,7 @@ describe("маршрут по хешу", () => {
 
 // ---------------------------------------------------------------------------
 
-const UNTRUSTED = "времена недостоверны: вкладка была в фоне";
+const UNTRUSTED = "timings unreliable: the tab was in the background";
 
 describe("честность замера первого кадра", () => {
   test("активная вкладка — число как было, без оговорок", async () => {
@@ -815,8 +815,8 @@ describe("честность замера первого кадра", () => {
     dom.flushFrames();
 
     const chip = dom.el("graph-layout");
-    expect(chip.textContent).toContain("первый кадр");
-    expect(chip.textContent).not.toContain("недостоверн");
+    expect(chip.textContent).toContain("first frame");
+    expect(chip.textContent).not.toContain("unreliable");
     expect(chip.dataset["trust"]).toBeUndefined();
     expect(chip.title).toBe("");
   });
@@ -833,7 +833,7 @@ describe("честность замера первого кадра", () => {
     const chip = dom.el("graph-layout");
     // Число остаётся на виду: по нему проверяют бюджет, а вкладка может так
     // и не стать активной. Врать оно при этом не должно.
-    expect(chip.textContent).toContain("первый кадр");
+    expect(chip.textContent).toContain("first frame");
     expect(chip.textContent).toContain(UNTRUSTED);
     expect(chip.dataset["trust"]).toBe("low");
     expect(chip.title).toContain("requestAnimationFrame");
@@ -862,7 +862,7 @@ describe("честность замера первого кадра", () => {
     worker.emit({ type: "seed", generation: 1, positions: new Float32Array(28), ms: 1 });
     dom.flushFrames();
     dom.flushFrames();
-    expect(dom.el("graph-layout").textContent).not.toContain("недостоверн");
+    expect(dom.el("graph-layout").textContent).not.toContain("unreliable");
 
     dom.hide();
     worker.emit({
@@ -891,8 +891,8 @@ describe("честность замера первого кадра", () => {
     dom.flushFrames();
 
     dom.hide();
-    expect(dom.el("graph-layout").textContent).not.toContain("недостоверн");
-    expect(dom.el("graph-layout").textContent).toContain("166 мс");
+    expect(dom.el("graph-layout").textContent).not.toContain("unreliable");
+    expect(dom.el("graph-layout").textContent).toContain("166 ms");
   });
 });
 
@@ -923,7 +923,7 @@ describe("доска: куда перетащить — вычисляется, 
     await settle();
 
     expect(dom.el("toast").hidden).toBe(false);
-    expect(dom.el("toast").textContent).toContain("blocked вычисляется из зависимостей");
+    expect(dom.el("toast").textContent).toContain("blocked is computed from dependencies");
     expect(dom.posts.length).toBe(0);
     // Диалог даже не открывался: отказ решается ДО сети, fetch на предпросмотр не ушёл.
     expect(dom.fetches.some((f) => f.includes("release-preview"))).toBe(false);
@@ -936,7 +936,7 @@ describe("доска: куда перетащить — вычисляется, 
     host.fire("drop", dragEvent(null, { dataset: { column: "in_progress" } }));
     await settle();
 
-    expect(dom.el("toast").textContent).toContain("in_progress зарабатывается арендой");
+    expect(dom.el("toast").textContent).toContain("in_progress is earned by a lease");
     expect(dom.posts.length).toBe(0);
   });
 
@@ -1041,8 +1041,8 @@ describe("карточка узла: смена эпика (S… myc-k7s2f240zkm
     dom.cards.set("n0", defaultCardView("n0"));
     await openCard(dom, 3);
 
-    const input = dom.findCreated((e) => e.attrs.get("placeholder") === "id эпика");
-    const apply = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "сменить эпик");
+    const input = dom.findCreated((e) => e.attrs.get("placeholder") === "epic id");
+    const apply = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "move to epic");
     expect(input).toBeDefined();
     expect(apply).toBeDefined();
 
@@ -1061,7 +1061,7 @@ describe("карточка узла: смена эпика (S… myc-k7s2f240zkm
     );
     await openCard(dom, 3);
 
-    const detach = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "выйти из эпика");
+    const detach = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "leave epic");
     expect(detach).toBeDefined();
 
     detach!.fire("click");
@@ -1075,8 +1075,8 @@ describe("карточка узла: смена эпика (S… myc-k7s2f240zkm
     dom.cards.set("n0", defaultCardView("n0"));
     await openCard(dom, 3);
 
-    const input = dom.findCreated((e) => e.attrs.get("placeholder") === "id эпика");
-    const apply = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "сменить эпик");
+    const input = dom.findCreated((e) => e.attrs.get("placeholder") === "epic id");
+    const apply = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "move to epic");
 
     input!.value = "   ";
     apply!.fire("click");
@@ -1084,7 +1084,7 @@ describe("карточка узла: смена эпика (S… myc-k7s2f240zkm
 
     expect(dom.posts.length).toBe(0);
     expect(dom.el("toast").hidden).toBe(false);
-    expect(dom.el("toast").textContent).toContain("id эпика пуст");
+    expect(dom.el("toast").textContent).toContain("epic id is empty");
   });
 
   test("отказ сервера (precond.cycle) показывается текстом сервера, а не общей фразой", async () => {
@@ -1093,17 +1093,18 @@ describe("карточка узла: смена эпика (S… myc-k7s2f240zkm
     await openCard(dom, 3);
 
     dom.nextWriteReply = {
-      body: { error: { code: "precond.cycle", msg: "узел не может входить в состав своего потомка" } },
+      body: { error: { code: "precond.cycle", msg: "edge parent(n0 → n1) would create a cycle: n1 → n0 → n1" } },
     };
 
-    const input = dom.findCreated((e) => e.attrs.get("placeholder") === "id эпика");
-    const apply = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "сменить эпик");
+    const input = dom.findCreated((e) => e.attrs.get("placeholder") === "epic id");
+    const apply = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "move to epic");
     input!.value = "n1";
     apply!.fire("click");
     await settle();
 
-    expect(dom.el("toast").textContent).toBe("precond.cycle: узел не может входить в состав своего потомка");
-    expect(dom.el("toast").textContent).not.toContain("что-то пошло не так");
+    expect(dom.el("toast").textContent).toBe("precond.cycle: edge parent(n0 → n1) would create a cycle: n1 → n0 → n1");
+    // Общая фраза клиента на отказ без тела — не то, что человек должен увидеть здесь.
+    expect(dom.el("toast").textContent).not.toContain("write rejected");
   });
 });
 
@@ -1121,7 +1122,7 @@ describe("карточка узла: срок аренды (memory-3a4b6d4hax96)
 
   test("аренда действует — держатель, часы и время ДО истечения", async () => {
     const t = await leaseText({ status: "in_progress", lease: { holder: "agent7", expires: Date.now() + 25 * 60_000 } });
-    expect(t).toMatch(/^в работе @agent7 до \d{2}:\d{2}:\d{2} \(через 2[45]m\)$/);
+    expect(t).toMatch(/^in progress @agent7 until \d{2}:\d{2}:\d{2}Z \(in 2[45]m\)$/);
   });
 
   test("аренда истекла — «истекла … назад», а не «в работе до»", async () => {
@@ -1129,16 +1130,16 @@ describe("карточка узла: срок аренды (memory-3a4b6d4hax96)
       status: "in_progress",
       lease: { holder: "agent7", expires: Date.now() - 3 * 3_600_000 - 60_000 },
     });
-    expect(t).toBe("аренда @agent7 истекла 3h назад");
+    expect(t).toBe("@agent7 · lease expired 3h ago");
   });
 
   test("в работе без аренды (ввоз из beads) — сказано прямо", async () => {
-    expect(await leaseText({ status: "in_progress", lease: null })).toBe("в работе без аренды");
+    expect(await leaseText({ status: "in_progress", lease: null })).toBe("in progress · no lease");
   });
 
   test("срок 0 — не аренда и не полночь 1970", async () => {
     const t = await leaseText({ status: "in_progress", lease: { holder: "agent7", expires: 0 } });
-    expect(t).toBe("в работе без аренды");
+    expect(t).toBe("in progress · no lease");
   });
 
   test("открытая задача без аренды строки не получает", async () => {
@@ -1161,7 +1162,7 @@ describe("карточка узла: нить комментариев (W13, mem
     await openCard(dom, 3);
 
     const title = dom.findCreated((e) => e.className === "card-comments-title");
-    expect(title?.textContent).toBe("нить · 2");
+    expect(title?.textContent).toBe("thread · 2");
 
     const agentLine = dom.findCreated((e) => e.className.includes("card-comment-agent"));
     const humanLine = dom.findCreated((e) => e.className.includes("card-comment-human"));
@@ -1177,7 +1178,7 @@ describe("карточка узла: нить комментариев (W13, mem
     await openCard(dom, 3);
 
     const title = dom.findCreated((e) => e.className === "card-comments-title");
-    expect(title?.textContent).toBe("нить · 0");
+    expect(title?.textContent).toBe("thread · 0");
   });
 
   test("composer виден только при writeEnabled и шлёт POST /op {op:'comment'}", async () => {
@@ -1193,7 +1194,7 @@ describe("карточка узла: нить комментариев (W13, mem
     await openCard(dom, 3);
 
     const input = dom.findCreated((e) => e.className === "card-comment-input");
-    const send = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "отправить");
+    const send = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "send");
     expect(input).toBeDefined();
     expect(send).toBeDefined();
 
@@ -1210,13 +1211,13 @@ describe("карточка узла: нить комментариев (W13, mem
     await openCard(dom, 3);
 
     const input = dom.findCreated((e) => e.className === "card-comment-input");
-    const send = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "отправить");
+    const send = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "send");
     input!.value = "   ";
     send!.fire("click");
     await settle();
 
     expect(dom.posts.length).toBe(0);
-    expect(dom.el("toast").textContent).toContain("комментарий пуст");
+    expect(dom.el("toast").textContent).toContain("comment is empty");
   });
 
   test("отказ сервера (501 unsupported.op) на комментарий показывается текстом сервера, а не молчит", async () => {
@@ -1226,11 +1227,11 @@ describe("карточка узла: нить комментариев (W13, mem
 
     dom.nextWriteReply = {
       status: 501,
-      body: { error: { code: "unsupported.op", msg: "операция 'comment' не реализована: требует ребра replies_to" } },
+      body: { error: { code: "unsupported.op", msg: "operation 'comment' is not implemented: a comment on a node needs a replies_to edge" } },
     };
 
     const input = dom.findCreated((e) => e.className === "card-comment-input");
-    const send = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "отправить");
+    const send = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "send");
     input!.value = "не пройдёт";
     send!.fire("click");
     await settle();
@@ -1250,7 +1251,7 @@ describe("роутинг: модель × класс задачи (W12)", () => 
     expect(sub).toContain("14");
     expect(sub).toContain("16");
     expect(sub).toContain("outcome v1");
-    expect(sub).toContain("порог наблюдений 3");
+    expect(sub).toContain("observation threshold 3");
   });
 
   test("МУТАЦИЯ: оговорка single_arm обязана быть видна на экране, а не только внутри карточки класса", async () => {
@@ -1260,7 +1261,7 @@ describe("роутинг: модель × класс задачи (W12)", () => 
       (e) => e.tagName === "CODE" && e.textContent === "routing.single_arm.feature:cross",
     );
     expect(code).toBeDefined();
-    const msg = dom.findCreated((e) => e.textContent?.includes("сравнивать не с чем") ?? false);
+    const msg = dom.findCreated((e) => e.textContent?.includes("nothing to compare") ?? false);
     expect(msg).toBeDefined();
   });
 
@@ -1273,7 +1274,7 @@ describe("роутинг: модель × класс задачи (W12)", () => 
     dom.goto("#routing");
     await settle();
     const ok = dom.findCreated(
-      (e) => e.textContent === "по каждому классу задач есть однозначный ответ",
+      (e) => e.textContent === "every task class has a definite answer",
     );
     expect(ok).toBeDefined();
   });
@@ -1281,10 +1282,10 @@ describe("роутинг: модель × класс задачи (W12)", () => 
   test("«цены нет» (null) и «цена ноль» (0) рисуются по-разному, а не одинаковым прочерком", async () => {
     const dom = await boot("#routing");
     // pricey/high в fix:module: costUsdMean=0, посчитана у всех 6 попыток.
-    const zero = dom.findCreated((e) => e.textContent?.startsWith("$0.0000/попытка") ?? false);
+    const zero = dom.findCreated((e) => e.textContent?.startsWith("$0.0000/attempt") ?? false);
     expect(zero).toBeDefined();
     // opus/high в feature:cross: costUsdMean=null, посчитана у 0 попыток.
-    const missing = dom.findCreated((e) => e.textContent?.startsWith("нет цены/попытка") ?? false);
+    const missing = dom.findCreated((e) => e.textContent?.startsWith("no price/attempt") ?? false);
     expect(missing).toBeDefined();
     expect(zero!.textContent).not.toBe(missing!.textContent);
   });
@@ -1316,7 +1317,7 @@ describe("роутинг: модель × класс задачи (W12)", () => 
       outcomeVersion: 0,
       minAttempts: 3,
       credibleMass: 0.9,
-      degraded: [{ code: "swarm.missing", msg: "таблицы swarm_attempt нет" }],
+      degraded: [{ code: "swarm.missing", msg: "no swarm_attempt table — attribution has not been started for a single attempt" }],
       took_ms: 1,
     };
     dom.goto("#routing");
@@ -1324,7 +1325,7 @@ describe("роутинг: модель × класс задачи (W12)", () => 
 
     expect(dom.el("routing-classes").hidden).toBe(true);
     expect(dom.el("routing-empty").hidden).toBe(false);
-    const title = dom.findCreated((e) => e.className === "big" && e.textContent === "Атрибуции пока нет");
+    const title = dom.findCreated((e) => e.className === "big" && e.textContent === "No attribution yet");
     expect(title).toBeDefined();
     const swarmMissing = dom.findCreated(
       (e) => e.tagName === "CODE" && e.textContent === "swarm.missing",
@@ -1344,12 +1345,12 @@ describe("решения (W8, memory-cx00fqk28pgv): цепочки и откры
     // инвертирует его), «· актуальна» пропадёт у головы или появится у обеих
     // версий — ровно баг «устаревшее решение показано как действующее».
     // Голова (dec-new, status active) обязана нести пометку «· актуальна»…
-    const currentPill = dom.findCreated((e) => e.textContent === "active · актуальна");
+    const currentPill = dom.findCreated((e) => e.textContent === "active · current");
     expect(currentPill).toBeDefined();
     // …а устаревшее звено (dec-old, status superseded) — нет, ни в каком виде.
     const stalePill = dom.findCreated((e) => e.textContent === "superseded");
     expect(stalePill).toBeDefined();
-    const staleMarkedCurrent = dom.findCreated((e) => e.textContent === "superseded · актуальна");
+    const staleMarkedCurrent = dom.findCreated((e) => e.textContent === "superseded · current");
     expect(staleMarkedCurrent).toBeUndefined();
     const oldLine = dom.findCreated((e) => e.textContent === "dec-old");
     expect(oldLine).toBeDefined();
@@ -1359,13 +1360,13 @@ describe("решения (W8, memory-cx00fqk28pgv): цепочки и откры
 
   test("read-only: кнопки «это верное» не рисуются вовсе", async () => {
     const dom = await boot("#decisions", 0, { readOnly: true });
-    const btn = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "это верное");
+    const btn = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "this one is right");
     expect(btn).toBeUndefined();
   });
 
   test("«это верное» отменяет ДРУГУЮ сторону обычным путём (POST .../op, op=cancel) с непустой причиной", async () => {
     const dom = await boot("#decisions", 0, { readOnly: false });
-    const buttons = dom.created.filter((e) => e.tagName === "BUTTON" && e.textContent === "это верное");
+    const buttons = dom.created.filter((e) => e.tagName === "BUTTON" && e.textContent === "this one is right");
     // Один на каждую сторону единственного противоречия.
     expect(buttons.length).toBe(2);
     buttons[0]!.fire("click");
@@ -1388,7 +1389,7 @@ describe("решения (W8, memory-cx00fqk28pgv): цепочки и откры
     dom.goto("#decisions");
     await settle();
     expect(dom.el("decisions-contradictions-empty").hidden).toBe(false);
-    const title = dom.findCreated((e) => e.className === "big" && e.textContent === "Открытых противоречий нет");
+    const title = dom.findCreated((e) => e.className === "big" && e.textContent === "No open contradictions");
     expect(title).toBeDefined();
   });
 
@@ -1396,7 +1397,7 @@ describe("решения (W8, memory-cx00fqk28pgv): цепочки и откры
     const dom = await boot("#graph");
     dom.decisionsPayload = {
       ...(defaultDecisionsPayload() as Record<string, unknown>),
-      degraded: [{ code: "decisions.chain_truncated", msg: "у части цепочек версий больше бюджета чтения" }],
+      degraded: [{ code: "decisions.chain_truncated", msg: "some version chains exceed the read budget — shown truncated" }],
     };
     dom.goto("#decisions");
     await settle();
@@ -1439,13 +1440,13 @@ describe("поиск (W6, memory-c7075t2s0nj6): гибридный поиск, �
   test("МУТАЦИЯ: предупреждение деградации (warn[]) обязано долететь до экрана, а не потеряться", async () => {
     const dom = await boot("#search");
     dom.searchWarn = [
-      { code: "degraded.embeddings", msg: "прогрев эмбеддера выключен — векторная ветка не звалась" },
+      { code: "degraded.embeddings", msg: "embedder warm-up is off — the vector branch was not called" },
     ];
     await search(dom, "переезд задачи");
     const code = dom.findCreated((e) => e.tagName === "CODE" && e.textContent === "degraded.embeddings");
     expect(code).toBeDefined();
     const msg = dom.findCreated(
-      (e) => e.textContent?.includes("векторная ветка не звалась") ?? false,
+      (e) => e.textContent?.includes("the vector branch was not called") ?? false,
     );
     expect(msg).toBeDefined();
   });
@@ -1469,8 +1470,8 @@ describe("поиск (W6, memory-c7075t2s0nj6): гибридный поиск, �
     await search(dom, "бюджет prime");
     const partial = dom.findCreated((e) => e.textContent?.startsWith("partial:") ?? false);
     expect(partial).toBeDefined();
-    expect(partial!.textContent).toContain("3 сверх бюджета");
-    const more = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "показать ещё");
+    expect(partial!.textContent).toContain("3 over budget");
+    const more = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "show more");
     expect(more).toBeDefined();
   });
 
@@ -1488,23 +1489,23 @@ describe("бутстрап: редактор обязательного конт
     const dom = await boot("#graph", 0, { readOnly: false });
     dom.bootstrapPreview = {
       ...(defaultBootstrapPreview() as Record<string, unknown>),
-      text: "# MYC BOOTSTRAP v1 · ws=demo\n[manual:style] короткие коммиты\n# 10 body chars / 2000 budget · 1 мс · cache off\n",
+      text: "# MYC BOOTSTRAP v1 · ws=demo\n[manual:style] короткие коммиты\n# 10 body chars / 2000 budget · 1 ms · cache off\n",
     };
     dom.goto("#bootstrap");
     await settle();
 
     expect(dom.el("bootstrap-preview").textContent).toBe(
-      "# MYC BOOTSTRAP v1 · ws=demo\n[manual:style] короткие коммиты\n# 10 body chars / 2000 budget · 1 мс · cache off\n",
+      "# MYC BOOTSTRAP v1 · ws=demo\n[manual:style] короткие коммиты\n# 10 body chars / 2000 budget · 1 ms · cache off\n",
     );
   });
 
   test("сохранить блок шлёт POST /api/bootstrap/<key> {text, global}", async () => {
     const dom = await boot("#bootstrap", 0, { readOnly: false });
-    const key = dom.findCreated((e) => (e.attrs.get("placeholder") ?? "").startsWith("ключ:"));
+    const key = dom.findCreated((e) => (e.attrs.get("placeholder") ?? "").startsWith("key:"));
     const text = dom.findCreated(
-      (e) => e.attrs.get("placeholder") === "текст правила — то, что увидит агент",
+      (e) => e.attrs.get("placeholder") === "rule text — what the agent will see",
     );
-    const submit = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "сохранить блок");
+    const submit = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "save block");
     expect(key).toBeDefined();
     expect(text).toBeDefined();
     expect(submit).toBeDefined();
@@ -1525,9 +1526,9 @@ describe("бутстрап: редактор обязательного конт
   test("МУТАЦИЯ: пустой ключ ничего не шлёт и показывает toast", async () => {
     const dom = await boot("#bootstrap", 0, { readOnly: false });
     const text = dom.findCreated(
-      (e) => e.attrs.get("placeholder") === "текст правила — то, что увидит агент",
+      (e) => e.attrs.get("placeholder") === "rule text — what the agent will see",
     );
-    const submit = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "сохранить блок");
+    const submit = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "save block");
 
     text!.value = "текст без ключа";
     submit!.fire("click");
@@ -1535,7 +1536,7 @@ describe("бутстрап: редактор обязательного конт
 
     expect(dom.posts.length).toBe(0);
     expect(dom.el("toast").hidden).toBe(false);
-    expect(dom.el("toast").textContent).toContain("ключ");
+    expect(dom.el("toast").textContent).toContain("block key is required");
   });
 
   test("снять блок шлёт POST .../op {op:'rm'}", async () => {
@@ -1547,7 +1548,7 @@ describe("бутстрап: редактор обязательного конт
     dom.goto("#bootstrap");
     await settle();
 
-    const rm = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "снять");
+    const rm = dom.findCreated((e) => e.tagName === "BUTTON" && e.textContent === "remove");
     expect(rm).toBeDefined();
     rm!.fire("click");
     await settle();
@@ -1572,7 +1573,7 @@ describe("бутстрап: редактор обязательного конт
     // Заглушка DOM не строит настоящее дерево (append — no-op): текст ищем
     // среди созданных клиентом узлов, как и остальные тесты этого файла.
     expect(dom.el("bootstrap-cut").hidden).toBe(false);
-    const banner = dom.findCreated((e) => (e.textContent ?? "").includes("порезано бюджетом"));
+    const banner = dom.findCreated((e) => (e.textContent ?? "").includes("cut by budget"));
     expect(banner).toBeDefined();
     const details = dom.findCreated(
       (e) => (e.textContent ?? "").includes("skills") && (e.textContent ?? "").includes("models"),
@@ -1642,7 +1643,7 @@ describe("база знаний: кнопки кандидата", () => {
   // Мутация «убрать бар разбора из renderKbRow» роняет этот тест.
   test("«принять» шлёт POST /op {op:'confirm'} — тот же путь записи, что `myc review confirm`", async () => {
     const dom = await kbScreen([kbRow("cand-1")], false);
-    const accept = button(dom, "принять");
+    const accept = button(dom, "confirm");
     expect(accept).toBeDefined();
     accept!.fire("click");
     await settle();
@@ -1651,15 +1652,15 @@ describe("база знаний: кнопки кандидата", () => {
 
   test("«отклонить» требует причину и шлёт её", async () => {
     const dom = await kbScreen([kbRow("cand-2")], false);
-    button(dom, "отклонить")!.fire("click");
+    button(dom, "reject")!.fire("click");
     await settle();
     expect(dom.posts.length).toBe(0); // без причины не уходит
-    const reason = dom.findCreated((e) => e.tagName === "INPUT" && (e.attrs.get("placeholder") ?? "").startsWith("причина"));
+    const reason = dom.findCreated((e) => e.tagName === "INPUT" && (e.attrs.get("placeholder") ?? "").startsWith("reason"));
     expect(reason).toBeDefined();
     reason!.value = "пересказ задачи, не решение";
     // Кнопка отправки причины в опбаре вешается через `onclick` (переназначается
     // на каждую операцию), а не addEventListener — зовём его так же, как браузер.
-    (button(dom, "подтвердить") as unknown as { onclick: () => void }).onclick();
+    (button(dom, "submit") as unknown as { onclick: () => void }).onclick();
     await settle();
     expect(dom.posts).toEqual([
       { path: "/api/nodes/cand-2/op", body: { op: "reject", reason: "пересказ задачи, не решение" } },
@@ -1668,11 +1669,11 @@ describe("база знаний: кнопки кандидата", () => {
 
   test("отклонённый кандидат помечен и кнопок не получает; read-only — тоже без кнопок", async () => {
     const dom = await kbScreen([kbRow("cand-3", { status: "retracted", review_open: false })], false);
-    expect(button(dom, "принять")).toBeUndefined();
-    expect(dom.findCreated((e) => e.textContent === "[кандидат · отклонён]")).toBeDefined();
+    expect(button(dom, "confirm")).toBeUndefined();
+    expect(dom.findCreated((e) => e.textContent === "[candidate · rejected]")).toBeDefined();
 
     const ro = await kbScreen([kbRow("cand-4")], true);
-    expect(button(ro, "принять")).toBeUndefined();
-    expect(ro.findCreated((e) => e.textContent === "[кандидат · не подтверждён]")).toBeDefined();
+    expect(button(ro, "confirm")).toBeUndefined();
+    expect(ro.findCreated((e) => e.textContent === "[candidate · unconfirmed]")).toBeDefined();
   });
 });

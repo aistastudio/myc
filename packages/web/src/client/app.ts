@@ -79,13 +79,13 @@ function el<K extends keyof HTMLElementTagNameMap>(
 }
 
 function fmtInt(n: number): string {
-  return n.toLocaleString("ru-RU");
+  return n.toLocaleString("en-US");
 }
 
 function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} Б`;
-  if (n < 1048576) return `${(n / 1024).toFixed(1)} КБ`;
-  return `${(n / 1048576).toFixed(1)} МБ`;
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
 }
 
 function fmtAge(ms: number): string {
@@ -98,18 +98,15 @@ function fmtAge(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+// Время и дата — в той же форме, что fmtClock и fmtDate в CLI: UTC с «Z» и
+// ISO-день. Один язык продукта: «until 09:55:00Z (in 25m)» в терминале и в
+// карточке читаются одинаково, и ни одна локаль браузера не вносит месяц словом.
 function fmtTime(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number): string => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${new Date(ms).toISOString().slice(11, 19)}Z`;
 }
 
 function fmtDay(ms: number): string {
-  return new Date(ms).toLocaleDateString("ru-RU", {
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  });
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 let toastTimer = 0;
@@ -197,7 +194,7 @@ async function mutate(path: string, body: unknown): Promise<boolean> {
     status = res.status;
     reply = (await res.json().catch(() => ({}))) as WriteReply;
   } catch (error) {
-    toast(`запись не ушла: ${error instanceof Error ? error.message : String(error)}`);
+    toast(`write not sent: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
   if (reply.error !== undefined || reply.ok !== true) {
@@ -205,7 +202,7 @@ async function mutate(path: string, body: unknown): Promise<boolean> {
     toast(
       err !== undefined
         ? `${err.code}: ${err.msg}${err.hint !== undefined ? ` — ${err.hint}` : ""}`
-        : `запись отклонена (HTTP ${status})`,
+        : `write rejected (HTTP ${status})`,
     );
     return false;
   }
@@ -377,7 +374,7 @@ function propsRow(
   const name = el("span", "props-name", label);
   row.append(name, control);
   if (onApply !== undefined) {
-    const apply = el("button", "rbtn props-apply", "записать");
+    const apply = el("button", "rbtn props-apply", "save");
     apply.addEventListener("click", onApply);
     row.append(apply);
   }
@@ -392,7 +389,7 @@ function propsRow(
  */
 function nodePropsEditor(id: string, onSaved?: () => void): HTMLElement {
   const root = el("div", "props");
-  root.append(el("div", "props-head", "свойства"));
+  root.append(el("div", "props-head", "properties"));
 
   const render = (view: NodePropsView): void => {
     const type = visibleTypeOf(view);
@@ -401,38 +398,38 @@ function nodePropsEditor(id: string, onSaved?: () => void): HTMLElement {
         "div",
         "props-head",
         // тип рядом с видом: epic — это attrs.type у kind=task, а не другой вид
-        `свойства · ${type}${type !== view.kind ? ` (${view.kind})` : ""} · ${view.status ?? "?"}`,
+        `properties · ${type}${type !== view.kind ? ` (${view.kind})` : ""} · ${view.status ?? "?"}`,
       ),
     );
 
     const title = el("input", "props-input") as HTMLInputElement;
-    title.setAttribute("placeholder", "заголовок");
+    title.setAttribute("placeholder", "title");
     title.value = typeof view.title === "string" ? view.title : "";
     const applyTitle = (): void =>
       void saveNodeProps(id, { title: title.value.trim() }, view.clk ?? {}, () => reload());
     title.addEventListener("keydown", (e) => {
       if ((e as KeyboardEvent).key === "Enter") applyTitle();
     });
-    root.append(propsRow("заголовок", title, applyTitle));
+    root.append(propsRow("title", title, applyTitle));
 
     const body = el("textarea", "props-input props-body") as HTMLTextAreaElement;
-    body.setAttribute("placeholder", "тело: описание, шаги, критерии");
+    body.setAttribute("placeholder", "body: description, steps, criteria");
     body.value = typeof view.body === "string" ? view.body : "";
     const applyBody = (): void =>
       void saveNodeProps(id, { body: body.value }, view.clk ?? {}, () => reload());
-    root.append(propsRow("тело", body, applyBody));
+    root.append(propsRow("body", body, applyBody));
 
-    root.append(propsRow("приоритет", prioritySelect(view.priority, id, () => reload())));
+    root.append(propsRow("priority", prioritySelect(view.priority, id, () => reload())));
 
     const tags = el("input", "props-input") as HTMLInputElement;
-    tags.setAttribute("placeholder", "через запятую");
+    tags.setAttribute("placeholder", "comma-separated");
     tags.value = tagsToInput(view.attrs?.tags);
     const applyTags = (): void =>
       void saveNodeProps(id, { tags: inputFromTags(tags.value) }, view.clk ?? {}, () => reload());
     tags.addEventListener("keydown", (e) => {
       if ((e as KeyboardEvent).key === "Enter") applyTags();
     });
-    root.append(propsRow("теги", tags, applyTags));
+    root.append(propsRow("tags", tags, applyTags));
 
     const acl = el("select", "props-input") as HTMLSelectElement;
     const aclNow = typeof view.acl === "string" ? view.acl : "team";
@@ -445,7 +442,7 @@ function nodePropsEditor(id: string, onSaved?: () => void): HTMLElement {
     acl.addEventListener("change", () => {
       void saveNodeProps(id, { acl: acl.value }, view.clk ?? {}, () => reload());
     });
-    root.append(propsRow("доступ", acl));
+    root.append(propsRow("acl", acl));
 
     const estimate = el("input", "props-input") as HTMLInputElement;
     estimate.setAttribute("placeholder", "30m, 2h, 1d");
@@ -461,10 +458,10 @@ function nodePropsEditor(id: string, onSaved?: () => void): HTMLElement {
     estimate.addEventListener("keydown", (e) => {
       if ((e as KeyboardEvent).key === "Enter") applyEstimate();
     });
-    root.append(propsRow("оценка", estimate, applyEstimate));
+    root.append(propsRow("estimate", estimate, applyEstimate));
 
     const assignee = el("input", "props-input") as HTMLInputElement;
-    assignee.setAttribute("placeholder", "исполнитель");
+    assignee.setAttribute("placeholder", "assignee");
     assignee.value = typeof view.assignee === "string" ? view.assignee : "";
     const applyAssignee = (): void =>
       void saveNodeProps(
@@ -476,7 +473,7 @@ function nodePropsEditor(id: string, onSaved?: () => void): HTMLElement {
     assignee.addEventListener("keydown", (e) => {
       if ((e as KeyboardEvent).key === "Enter") applyAssignee();
     });
-    root.append(propsRow("исполнитель", assignee, applyAssignee));
+    root.append(propsRow("assignee", assignee, applyAssignee));
   };
 
   const reload = async (): Promise<void> => {
@@ -485,8 +482,8 @@ function nodePropsEditor(id: string, onSaved?: () => void): HTMLElement {
       view = await fetchNodeProps(id);
     } catch (e) {
       root.replaceChildren(
-        el("div", "props-head", "свойства"),
-        el("div", "props-error", `узел не прочитан: ${e instanceof Error ? e.message : String(e)}`),
+        el("div", "props-head", "properties"),
+        el("div", "props-error", `node not read: ${e instanceof Error ? e.message : String(e)}`),
       );
       return;
     }
@@ -523,13 +520,13 @@ function cardRefLine(prefix: string, r: CardRef, withStatus = true): HTMLElement
 function parentEditRow(id: string, current: CardRef | null, onSaved: () => void): HTMLElement {
   const row = el("div", "props-row");
   const input = el("input", "props-input") as HTMLInputElement;
-  input.setAttribute("placeholder", "id эпика");
+  input.setAttribute("placeholder", "epic id");
   input.value = current?.id ?? "";
 
   const apply = (): void => {
     const val = input.value.trim();
     if (val.length === 0) {
-      toast("id эпика пуст — для отцепления жми «выйти из эпика»");
+      toast("epic id is empty — to detach, press 'leave epic'");
       return;
     }
     void mutate(`/api/nodes/${encodeURIComponent(id)}`, { parent: val }).then(
@@ -540,12 +537,12 @@ function parentEditRow(id: string, current: CardRef | null, onSaved: () => void)
     if ((e as KeyboardEvent).key === "Enter") apply();
   });
 
-  const applyBtn = el("button", "rbtn", "сменить эпик");
+  const applyBtn = el("button", "rbtn", "move to epic");
   applyBtn.addEventListener("click", apply);
-  row.append(el("span", "props-name", "эпик"), input, applyBtn);
+  row.append(el("span", "props-name", "epic"), input, applyBtn);
 
   if (current !== null) {
-    const detach = el("button", "rbtn", "выйти из эпика");
+    const detach = el("button", "rbtn", "leave epic");
     detach.addEventListener("click", () => {
       void mutate(`/api/nodes/${encodeURIComponent(id)}`, { parent: "" }).then(
         (ok) => ok && onSaved(),
@@ -567,7 +564,7 @@ function commentLine(c: CardComment): HTMLElement {
   const row = el("div", `card-comment ${human ? "card-comment-human" : "card-comment-agent"}`);
   const head = el("div", "card-comment-head");
   head.append(
-    el("span", "card-comment-author", `${human ? "человек" : "агент"} · ${c.author}`),
+    el("span", "card-comment-author", `${human ? "human" : "agent"} · ${c.author}`),
     el("span", "card-comment-time", fmtTime(c.created_at)),
   );
   row.append(head, el("div", "card-comment-body", c.body));
@@ -584,13 +581,13 @@ function commentLine(c: CardComment): HTMLElement {
 function commentComposer(id: string, onSent: () => void): HTMLElement {
   const box = el("div", "card-comment-compose");
   const input = el("textarea", "card-comment-input") as HTMLTextAreaElement;
-  input.setAttribute("placeholder", "написать комментарий — markdown, попадёт в оплог");
+  input.setAttribute("placeholder", "write a comment — markdown, goes to the oplog");
   input.rows = 2;
-  const send = el("button", "rbtn primary", "отправить");
+  const send = el("button", "rbtn primary", "send");
   send.addEventListener("click", () => {
     const text = input.value.trim();
     if (text.length === 0) {
-      toast("комментарий пуст");
+      toast("comment is empty");
       return;
     }
     void mutate(`/api/nodes/${encodeURIComponent(id)}/op`, { op: "comment", body: text }).then((ok) => {
@@ -606,7 +603,7 @@ function commentComposer(id: string, onSent: () => void): HTMLElement {
 
 function commentsSection(id: string, comments: readonly CardComment[], onSent: () => void): HTMLElement {
   const section = el("div", "card-comments");
-  section.append(el("div", "card-comments-title", `нить · ${comments.length}`));
+  section.append(el("div", "card-comments-title", `thread · ${comments.length}`));
   for (const c of comments) section.append(commentLine(c));
   if (writeEnabled) section.append(commentComposer(id, onSent));
   return section;
@@ -623,12 +620,12 @@ function commentsSection(id: string, comments: readonly CardComment[], onSent: (
  */
 function leaseLine(c: CardView, now: number): string | null {
   if (c.lease === null || !(c.lease.expires > 0)) {
-    return c.kind === "task" && c.status === "in_progress" ? "в работе без аренды" : null;
+    return c.kind === "task" && c.status === "in_progress" ? "in progress · no lease" : null;
   }
   const at = c.lease.expires;
   return at < now
-    ? `аренда @${c.lease.holder} истекла ${fmtAge(now - at)} назад`
-    : `в работе @${c.lease.holder} до ${fmtTime(at)} (через ${fmtAge(at - now)})`;
+    ? `@${c.lease.holder} · lease expired ${fmtAge(now - at)} ago`
+    : `in progress @${c.lease.holder} until ${fmtTime(at)} (in ${fmtAge(at - now)})`;
 }
 
 /**
@@ -643,7 +640,7 @@ async function fillCardLinks(host: HTMLElement, id: string): Promise<void> {
     c = await api<CardView>(`/api/nodes/${encodeURIComponent(id)}/card`);
   } catch (e) {
     host.replaceChildren(
-      el("div", "props-error", `связи не прочитаны: ${e instanceof Error ? e.message : String(e)}`),
+      el("div", "props-error", `links not read: ${e instanceof Error ? e.message : String(e)}`),
     );
     return;
   }
@@ -651,20 +648,20 @@ async function fillCardLinks(host: HTMLElement, id: string): Promise<void> {
 
   // Тип рядом с видом: epic — attrs.type у kind=task, а не отдельный вид ядра.
   if (c.type !== c.kind) {
-    host.append(el("div", "card-type", `тип ${c.type} · вид ${c.kind}`));
+    host.append(el("div", "card-type", `type ${c.type} · kind ${c.kind}`));
   }
   const lease = leaseLine(c, Date.now());
   if (lease !== null) host.append(el("div", "mono card-lease", lease));
   if (c.parent !== null) {
-    host.append(el("div", "mono", `входит в  ${c.parent.id}  ${c.parent.title}`));
+    host.append(el("div", "mono", `part of  ${c.parent.id}  ${c.parent.title}`));
   }
   if (writeEnabled) {
     host.append(parentEditRow(id, c.parent, () => void fillCardLinks(host, id)));
   }
   if (c.progress !== null) {
-    const tail = c.progress.cancelled > 0 ? `, отменено ${c.progress.cancelled}` : "";
+    const tail = c.progress.cancelled > 0 ? `, cancelled ${c.progress.cancelled}` : "";
     host.append(
-      el("div", "mono", `состав  ${c.progress.done} из ${c.progress.total} закрыто${tail}`),
+      el("div", "mono", `children  ${c.progress.done} of ${c.progress.total} closed${tail}`),
     );
     for (const child of c.children) {
       host.append(cardRefLine(childMark(child.status), child));
@@ -680,28 +677,28 @@ async function fillCardLinks(host: HTMLElement, id: string): Promise<void> {
     host.append(el("div", "mono", `${l.type} ${l.id} — ${l.title}`));
   }
   if (c.tags.length > 0) {
-    host.append(el("div", "mono", `теги ${c.tags.join(", ")}`));
+    host.append(el("div", "mono", `tags ${c.tags.join(", ")}`));
   }
   // Слои и ОБЕ оси охвата — в каждой карточке, а не только в базе знаний:
   // оси независимы, и карточка не смеет показывать одну вместо другой.
-  host.append(el("div", "mono", `слой L${c.layer} · ${reachLine(c)} · ${repoLine(c)}`));
+  host.append(el("div", "mono", `layer L${c.layer} · ${reachLine(c)} · ${repoLine(c)}`));
   host.append(commentsSection(id, c.comments, () => void fillCardLinks(host, id)));
 }
 
 /** Охват сессии (S58) одной строкой: неизвестный показывается, не прячется. */
 function reachLine(c: { reach: string; session: string }): string {
-  if (c.reach === "project") return "охват project";
+  if (c.reach === "project") return "reach project";
   if (c.reach === "session") {
-    return `охват session ${c.session.length > 12 ? `${c.session.slice(0, 12)}…` : c.session || "без ключа"}`;
+    return `reach session ${c.session.length > 12 ? `${c.session.slice(0, 12)}…` : c.session || "no key"}`;
   }
-  return "охват не записан";
+  return "reach not recorded";
 }
 
 /** Охват репозитория (S59) одной строкой — рядом с охватом сессии, не вместо. */
 function repoLine(c: { repo: string; repo_state: string }): string {
   if (c.repo_state === "repo") return `repo ${c.repo}`;
-  if (c.repo_state === "root") return "repo общий";
-  return "repo не определён";
+  if (c.repo_state === "root") return "repo all";
+  return "repo unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -715,7 +712,7 @@ function applyTheme(theme: Theme): void {
   const root = document.documentElement;
   if (theme === "auto") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
-  $("theme").textContent = theme === "auto" ? "авто" : theme === "light" ? "светлая" : "тёмная";
+  $("theme").textContent = theme === "auto" ? "auto" : theme === "light" ? "light" : "dark";
 }
 
 function initTheme(): void {
@@ -776,12 +773,12 @@ const EDGE_WEIGHT: Record<string, number> = {
 };
 
 /** Оговорка на чипе; вынесена, чтобы тест сверял ровно ту строку, что видна. */
-const UNTRUSTED_TIMING = "времена недостоверны: вкладка была в фоне";
+const UNTRUSTED_TIMING = "timings unreliable: the tab was in the background";
 const UNTRUSTED_TIMING_HINT =
-  "Вкладка была скрыта во время замера. Chrome не вызывает requestAnimationFrame " +
-  "в фоновой вкладке и прижимает таймеры к секунде, поэтому эти миллисекунды " +
-  "меряют время до возвращения на вкладку, а не работу интерфейса. " +
-  "Для честного числа откройте страницу активной вкладкой и обновите её.";
+  "The tab was hidden during the measurement. Chrome does not call requestAnimationFrame " +
+  "in a background tab and clamps timers to one second, so these milliseconds " +
+  "measure the time until you returned to the tab, not the interface's work. " +
+  "For an honest number, open the page in an active tab and reload it.";
 
 interface WorkerFrame {
   type: "seed" | "tick" | "done";
@@ -894,22 +891,22 @@ class GraphView {
     stat.replaceChildren();
     stat.append(
       el("b", undefined, fmtInt(payload.total_nodes)),
-      document.createTextNode(" узлов · "),
+      document.createTextNode(" nodes · "),
       el("b", undefined, fmtInt(payload.total_edges)),
-      document.createTextNode(` рёбер · выборка ${payload.took_ms} мс`),
+      document.createTextNode(` edges · query ${payload.took_ms} ms`),
     );
     if (payload.truncated) {
-      stat.append(document.createTextNode(` · показаны top-${fmtInt(payload.nodes.length)} по степени`));
+      stat.append(document.createTextNode(` · showing top-${fmtInt(payload.nodes.length)} by degree`));
     }
 
     if (payload.nodes.length === 0) {
       emptyState(
         $("graph-empty"),
-        "Граф пуст",
-        "В базе ещё нет узлов. Просмотрщик открыт только на чтение и ничего не создаёт — заведите первый узел через CLI, страница подхватит его при обновлении.",
-        'myc task "первая задача"',
+        "Graph is empty",
+        "No nodes in the database yet. Create the first node with the CLI; the page picks it up on reload.",
+        'myc task "first task"',
       );
-      $("graph-layout").textContent = "лэйаут: не нужен";
+      $("graph-layout").textContent = "layout: not needed";
       this.pos = new Float32Array(0);
       this.ready = true;
       this.draw();
@@ -942,8 +939,8 @@ class GraphView {
 
     this.worker = new Worker("/layout.worker.js", { type: "module" });
     this.worker.onmessage = (ev: MessageEvent<WorkerFrame>) => this.onFrame(ev.data);
-    this.worker.onerror = () => toast("воркер лэйаута не запустился — граф остаётся на засеве");
-    $("graph-layout").textContent = "лэйаут: засев…";
+    this.worker.onerror = () => toast("layout worker did not start — the graph stays at its seed positions");
+    $("graph-layout").textContent = "layout: seeding…";
     this.worker.postMessage(
       {
         type: "layout",
@@ -977,7 +974,7 @@ class GraphView {
         if (this.firstFrameMs === 0) {
           this.firstFrameMs = Math.round(performance.now() - BOOT_T0);
           if (tabWasHidden) this.timingTrusted = false;
-          this.updateLayoutChip("засев");
+          this.updateLayoutChip("seed");
         }
       });
       return;
@@ -987,7 +984,7 @@ class GraphView {
     // узлов уезжает за край.
     if (!this.userMoved) this.fit(false);
     this.draw();
-    this.updateLayoutChip(frame.type === "done" ? "готов" : "уточняется");
+    this.updateLayoutChip(frame.type === "done" ? "done" : "refining");
   }
 
   /**
@@ -998,10 +995,10 @@ class GraphView {
    */
   private updateLayoutChip(phase: string): void {
     const total = this.data?.nodes.length ?? 0;
-    const parts = [`лэйаут: ${phase}`];
-    if (this.layoutIter > 0) parts.push(`${this.layoutIter} итераций`);
-    parts.push(`${this.layoutMs} мс на ${fmtInt(total)} узлов`);
-    if (this.firstFrameMs > 0) parts.push(`первый кадр ${this.firstFrameMs} мс`);
+    const parts = [`layout: ${phase}`];
+    if (this.layoutIter > 0) parts.push(`${this.layoutIter} iterations`);
+    parts.push(`${this.layoutMs} ms for ${fmtInt(total)} nodes`);
+    if (this.firstFrameMs > 0) parts.push(`first frame ${this.firstFrameMs} ms`);
     if (!this.timingTrusted) parts.push(UNTRUSTED_TIMING);
     const chip = $("graph-layout");
     chip.textContent = parts.join(" · ");
@@ -1289,8 +1286,8 @@ class GraphView {
     const node = data.nodes[i]!;
     tip.replaceChildren();
     tip.append(
-      el("div", undefined, node.title || "(без заголовка)"),
-      el("div", "t-id", `${node.id} · ${node.kind} · ${node.status} · связей ${node.deg}`),
+      el("div", undefined, node.title || "(untitled)"),
+      el("div", "t-id", `${node.id} · ${node.kind} · ${node.status} · links ${node.deg}`),
     );
     tip.style.left = `${Math.min(x + 14, this.w - 350)}px`;
     tip.style.top = `${Math.min(y + 14, this.h - 70)}px`;
@@ -1315,12 +1312,12 @@ class GraphView {
     const dl = el("dl", "kv");
     const rows: [string, string][] = [
       ["id", node.id],
-      ["вид", node.kind],
-      ["статус", node.status],
-      ["слой", `L${node.layer}`],
-      ["приоритет", `P${node.priority}`],
-      ["связей", String(node.deg)],
-      ["обновлён", `${fmtAge(Date.now() - node.updated_at)} назад`],
+      ["kind", node.kind],
+      ["status", node.status],
+      ["layer", `L${node.layer}`],
+      ["priority", `P${node.priority}`],
+      ["links", String(node.deg)],
+      ["updated", `${fmtAge(Date.now() - node.updated_at)} ago`],
     ];
     for (const [k, v] of rows) {
       dl.append(el("dt", undefined, k), el("dd", undefined, v));
@@ -1348,17 +1345,17 @@ class GraphView {
     // отращивает свой. Статуса в нём нет: он зарабатывается операциями.
     if (writeEnabled) {
       const root = el("div", "props-host");
-      const toggle = el("button", "rbtn props-toggle", "править свойства");
+      const toggle = el("button", "rbtn props-toggle", "edit properties");
       toggle.addEventListener("click", () => {
         const open = root.classList.toggle("open");
         if (open) {
           // панель сама перечитывает узел после записи; полный перерасчёт
           // лэйаута графа на каждую правку не нужен
           root.append(nodePropsEditor(node.id));
-          toggle.textContent = "закрыть правку";
+          toggle.textContent = "close editor";
         } else {
           root.replaceChildren();
-          toggle.textContent = "править свойства";
+          toggle.textContent = "edit properties";
         }
       });
       card.append(toggle, root);
@@ -1383,8 +1380,8 @@ class GraphView {
     }
     $("graph-hint").textContent =
       this.query.length > 0
-        ? `совпадений: ${this.matches.size}`
-        : "колесо — зум, перетаскивание — панорама, клик по узлу — карточка";
+        ? `matches: ${this.matches.size}`
+        : "wheel — zoom, drag — pan, click a node — card";
     this.draw();
   }
 }
@@ -1402,7 +1399,7 @@ function renderReadyRow(row: ReadyRow): HTMLElement {
     el("span", "rid", row.id),
     el("span", `badge p${row.priority}`, `P${row.priority}`),
     el("span", "badge", row.type),
-    el("span", "rtitle", row.title || "(без заголовка)"),
+    el("span", "rtitle", row.title || "(untitled)"),
     el("span", "badge", row.assignee.length > 0 ? `@${row.assignee}` : "free"),
     el("span", "rscore", row.score.toFixed(2)),
   );
@@ -1433,7 +1430,7 @@ function renderReadyRow(row: ReadyRow): HTMLElement {
   }
   const sum = el("span", "term");
   sum.append(
-    el("span", "mul", "сумма = "),
+    el("span", "mul", "sum = "),
     el("span", "num", row.score.toFixed(2)),
   );
   terms.append(sum);
@@ -1455,16 +1452,16 @@ function renderReadyRow(row: ReadyRow): HTMLElement {
  * открытые задачи, карточка обслуживает полный цикл, включая reopen.
  */
 const OP_LABELS: readonly (readonly [string, string, boolean])[] = [
-  ["взять", "claim", false],
-  ["отпустить", "release", false],
-  ["закрыть", "close", true],
-  ["вернуть", "reopen", true],
-  ["отменить", "cancel", true],
-  // Разбор кандидата хука сжатия (`myc review confirm|reject`): «принять» —
-  // не «подтвердить», потому что «подтвердить» уже подписана кнопка
-  // отправки причины в этом же баре.
-  ["принять", "confirm", false],
-  ["отклонить", "reject", true],
+  ["claim", "claim", false],
+  ["release", "release", false],
+  ["close", "close", true],
+  ["reopen", "reopen", true],
+  ["cancel", "cancel", true],
+  // Разбор кандидата хука сжатия (`myc review confirm|reject`). Подписи —
+  // глаголы CLI; кнопка отправки причины в этом же баре поэтому «submit»,
+  // а не «confirm», чтобы не совпасть с операцией.
+  ["confirm", "confirm", false],
+  ["reject", "reject", true],
 ];
 
 const LEASE_MINUTES = [30, 60, 120, 240] as const;
@@ -1474,9 +1471,9 @@ function opBar(id: string, ops: readonly string[], onDone: () => void): HTMLElem
   const reasonBox = el("div", "rreason");
   reasonBox.hidden = true;
   const reason = el("input", "rreason-input");
-  reason.setAttribute("placeholder", "причина — её прочитают следующие сессии");
-  const confirm = el("button", "rbtn primary", "подтвердить");
-  const cancelBtn = el("button", "rbtn", "не надо");
+  reason.setAttribute("placeholder", "reason — later sessions will read it");
+  const confirm = el("button", "rbtn primary", "submit");
+  const cancelBtn = el("button", "rbtn", "never mind");
   reasonBox.append(reason, confirm, cancelBtn);
 
   const send = async (body: Record<string, unknown>): Promise<void> => {
@@ -1506,7 +1503,7 @@ function opBar(id: string, ops: readonly string[], onDone: () => void): HTMLElem
       confirm.onclick = () => {
         const text = reason.value.trim();
         if (text.length === 0) {
-          toast(`${op}: без причины нельзя — её читают, когда возвращаются к задаче`);
+          toast(`${op}: a reason is required — it is read by whoever comes back to the task`);
           return;
         }
         reasonBox.hidden = true;
@@ -1566,12 +1563,12 @@ function boardDropDecision(column: BoardColumn): BoardDropRejected | BoardDropAl
     case "blocked":
       return {
         allowed: false,
-        reason: "blocked вычисляется из зависимостей — задачу блокируют они, а не перетаскивание",
+        reason: "blocked is computed from dependencies — they block the task, not a drag",
       };
     case "in_progress":
       return {
         allowed: false,
-        reason: "in_progress зарабатывается арендой — возьмите задачу кнопкой «взять», не перетаскиванием",
+        reason: "in_progress is earned by a lease — take the task with the 'claim' button, not by dragging",
       };
     case "closed":
       return { allowed: true, op: "close" };
@@ -1583,11 +1580,11 @@ function boardDropDecision(column: BoardColumn): BoardDropRejected | BoardDropAl
 }
 
 const BOARD_COLUMNS: readonly { key: BoardColumn; label: string }[] = [
-  { key: "open", label: "Открыто" },
-  { key: "blocked", label: "Заблокировано" },
-  { key: "in_progress", label: "В работе" },
-  { key: "closed", label: "Закрыто" },
-  { key: "cancelled", label: "Отменено" },
+  { key: "open", label: "Open" },
+  { key: "blocked", label: "Blocked" },
+  { key: "in_progress", label: "In progress" },
+  { key: "closed", label: "Closed" },
+  { key: "cancelled", label: "Cancelled" },
 ];
 
 let boardDragId: string | null = null;
@@ -1608,9 +1605,9 @@ async function showBoardDialog(id: string, op: "close" | "cancel" | "reopen"): P
   const cancelBtn = $("board-modal-cancel") as HTMLButtonElement;
 
   const OP_TITLE: Record<typeof op, string> = {
-    close: `закрыть ${id}`,
-    cancel: `отменить ${id}`,
-    reopen: `вернуть в открытые ${id}`,
+    close: `close ${id}`,
+    cancel: `cancel ${id}`,
+    reopen: `reopen ${id}`,
   };
   title.textContent = OP_TITLE[op];
   reasonInput.value = "";
@@ -1626,8 +1623,8 @@ async function showBoardDialog(id: string, op: "close" | "cancel" | "reopen"): P
           "div",
           "modal-hint",
           preview.released.length === 0
-            ? "ничего не освобождает"
-            : `освободит из blocked (${preview.released.length}):`,
+            ? "unblocks nothing"
+            : `will unblock (${preview.released.length}):`,
         ),
       );
       for (const r of preview.released) {
@@ -1650,7 +1647,7 @@ async function showBoardDialog(id: string, op: "close" | "cancel" | "reopen"): P
     confirmBtn.onclick = () => {
       const reason = reasonInput.value.trim();
       if (reason.length === 0) {
-        toast(`${op}: без причины нельзя — её читают, когда возвращаются к задаче`);
+        toast(`${op}: a reason is required — it is read by whoever comes back to the task`);
         return;
       }
       void (async () => {
@@ -1681,7 +1678,7 @@ function boardCard(row: BoardRow, column: BoardColumn): HTMLElement {
     el("span", "rid", row.id),
     el("span", `badge p${row.priority}`, `P${row.priority}`),
     el("span", "badge", row.type),
-    el("span", "rtitle", row.title || "(без заголовка)"),
+    el("span", "rtitle", row.title || "(untitled)"),
   );
   if (row.assignee.length > 0) c.append(el("span", "badge", `@${row.assignee}`));
   // Вложенность (W5): задача внутри эпика показывает, куда входит; эпик
@@ -1693,7 +1690,7 @@ function boardCard(row: BoardRow, column: BoardColumn): HTMLElement {
   }
   if (row.progress !== undefined) {
     const p = row.progress;
-    const tail = p.cancelled > 0 ? `, отменено ${p.cancelled}` : "";
+    const tail = p.cancelled > 0 ? `, cancelled ${p.cancelled}` : "";
     c.append(el("span", "board-progress", `${p.done}/${p.total}${tail}`));
   }
   return c;
@@ -1757,7 +1754,7 @@ async function loadBoard(): Promise<void> {
   for (const { key, label } of BOARD_COLUMNS) {
     host.append(boardColumn(key, label, payload.columns[key]));
   }
-  $("board-sub").textContent = `собрано за ${payload.took_ms} мс`;
+  $("board-sub").textContent = `built in ${payload.took_ms} ms`;
 }
 
 /**
@@ -1783,7 +1780,7 @@ function renderTaskNew(): void {
   form.hidden = true;
 
   const title = el("input", "props-input") as HTMLInputElement;
-  title.setAttribute("placeholder", "заголовок — о чём задача");
+  title.setAttribute("placeholder", "title — what the task is about");
   const type = el("select", "props-input") as HTMLSelectElement;
   for (const t of TASK_TYPES) {
     const o = el("option", undefined, t);
@@ -1792,9 +1789,9 @@ function renderTaskNew(): void {
     type.append(o);
   }
   const body = el("textarea", "props-input props-body") as HTMLTextAreaElement;
-  body.setAttribute("placeholder", "тело: описание, шаги, критерии готовности");
+  body.setAttribute("placeholder", "body: description, steps, acceptance criteria");
   const priority = el("select", "props-input") as HTMLSelectElement;
-  const none = el("option", undefined, "приоритет по умолчанию");
+  const none = el("option", undefined, "default priority");
   none.setAttribute("value", "");
   priority.append(none);
   for (const p of PRIORITIES) {
@@ -1803,20 +1800,20 @@ function renderTaskNew(): void {
     priority.append(o);
   }
   const tags = el("input", "props-input") as HTMLInputElement;
-  tags.setAttribute("placeholder", "теги через запятую");
+  tags.setAttribute("placeholder", "tags, comma-separated");
   const estimate = el("input", "props-input") as HTMLInputElement;
-  estimate.setAttribute("placeholder", "оценка: 30m, 2h, 1d");
+  estimate.setAttribute("placeholder", "estimate: 30m, 2h, 1d");
   const assignee = el("input", "props-input") as HTMLInputElement;
-  assignee.setAttribute("placeholder", "исполнитель");
+  assignee.setAttribute("placeholder", "assignee");
   const parent = el("input", "props-input") as HTMLInputElement;
-  parent.setAttribute("placeholder", "id эпика, если задача входит в состав");
+  parent.setAttribute("placeholder", "epic id, if the task is part of an epic");
 
-  const submit = el("button", "rbtn primary", "завести");
+  const submit = el("button", "rbtn primary", "create");
   submit.addEventListener("click", () => {
     void (async () => {
       const text = title.value.trim();
       if (text.length === 0) {
-        toast("без заголовка нельзя: он виден в очереди, графе и myc list");
+        toast("a title is required: it shows in the queue, the graph and myc list");
         return;
       }
       const fields: Record<string, unknown> = { title: text, kind: type.value };
@@ -1832,7 +1829,7 @@ function renderTaskNew(): void {
       const epic = parent.value.trim();
       if (epic.length > 0) fields["parent"] = epic;
       if (await mutate("/api/nodes", fields)) {
-        toast("задача заведена тем же путём, что myc create");
+        toast("task created the same way as myc create");
         title.value = "";
         body.value = "";
         parent.value = "";
@@ -1841,23 +1838,23 @@ function renderTaskNew(): void {
     })();
   });
 
-  const toggle = el("button", "rbtn task-new-toggle", "завести задачу");
+  const toggle = el("button", "rbtn task-new-toggle", "new task");
   toggle.addEventListener("click", () => {
     const open = form.classList.toggle("open");
     form.hidden = !open;
-    toggle.textContent = open ? "убрать форму" : "завести задачу";
+    toggle.textContent = open ? "hide form" : "new task";
     if (open) title.focus();
   });
 
   form.append(
-    propsRow("заголовок", title),
-    propsRow("тип", type),
-    propsRow("тело", body),
-    propsRow("приоритет", priority),
-    propsRow("теги", tags),
-    propsRow("оценка", estimate),
-    propsRow("исполнитель", assignee),
-    propsRow("входит в", parent),
+    propsRow("title", title),
+    propsRow("type", type),
+    propsRow("body", body),
+    propsRow("priority", priority),
+    propsRow("tags", tags),
+    propsRow("estimate", estimate),
+    propsRow("assignee", assignee),
+    propsRow("part of", parent),
     submit,
   );
   host.replaceChildren(toggle, form);
@@ -1873,18 +1870,18 @@ async function loadReady(): Promise<void> {
   formula.append(
     document.createTextNode("score = "),
     el("b", undefined, w.priority.toFixed(2)),
-    document.createTextNode("·приоритет + "),
+    document.createTextNode("·priority + "),
     el("b", undefined, w.unblocks.toFixed(2)),
-    document.createTextNode("·разблокирует + "),
+    document.createTextNode("·unblocks + "),
     el("b", undefined, w.freshness.toFixed(2)),
-    document.createTextNode("·свежесть + "),
+    document.createTextNode("·freshness + "),
     el("b", undefined, w.anchors.toFixed(2)),
-    document.createTextNode("·якоря + "),
+    document.createTextNode("·anchors + "),
     el("b", undefined, w.type.toFixed(2)),
-    document.createTextNode("·тип   (решение S21; веса из workspace.toml)"),
+    document.createTextNode("·type   (decision S21; weights from workspace.toml)"),
   );
   $("ready-sub").textContent =
-    `${payload.ready} ready · ${payload.blocked} blocked · ${payload.in_progress} in_progress · ${payload.took_ms} мс`;
+    `${payload.ready} ready · ${payload.blocked} blocked · ${payload.in_progress} in_progress · ${payload.took_ms} ms`;
 
   const host = $("ready-rows");
   host.replaceChildren();
@@ -1893,11 +1890,11 @@ async function loadReady(): Promise<void> {
     formula.hidden = true;
     emptyState(
       $("ready-empty"),
-      payload.blocked > 0 ? "Всё заблокировано" : "Очередь пуста",
+      payload.blocked > 0 ? "Everything is blocked" : "Queue is empty",
       payload.blocked > 0
-        ? `Открытых задач без блокеров нет, но ${payload.blocked} ждут разблокировки. Закройте блокер — задача появится здесь.`
-        : "Нет открытых задач без блокеров. Как только появится первая, она встанет сюда вместе с разбором своей оценки.",
-      'myc task "первая задача" --priority P1',
+        ? `No open tasks without blockers, but ${payload.blocked} are waiting to be unblocked. Close a blocker and the task shows up here.`
+        : "No open tasks without blockers. As soon as one appears, it lands here with the breakdown of its score.",
+      'myc task "first task" --priority P1',
     );
     return;
   }
@@ -1934,11 +1931,11 @@ const kbState = { kind: "", layer: "", reach: "", repo: "", q: "" };
 function kbReachMark(row: KbRow): HTMLElement {
   if (row.reach === "session") {
     const short = row.session.length > 12 ? `${row.session.slice(0, 12)}…` : row.session;
-    return el("span", "kreach kreach-session", `[@сессия ${short || "без ключа"}]`);
+    return el("span", "kreach kreach-session", `[@session ${short || "no key"}]`);
   }
-  if (row.reach === "project") return el("span", "kreach kreach-project", "[@проект]");
+  if (row.reach === "project") return el("span", "kreach kreach-project", "[@project]");
   // Не определён — не «спрятан»: метка честно говорит, что охвата нет.
-  return el("span", "kreach kreach-unknown", "[@без охвата]");
+  return el("span", "kreach kreach-unknown", "[@no-reach]");
 }
 
 /**
@@ -1952,23 +1949,23 @@ function kbReviewMark(row: KbRow): HTMLElement | null {
     // Разбор прошёл — отклонён (retracted) или заменён: в выдаче его нет по
     // статусу, в «ждёт» — тоже. Метка остаётся, иначе строка читалась бы
     // обычной заметкой со странным статусом.
-    const done = el("span", "kreach kreach-unknown", `[кандидат · отклонён]`);
-    done.title = `кандидат хука сжатия, разбор окончен (статус ${row.status}): recall, search и prime его не отдают`;
+    const done = el("span", "kreach kreach-unknown", `[candidate · rejected]`);
+    done.title = `compaction candidate, review finished (status ${row.status}): recall, search and prime do not return it`;
     return done;
   }
-  const mark = el("span", "kreach kreach-unknown", "[кандидат · не подтверждён]");
+  const mark = el("span", "kreach kreach-unknown", "[candidate · unconfirmed]");
   mark.title =
-    "кандидат хука сжатия (state pending_review): recall, search и prime его не отдают, " +
-    "пока его не подтвердят — кнопками ниже или `myc review confirm|reject <id>`";
+    "compaction candidate (state pending_review): recall, search and prime do not return it " +
+    "until it is confirmed — with the buttons below or `myc review confirm|reject <id>`";
   return mark;
 }
 
 /** Метка охвата репозитория — вторая ось, рядом с первой, а не вместо (S59). */
 function kbRepoMark(row: KbRow): HTMLElement {
   if (row.repo_state === "repo") return el("span", "krepo", row.repo);
-  if (row.repo_state === "root") return el("span", "krepo krepo-root", "все");
+  if (row.repo_state === "root") return el("span", "krepo krepo-root", "all");
   const unknown = el("span", "krepo krepo-unknown", "repo?");
-  unknown.title = "охват репозитория не определён: узел старше решения S59 или путь вывода неизвестен";
+  unknown.title = "repo reach unknown: the node predates decision S59 or its derivation path is unknown";
   return unknown;
 }
 
@@ -1990,13 +1987,13 @@ function renderKbRow(row: KbRow): HTMLElement {
     el("span", "rid", row.id),
     el("span", "badge", row.subtype !== null ? `${row.subtype} (${row.kind})` : row.kind),
     el("span", "badge", `L${row.layer}`),
-    el("span", "ktitle", row.title || "(без заголовка)"),
+    el("span", "ktitle", row.title || "(untitled)"),
     kbReachMark(row),
     kbRepoMark(row),
   );
   const review = kbReviewMark(row);
   if (review !== null) top.append(review);
-  top.append(el("span", "kage", `${fmtAge(Date.now() - row.updated_at)} назад`));
+  top.append(el("span", "kage", `${fmtAge(Date.now() - row.updated_at)} ago`));
   box.append(top);
   // Кандидат, ждущий разбора, разбирается прямо в списке: принять — знание
   // (recall и prime его отдают, embed и absorb в очереди), отклонить — с
@@ -2022,7 +2019,7 @@ async function fillKbDetail(host: HTMLElement, id: string): Promise<void> {
   try {
     c = await api<CardView>(`/api/nodes/${encodeURIComponent(id)}/card`);
   } catch (e) {
-    host.append(el("div", "props-error", `узел не прочитан: ${e instanceof Error ? e.message : String(e)}`));
+    host.append(el("div", "props-error", `node not read: ${e instanceof Error ? e.message : String(e)}`));
     return;
   }
   if (c.body.length > 0) {
@@ -2031,10 +2028,10 @@ async function fillKbDetail(host: HTMLElement, id: string): Promise<void> {
     host.append(pre);
   }
   const links = el("div", "klinks");
-  if (c.parent !== null) links.append(el("div", "mono", `входит в ${c.parent.id} ${c.parent.title}`));
+  if (c.parent !== null) links.append(el("div", "mono", `part of ${c.parent.id} ${c.parent.title}`));
   for (const l of c.links) links.append(el("div", "mono", `${l.type} ${l.id} — ${l.title}`));
-  if (c.tags.length > 0) links.append(el("div", "mono", `теги ${c.tags.join(", ")}`));
-  links.append(el("div", "mono", `слой L${c.layer} · ${reachLine(c)} · ${repoLine(c)}`));
+  if (c.tags.length > 0) links.append(el("div", "mono", `tags ${c.tags.join(", ")}`));
+  links.append(el("div", "mono", `layer L${c.layer} · ${reachLine(c)} · ${repoLine(c)}`));
   host.append(links);
   host.append(nodePropsEditor(id, () => void loadKb()));
 }
@@ -2044,19 +2041,19 @@ function renderKbFooter(counts: KbCounts, host: HTMLElement): void {
   host.replaceChildren();
   const reach = el("span", "kfooter-group");
   reach.append(
-    el("span", "kfooter-name", "охват сессии:"),
-    el("span", undefined, ` проект ${counts.reach.project} · сессия ${counts.reach.session} · без охвата ${counts.reach.unknown}`),
+    el("span", "kfooter-name", "session reach:"),
+    el("span", undefined, ` project ${counts.reach.project} · session ${counts.reach.session} · no reach ${counts.reach.unknown}`),
   );
   const repo = el("span", "kfooter-group");
-  const repoBits = [`все ${counts.repo.root}`, `не определён ${counts.repo.unknown}`];
+  const repoBits = [`all ${counts.repo.root}`, `unknown ${counts.repo.unknown}`];
   for (const r of counts.repo.by_repo) repoBits.push(`${r.key} ${r.n}`);
-  repo.append(el("span", "kfooter-name", "охват репозитория:"), el("span", undefined, ` ${repoBits.join(" · ")}`));
+  repo.append(el("span", "kfooter-name", "repo reach:"), el("span", undefined, ` ${repoBits.join(" · ")}`));
   host.append(reach, repo);
   if (counts.pending_review > 0) {
     const review = el("span", "kfooter-group");
     review.append(
-      el("span", "kfooter-name", "кандидаты на подтверждение:"),
-      el("span", undefined, ` ${counts.pending_review} — в выдачу агенту не попадают`),
+      el("span", "kfooter-name", "candidates awaiting review:"),
+      el("span", undefined, ` ${counts.pending_review} — not returned to agents`),
     );
     host.append(review);
   }
@@ -2066,14 +2063,14 @@ function renderKbFilters(): void {
   const host = $("kb-filters");
   host.replaceChildren();
 
-  kbFilterGroup("виды", host);
-  host.append(kbChip("все", kbState.kind === "", () => { kbState.kind = ""; void loadKb(); }));
+  kbFilterGroup("kinds", host);
+  host.append(kbChip("all", kbState.kind === "", () => { kbState.kind = ""; void loadKb(); }));
   for (const k of KB_KINDS) {
     host.append(kbChip(k, kbState.kind === k, () => { kbState.kind = k; void loadKb(); }));
   }
 
-  kbFilterGroup("слои", host);
-  host.append(kbChip("все", kbState.layer === "", () => { kbState.layer = ""; void loadKb(); }));
+  kbFilterGroup("layers", host);
+  host.append(kbChip("all", kbState.layer === "", () => { kbState.layer = ""; void loadKb(); }));
   for (const l of KB_LAYERS) {
     host.append(kbChip(l, kbState.layer === String(Number(l.slice(1))), () => {
       kbState.layer = kbState.layer === String(Number(l.slice(1))) ? "" : String(Number(l.slice(1)));
@@ -2081,13 +2078,13 @@ function renderKbFilters(): void {
     }));
   }
 
-  kbFilterGroup("охват сессии", host);
-  for (const [label, value] of [["все", ""], ["проект", "project"], ["сессия", "session"], ["без охвата", "unknown"]] as const) {
+  kbFilterGroup("session reach", host);
+  for (const [label, value] of [["all", ""], ["project", "project"], ["session", "session"], ["no reach", "unknown"]] as const) {
     host.append(kbChip(label, kbState.reach === value, () => { kbState.reach = value; void loadKb(); }));
   }
 
   const search = el("input", "search ksearch") as HTMLInputElement;
-  search.setAttribute("placeholder", "фильтр по заголовку, id и тегам");
+  search.setAttribute("placeholder", "filter by title, id and tags");
   search.value = kbState.q;
   search.addEventListener("input", () => {
     kbState.q = search.value;
@@ -2114,7 +2111,7 @@ function renderKbNew(): void {
   form.hidden = true;
 
   const title = el("input", "props-input") as HTMLInputElement;
-  title.setAttribute("placeholder", "заголовок / суть факта");
+  title.setAttribute("placeholder", "title / the gist of the fact");
   const kind = el("select", "props-input") as HTMLSelectElement;
   for (const k of KB_KINDS) {
     const o = el("option", undefined, k);
@@ -2123,11 +2120,11 @@ function renderKbNew(): void {
     kind.append(o);
   }
   const body = el("textarea", "props-input props-body") as HTMLTextAreaElement;
-  body.setAttribute("placeholder", "тело: у заметки — развёрнутый факт под первой строкой");
+  body.setAttribute("placeholder", "body: for a note, the full fact under the first line");
   const tags = el("input", "props-input") as HTMLInputElement;
-  tags.setAttribute("placeholder", "теги через запятую");
+  tags.setAttribute("placeholder", "tags, comma-separated");
   const layer = el("select", "props-input") as HTMLSelectElement;
-  const layerNone = el("option", undefined, "слой по умолчанию");
+  const layerNone = el("option", undefined, "default layer");
   layerNone.setAttribute("value", "");
   layer.append(layerNone);
   for (const l of KB_LAYERS) {
@@ -2136,7 +2133,7 @@ function renderKbNew(): void {
     layer.append(o);
   }
   const acl = el("select", "props-input") as HTMLSelectElement;
-  const aclNone = el("option", undefined, "доступ по умолчанию (team)");
+  const aclNone = el("option", undefined, "default acl (team)");
   aclNone.setAttribute("value", "");
   acl.append(aclNone);
   for (const mode of ACL_MODES) {
@@ -2145,15 +2142,15 @@ function renderKbNew(): void {
     acl.append(o);
   }
   const reach = el("select", "props-input") as HTMLSelectElement;
-  const reachSession = el("option", undefined, "охват: сессия (по умолчанию)");
+  const reachSession = el("option", undefined, "reach: session (default)");
   reachSession.setAttribute("value", "");
-  const reachProject = el("option", undefined, "охват: project — явное решение");
+  const reachProject = el("option", undefined, "reach: project — an explicit decision");
   reachProject.setAttribute("value", "project");
   reach.append(reachSession, reachProject);
   const source = el("input", "props-input") as HTMLInputElement;
-  source.setAttribute("placeholder", "происхождение: url или файл (заметка)");
+  source.setAttribute("placeholder", "source: url or file (note)");
   const repo = el("input", "props-input") as HTMLInputElement;
-  repo.setAttribute("placeholder", "охват репозитория, пусто — вывести из пути (doc/skill)");
+  repo.setAttribute("placeholder", "repo reach; empty — derive from the path (doc/skill)");
 
   // Поля, которых у команды создания данного вида нет, скрываются, а не
   // рисуются серыми: интерфейс показывает ровно то, что движок примет.
@@ -2166,12 +2163,12 @@ function renderKbNew(): void {
   };
   kind.addEventListener("change", syncKind);
 
-  const submit = el("button", "rbtn primary", "завести");
+  const submit = el("button", "rbtn primary", "create");
   submit.addEventListener("click", () => {
     void (async () => {
       const text = title.value.trim();
       if (text.length === 0) {
-        toast("без заголовка нельзя: он виден в списке, поиске и myc show");
+        toast("a title is required: it shows in the list, in search and in myc show");
         return;
       }
       const fields: Record<string, unknown> = { title: text, kind: kind.value };
@@ -2192,8 +2189,8 @@ function renderKbNew(): void {
       if (await mutate("/api/nodes", fields)) {
         toast(
           kind.value === "note"
-            ? "заметка заведена тем же путём, что myc remember: очередь embed+absorb и поиск"
-            : `${kind.value} заведён тем же путём, что myc create`,
+            ? "note created the same way as myc remember: embed+absorb queue and search"
+            : `${kind.value} created the same way as myc create`,
         );
         title.value = "";
         body.value = "";
@@ -2202,24 +2199,24 @@ function renderKbNew(): void {
     })();
   });
 
-  const toggle = el("button", "rbtn task-new-toggle", "завести знание");
+  const toggle = el("button", "rbtn task-new-toggle", "new knowledge");
   toggle.addEventListener("click", () => {
     const open = form.classList.toggle("open");
     form.hidden = !open;
-    toggle.textContent = open ? "убрать форму" : "завести знание";
+    toggle.textContent = open ? "hide form" : "new knowledge";
     if (open) title.focus();
   });
 
   form.append(
-    propsRow("вид", kind),
-    propsRow("заголовок", title),
-    propsRow("тело", body),
-    propsRow("теги", tags),
-    propsRow("слой", layer),
-    propsRow("доступ", acl),
-    propsRow("охват сессии", reach),
-    propsRow("происхождение", source),
-    propsRow("охват репозитория", repo),
+    propsRow("kind", kind),
+    propsRow("title", title),
+    propsRow("body", body),
+    propsRow("tags", tags),
+    propsRow("layer", layer),
+    propsRow("acl", acl),
+    propsRow("session reach", reach),
+    propsRow("source", source),
+    propsRow("repo reach", repo),
     submit,
   );
   syncKind();
@@ -2239,7 +2236,7 @@ async function loadKb(): Promise<void> {
   const payload = await api<KbPayload>(`/api/kb${qs.length > 0 ? `?${qs}` : ""}`);
 
   $("kb-sub").textContent =
-    `${payload.shown} из ${fmtInt(payload.total)} знаний · ${payload.took_ms} мс`;
+    `${payload.shown} of ${fmtInt(payload.total)} entries · ${payload.took_ms} ms`;
   renderKbFilters();
 
   const host = $("kb-rows");
@@ -2248,11 +2245,11 @@ async function loadKb(): Promise<void> {
     host.hidden = true;
     emptyState(
       $("kb-empty"),
-      payload.total === 0 ? "База знаний пуста" : "Под фильтр ничего не попало",
+      payload.total === 0 ? "Knowledge base is empty" : "Nothing matches the filter",
       payload.total === 0
-        ? "Знания записывают `myc remember`, агенты и эта страница — каждая заметка попадает в поиск и в absorb-очередь наравне с терминальной."
-        : "Фильтр слишком узкий: сбросьте вид, слой или охват, чтобы увидеть остальное.",
-      'myc remember "первый факт"',
+        ? "Knowledge is written by `myc remember`, by agents and by this page — every note goes into search and the absorb queue just like one from the terminal."
+        : "The filter is too narrow: reset the kind, layer or reach to see the rest.",
+      'myc remember "first fact"',
     );
     renderKbFooter(payload.counts, $("kb-footer"));
     return;
@@ -2270,7 +2267,7 @@ async function loadKb(): Promise<void> {
 async function loadTimeline(): Promise<void> {
   const payload = await api<TimelinePayload>("/api/oplog?n=200");
   $("timeline-sub").textContent =
-    `${fmtInt(payload.total)} записей всего · последняя seq ${payload.last_seq} · ${payload.took_ms} мс`;
+    `${fmtInt(payload.total)} records total · last seq ${payload.last_seq} · ${payload.took_ms} ms`;
 
   const rows = $("timeline-rows");
   const spark = $("timeline-spark");
@@ -2282,9 +2279,9 @@ async function loadTimeline(): Promise<void> {
     spark.hidden = true;
     emptyState(
       $("timeline-empty"),
-      "Оплог пуст",
-      "Ни одной записи ещё не сделано. Оплог пополняется каждой записью CLI или агента — просмотрщик только читает его.",
-      'myc remember "первый факт"',
+      "Oplog is empty",
+      "No records yet. The oplog grows with every write from the CLI or an agent — the viewer only reads it.",
+      'myc remember "first fact"',
     );
     return;
   }
@@ -2306,7 +2303,7 @@ async function loadTimeline(): Promise<void> {
   for (let i = 0; i < bins.length; i++) {
     const bar = el("i");
     bar.style.height = `${Math.max(4, ((bins[i] ?? 0) / peak) * 100)}%`;
-    bar.title = `${bins[i] ?? 0} записей`;
+    bar.title = `${bins[i] ?? 0} records`;
     spark.append(bar);
   }
 
@@ -2383,13 +2380,13 @@ function kindBars(host: HTMLElement, rows: readonly { key: string; n: number }[]
 function routingAnswerLabel(answer: RoutingClass["answer"]): string {
   switch (answer) {
     case "ok":
-      return "ответ есть";
+      return "answered";
     case "single_arm":
-      return "не с чем сравнить";
+      return "nothing to compare";
     case "insufficient_attempts":
-      return "наблюдений не хватает";
+      return "not enough observations";
     case "no_cost_data":
-      return "цена не посчитана";
+      return "cost not computed";
     default:
       return answer;
   }
@@ -2406,7 +2403,7 @@ function routingAnswerState(cls: RoutingClass): "ok" | "warn" {
  * скрыл бы то, что 0 попыток из N дали стоимость (см. costedAttempts рядом).
  */
 function fmtRoutingCost(v: number | null): string {
-  return v === null ? "нет цены" : `$${v.toFixed(4)}`;
+  return v === null ? "no price" : `$${v.toFixed(4)}`;
 }
 
 function renderRoutingArm(a: RoutingArm): HTMLElement {
@@ -2426,11 +2423,11 @@ function renderRoutingArm(a: RoutingArm): HTMLElement {
     el(
       "span",
       a.costUsdMean === null ? "arm-cost arm-cost-missing" : "arm-cost",
-      `${fmtRoutingCost(a.costUsdMean)}/попытка (${a.costedAttempts}/${a.attempts})`,
+      `${fmtRoutingCost(a.costUsdMean)}/attempt (${a.costedAttempts}/${a.attempts})`,
     ),
   );
-  row.append(el("span", "arm-clean", `чисто ${Math.round(a.cleanRate * 100)}%`));
-  if (!a.enoughData) row.append(el("span", "state warn", "мало наблюдений"));
+  row.append(el("span", "arm-clean", `clean ${Math.round(a.cleanRate * 100)}%`));
+  if (!a.enoughData) row.append(el("span", "state warn", "few observations"));
   return row;
 }
 
@@ -2449,11 +2446,11 @@ function renderRoutingClass(cls: RoutingClass): HTMLElement {
 async function loadRouting(): Promise<void> {
   const payload = await api<RoutingPayload>("/api/routing");
   $("routing-sub").textContent =
-    `задач закрыто ${fmtInt(payload.coverage.tasksClosed)}, с атрибуцией ${fmtInt(payload.coverage.tasksAttributed)} · ` +
-    `попыток ${fmtInt(payload.coverage.attempts)} (закрыто ${fmtInt(payload.coverage.finished)}, ` +
-    `со стоимостью ${fmtInt(payload.coverage.withCost)}) · outcome v${payload.outcomeVersion}, ` +
-    `интервал ${Math.round(payload.credibleMass * 100)}%, порог наблюдений ${payload.minAttempts} · ` +
-    `${payload.took_ms} мс`;
+    `tasks closed ${fmtInt(payload.coverage.tasksClosed)}, attributed ${fmtInt(payload.coverage.tasksAttributed)} · ` +
+    `attempts ${fmtInt(payload.coverage.attempts)} (closed ${fmtInt(payload.coverage.finished)}, ` +
+    `with cost ${fmtInt(payload.coverage.withCost)}) · outcome v${payload.outcomeVersion}, ` +
+    `interval ${Math.round(payload.credibleMass * 100)}%, observation threshold ${payload.minAttempts} · ` +
+    `${payload.took_ms} ms`;
 
   // Оговорки — первыми и так же заметно, как на экране «здоровье» (И2):
   // single_arm/insufficient_attempts/no_cost_data не должны потеряться рядом
@@ -2461,11 +2458,11 @@ async function loadRouting(): Promise<void> {
   const degHost = $("routing-degraded");
   degHost.replaceChildren();
   const deg = card(
-    payload.degraded.length === 0 ? "оговорок нет" : `оговорки (${payload.degraded.length})`,
+    payload.degraded.length === 0 ? "no caveats" : `caveats (${payload.degraded.length})`,
     true,
   );
   if (payload.degraded.length === 0) {
-    deg.append(el("span", "state ok", "по каждому классу задач есть однозначный ответ"));
+    deg.append(el("span", "state ok", "every task class has a definite answer"));
   } else {
     for (const d of payload.degraded) {
       const box = el("div", "deg");
@@ -2481,8 +2478,8 @@ async function loadRouting(): Promise<void> {
     host.hidden = true;
     emptyState(
       $("routing-empty"),
-      "Атрибуции пока нет",
-      "Ни одной закрытой попытки с атрибуцией. Панель наполнится, как только `myc attempt finish` закроет первую попытку.",
+      "No attribution yet",
+      "Not a single closed attempt with attribution. The panel fills in as soon as `myc attempt finish` closes the first attempt.",
       "myc report models",
     );
     return;
@@ -2509,11 +2506,11 @@ function renderBootstrapCut(data: BootstrapPreview): void {
   }
   host.hidden = false;
   host.replaceChildren();
-  host.append(el("b", undefined, "порезано бюджетом"));
+  host.append(el("b", undefined, "cut by budget"));
   const bits: string[] = [];
-  if (data.dropped.length > 0) bits.push(`выброшено: ${data.dropped.join(", ")}`);
-  if (data.clipped.length > 0) bits.push(`подрезано: ${data.clipped.join(", ")}`);
-  bits.push(`бюджет ${fmtInt(data.budget)} симв · тело ${fmtInt(data.body_chars)} симв`);
+  if (data.dropped.length > 0) bits.push(`dropped: ${data.dropped.join(", ")}`);
+  if (data.clipped.length > 0) bits.push(`clipped: ${data.clipped.join(", ")}`);
+  bits.push(`budget ${fmtInt(data.budget)} chars · body ${fmtInt(data.body_chars)} chars`);
   host.append(el("span", undefined, bits.join(" · ")));
 }
 
@@ -2522,21 +2519,21 @@ function renderBootstrapHistory(rows: readonly BootstrapHistoryRow[]): void {
   host.hidden = false;
   host.replaceChildren();
   if (rows.length === 0) {
-    host.append(el("div", undefined, "истории нет"));
+    host.append(el("div", undefined, "no history"));
     return;
   }
   for (const r of rows) {
     const row = el("div", "bootstrap-history-row");
     row.append(el("span", "htime", fmtTime(r.ts_ms)));
     row.append(el("span", "hactor", r.actor || "?"));
-    row.append(el("span", "htext", r.text ?? "(пусто)"));
+    row.append(el("span", "htext", r.text ?? "(empty)"));
     host.append(row);
   }
 }
 
 async function toggleBootstrapHistory(row: BootstrapBlockRow): Promise<void> {
   if (row.id === "-") {
-    toast("у блока личного яруса нет id — истории нет (ограничение myc bootstrap list)");
+    toast("a personal-tier block has no id, so no history (a limitation of myc bootstrap list)");
     return;
   }
   if (bootstrapHistoryFor === row.id) {
@@ -2554,24 +2551,24 @@ function renderBootstrapBlocks(rows: readonly BootstrapBlockRow[]): void {
   host.replaceChildren();
   const empty = $("bootstrap-empty");
   if (rows.length === 0) {
-    emptyState(empty, "ручных блоков нет", "правило запуска, которого нет в автодетекте — заведите его ниже");
+    emptyState(empty, "no manual blocks", "a launch rule autodetect cannot see — add it below");
     return;
   }
   empty.hidden = true;
   for (const row of rows) {
     const item = el("div", "bootstrap-block");
     item.append(el("span", "bkey", row.key));
-    item.append(el("span", "btier", row.tier === "personal" ? "@personal" : "проектный"));
-    item.append(el("span", "bchars", `${fmtInt(row.chars)} симв`));
+    item.append(el("span", "btier", row.tier === "personal" ? "@personal" : "project"));
+    item.append(el("span", "bchars", `${fmtInt(row.chars)} chars`));
     const actions = el("div", "bactions");
-    const hist = el("button", "rbtn", "история");
+    const hist = el("button", "rbtn", "history");
     hist.addEventListener("click", () => void toggleBootstrapHistory(row));
     actions.append(hist);
     if (writeEnabled) {
-      const edit = el("button", "rbtn", "править");
+      const edit = el("button", "rbtn", "edit");
       edit.addEventListener("click", () => fillBootstrapForm(row));
       actions.append(edit);
-      const rm = el("button", "rbtn danger", "снять");
+      const rm = el("button", "rbtn danger", "remove");
       rm.addEventListener("click", () => {
         void (async () => {
           const ok = await mutate(`/api/bootstrap/${encodeURIComponent(row.key)}/op`, {
@@ -2599,7 +2596,7 @@ function fillBootstrapForm(row: BootstrapBlockRow): void {
   bootstrapTextInput.value = "";
   bootstrapGlobalInput.checked = row.tier === "personal";
   bootstrapTextInput.focus();
-  toast(`правите «${row.key}» — впишите новый текст целиком, он заменит прежний`);
+  toast(`editing "${row.key}" — enter the full new text, it replaces the old one`);
 }
 
 function renderBootstrapNew(): void {
@@ -2617,25 +2614,25 @@ function renderBootstrapNew(): void {
   form.hidden = false;
 
   const key = el("input", "props-input") as HTMLInputElement;
-  key.setAttribute("placeholder", "ключ: a-z0-9_- (напр. style)");
+  key.setAttribute("placeholder", "key: a-z0-9_- (e.g. style)");
   const text = el("textarea", "props-input props-body") as HTMLTextAreaElement;
-  text.setAttribute("placeholder", "текст правила — то, что увидит агент");
+  text.setAttribute("placeholder", "rule text — what the agent will see");
   const globalLabel = el("label");
   const global = el("input") as HTMLInputElement;
   global.type = "checkbox";
-  globalLabel.append(global, document.createTextNode(" личный ярус (~/.myc)"));
+  globalLabel.append(global, document.createTextNode(" personal tier (~/.myc)"));
 
-  const submit = el("button", "rbtn primary", "сохранить блок");
+  const submit = el("button", "rbtn primary", "save block");
   submit.addEventListener("click", () => {
     void (async () => {
       const k = key.value.trim();
       const t = text.value;
       if (k.length === 0) {
-        toast("нужен ключ блока");
+        toast("block key is required");
         return;
       }
       if (t.length === 0) {
-        toast("нужен текст блока");
+        toast("block text is required");
         return;
       }
       const ok = await mutate(`/api/bootstrap/${encodeURIComponent(k)}`, {
@@ -2661,8 +2658,8 @@ function renderBootstrapNew(): void {
 async function loadBootstrap(): Promise<void> {
   const preview = await apiData<BootstrapPreview>("/api/bootstrap");
   $("bootstrap-sub").textContent =
-    `auto ${preview.auto} · ручных ${preview.manual} · ${fmtInt(preview.chars)}/${fmtInt(preview.budget)} симв · ` +
-    `cache ${preview.cache} · ${preview.took_ms} мс`;
+    `auto ${preview.auto} · manual ${preview.manual} · ${fmtInt(preview.chars)}/${fmtInt(preview.budget)} chars · ` +
+    `cache ${preview.cache} · ${preview.took_ms} ms`;
   // БУКВАЛЬНЫЙ текст сервера, символ в символ — приёмка экрана держится на
   // том, что здесь никогда не появляется ничего, кроме `preview.text`.
   $("bootstrap-preview").textContent = preview.text;
@@ -2677,18 +2674,18 @@ async function loadHealth(): Promise<void> {
   const h = await api<HealthPayload>("/api/health");
   const schema =
     h.workspace.schema_version !== null
-      ? `схема v${h.workspace.schema_version}`
-      : "версия схемы неизвестна — нет таблицы schema_migrations или она пуста";
+      ? `schema v${h.workspace.schema_version}`
+      : "schema version unknown — schema_migrations is missing or empty";
   $("health-sub").textContent =
-    `${h.workspace.slug} · ${h.workspace.db_path} · ${schema} · собрано за ${h.took_ms} мс`;
+    `${h.workspace.slug} · ${h.workspace.db_path} · ${schema} · built in ${h.took_ms} ms`;
 
   const host = $("health-cards");
   host.replaceChildren();
 
   // Деградации — первыми и крупно: молчаливого фолбэка не бывает (И2).
-  const deg = card(h.degraded.length === 0 ? "деградаций нет" : `деградации (${h.degraded.length})`, true);
+  const deg = card(h.degraded.length === 0 ? "no degradation" : `degraded (${h.degraded.length})`, true);
   if (h.degraded.length === 0) {
-    const ok = el("span", "state ok", "всё в норме");
+    const ok = el("span", "state ok", "all healthy");
     deg.append(ok);
   } else {
     for (const d of h.degraded) {
@@ -2699,13 +2696,13 @@ async function loadHealth(): Promise<void> {
   }
   host.append(deg);
 
-  const ws = card("воркспейс");
-  kv(ws, "база", fmtBytes(h.workspace.db_bytes));
+  const ws = card("workspace");
+  kv(ws, "database", fmtBytes(h.workspace.db_bytes));
   kv(ws, "WAL", fmtBytes(h.workspace.wal_bytes));
   kv(ws, "shm", fmtBytes(h.workspace.shm_bytes));
-  kv(ws, "журнал", h.workspace.journal_mode);
+  kv(ws, "journal", h.workspace.journal_mode);
   kv(ws, "site_id", h.workspace.site_id || "—");
-  kv(ws, "режим", "только чтение");
+  kv(ws, "mode", "read-only");
   const meter = el("div", "meter");
   const fill = el("i");
   const walPct = Math.min(100, (h.workspace.wal_bytes / (32 * 1024 * 1024)) * 100);
@@ -2713,79 +2710,79 @@ async function loadHealth(): Promise<void> {
   if (walPct > 100 * (8 / 32)) fill.className = walPct > 90 ? "bad" : "warn";
   meter.append(fill);
   ws.append(meter);
-  kv(ws, "WAL к потолку 32 МБ", `${walPct.toFixed(1)}%`);
+  kv(ws, "WAL of the 32 MB ceiling", `${walPct.toFixed(1)}%`);
   host.append(ws);
 
-  const nodes = card("узлы");
+  const nodes = card("nodes");
   nodes.append(el("div", "big", fmtInt(h.nodes.total)));
   if (h.nodes.by_kind.length > 0) kindBars(nodes, h.nodes.by_kind, "kind");
-  else nodes.append(el("div", "row", "по видам пока пусто"));
+  else nodes.append(el("div", "row", "no kinds yet"));
   host.append(nodes);
 
-  const edges = card("рёбра");
+  const edges = card("edges");
   edges.append(el("div", "big", fmtInt(h.edges.total)));
   if (h.edges.by_type.length > 0) {
     for (const r of h.edges.by_type) kv(edges, r.key, fmtInt(r.n));
   } else {
-    edges.append(el("div", "row", "связей пока нет"));
+    edges.append(el("div", "row", "no edges yet"));
   }
   host.append(edges);
 
-  const embed = card("эмбеддер");
+  const embed = card("embedder");
   const embedState = el(
     "span",
     `state ${h.embed.state === "ok" ? "ok" : h.embed.state === "off" ? "warn" : "bad"}`,
     h.embed.state === "ok"
-      ? "работает"
+      ? "working"
       : h.embed.state === "off"
-        ? "выключен"
+        ? "off"
         : h.embed.state === "degraded"
-          ? "деградация"
-          : "неизвестно",
+          ? "degraded"
+          : "unknown",
   );
   embed.append(embedState);
-  kv(embed, "модель", h.embed.model || "—");
-  kv(embed, "размерность", h.embed.dim !== null ? String(h.embed.dim) : "—");
-  kv(embed, "в очереди", fmtInt(h.embed.pending));
-  kv(embed, "провалено", fmtInt(h.embed.failed));
+  kv(embed, "model", h.embed.model || "—");
+  kv(embed, "dimension", h.embed.dim !== null ? String(h.embed.dim) : "—");
+  kv(embed, "pending", fmtInt(h.embed.pending));
+  kv(embed, "failed", fmtInt(h.embed.failed));
   const detail = el("div", "row");
   detail.append(el("span", undefined, h.embed.detail));
   embed.append(detail);
   host.append(embed);
 
-  const vec = card("векторное расширение");
+  const vec = card("vector extension");
   vec.append(
-    el("span", `state ${h.vec.schema_applied ? "ok" : "warn"}`, h.vec.schema_applied ? "схема применена" : "не применена"),
+    el("span", `state ${h.vec.schema_applied ? "ok" : "warn"}`, h.vec.schema_applied ? "schema applied" : "not applied"),
   );
   const vd = el("div", "row");
   vd.append(el("span", undefined, h.vec.detail));
   vec.append(vd);
-  kv(vec, "векторов", h.embed.rows !== null ? fmtInt(h.embed.rows) : "не читается без vec0");
-  kv(vec, "FTS", h.fts.available ? "есть" : "нет");
+  kv(vec, "vectors", h.embed.rows !== null ? fmtInt(h.embed.rows) : "unreadable without vec0");
+  kv(vec, "FTS", h.fts.available ? "yes" : "no");
   host.append(vec);
 
-  const jobs = card("фоновая очередь");
+  const jobs = card("background queue");
   jobs.append(el("div", "big", fmtInt(h.jobs.pending)));
-  kv(jobs, "провалено", fmtInt(h.jobs.failed));
+  kv(jobs, "failed", fmtInt(h.jobs.failed));
   for (const r of h.jobs.by_kind) kv(jobs, r.key, fmtInt(r.n));
-  if (h.jobs.by_kind.length === 0) jobs.append(el("div", "row", "очередь пуста"));
+  if (h.jobs.by_kind.length === 0) jobs.append(el("div", "row", "queue is empty"));
   host.append(jobs);
 
-  const anchors = card("якоря");
+  const anchors = card("anchors");
   anchors.append(el("div", "big", fmtInt(h.anchors.total)));
   for (const r of h.anchors.by_state) kv(anchors, r.key, fmtInt(r.n));
-  if (h.anchors.by_state.length === 0) anchors.append(el("div", "row", "якорей нет"));
+  if (h.anchors.by_state.length === 0) anchors.append(el("div", "row", "no anchors"));
   host.append(anchors);
 
-  const op = card("оплог");
+  const op = card("oplog");
   op.append(el("div", "big", fmtInt(h.oplog.count)));
-  kv(op, "последний seq", String(h.oplog.last_seq));
-  kv(op, "последняя запись", h.oplog.last_ts !== null ? `${fmtAge(Date.now() - h.oplog.last_ts)} назад` : "—");
+  kv(op, "last seq", String(h.oplog.last_seq));
+  kv(op, "last write", h.oplog.last_ts !== null ? `${fmtAge(Date.now() - h.oplog.last_ts)} ago` : "—");
   for (const a of h.oplog.actors) kv(op, a.key, fmtInt(a.n));
   host.append(op);
 
   if (h.components.length > 0) {
-    const comp = card("компоненты (myc_health)", true);
+    const comp = card("components (myc_health)", true);
     for (const c of h.components) {
       const row = el("div", "row");
       row.append(
@@ -2853,7 +2850,7 @@ function renderSearchDegraded(warn: readonly { code: string; msg: string }[]): v
   const host = $("search-degraded");
   host.replaceChildren();
   if (warn.length === 0) return;
-  const box = card(`деградация (${warn.length})`, true);
+  const box = card(`degraded (${warn.length})`, true);
   for (const w of warn) {
     const row = el("div", "deg");
     row.append(el("code", undefined, w.code), el("span", undefined, w.msg));
@@ -2867,28 +2864,28 @@ function renderSearchFooter(data: SearchPayload): void {
   host.hidden = false;
   host.replaceChildren();
   const bits: string[] = [
-    `${fmtInt(data.shown)} из ${fmtInt(data.total)}`,
+    `${fmtInt(data.shown)} of ${fmtInt(data.total)}`,
     data.mode,
-    `${data.took_ms} мс`,
-    `${fmtInt(data.used_chars)} симв из ${fmtInt(data.budget)}`,
+    `${data.took_ms} ms`,
+    `${fmtInt(data.used_chars)} chars of ${fmtInt(data.budget)}`,
   ];
-  if (data.deduped > 0) bits.push(`${fmtInt(data.deduped)} дублей свёрнуто`);
-  if (data.foreign > 0) bits.push(`${fmtInt(data.foreign)} из чужих сессий`);
-  if (data.unknown_reach > 0) bits.push(`${fmtInt(data.unknown_reach)} без охвата`);
-  if (data.unknown_repo > 0) bits.push(`${fmtInt(data.unknown_repo)} без охвата репозитория`);
-  if (data.pool_exhausted) bits.push("пул исчерпан, total — нижняя оценка");
+  if (data.deduped > 0) bits.push(`${fmtInt(data.deduped)} ${data.deduped === 1 ? "duplicate" : "duplicates"} collapsed`);
+  if (data.foreign > 0) bits.push(`${fmtInt(data.foreign)} from other sessions`);
+  if (data.unknown_reach > 0) bits.push(`${fmtInt(data.unknown_reach)} without reach`);
+  if (data.unknown_repo > 0) bits.push(`${fmtInt(data.unknown_repo)} without repo reach`);
+  if (data.pool_exhausted) bits.push("pool exhausted, total is a lower bound");
   host.append(el("span", "search-footer-line", bits.join(" · ")));
   // partial — ГРОМКО, своей строкой, а не спрятано в подсказку (И2): поиск,
   // который молча отдал не всё, хуже отсутствующего.
   if (data.partial) {
     const why: string[] = [];
-    if (data.omitted > 0) why.push(`${fmtInt(data.omitted)} сверх бюджета`);
+    if (data.omitted > 0) why.push(`${fmtInt(data.omitted)} over budget`);
     host.append(
-      el("span", "search-partial state warn", `partial: ${why.length > 0 ? why.join(", ") : "выдано не всё"}`),
+      el("span", "search-partial state warn", `partial: ${why.length > 0 ? why.join(", ") : "not everything returned"}`),
     );
   }
   if (data.cursor !== undefined) {
-    const more = el("button", "rbtn", "показать ещё");
+    const more = el("button", "rbtn", "show more");
     more.addEventListener("click", () => {
       void runSearch(searchQuery, Number(data.cursor), true);
     });
@@ -2899,12 +2896,12 @@ function renderSearchFooter(data: SearchPayload): void {
 async function runSearch(query: string, offset = 0, append = false): Promise<void> {
   const q = query.trim();
   if (q.length === 0) {
-    toast("нужен запрос");
+    toast("a query is required");
     return;
   }
   searchQuery = q;
   searchOffset = offset;
-  $("search-sub").textContent = "ищу…";
+  $("search-sub").textContent = "searching…";
   let env: Envelope<SearchPayload>;
   try {
     const params = new URLSearchParams({ q });
@@ -2918,7 +2915,7 @@ async function runSearch(query: string, offset = 0, append = false): Promise<voi
   const data = env.data;
   searchRows = append ? [...searchRows, ...data.rows] : [...data.rows];
 
-  $("search-sub").textContent = `«${data.query}»`;
+  $("search-sub").textContent = `"${data.query}"`;
   renderSearchDegraded(env.warn ?? []);
 
   const host = $("search-rows");
@@ -2927,7 +2924,7 @@ async function runSearch(query: string, offset = 0, append = false): Promise<voi
     host.replaceChildren();
     host.hidden = true;
     $("search-footer").hidden = true;
-    emptyState(empty, "ничего не нашлось", "попробуйте другой запрос или снимите фильтры", "myc recall");
+    emptyState(empty, "nothing found", "try another query or remove filters", "myc recall");
     return;
   }
   empty.hidden = true;
@@ -2966,7 +2963,7 @@ function initSearchTab(): void {
 // ---------------------------------------------------------------------------
 
 function decisionPill(l: DecisionLink): HTMLElement {
-  return el("span", l.current ? "state ok" : "state warn", l.current ? `${l.status} · актуальна` : l.status);
+  return el("span", l.current ? "state ok" : "state warn", l.current ? `${l.status} · current` : l.status);
 }
 
 function renderDecisionLink(l: DecisionLink): HTMLElement {
@@ -2986,7 +2983,7 @@ function renderDecisionChain(chain: DecisionChain): HTMLElement {
   if (chain.forked !== undefined) {
     // Развилка — след слияния двух веток; молчать об этом нельзя (И2), как и
     // в `myc show`, откуда взято то же поле.
-    box.append(el("div", "state warn", `развилка цепочки: ${chain.forked.join(", ")}`));
+    box.append(el("div", "state warn", `chain fork: ${chain.forked.join(", ")}`));
   }
   return box;
 }
@@ -3012,14 +3009,14 @@ function renderContradiction(c: DecisionContradiction, onDone: () => void): HTML
   if (c.reason !== undefined) box.append(el("div", "routing-why", c.reason));
 
   const resolve = async (verified: DecisionRef, wrong: DecisionRef): Promise<void> => {
-    const reason = `противоречило ${verified.id} «${verified.title}» — оно признано верным, эта версия отменена`;
+    const reason = `contradicted ${verified.id} "${verified.title}" — that one was accepted as correct, this version is cancelled`;
     if (await mutate(`/api/nodes/${encodeURIComponent(wrong.id)}/op`, { op: "cancel", reason })) onDone();
   };
 
   for (const [side, other] of [[c.a, c.b] as const, [c.b, c.a] as const]) {
     const row = decisionRefLine(side);
     if (writeEnabled) {
-      const btn = el("button", "rbtn", "это верное");
+      const btn = el("button", "rbtn", "this one is right");
       btn.addEventListener("click", () => void resolve(side, other));
       row.append(btn);
     }
@@ -3031,13 +3028,13 @@ function renderContradiction(c: DecisionContradiction, onDone: () => void): HTML
 async function loadDecisions(): Promise<void> {
   const payload = await api<DecisionsPayload>("/api/decisions");
   $("decisions-sub").textContent =
-    `решений ${fmtInt(payload.total_decisions)}, цепочек ${fmtInt(payload.chains.length)}, ` +
-    `открытых противоречий ${fmtInt(payload.contradictions.length)} · ${payload.took_ms} мс`;
+    `decisions ${fmtInt(payload.total_decisions)}, chains ${fmtInt(payload.chains.length)}, ` +
+    `open contradictions ${fmtInt(payload.contradictions.length)} · ${payload.took_ms} ms`;
 
   const degHost = $("decisions-degraded");
   degHost.replaceChildren();
   if (payload.degraded.length > 0) {
-    const deg = card(`оговорки (${payload.degraded.length})`, true);
+    const deg = card(`caveats (${payload.degraded.length})`, true);
     for (const d of payload.degraded) {
       const box = el("div", "deg");
       box.append(el("code", undefined, d.code), el("span", undefined, d.msg));
@@ -3053,7 +3050,7 @@ async function loadDecisions(): Promise<void> {
   for (const c of payload.contradictions) contraHost.append(renderContradiction(c, refresh));
   contraHost.hidden = payload.contradictions.length === 0;
   if (payload.contradictions.length === 0) {
-    emptyState($("decisions-contradictions-empty"), "Открытых противоречий нет", "Все ребра contradicts либо отсутствуют, либо уже разрешены обычной отменой.");
+    emptyState($("decisions-contradictions-empty"), "No open contradictions", "There are no contradicts edges, or all of them were already resolved by a regular cancel.");
   } else {
     $("decisions-contradictions-empty").hidden = true;
   }
@@ -3063,7 +3060,7 @@ async function loadDecisions(): Promise<void> {
   for (const c of payload.chains) chainsHost.append(renderDecisionChain(c));
   chainsHost.hidden = payload.chains.length === 0;
   if (payload.chains.length === 0) {
-    emptyState($("decisions-empty"), "Решений пока нет", "Ни одного узла с attrs.type='decision'.", "myc create --type decision \"…\"");
+    emptyState($("decisions-empty"), "No decisions yet", "Not a single node with attrs.type='decision'.", "myc create --type decision \"…\"");
   } else {
     $("decisions-empty").hidden = true;
   }
@@ -3177,12 +3174,12 @@ async function main(): Promise<void> {
     writeEnabled = boot.read_only === false;
     // Ярус (S41) — третья ось, свойство открытой базы целиком: показывается
     // один раз в шапке, а не примешивается к охватам строк (S58, S59).
-    const tierMark = boot.tier === "personal" ? "ярус: личный (~/.myc)" : "ярус: проектный (.myc)";
+    const tierMark = boot.tier === "personal" ? "tier: personal (~/.myc)" : "tier: project (.myc)";
     $("boot").textContent =
-      `${boot.slug} · ${tierMark} · ${fmtInt(boot.nodes)} узлов / ${fmtInt(boot.edges)} рёбер` +
-      (writeEnabled ? "" : " · только чтение");
+      `${boot.slug} · ${tierMark} · ${fmtInt(boot.nodes)} nodes / ${fmtInt(boot.edges)} edges` +
+      (writeEnabled ? "" : " · read-only");
     if (!boot.schema_ready) {
-      toast("в базе нет схемы myc — показываю пустые экраны, а не падаю; проверьте myc init");
+      toast("the database has no myc schema — showing empty screens instead of failing; check myc init");
     }
     // Очередь могла нарисоваться раньше ответа /api/boot — тогда она не знала
     // о записи и осталась без кнопок. Перерисовываем ровно этот случай.

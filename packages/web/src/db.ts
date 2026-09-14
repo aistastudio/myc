@@ -90,7 +90,7 @@ export function openReadOnly(path: string): ReadOnlyDb {
     applySqliteRuntime(db);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    throw new VizDbError("db.open", `не удалось открыть базу только на чтение: ${msg}`);
+    throw new VizDbError("db.open", `could not open the database read-only: ${msg}`);
   }
 
   // Проверка ГОТОВНОСТИ чтения, а не только открытия. База в WAL после
@@ -110,7 +110,7 @@ export function openReadOnly(path: string): ReadOnlyDb {
       writableHandle = true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      throw new VizDbError("db.open", `не удалось открыть базу: ${msg}`);
+      throw new VizDbError("db.open", `could not open the database: ${msg}`);
     }
     db.exec("PRAGMA query_only = 1");
   }
@@ -130,7 +130,7 @@ export function openReadOnly(path: string): ReadOnlyDb {
     const enforced = db.query("PRAGMA query_only").get() as { query_only?: number } | null;
     if (enforced?.query_only !== 1) {
       db.close();
-      throw new VizDbError("db.open", "база без -wal/-shm открыта читаемым handle-ом, но query_only не поддержан — читать небезопасно");
+      throw new VizDbError("db.open", "a database without -wal/-shm was opened with a writable handle, but query_only is not supported — reading is unsafe");
     }
   }
 
