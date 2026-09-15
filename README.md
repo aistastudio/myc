@@ -97,6 +97,7 @@ myc wire --status-line          # + myc's status line under Claude Code's prompt
 myc wire --queue-hook           # + heavy commands take turns (below)
 myc wire --agents-md            # + the myc block in AGENTS.md
 myc wire --scope user           # the same for agents in git worktrees (Claude Code's user layer)
+myc wire --scope user --agents claude,opencode  # + opencode's global config
 myc unwire                      # remove what wire put in
 ```
 
@@ -118,6 +119,20 @@ workspace the MCP server offers zero tools and no instructions. `--hook-mode
 replace` is refused here. The journal is `~/.myc/wire-user.json`; `myc unwire
 --scope user` restores the settings node by node and removes the MCP server.
 
+opencode in such a worktree is in the same position, and `--agents opencode`
+(or `claude,opencode`; without `--agents` the user layer is Claude Code's only)
+wires its global config, `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`:
+the `myc` server goes into `mcp` of the `opencode.json[c]` opencode itself treats
+as its own, as one node — the file is JSONC, and other entries, comments and
+trailing commas stay byte for byte — and `plugin/myc.ts` goes next to it. opencode
+starts that server in the directory it was opened in, so `myc mcp` finds the
+workspace from a worktree by itself. The plugin makes the same two checks as the
+helper, once per project and without starting myc: no workspace here, or the
+project wires opencode itself (`opencode.json` with `mcp.myc`, or
+`.opencode/plugin/myc.ts` — opencode loads the plugins of both layers, and a
+project's `mcp.myc` overrides this one) — then it registers no hooks at all.
+`myc unwire --scope user` takes out exactly that node and the plugin.
+
 With `--status-line` the user layer also gets myc's status line, `myc
 statusline --scope user`: in a myc workspace — a git worktree of one included —
 it is the full line, outside one it prints nothing of its own. The line that was
@@ -134,7 +149,7 @@ unwire --scope user` puts the previous line back byte for byte. `myc doctor
 --hooks` checks the whole user layer against the journal: myc's hook entries and
 rules still in `~/.claude/settings.json`, the helpers exactly what this build
 writes (a stale one is named with the build that wrote it), the status line, the
-MCP server.
+MCP server — and, when opencode is wired, its plugin and `mcp.myc`.
 
 ## Heavy commands take turns
 

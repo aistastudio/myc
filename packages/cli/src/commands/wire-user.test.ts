@@ -297,7 +297,7 @@ describe("--scope user: ~/.claude/settings.json", () => {
     const r = registry();
     const cases: [string[], string][] = [
       [["--hook-mode", "replace"], "evict other tools' hooks"],
-      [["--agents", "claude,codex"], "Claude Code only"],
+      [["--agents", "claude,codex"], "Claude Code and opencode only"],
       [["--agents-md"], "AGENTS.md is a project file"],
     ];
     for (const [flags, why] of cases) {

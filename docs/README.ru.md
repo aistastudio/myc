@@ -98,6 +98,7 @@ myc wire --status-line          # + строка статуса myc под пр�
 myc wire --queue-hook           # + тяжёлые команды по очереди (ниже)
 myc wire --agents-md            # + блок myc в AGENTS.md
 myc wire --scope user           # то же для агентов в git worktree (пользовательский слой Claude Code)
+myc wire --scope user --agents claude,opencode  # + глобальный конфиг opencode
 myc unwire                      # снять то, что поставил wire
 ```
 
@@ -119,6 +120,20 @@ myc unwire                      # снять то, что поставил wire
 `~/.myc/wire-user.json`; `myc unwire --scope user` возвращает настройки к
 прежним по узлам и снимает MCP-сервер.
 
+opencode в таком worktree в том же положении, и `--agents opencode` (или
+`claude,opencode`; без `--agents` пользовательский слой — только Claude Code)
+проводит его глобальный конфиг, `$XDG_CONFIG_HOME/opencode` или
+`~/.config/opencode`: сервер `myc` встаёт в `mcp` того `opencode.json[c]`,
+который opencode сам считает своим, одним узлом — файл JSONC, и чужие записи,
+комментарии и висячие запятые остаются байт в байт, — а рядом ложится
+`plugin/myc.ts`. Сервер opencode запускает в каталоге, где его открыли, и
+`myc mcp` сам находит воркспейс из worktree. Плагин делает те же две проверки,
+что и helper, один раз на проект и без запуска myc: нет здесь воркспейса или
+проект проводит opencode сам (`opencode.json` с `mcp.myc` или
+`.opencode/plugin/myc.ts` — opencode грузит плагины обоих слоёв, а `mcp.myc`
+проекта перекрывает этот) — и тогда не ставит ни одного хука. `myc unwire
+--scope user` снимает ровно этот узел и плагин.
+
 С `--status-line` в пользовательский слой встаёт и строка статуса myc — `myc
 statusline --scope user`: в воркспейсе myc (и в его git worktree) это полная
 строка, вне воркспейса она не печатает ничего своего. Строка, стоявшая до неё
@@ -134,7 +149,7 @@ orca считает своей строку, в команде которой е
 --hooks` сверяет весь пользовательский слой с журналом: наши хуки и правила на
 месте в `~/.claude/settings.json`, helper'ы — ровно то, что пишет эта сборка
 (устаревший назван вместе со сборкой, которая его записала), строка статуса,
-MCP-сервер.
+MCP-сервер — а при проводке opencode и его плагин и `mcp.myc`.
 
 ## Тяжёлые команды — по очереди
 

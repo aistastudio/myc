@@ -196,10 +196,7 @@ process.exit(0);
  * `process.exit(0)` сторожа срабатывает раньше любого кода helper'а.
  */
 export function userScopeGuard(selfDir: string, mark: string): string {
-  return `import * as __mycFs from "node:fs";
-import * as __mycPath from "node:path";
-import { homedir as __mycHomedir } from "node:os";
-
+  return `${GUARD_IMPORTS}
 // ---- user-layer guard: decides first and starts no process ----------------
 // This helper lives in the user layer, so every Claude Code session on the
 // machine runs it, with myc or without. It goes on only when (1) there is a
@@ -207,7 +204,59 @@ import { homedir as __mycHomedir } from "node:os";
 const __MYC_SELF_DIR = ${JSON.stringify(selfDir)};
 const __MYC_MARK = ${JSON.stringify(mark)};
 
-// The walk-up of myc itself: the first .myc/myc.db upwards. The home
+${WORKSPACE_WALK}
+// The project's own myc wiring: its settings run its own helper (not this
+// file), and that helper exists — then it does the work.
+function __mycProjectWired(dir) {
+  if (!__mycFs.existsSync(__mycPath.join(dir, ".claude", "helpers", __MYC_MARK))) return false;
+  for (const name of ["settings.json", "settings.local.json"]) {
+    let settings;
+    try {
+      settings = JSON.parse(__mycFs.readFileSync(__mycPath.join(dir, ".claude", name), "utf8"));
+    } catch {
+      continue;
+    }
+    const hooks = settings !== null && typeof settings === "object" ? settings.hooks : null;
+    if (hooks === null || typeof hooks !== "object") continue;
+    for (const list of Object.values(hooks)) {
+      if (!Array.isArray(list)) continue;
+      for (const entry of list) {
+        const handlers = entry !== null && typeof entry === "object" && Array.isArray(entry.hooks) ? entry.hooks : [];
+        for (const h of handlers) {
+          const cmd = h !== null && typeof h === "object" ? h.command : undefined;
+          if (typeof cmd === "string" && cmd.includes(__MYC_MARK) && !cmd.includes(__MYC_SELF_DIR)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+{
+  let go = false;
+  try {
+    const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    go = __mycWorkspace(dir) !== "" && !__mycProjectWired(dir);
+  } catch {}
+  if (!go) process.exit(0);
+}
+// ---- end of the user-layer guard -------------------------------------------
+`;
+}
+
+/** Импорты сторожа — одни и те же у helper'а Claude Code и у плагина opencode. */
+const GUARD_IMPORTS = `import * as __mycFs from "node:fs";
+import * as __mycPath from "node:path";
+import { homedir as __mycHomedir } from "node:os";
+`;
+
+/**
+ * Поиск воркспейса myc без единого процесса — тот же подъём, что у самого myc
+ * (commands/wsfind.ts). Один текст на два хоста пользовательского слоя: helper
+ * Claude Code (исполняет node) и плагин opencode (исполняет Bun, встроенный в
+ * opencode), поэтому это чистый JS без типов: такой текст годится обоим.
+ */
+const WORKSPACE_WALK = `// The walk-up of myc itself: the first .myc/myc.db upwards. The home
 // directory counts only as the starting point: its .myc is the personal
 // tier, not a project's workspace.
 function __mycClimb(start) {
@@ -265,45 +314,7 @@ function __mycWorkspace(start) {
   }
   return "";
 }
-
-// The project's own myc wiring: its settings run its own helper (not this
-// file), and that helper exists — then it does the work.
-function __mycProjectWired(dir) {
-  if (!__mycFs.existsSync(__mycPath.join(dir, ".claude", "helpers", __MYC_MARK))) return false;
-  for (const name of ["settings.json", "settings.local.json"]) {
-    let settings;
-    try {
-      settings = JSON.parse(__mycFs.readFileSync(__mycPath.join(dir, ".claude", name), "utf8"));
-    } catch {
-      continue;
-    }
-    const hooks = settings !== null && typeof settings === "object" ? settings.hooks : null;
-    if (hooks === null || typeof hooks !== "object") continue;
-    for (const list of Object.values(hooks)) {
-      if (!Array.isArray(list)) continue;
-      for (const entry of list) {
-        const handlers = entry !== null && typeof entry === "object" && Array.isArray(entry.hooks) ? entry.hooks : [];
-        for (const h of handlers) {
-          const cmd = h !== null && typeof h === "object" ? h.command : undefined;
-          if (typeof cmd === "string" && cmd.includes(__MYC_MARK) && !cmd.includes(__MYC_SELF_DIR)) return true;
-        }
-      }
-    }
-  }
-  return false;
-}
-
-{
-  let go = false;
-  try {
-    const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    go = __mycWorkspace(dir) !== "" && !__mycProjectWired(dir);
-  } catch {}
-  if (!go) process.exit(0);
-}
-// ---- end of the user-layer guard -------------------------------------------
 `;
-}
 
 export interface UserHelperOptions extends HelperOptions {
   /** Абсолютный каталог helper'ов пользовательского слоя: по нему сторож отличает себя от проектного. */
@@ -803,6 +814,292 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
       } catch {}
     },
   };
+};
+`;
+}
+
+/**
+ * Пользовательский слой opencode (`myc wire --scope user --agents opencode`,
+ * memory-n1tt0dy8t4e9): `<конфиг opencode>/plugin/myc.ts`.
+ *
+ * ЗАЧЕМ — тот же, что у claudeUserHelper: orca запускает opencode в git
+ * worktree командного репозитория, проект такого агента — сам worktree, и
+ * проектной проводки myc (`opencode.json` + `.opencode/plugin/myc.ts`) там нет и
+ * быть не может. Единственный слой, который opencode читает там и который не
+ * принадлежит команде, — его глобальный конфиг.
+ *
+ * ЧТО ПРОВЕРЕНО живым прогоном opencode 1.18.30 и 1.18.31 на изолированных
+ * HOME и XDG_*_HOME (заглушка MCP-сервера пишет свои cwd и env в файл;
+ * плагин-проба — то, что ему передал opencode; `opencode run` против
+ * фальшивого провайдера на 127.0.0.1) и чтением его бинаря:
+ *   - глобальный каталог — `$XDG_CONFIG_HOME/opencode`, без переменной —
+ *     `~/.config/opencode` (`opencode debug paths`); плагины opencode ищет
+ *     маской `{plugin,plugins}/*.{ts,js}` в КАЖДОМ каталоге конфига: в
+ *     глобальном, в `.opencode` от каталога запуска до корня worktree, в
+ *     `~/.opencode`. Проба из глобального `plugin/` загрузилась в worktree;
+ *   - плагин исполняется в Bun, встроенном в opencode (`Bun.version` 1.3.14,
+ *     `Bun.spawn` и `Bun.JSONC` есть), и зовётся как `fn({client, project,
+ *     worktree, directory, …})`: `directory` — каталог инстанса, `worktree` —
+ *     корень git worktree (не основной копии). Каждый ЭКСПОРТ модуля обязан
+ *     быть функцией (иначе «Plugin export is not a function»);
+ *   - проектный `.opencode/plugin/probe.ts` и глобальный `plugin/probe.ts`
+ *     грузятся ОБА: одинаковое имя файла дубль не снимает. Отсюда второе
+ *     условие сторожа — у проекта своя проводка, и этот плагин молчит;
+ *   - плагин зовётся ОДИН раз на инстанс, а модуль импортируется один раз на
+ *     процесс; `opencode serve` держит несколько каталогов в одном процессе.
+ *     Поэтому каталог живёт в замыкании (`__mycHooks`), а не в переменной
+ *     модуля, как у проектного плагина, где каталог всегда один.
+ * Про MCP того же прогона — в шапке пользовательского слоя opencode в
+ * commands/wire.ts.
+ *
+ * Хуки — те же, что у проектного opencodePlugin (события, аргументы myc,
+ * дедлайны, стенограмма из client.session.messages); паритет держит тест
+ * wire-user.opencode.test.ts. Сторож — тот же подъём по воркспейсу, что у
+ * helper'а Claude Code (WORKSPACE_WALK), и своя проверка проводки проекта.
+ * Решение принимается ОДИН раз на инстанс и без единого процесса: нет
+ * воркспейса или проводка своя — плагин не отдаёт ни одного хука.
+ *
+ * ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ, общее с проектным плагином (memory-synef5yh4xf2):
+ * prime «один раз на сессию» через `experimental.chat.system.transform`
+ * доходит до модели лишь в одном запросе, а на первом сообщении новой сессии
+ * — в запрос генератора заголовка (e2e `opencode run` 1.18.31). Паритет здесь
+ * сознательный: чинить — оба плагина вместе.
+ */
+export interface OpencodeUserPluginOptions extends HelperOptions {
+  /** Абсолютный путь самого плагина: сторож не должен принять себя за проводку проекта. */
+  readonly selfPath: string;
+  /** myc, выбранный при wire: абсолютный путь или `myc` (PATH). */
+  readonly mycBin: string;
+}
+
+export function opencodeUserPlugin(opts: OpencodeUserPluginOptions): string {
+  const hooks: string[] = [];
+  if (opts.events.includes("pre-compact")) {
+    hooks.push(`    // The only door into the context at compaction: opencode appends
+    // output.context to the summarising prompt.
+    "experimental.session.compacting": async (
+      input: { sessionID: string },
+      output: { context: string[] },
+    ): Promise<void> => {
+      try {
+        const packet = await absorb(input.sessionID);
+        handled.set(input.sessionID, Date.now());
+        if (packet.trim().length > 0) output.context.push(packet);
+      } catch {}
+    },
+    // The fallback for a build without the experimental hook: the event is
+    // stable, and the transcript is still whole after compaction.
+    event: async ({ event }: { event: { type: string; properties?: any } }): Promise<void> => {
+      try {
+        if (event.type !== "session.compacted") return;
+        const id = event.properties?.sessionID;
+        if (typeof id !== "string" || id.length === 0) return;
+        const at = handled.get(id);
+        if (at !== undefined && Date.now() - at < HANDLED_MS) return;
+        await absorb(id);
+      } catch {}
+    },`);
+  }
+  if (opts.events.includes("session-start")) {
+    hooks.push(`    // prime in place of the session.start opencode does not have: the system
+    // prompt is the one channel a plugin has. Once per session.
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      try {
+        const id = input?.sessionID;
+        if (typeof id !== "string" || id.length === 0 || primed.has(id)) return;
+        primed.add(id);
+        const text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+        if (text.trim().length > 0) output.system.push(text);
+      } catch {}
+    },`);
+  }
+  if (opts.events.includes("post-edit")) {
+    hooks.push(`    "tool.execute.after": async (input: { tool: string; args?: any }): Promise<void> => {
+      try {
+        const file = input?.args?.filePath ?? input?.args?.path;
+        if (!["write", "edit", "patch"].includes(input?.tool) || typeof file !== "string" || file.length === 0) return;
+        await run(["anchor", "touch", file], 1000, "post-edit");
+      } catch {}
+    },`);
+  }
+  return `// ${opts.selfPath} — generated by \`myc wire --scope user --agents opencode\`; edits will be overwritten.
+//
+// The rule of every myc hook: myc NEVER breaks the agent's session. Any error,
+// any timeout, a missing binary — silence and an empty string, never an
+// exception out of a hook.
+//
+// This plugin lives in opencode's global config, so opencode loads it in every
+// project on the machine, with myc or without. It does anything only when
+// (1) there is a myc workspace here — the walk-up of myc itself, and from a
+// git worktree the same walk from the same place in the main tree — and
+// (2) the project does not wire myc for opencode itself. Both are decided once
+// per opencode instance (a project directory) and start no process; otherwise
+// the plugin returns no hooks at all.
+${GUARD_IMPORTS}import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+const __MYC_SELF = ${JSON.stringify(opts.selfPath)};
+const WIRED_BIN = ${JSON.stringify(opts.mycBin)};
+
+${WORKSPACE_WALK}
+// A myc server in an opencode config file, read as opencode reads it (JSONC).
+function __mycHasServer(file) {
+  let text;
+  try {
+    text = __mycFs.readFileSync(file, "utf8");
+  } catch {
+    return false;
+  }
+  let config;
+  try {
+    config = typeof Bun !== "undefined" && Bun.JSONC ? Bun.JSONC.parse(text) : JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const mcp = config !== null && typeof config === "object" ? config.mcp : null;
+  return mcp !== null && typeof mcp === "object" && mcp.myc !== undefined && mcp.myc !== null;
+}
+
+// The project's own opencode wiring, where opencode itself looks for it — from
+// the directory up to the worktree root: opencode.json[c] (in the directory or
+// in its .opencode/) with an mcp.myc server, or a myc plugin in
+// .opencode/plugin(s)/. opencode loads plugins from EVERY config directory, so
+// with the project's own plugin both would run and prime would reach the
+// system prompt twice; a project's mcp.myc overrides this layer's server anyway.
+function __mycOpencodeWired(start, stop) {
+  const top = typeof stop === "string" && stop.length > 0 ? __mycPath.resolve(stop) : "";
+  let dir = __mycPath.resolve(start);
+  for (;;) {
+    const own = __mycPath.join(dir, ".opencode");
+    for (const name of ["opencode.json", "opencode.jsonc"]) {
+      if (__mycHasServer(__mycPath.join(dir, name)) || __mycHasServer(__mycPath.join(own, name))) return true;
+    }
+    for (const sub of ["plugin", "plugins"]) {
+      for (const name of ["myc.ts", "myc.js"]) {
+        const p = __mycPath.join(own, sub, name);
+        if (p !== __MYC_SELF && __mycFs.existsSync(p)) return true;
+      }
+    }
+    if (dir === top) return false;
+    const parent = __mycPath.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
+// MYC_BIN, then the myc chosen by wire, then ~/.myc/bin, then PATH. Nothing
+// relative to the project: in the user layer it is someone else's repository.
+function bin(): string {
+  const env = process.env.MYC_BIN;
+  if (env && existsSync(env)) return env;
+  if (WIRED_BIN !== "myc" && existsSync(WIRED_BIN)) return WIRED_BIN;
+  const home = join(process.env.HOME ?? "", ".myc/bin/myc");
+  if (existsSync(home)) return home;
+  return "myc";
+}
+
+/** Compactions the main hook already recorded: the fallback leaves them alone. */
+const handled = new Map<string, number>();
+const HANDLED_MS = 60000;
+/** Sessions that already got prime: it costs a request, not every request. */
+const primed = new Set<string>();
+
+// One set of hooks per opencode instance. A server process may serve several
+// directories and imports this module once, so the project directory lives in
+// this closure, not in a module variable.
+function __mycHooks(client: any, DIR: string) {
+  // One myc call: its own deadline, its own kill, no rejection let through.
+  // \`ev\` is the EVENT name: by MYC_HOOK myc marks which hook fired, and
+  // \`myc doctor --hooks\` tells session start from compaction by it.
+  const run = async (args: string[], ms: number, ev: string, stdin?: string): Promise<string> => {
+    try {
+      const proc = Bun.spawn([bin(), ...args], {
+        cwd: DIR,
+        stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
+        stdout: "pipe",
+        stderr: "ignore",
+        env: { ...process.env, MYC_HOOK: ev, MYC_HOOK_AGENT: "opencode" },
+      });
+      const timer = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {}
+      }, ms);
+      const out = await new Response(proc.stdout).text();
+      clearTimeout(timer);
+      return out;
+    } catch {
+      return "";
+    }
+  };
+
+  // The session transcript as JSONL for \`myc absorb-session\`: one line per
+  // message, text/tool_use/tool_result blocks named as Claude Code names them.
+  const transcript = async (sessionID: string): Promise<string> => {
+    try {
+      const res: any = await client.session.messages({
+        path: { id: sessionID },
+        query: { directory: DIR },
+      });
+      const list: any[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+      const lines: string[] = [];
+      for (const m of list) {
+        const info: any = m?.info ?? {};
+        const content: any[] = [];
+        for (const part of m?.parts ?? []) {
+          if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
+            content.push({ type: "text", text: part.text });
+          } else if (part?.type === "tool") {
+            const state: any = part.state ?? {};
+            content.push({ type: "tool_use", name: part.tool ?? "tool", input: state.input ?? {} });
+            if (typeof state.output === "string" && state.output.length > 0) {
+              content.push({ type: "tool_result", content: state.output });
+            }
+          }
+        }
+        if (content.length === 0) continue;
+        lines.push(
+          JSON.stringify({
+            type: info.role ?? "system",
+            sessionId: sessionID,
+            cwd: DIR,
+            message: { role: info.role ?? "system", model: info.modelID, content },
+          }),
+        );
+      }
+      return lines.length === 0 ? "" : lines.join("\\n") + "\\n";
+    } catch {
+      return "";
+    }
+  };
+
+  // The compaction episode: \`--transcript -\` with the transcript on stdin.
+  // The call is made even when the request failed: an empty status is seen
+  // by \`myc doctor --hooks\`, silence is not.
+  const absorb = async (sessionID: string): Promise<string> =>
+    run(
+      ["absorb-session", "--reason", "compact", "--transcript", "-", "--budget", "1200", "--agent", "opencode", "--session", sessionID, "--hook-output", "text"],
+      7500,
+      "pre-compact",
+      await transcript(sessionID),
+    );
+
+  return {
+${hooks.join("\n")}
+  };
+}
+
+export const MycPlugin = async ({ client, directory, worktree }: { client: any; directory?: string; worktree?: string }) => {
+  const dir = typeof directory === "string" && directory.length > 0 ? directory : process.cwd();
+  let go = false;
+  try {
+    go = __mycWorkspace(dir) !== "" && !__mycOpencodeWired(dir, worktree);
+  } catch {}
+  if (!go) return {};
+  return __mycHooks(client, dir);
 };
 `;
 }

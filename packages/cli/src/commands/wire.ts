@@ -66,6 +66,7 @@ import {
   kimiHelper,
   kimiHooksToml,
   opencodePlugin,
+  opencodeUserPlugin,
   skillMd,
   type HookEvent,
   type HookSpec,
@@ -1346,8 +1347,8 @@ const SCOPE_FLAG: FlagSpec = {
   name: "scope",
   value: "string",
   description:
-    "project (default) — this tree; user — Claude Code's user layer (~/.claude), for agents in git worktrees " +
-    "and nested repos where the project layer has no myc",
+    "project (default) — this tree; user — the user layer of Claude Code (~/.claude) and, with --agents opencode, " +
+    "of opencode (~/.config/opencode), for agents in git worktrees and nested repos where the project layer has no myc",
 };
 
 const WIRE_FLAGS: readonly FlagSpec[] = [
@@ -1558,7 +1559,11 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
       "replace is refused); statusLine only with --status-line: myc's line (the full line in a myc " +
       "workspace, nothing of its own outside one), the line that was there is kept in the journal and " +
       "keeps getting the same input, and unwire puts it back; the MCP server is registered with " +
-      "`claude mcp add --scope user`; the journal is ~/.myc/wire-user.json.",
+      "`claude mcp add --scope user`; the journal is ~/.myc/wire-user.json. Without --agents the " +
+      "user layer is Claude Code's only; --agents opencode (or claude,opencode) wires opencode's " +
+      "global config ($XDG_CONFIG_HOME/opencode, else ~/.config/opencode): mcp.myc goes into its " +
+      "opencode.json[c] as one node (other entries and comments stay byte for byte), and " +
+      "plugin/myc.ts does nothing where there is no myc workspace or the project wires opencode itself.",
     handler: (ctx) => {
       // Фоновая проверка обновлений: no-op по умолчанию, при
       // MYC_UPDATE_CHECK=1 — отсоединённый процесс, которого wire не ждёт.
@@ -1877,7 +1882,9 @@ export function createUnwireCommand(overrides: Partial<Pick<WireDeps, "env" | "p
       "breach as writing it blind. --scope user undoes `myc wire --scope user` by " +
       "~/.myc/wire-user.json: myc's hook entries and the permission rules wire added come out of " +
       "~/.claude/settings.json node by node (everything else stays byte for byte), the helpers " +
-      "and the skill are deleted, the MCP server goes through `claude mcp remove --scope user`.",
+      "and the skill are deleted, the MCP server goes through `claude mcp remove --scope user`; " +
+      "for opencode, mcp.myc comes out of its global config (comments and the rest stay byte for " +
+      "byte) and the plugin is deleted.",
     handler: (ctx) => {
       const scope = parseScope(ctx);
       if (scope === null) return failure("usage.invalid", "--scope takes project or user", ExitCode.USAGE);
@@ -2040,6 +2047,10 @@ export interface UserPaths {
   /** Куда `claude mcp add --scope user` кладёт сервер — только читаем. */
   readonly claudeJson: string;
   readonly journal: string;
+  /** Глобальный каталог конфига opencode: `$XDG_CONFIG_HOME/opencode`, иначе `~/.config/opencode`. */
+  readonly opencodeDir: string;
+  /** Плагин пользовательского слоя opencode: opencode грузит `{plugin,plugins}/*.{ts,js}` каталога конфига. */
+  readonly opencodePlugin: string;
 }
 
 function nonEmpty(v: string | undefined): string | undefined {
@@ -2061,7 +2072,11 @@ export function userPaths(env: NodeJS.ProcessEnv): UserPaths | null {
   const cfg = nonEmpty(env.CLAUDE_CONFIG_DIR);
   const claudeDir = cfg ?? join(home, ".claude");
   const helpersDir = join(claudeDir, "helpers");
+  // Как у opencode (Global.Path.config): пустая XDG_CONFIG_HOME — не задана.
+  const opencodeDir = join(nonEmpty(env.XDG_CONFIG_HOME) ?? join(home, ".config"), "opencode");
   return {
+    opencodeDir,
+    opencodePlugin: join(opencodeDir, "plugin", "myc.ts"),
     home,
     claudeDir,
     settings: join(claudeDir, "settings.json"),
@@ -2355,6 +2370,30 @@ export interface UserJournal {
   readonly events?: readonly string[];
   /** Наша строка статуса и та, что стояла до неё (`--status-line`); нет поля — строку не ставили. */
   readonly status_line?: UserStatusLineRecord;
+  /**
+   * Пользовательский слой opencode (`--agents opencode`); нет поля — его не
+   * проводили. `settings: null` при нём — журнал только opencode (Claude Code
+   * этим слоем не проводился).
+   */
+  readonly opencode?: UserOpencodeRecord;
+}
+
+/** Что журнал знает о пользовательском слое opencode — ровно то, что снимет unwire. */
+export interface UserOpencodeRecord {
+  /** Глобальный конфиг opencode, в который wire писал `mcp.myc`. */
+  readonly config: string;
+  /** Файла не было до ПЕРВОГО wire: без наших узлов (и `$schema`, который мы же положили) он удаляется. */
+  readonly created: boolean;
+  /** Контейнер `mcp` создал wire: опустевший, он снимается вместе с `myc`. */
+  readonly container: boolean;
+  /** `mcp.myc`, как его записал wire; null — узел не наш (чужой или wire не смог его записать). */
+  readonly mcp: { readonly command: readonly string[] } | null;
+  readonly plugin: string;
+  /** myc, вшитый в плагин и в команду сервера, и сборка, записавшая их. */
+  readonly bin: string;
+  readonly version: string;
+  /** `.myc.bak` конфига, записанный последним: снимается, если его не трогали. */
+  readonly backup?: { readonly path: string; readonly hash: string };
 }
 
 /**
@@ -2374,6 +2413,8 @@ export function readUserJournal(path: string): UserJournal | null {
     const j = JSON.parse(raw) as Partial<UserJournal>;
     if (!isPlainObject(j) || j.scope !== "user" || !Array.isArray(j.files)) return null;
     const sl = (j as Record<string, unknown>)["status_line"];
+    const oc = (j as Record<string, unknown>)["opencode"];
+    const ocOk = isPlainObject(oc) && typeof oc["config"] === "string" && typeof oc["plugin"] === "string";
     return {
       v: 1,
       scope: "user",
@@ -2387,10 +2428,29 @@ export function readUserJournal(path: string): UserJournal | null {
       ...(typeof j.bin === "string" ? { bin: j.bin } : {}),
       ...(Array.isArray(j.events) ? { events: j.events.filter((e): e is string => typeof e === "string") } : {}),
       ...(isPlainObject(sl) ? { status_line: { previous: sl["previous"] ?? null } } : {}),
+      ...(ocOk ? { opencode: readOpencodeRecord(oc) } : {}),
     };
   } catch {
     return null;
   }
+}
+
+function readOpencodeRecord(oc: Record<string, unknown>): UserOpencodeRecord {
+  const mcp = oc["mcp"];
+  const command = isPlainObject(mcp) ? asArray(mcp["command"]) : [];
+  const backup = oc["backup"];
+  return {
+    config: oc["config"] as string,
+    created: oc["created"] === true,
+    container: oc["container"] === true,
+    mcp: command.length > 0 && command.every((c) => typeof c === "string") ? { command: command as string[] } : null,
+    plugin: oc["plugin"] as string,
+    bin: typeof oc["bin"] === "string" ? oc["bin"] : "myc",
+    version: typeof oc["version"] === "string" ? oc["version"] : "",
+    ...(isPlainObject(backup) && typeof backup["path"] === "string" && typeof backup["hash"] === "string"
+      ? { backup: { path: backup["path"], hash: backup["hash"] } }
+      : {}),
+  };
 }
 
 /**
@@ -2404,8 +2464,10 @@ export function userGeneratedFiles(
   events: readonly HookEvent[],
   hookOutput: "json" | "text",
   mycBin: string,
-): { readonly helper: string; readonly queueHelper: string; readonly skill: string } {
+  opencodeBin: string = mycBin,
+): { readonly helper: string; readonly queueHelper: string; readonly skill: string; readonly opencodePlugin: string } {
   return {
+    opencodePlugin: opencodeUserPlugin({ events, hookOutput, selfPath: paths.opencodePlugin, mycBin: opencodeBin }),
     helper: claudeUserHelper({ events, hookOutput, selfDir: paths.helpersDir, mycBin }),
     queueHelper: withUserScopeGuard(
       queueHelper(),
@@ -2594,13 +2656,505 @@ function planUserStatusLine(
   return { record: { previous }, notes, node: true };
 }
 
+// ---------------------------------------------------------------------------
+// --scope user --agents opencode: пользовательский слой opencode (memory-n1tt0dy8t4e9)
+// ---------------------------------------------------------------------------
+//
+// ЗАЧЕМ — тот же, что у слоя Claude Code: opencode в git worktree командного
+// репозитория видит только файлы команды, и проектной проводки myc там нет.
+// Плагин и его сторож — в шапке opencodeUserPlugin (hooks/templates.ts).
+//
+// Проверено живым прогоном opencode 1.18.30 и 1.18.31 на изолированных HOME и
+// XDG_*_HOME (заглушка MCP-сервера пишет свои cwd и env в файл; `opencode run`
+// против фальшивого OpenAI-совместимого провайдера на 127.0.0.1) и чтением его
+// бинаря:
+//   - глобальные конфиги — `config.json`, `opencode.json`, `opencode.jsonc` в
+//     `$XDG_CONFIG_HOME/opencode` (без неё — `~/.config/opencode`), сливаются в
+//     этом порядке; затем OPENCODE_CONFIG, затем `opencode.json[c]` проекта от
+//     каталога запуска до корня worktree, затем `.opencode/`. Своим opencode
+//     считает первый существующий из `opencode.jsonc`, `opencode.json`,
+//     `config.json` (его переписывает `Config.updateGlobal`) — туда и пишем;
+//   - все эти файлы opencode разбирает как JSONC. Файл без `$schema` он при
+//     чтении ПЕРЕПИСЫВАЕТ, вставляя строку `"$schema"`, — поэтому созданный
+//     нами файл её содержит;
+//   - одноимённый сервер: `mcp.myc` проекта перекрывает глобальный, и
+//     глобальный НЕ запускается вовсе (`opencode mcp list`: стартовал только
+//     проектный) — дубля MCP при проводке проекта не будет;
+//   - local-сервер стартует с cwd = каталог инстанса (каталог запуска
+//     opencode, хоть подкаталог worktree) и env = process.env opencode плюс
+//     OPENCODE=1 и OPENCODE_PID; переменной проекта вроде CLAUDE_PROJECT_DIR
+//     нет. `myc mcp` находит воркспейс по cwd — подъёмом и из git worktree в
+//     основную копию: живой myc 0.3.10 из подкаталога worktree отдал 13
+//     инструментов и instructions, вне воркспейса — 0 инструментов и без
+//     instructions, а opencode показал его `✓ connected` без единой жалобы.
+//     `opencode run` в worktree донёс до модели все 13 `myc_*` и instructions.
+//
+// Правила D10 те же: целиком пишется только свой файл (плагин), в чужом
+// конфиге — один узел `mcp.myc`, `.myc.bak` рядом, журнал общий с Claude Code
+// (`~/.myc/wire-user.json`), повтор ничего не меняет. Отличие от
+// `~/.claude/settings.json` одно: конфиг opencode — JSONC, и в нём бывают
+// комментарии и висячие запятые. Поэтому он не разбирается и не пишется
+// заново, а правится ТОЧЕЧНО, как текст: вставляется (или снимается) ровно
+// член `"myc": …`, остальные байты — как лежали, с комментариями. Результат
+// перепроверяется разбором: он обязан быть прежним значением плюс (минус)
+// ровно `mcp.myc`, иначе не пишется ничего.
+
+/**
+ * Кого проводит пользовательский слой и как он зовётся в отчёте. Ключи
+ * привязаны к Harness типом (как PLANNERS проекта): имя вне HARNESSES — ошибка
+ * компиляции, а сам список харнессов живёт в одном месте (harness.wiring.test.ts).
+ */
+const USER_LAYERS: { readonly [H in Harness]?: string } = { claude: "Claude Code", opencode: "opencode" };
+const USER_AGENTS: readonly Harness[] = HARNESSES.filter((h) => USER_LAYERS[h] !== undefined);
+/**
+ * Без --agents — только Claude Code, как до появления слоя opencode: повторный
+ * `myc wire --scope user` не начинает вдруг писать в чужой конфиг.
+ */
+const USER_DEFAULT_AGENTS: readonly Harness[] = ["claude"];
+const wiresClaude = (agents: readonly Harness[]): boolean => agents.includes("claude");
+const wiresOpencode = (agents: readonly Harness[]): boolean => agents.includes("opencode");
+
+type JsoncNode =
+  | { readonly kind: "object"; readonly start: number; readonly end: number; readonly members: readonly JsoncMember[]; readonly value: Record<string, unknown> }
+  | { readonly kind: "value"; readonly start: number; readonly end: number; readonly value: unknown };
+
+interface JsoncMember {
+  readonly key: string;
+  readonly keyStart: number;
+  readonly node: JsoncNode;
+}
+
+class JsoncError extends Error {}
+
+/** Позиция после пробелов и комментариев. */
+function skipBlank(text: string, from: number): number {
+  let i = from;
+  for (;;) {
+    const c = text[i];
+    if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "﻿") i++;
+    else if (text.startsWith("//", i)) {
+      const nl = text.indexOf("\n", i);
+      i = nl === -1 ? text.length : nl + 1;
+    } else if (text.startsWith("/*", i)) {
+      const end = text.indexOf("*/", i + 2);
+      if (end === -1) throw new JsoncError(`unterminated comment at offset ${i}`);
+      i = end + 2;
+    } else return i;
+  }
+}
+
+const JSONC_SCALAR = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
+
+/**
+ * Разбор JSONC с координатами каждого члена объекта: значение и места, по
+ * которым узел можно заменить или вынуть, не трогая соседних байт. Грамматика
+ * — та, что принимает opencode (jsonc): JSON, комментарии `//` и `/* *\/`,
+ * висячие запятые. Остальное — JsoncError, и тогда в файл не пишется ничего.
+ */
+function scanJsonc(text: string): JsoncNode {
+  let i = 0;
+  const fail = (what: string): never => {
+    throw new JsoncError(`${what} at offset ${i}`);
+  };
+  const str = (): string => {
+    const start = i++;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === "\\") i += 2;
+      else if (c === '"') return JSON.parse(text.slice(start, ++i)) as string;
+      else if (c === "\n") fail("newline in a string");
+      else i++;
+    }
+    return fail("unterminated string");
+  };
+  const node = (): JsoncNode => {
+    i = skipBlank(text, i);
+    const start = i;
+    const c = text[i];
+    if (c === "{") {
+      i++;
+      const members: JsoncMember[] = [];
+      const value: Record<string, unknown> = {};
+      for (;;) {
+        i = skipBlank(text, i);
+        if (text[i] === "}") return { kind: "object", start, end: ++i, members, value };
+        if (text[i] !== '"') fail("expected a key");
+        const keyStart = i;
+        const key = str();
+        i = skipBlank(text, i);
+        if (text[i] !== ":") fail("expected ':'");
+        i++;
+        const member = node();
+        members.push({ key, keyStart, node: member });
+        // Как JSON.parse: `__proto__` — обычный ключ, повтор ключа — последнее значение на первом месте.
+        Object.defineProperty(value, key, { value: member.value, enumerable: true, writable: true, configurable: true });
+        i = skipBlank(text, i);
+        if (text[i] === ",") i++;
+        else if (text[i] !== "}") fail("expected ',' or '}'");
+      }
+    }
+    if (c === "[") {
+      i++;
+      const value: unknown[] = [];
+      for (;;) {
+        i = skipBlank(text, i);
+        if (text[i] === "]") return { kind: "value", start, end: ++i, value };
+        value.push(node().value);
+        i = skipBlank(text, i);
+        if (text[i] === ",") i++;
+        else if (text[i] !== "]") fail("expected ',' or ']'");
+      }
+    }
+    if (c === '"') {
+      const value = str();
+      return { kind: "value", start, end: i, value };
+    }
+    JSONC_SCALAR.lastIndex = i;
+    const m = JSONC_SCALAR.exec(text);
+    if (m === null) return fail("unexpected token");
+    i += m[0].length;
+    return { kind: "value", start, end: i, value: JSON.parse(m[0]) as unknown };
+  };
+  const root = node();
+  if (skipBlank(text, i) !== text.length) fail("trailing content");
+  return root;
+}
+
+/** Значение JSONC-текста; JsoncError — не разобрать. */
+function parseJsonc(text: string): unknown {
+  return scanJsonc(text).value;
+}
+
+interface TextEdit {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+
+function applyEdits(text: string, edits: readonly TextEdit[]): string {
+  let out = text;
+  for (const e of [...edits].sort((a, b) => b.start - a.start)) out = `${out.slice(0, e.start)}${e.text}${out.slice(e.end)}`;
+  return out;
+}
+
+/** Пробелы от начала строки до позиции. */
+function lineIndent(text: string, pos: number): string {
+  const from = text.lastIndexOf("\n", pos - 1) + 1;
+  return /^[ \t]*/.exec(text.slice(from, pos))?.[0] ?? "";
+}
+
+/** Отступ члена, если он первый на своей строке; иначе null. */
+function memberIndent(text: string, keyStart: number): string | null {
+  const before = text.slice(text.lastIndexOf("\n", keyStart - 1) + 1, keyStart);
+  return /^[ \t]*$/.test(before) ? before : null;
+}
+
+/** Значение так, как его записал бы JSON.stringify на этой глубине. */
+function renderAt(value: unknown, indent: string, unit: string): string {
+  return JSON.stringify(value, null, unit).split("\n").join(`\n${indent}`);
+}
+
+function lastMember(obj: JsoncNode, key: string): JsoncMember | undefined {
+  return obj.kind === "object" ? [...obj.members].reverse().find((m) => m.key === key) : undefined;
+}
+
+/**
+ * Конец строки, если от `pos` до перевода строки только пробелы и
+ * комментарии (их не отрываем от их строки); иначе — сама `pos`.
+ */
+function lineEnd(text: string, pos: number): number {
+  let i = pos;
+  for (;;) {
+    while (text[i] === " " || text[i] === "\t") i++;
+    if (text.startsWith("//", i)) {
+      const nl = text.indexOf("\n", i);
+      return nl === -1 ? text.length : nl;
+    }
+    if (text.startsWith("/*", i)) {
+      const end = text.indexOf("*/", i + 2);
+      if (end === -1 || text.slice(i, end).includes("\n")) return pos;
+      i = end + 2;
+      continue;
+    }
+    return i >= text.length || text[i] === "\n" || text[i] === "\r" ? i : pos;
+  }
+}
+
+/**
+ * Новый член в конец объекта — туда же, куда его поставил бы JSON.stringify:
+ * в канонической записи результат равен `JSON.stringify(v, null, отступ)`
+ * байт в байт. В JSONC чужие строки остаются целыми: комментарий в конце
+ * строки последнего члена так и стоит на ней, а висячая запятая объекта —
+ * стиль файла: тогда наш член встаёт после неё и получает свою.
+ */
+function insertMember(text: string, obj: Extract<JsoncNode, { kind: "object" }>, key: string, value: unknown, unit: string): TextEdit[] {
+  const last = obj.members.at(-1);
+  if (last !== undefined) {
+    const ind = memberIndent(text, last.keyStart) ?? `${lineIndent(text, obj.start)}${unit}`;
+    const member = `${JSON.stringify(key)}: ${renderAt(value, ind, unit)}`;
+    const after = skipBlank(text, last.node.end);
+    if (text[after] === ",") {
+      const at = lineEnd(text, after + 1);
+      return [{ start: at, end: at, text: `\n${ind}${member},` }];
+    }
+    const at = lineEnd(text, last.node.end);
+    return at === last.node.end
+      ? [{ start: at, end: at, text: `,\n${ind}${member}` }]
+      : [
+          { start: last.node.end, end: last.node.end, text: "," },
+          { start: at, end: at, text: `\n${ind}${member}` },
+        ];
+  }
+  const outer = lineIndent(text, obj.start);
+  const ind = `${outer}${unit}`;
+  const member = `${JSON.stringify(key)}: ${renderAt(value, ind, unit)}`;
+  // `{}` — как у JSON.stringify; внутри комментарий — он остаётся на своей строке.
+  if (/^\s*$/.test(text.slice(obj.start + 1, obj.end - 1))) return [{ start: obj.start + 1, end: obj.end - 1, text: `\n${ind}${member}\n${outer}` }];
+  const at = lineEnd(text, obj.start + 1);
+  return [{ start: at, end: at, text: `\n${ind}${member}` }];
+}
+
+/**
+ * Член вон вместе со своим разделителем — обратное insertMember: вставленное
+ * им снимается байт в байт. Снимается своя строка члена (отступ и один
+ * перевод строки перед ключом); комментарии вокруг — чужие и остаются;
+ * опустевший объект без чужого внутри становится `{}`.
+ */
+function removeMember(text: string, obj: Extract<JsoncNode, { kind: "object" }>, index: number): TextEdit[] {
+  const m = obj.members[index]!;
+  let from = m.keyStart;
+  while (from > obj.start + 1 && (text[from - 1] === " " || text[from - 1] === "\t")) from--;
+  if (from > obj.start + 1 && text[from - 1] === "\n") from--;
+  if (from > obj.start + 1 && text[from - 1] === "\r") from--;
+  const blank = (a: number, b: number): boolean => /^\s*$/.test(text.slice(a, b));
+  const after = skipBlank(text, m.node.end);
+  if (text[after] === ",") {
+    if (obj.members.length === 1 && blank(obj.start + 1, from) && blank(after + 1, obj.end - 1)) {
+      return [{ start: obj.start + 1, end: obj.end - 1, text: "" }];
+    }
+    return [{ start: from, end: after + 1, text: "" }];
+  }
+  if (index > 0) {
+    const comma = skipBlank(text, obj.members[index - 1]!.node.end);
+    return [
+      { start: comma, end: comma + 1, text: "" },
+      { start: from, end: m.node.end, text: "" },
+    ];
+  }
+  if (blank(obj.start + 1, from) && blank(m.node.end, obj.end - 1)) return [{ start: obj.start + 1, end: obj.end - 1, text: "" }];
+  return [{ start: from, end: m.node.end, text: "" }];
+}
+
+/**
+ * Единица отступа файла — как у readJsonSource. Кавычка — `\x22`: сторож
+ * advised-commands.test.ts разбирает литералы посимвольно и регэкспов не знает.
+ */
+function indentUnit(text: string): string {
+  return /\n([ \t]+)\x22/.exec(text)?.[1] ?? "  ";
+}
+
+/** `mcp.myc = value` в JSONC-тексте; всё прочее — байт в байт. */
+function setOpencodeMcp(text: string, value: unknown): string {
+  const root = scanJsonc(text);
+  if (root.kind !== "object") throw new JsoncError("the top level is not an object");
+  const unit = indentUnit(text);
+  const mcp = lastMember(root, "mcp");
+  if (mcp === undefined) return applyEdits(text, insertMember(text, root, "mcp", { [USER_MCP_NAME]: value }, unit));
+  if (mcp.node.kind !== "object") throw new JsoncError('"mcp" is not an object');
+  const myc = lastMember(mcp.node, USER_MCP_NAME);
+  if (myc === undefined) return applyEdits(text, insertMember(text, mcp.node, USER_MCP_NAME, value, unit));
+  const ind = memberIndent(text, myc.keyStart) ?? lineIndent(text, myc.keyStart);
+  return applyEdits(text, [{ start: myc.node.start, end: myc.node.end, text: renderAt(value, ind, unit) }]);
+}
+
+/** Снять `mcp.myc`; `dropEmptyMcp` — и сам `mcp`, если в нём больше ничего нет. */
+function removeOpencodeMcp(text: string, dropEmptyMcp: boolean): string {
+  const root = scanJsonc(text);
+  if (root.kind !== "object") throw new JsoncError("the top level is not an object");
+  const at = root.members.map((m) => m.key).lastIndexOf("mcp");
+  const mcp = root.members[at];
+  if (mcp === undefined || mcp.node.kind !== "object") return text;
+  const index = mcp.node.members.map((m) => m.key).lastIndexOf(USER_MCP_NAME);
+  if (index === -1) return text;
+  if (dropEmptyMcp && mcp.node.members.length === 1) return applyEdits(text, removeMember(text, root, at));
+  return applyEdits(text, removeMember(text, mcp.node, index));
+}
+
+/** Тот же ли это наш сервер: local с той же командой (`enabled` и прочее — дело человека). */
+function isOurOpencodeServer(node: unknown, command: readonly string[]): boolean {
+  return isPlainObject(node) && node["type"] === "local" && JSON.stringify(node["command"]) === JSON.stringify(command);
+}
+
+/**
+ * Глобальный конфиг opencode, который opencode сам считает своим: первый
+ * существующий из `opencode.jsonc`, `opencode.json`, `config.json` (rW() в
+ * 1.18.30). Нет ни одного — `opencode.json`.
+ */
+function opencodeGlobalConfig(dir: string): string {
+  for (const name of ["opencode.jsonc", "opencode.json", "config.json"]) {
+    if (existsSync(join(dir, name))) return join(dir, name);
+  }
+  return join(dir, "opencode.json");
+}
+
+/** `mcp.myc` глобального конфига opencode — для `myc doctor --hooks`; broken — файл не разобрать. */
+export function readOpencodeMcp(path: string): { readonly value: unknown; readonly broken: boolean; readonly exists: boolean } {
+  const text = fileText(path);
+  if (text === null) return { value: undefined, broken: false, exists: false };
+  try {
+    const v = parseJsonc(text);
+    return { value: isPlainObject(v) ? asRecord(v["mcp"])[USER_MCP_NAME] : undefined, broken: !isPlainObject(v), exists: true };
+  } catch {
+    return { value: undefined, broken: true, exists: true };
+  }
+}
+
+/** Наш ли `mcp.myc`: тот, что записал wire (по журналу). */
+export function isOpencodeServerOurs(node: unknown, command: readonly string[]): boolean {
+  return isOurOpencodeServer(node, command);
+}
+
+type OpencodeMcpState = "add" | "replace" | "unchanged" | "foreign" | "refused";
+
+interface OpencodeUserPlan {
+  readonly files: UserFileAction[];
+  readonly config: {
+    readonly path: string;
+    /** Текст на момент плана; запись — только если он тот же. */
+    readonly before: string | null;
+    readonly after: string;
+    readonly kind: ActionKind;
+    readonly detail: string;
+  };
+  readonly mcp: { readonly state: OpencodeMcpState; readonly command: readonly string[]; readonly reason?: string };
+  /** `mcp` не было до первой записи `mcp.myc`. */
+  readonly container: boolean;
+  /** `mcp.myc` стоял до этого прогона и его ставил wire. */
+  readonly oursBefore: boolean;
+  readonly notes: string[];
+}
+
+function planUserOpencode(o: {
+  readonly paths: UserPaths;
+  readonly prev: UserJournal | null;
+  readonly bin: MycBinChoice;
+  readonly events: readonly HookEvent[];
+  readonly hookOutput: "json" | "text";
+  readonly probe: () => ReturnType<McpProbe>;
+  readonly show: (p: string) => string;
+}): OpencodeUserPlan | { readonly failure: CommandFailure } {
+  const { paths, prev, bin, show } = o;
+  const notes: string[] = [];
+  const files: UserFileAction[] = [];
+  planUserFile(files, paths.opencodePlugin, userGeneratedFiles(paths, o.events, o.hookOutput, bin.command).opencodePlugin);
+
+  // Файл, куда писал прошлый wire, пока он есть: иначе появившийся рядом
+  // `opencode.jsonc` увёл бы новую запись в другой файл, а старая осталась бы.
+  const recorded = prev?.opencode;
+  const path = recorded !== undefined && existsSync(recorded.config) ? recorded.config : opencodeGlobalConfig(paths.opencodeDir);
+  const before = fileText(path);
+  let value: Record<string, unknown> = {};
+  if (before !== null) {
+    let parsed: unknown;
+    try {
+      parsed = parseJsonc(before);
+    } catch (e) {
+      return {
+        failure: failure(
+          "conflict.opencode_config",
+          `${path} is not valid JSONC (${e instanceof Error ? e.message : String(e)}) — nothing written`,
+          ExitCode.CONFLICT,
+        ),
+      };
+    }
+    if (!isPlainObject(parsed)) return { failure: failure("conflict.opencode_config", `${path}: the top level is not an object — nothing written`, ExitCode.CONFLICT) };
+    value = parsed;
+    if (value["mcp"] !== undefined && !isPlainObject(value["mcp"])) {
+      return { failure: failure("conflict.opencode_config", `${path}: "mcp" is not an object — nothing written`, ExitCode.CONFLICT) };
+    }
+  }
+
+  const want = { type: "local", command: [bin.command, ...USER_MCP_ARGS], enabled: true };
+  const current = asRecord(value["mcp"])[USER_MCP_NAME];
+  const same = recorded !== undefined && recorded.config === path;
+  const oursBefore = same && recorded.mcp !== null && isOurOpencodeServer(current, recorded.mcp.command);
+  const container = same && recorded.mcp !== null ? recorded.container : value["mcp"] === undefined;
+  const base = { path, before };
+  const keep = (state: OpencodeMcpState, reason?: string): OpencodeUserPlan => ({
+    files,
+    config: {
+      ...base,
+      after: before ?? "",
+      kind: "unchanged",
+      detail: state === "unchanged" ? "up to date" : state === "foreign" ? "mcp.myc is someone else's — left alone" : "mcp.myc not written (see the warning)",
+    },
+    mcp: { state, command: want.command, ...(reason !== undefined ? { reason } : {}) },
+    container,
+    oursBefore,
+    notes,
+  });
+
+  if (isOurOpencodeServer(current, want.command)) {
+    if (asRecord(current)["enabled"] === false) notes.push(`${show(path)}: mcp.myc is myc's but disabled by hand ("enabled": false) — left as is`);
+    return keep("unchanged");
+  }
+  if (current !== undefined && !oursBefore) {
+    const reason = `mcp.myc in ${show(path)} was not written by myc wire (${JSON.stringify(current)}) — left alone`;
+    notes.push(reason);
+    return keep("foreign", reason);
+  }
+  const checked = o.probe();
+  if (!checked.ok) return keep("refused", checked.why);
+
+  const state: OpencodeMcpState = current === undefined ? "add" : "replace";
+  let after: string;
+  try {
+    after = before === null ? `${JSON.stringify({ $schema: OPENCODE_SCHEMA, mcp: { [USER_MCP_NAME]: want } }, null, 2)}\n` : setOpencodeMcp(before, want);
+  } catch (e) {
+    return { failure: failure("conflict.opencode_config", `${path}: ${e instanceof Error ? e.message : String(e)} — nothing written`, ExitCode.CONFLICT) };
+  }
+  // Страховка точечной правки: результат — прежнее значение плюс ровно mcp.myc.
+  const expected = structuredClone(value);
+  expected["mcp"] = { ...asRecord(expected["mcp"]), [USER_MCP_NAME]: want };
+  if (before === null) expected["$schema"] = OPENCODE_SCHEMA;
+  let got: unknown;
+  try {
+    got = parseJsonc(after);
+  } catch {
+    got = undefined;
+  }
+  if (before !== null && JSON.stringify(got) !== JSON.stringify(expected)) {
+    return {
+      failure: failure(
+        "conflict.opencode_config",
+        `${path}: mcp.myc can't be placed without touching other entries — nothing written`,
+        ExitCode.CONFLICT,
+        `add it by hand under "mcp": "myc": ${JSON.stringify(want)}`,
+      ),
+    };
+  }
+  return {
+    files,
+    config: { ...base, after, kind: before === null ? "new" : "merge", detail: `+1 node: mcp.myc${state === "replace" ? " (re-pointed)" : ""}` },
+    mcp: { state, command: want.command },
+    container,
+    oursBefore,
+    notes,
+  };
+}
+
 export interface WireUserData {
   readonly scope: "user";
   readonly home: string;
+  /** Чей пользовательский слой проводился: claude, opencode или оба. */
+  readonly agents: readonly string[];
   readonly events: readonly string[];
   readonly skipped_events: readonly { event: string; reason: string }[];
   readonly actions: readonly { path: string; action: ActionKind; detail: string }[];
-  readonly mcp: { readonly state: McpState | "added" | "failed"; readonly command: string; readonly reason?: string };
+  /** MCP пользовательского слоя Claude Code; нет поля — Claude Code не в --agents. */
+  readonly mcp?: { readonly state: McpState | "added" | "failed"; readonly command: string; readonly reason?: string };
+  /** Слой opencode; нет поля — opencode не в --agents. */
+  readonly opencode?: { readonly config: string; readonly mcp: { readonly state: OpencodeMcpState; readonly command: string; readonly reason?: string } };
   readonly untouched: readonly string[];
   readonly notes: readonly string[];
   readonly dry_run: boolean;
@@ -2608,54 +3162,41 @@ export interface WireUserData {
   readonly journal: string | null;
 }
 
-function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): CommandResult {
-  const refuse = (msg: string): CommandFailure => failure("usage.scope", msg, ExitCode.USAGE);
-  const agentsRaw = flagStr(ctx, "agents");
-  if (agentsRaw !== undefined) {
-    const agents = parseAgents(agentsRaw);
-    if (agents === null) return failure("usage.invalid", `--agents takes ${HARNESSES.join(", ")}`, ExitCode.USAGE);
-    const other = agents.filter((a) => a !== "claude");
-    if (other.length > 0) {
-      return refuse(
-        `--scope user wires Claude Code only; ${other.join(", ")} ${other.length === 1 ? "is" : "are"} not implemented ` +
-          `in the user layer — wire them per project: myc wire --agents ${other.join(",")}`,
-      );
-    }
-  }
-  const wantStatusLine = ctx.flags["status-line"] === true;
-  if (ctx.flags["agents-md"] === true) return refuse("--agents-md is not available with --scope user: AGENTS.md is a project file");
-  const modeRaw = flagStr(ctx, "hook-mode");
-  if (modeRaw === "replace") {
-    return refuse(
-      "--hook-mode replace is not available with --scope user: it would evict other tools' hooks (orca, herdr, …) " +
-        "from every project on the machine. The default, append, keeps them and adds myc's alongside; skip leaves " +
-        "an event alone when a foreign hook is there",
-    );
-  }
-  if (modeRaw !== undefined && modeRaw !== "append" && modeRaw !== "skip") {
-    return failure("usage.invalid", "--hook-mode takes append or skip with --scope user", ExitCode.USAGE);
-  }
-  const mode: "append" | "skip" = modeRaw === "skip" ? "skip" : "append";
-  const outRaw = flagStr(ctx, "hook-output") ?? "json";
-  if (outRaw !== "json" && outRaw !== "text") return failure("usage.invalid", "--hook-output takes json or text", ExitCode.USAGE);
-  if (deps.platform === "win32") {
-    return failure(
-      "precond.platform",
-      "--scope user is not implemented on Windows: its hook commands are POSIX shell, checked on macOS and Linux only",
-      ExitCode.PRECOND,
-    );
-  }
-  const paths = userPaths(deps.env);
-  if (paths === null) return failure("precond.no_home", "HOME is not set: no user layer of Claude Code to wire", ExitCode.PRECOND);
-  const { available: events, skipped } = availableEvents(registry);
-  if (!events.includes("pre-compact")) {
-    return failure("precond.missing_command", "no `myc absorb-session` command — nothing to install pre-compact on", ExitCode.PRECOND);
-  }
+/** Слой Claude Code, спланированный до записи: что пишется в `~/.claude` и что регистрируется. */
+interface ClaudeUserPlan {
+  readonly files: UserFileAction[];
+  readonly settingsText: string | null;
+  readonly settingsContent: string;
+  readonly settingsKind: ActionKind;
+  readonly settingsDetail: string;
+  readonly source: JsonSource;
+  readonly helpers: readonly string[];
+  readonly addedRules: readonly string[];
+  readonly placedEvents: readonly string[];
+  readonly statusLine: UserStatusLineRecord | undefined;
+  readonly mcp: UserMcpPlan;
+  readonly claude: string | null;
+  readonly notes: string[];
+  readonly untouched: string[];
+}
 
-  const home = paths.home;
-  const show = (p: string): string => tilde(p, home);
-  const prev = readUserJournal(paths.journal);
-  const bin = resolveUserMycBin(deps.env);
+function planUserClaude(
+  ctx: CommandContext,
+  registry: Registry,
+  deps: WireDeps,
+  o: {
+    readonly paths: UserPaths;
+    readonly prev: UserJournal | null;
+    readonly bin: MycBinChoice;
+    readonly events: readonly HookEvent[];
+    readonly hookOutput: "json" | "text";
+    readonly mode: "append" | "skip";
+    readonly wantStatusLine: boolean;
+    readonly probe: () => ReturnType<McpProbe>;
+    readonly show: (p: string) => string;
+  },
+): ClaudeUserPlan | { readonly failure: CommandFailure } {
+  const { paths, prev, bin, events, mode, wantStatusLine, show } = o;
   const notes: string[] = [];
   const untouched: string[] = [];
   const files: UserFileAction[] = [];
@@ -2664,13 +3205,15 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
   if (ctx.flags["queue-hook"] === true) {
     const probe = deps.probeQueue(paths.claudeDir, deps.env);
     if (!probe.ok) {
-      return failure(
-        "precond.queue_bin",
-        `nowhere to queue heavy commands through: ${probe.why}. A hook on a myc without \`run\` would turn every heavy ` +
-          "command into an error — nothing written",
-        ExitCode.PRECOND,
-        "MYC_BIN=<path to a fresh myc> myc wire --scope user --queue-hook",
-      );
+      return {
+        failure: failure(
+          "precond.queue_bin",
+          `nowhere to queue heavy commands through: ${probe.why}. A hook on a myc without \`run\` would turn every heavy ` +
+            "command into an error — nothing written",
+          ExitCode.PRECOND,
+          "MYC_BIN=<path to a fresh myc> myc wire --scope user --queue-hook",
+        ),
+      };
     }
     queueBin = probe.bin;
   }
@@ -2681,17 +3224,19 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
   if (wantStatusLine) {
     const probe = deps.probeUserStatusLine(bin, deps.env);
     if (!probe.ok) {
-      return failure(
-        "precond.statusline_bin",
-        `nowhere to install the status line: ${probe.why}. A line on that binary would show nothing and cut the ` +
-          "previous line off from its input — nothing written",
-        ExitCode.PRECOND,
-        "MYC_BIN=<path to a fresh myc> myc wire --scope user --status-line",
-      );
+      return {
+        failure: failure(
+          "precond.statusline_bin",
+          `nowhere to install the status line: ${probe.why}. A line on that binary would show nothing and cut the ` +
+            "previous line off from its input — nothing written",
+          ExitCode.PRECOND,
+          "MYC_BIN=<path to a fresh myc> myc wire --scope user --status-line",
+        ),
+      };
     }
   }
 
-  const generated = userGeneratedFiles(paths, events, outRaw, bin.command);
+  const generated = userGeneratedFiles(paths, events, o.hookOutput, bin.command);
   planUserFile(files, paths.helper, generated.helper);
   planUserFile(files, paths.skill, generated.skill);
 
@@ -2699,17 +3244,19 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
   const settingsText = fileText(paths.settings);
   const source = readJsonSource(paths.settings);
   if (source.broken) {
-    return failure("conflict.user_settings", `${paths.settings} is not valid JSON — nothing written`, ExitCode.CONFLICT);
+    return { failure: failure("conflict.user_settings", `${paths.settings} is not valid JSON — nothing written`, ExitCode.CONFLICT) };
   }
   const layout = settingsText === null ? { ok: true, newline: true } : sameLayout(settingsText, source.value, source.indent);
   if (!layout.ok) {
-    return failure(
-      "conflict.user_settings",
-      `${paths.settings} is not laid out the way JSON.stringify writes it (indent ${JSON.stringify(source.indent)}), so a ` +
-        "node-by-node merge would reformat other tools' entries — nothing written",
-      ExitCode.CONFLICT,
-      "let Claude Code or orca rewrite the file (e.g. change any setting in /config), then run wire again",
-    );
+    return {
+      failure: failure(
+        "conflict.user_settings",
+        `${paths.settings} is not laid out the way JSON.stringify writes it (indent ${JSON.stringify(source.indent)}), so a ` +
+          "node-by-node merge would reformat other tools' entries — nothing written",
+        ExitCode.CONFLICT,
+        "let Claude Code or orca rewrite the file (e.g. change any setting in /config), then run wire again",
+      ),
+    };
   }
   const helpers = [paths.helper, paths.queueHelper];
   const isOurs = (e: unknown): boolean => isUserEntry(e, helpers);
@@ -2804,7 +3351,7 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
     journal: show(paths.journal),
   });
   if ("conflict" in sl) {
-    return failure("conflict.status_line", `status line not installed, nothing written: ${sl.conflict}`, ExitCode.CONFLICT);
+    return { failure: failure("conflict.status_line", `status line not installed, nothing written: ${sl.conflict}`, ExitCode.CONFLICT) };
   }
   notes.push(...sl.notes);
   if (sl.node) nodes.push("statusLine");
@@ -2815,7 +3362,7 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
 
   // --- MCP ---------------------------------------------------------------------
   const claude = findClaude(deps.env);
-  const mcp = planUserMcp(paths, bin, prev, () => deps.probeMcp(bin, deps.env), claude);
+  const mcp = planUserMcp(paths, bin, prev, o.probe, claude);
   if (mcp.state !== "unchanged" && mcp.state !== "foreign") {
     notes.push(
       `${show(paths.claudeJson)} is written by \`claude mcp\` itself (it keeps its own backup under ${show(paths.claudeDir)}/backups); ` +
@@ -2824,19 +3371,112 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
   }
   if (mcp.state === "foreign" && mcp.reason !== undefined) notes.push(mcp.reason);
 
-  const dryRun = ctx.flags["dry-run"] === true;
-  const settingsAction = { path: paths.settings, action: settingsKind, detail: nodes.length > 0 && settingsKind !== "unchanged" ? `+${countNodes(nodes.length)}: ${nodes.join(", ")}` : "up to date" };
-  let mcpOutcome: WireUserData["mcp"] = {
-    state: mcp.state,
-    command: claudeLine(mcp.add),
-    ...(mcp.reason !== undefined ? { reason: mcp.reason } : {}),
+  return {
+    files,
+    settingsText,
+    settingsContent,
+    settingsKind,
+    settingsDetail: nodes.length > 0 && settingsKind !== "unchanged" ? `+${countNodes(nodes.length)}: ${nodes.join(", ")}` : "up to date",
+    source,
+    helpers,
+    addedRules,
+    placedEvents,
+    statusLine: sl.record,
+    mcp,
+    claude,
+    notes,
+    untouched,
   };
+}
+
+function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): CommandResult {
+  const refuse = (msg: string): CommandFailure => failure("usage.scope", msg, ExitCode.USAGE);
+  let agents: readonly Harness[] = USER_DEFAULT_AGENTS;
+  const agentsRaw = flagStr(ctx, "agents");
+  if (agentsRaw !== undefined) {
+    const parsed = parseAgents(agentsRaw);
+    if (parsed === null) return failure("usage.invalid", `--agents takes ${HARNESSES.join(", ")}`, ExitCode.USAGE);
+    const other = parsed.filter((a) => !USER_AGENTS.includes(a));
+    if (other.length > 0) {
+      return refuse(
+        `--scope user wires Claude Code and opencode only; ${other.join(", ")} ${other.length === 1 ? "is" : "are"} not implemented ` +
+          `in the user layer — wire them per project: myc wire --agents ${other.join(",")}`,
+      );
+    }
+    agents = parsed;
+  }
+  const doClaude = wiresClaude(agents);
+  const doOpencode = wiresOpencode(agents);
+  const wantStatusLine = ctx.flags["status-line"] === true;
+  if (ctx.flags["agents-md"] === true) return refuse("--agents-md is not available with --scope user: AGENTS.md is a project file");
+  const modeRaw = flagStr(ctx, "hook-mode");
+  if (modeRaw === "replace") {
+    return refuse(
+      "--hook-mode replace is not available with --scope user: it would evict other tools' hooks (orca, herdr, …) " +
+        "from every project on the machine. The default, append, keeps them and adds myc's alongside; skip leaves " +
+        "an event alone when a foreign hook is there",
+    );
+  }
+  if (modeRaw !== undefined && modeRaw !== "append" && modeRaw !== "skip") {
+    return failure("usage.invalid", "--hook-mode takes append or skip with --scope user", ExitCode.USAGE);
+  }
+  const mode: "append" | "skip" = modeRaw === "skip" ? "skip" : "append";
+  const outRaw = flagStr(ctx, "hook-output") ?? "json";
+  if (outRaw !== "json" && outRaw !== "text") return failure("usage.invalid", "--hook-output takes json or text", ExitCode.USAGE);
+  if (deps.platform === "win32") {
+    return failure(
+      "precond.platform",
+      "--scope user is not implemented on Windows: its hook commands are POSIX shell, checked on macOS and Linux only",
+      ExitCode.PRECOND,
+    );
+  }
+  const paths = userPaths(deps.env);
+  if (paths === null) return failure("precond.no_home", "HOME is not set: no user layer of Claude Code to wire", ExitCode.PRECOND);
+  const { available: events, skipped } = availableEvents(registry);
+  if (!events.includes("pre-compact")) {
+    return failure("precond.missing_command", "no `myc absorb-session` command — nothing to install pre-compact on", ExitCode.PRECOND);
+  }
+
+  const home = paths.home;
+  const show = (p: string): string => tilde(p, home);
+  const prev = readUserJournal(paths.journal);
+  const bin = resolveUserMycBin(deps.env);
+  const notes: string[] = [];
+  const untouched: string[] = [];
+  // Проба MCP одна на оба хоста: myc запускается в пустом каталоге не больше раза за wire.
+  let probed: ReturnType<McpProbe> | undefined;
+  const probe = (): ReturnType<McpProbe> => (probed ??= deps.probeMcp(bin, deps.env));
+
+  if (!doClaude) {
+    if (wantStatusLine) notes.push("the status line is installed only for Claude Code, which is not in --agents — statusLine left alone");
+    if (ctx.flags["queue-hook"] === true) {
+      notes.push("the queue hook is installed only for Claude Code, which is not in --agents — hooks.PreToolUse left alone");
+    }
+  }
+  const cp = doClaude ? planUserClaude(ctx, registry, deps, { paths, prev, bin, events, hookOutput: outRaw, mode, wantStatusLine, probe, show }) : null;
+  if (cp !== null && "failure" in cp) return cp.failure;
+  const op = doOpencode ? planUserOpencode({ paths, prev, bin, events, hookOutput: outRaw, probe, show }) : null;
+  if (op !== null && "failure" in op) return op.failure;
+  if (cp !== null) {
+    notes.push(...cp.notes);
+    untouched.push(...cp.untouched);
+  }
+  if (op !== null) {
+    if (wantStatusLine) notes.push("opencode: status line not installed — there is no config key for it, the TUI draws its own line");
+    notes.push(...op.notes);
+  }
+  const files = [...(cp?.files ?? []), ...(op?.files ?? [])];
+
+  const dryRun = ctx.flags["dry-run"] === true;
+  let mcpOutcome: WireUserData["mcp"] =
+    cp === null ? undefined : { state: cp.mcp.state, command: claudeLine(cp.mcp.add), ...(cp.mcp.reason !== undefined ? { reason: cp.mcp.reason } : {}) };
   let journal: string | null = null;
 
   if (!dryRun) {
-    // Файл настроек мог измениться между чтением и записью (его правят orca и
-    // сессии Claude Code): тогда ничего не пишем — свежий прогон спланирует заново.
-    if (fileText(paths.settings) !== settingsText) {
+    // Файлы настроек могли измениться между чтением и записью (их правят orca,
+    // сессии Claude Code и сам opencode): тогда ничего не пишем — свежий прогон
+    // спланирует заново.
+    if (cp !== null && fileText(paths.settings) !== cp.settingsText) {
       return failure(
         "conflict.user_settings_changed",
         `${paths.settings} changed while wire was planning — nothing written`,
@@ -2844,7 +3484,19 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
         "myc wire --scope user",
       );
     }
-    const wanted = [paths.claudeDir, paths.helpersDir, dirname(dirname(paths.skill)), dirname(paths.skill), dirname(paths.journal)];
+    if (op !== null && fileText(op.config.path) !== op.config.before) {
+      return failure(
+        "conflict.opencode_config_changed",
+        `${op.config.path} changed while wire was planning — nothing written`,
+        ExitCode.CONFLICT,
+        "myc wire --scope user --agents opencode",
+      );
+    }
+    const wanted = [
+      ...(cp !== null ? [paths.claudeDir, paths.helpersDir, dirname(dirname(paths.skill)), dirname(paths.skill)] : []),
+      ...(op !== null ? [paths.opencodeDir, dirname(paths.opencodePlugin)] : []),
+      dirname(paths.journal),
+    ];
     const madeDirs = wanted.filter((d) => !existsSync(d));
     // `.myc.bak` своих файлов — тоже созданные нами файлы: журнал знает их
     // хеш, и unwire снимает их, если их с тех пор не трогали.
@@ -2860,65 +3512,112 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
       writeFileSync(f.path, f.content);
     }
     let backup = prev?.settings?.backup;
-    if (settingsKind !== "unchanged") {
+    if (cp !== null && cp.settingsKind !== "unchanged") {
       mkdirSync(dirname(paths.settings), { recursive: true });
-      if (settingsText !== null) {
+      if (cp.settingsText !== null) {
         const bak = `${paths.settings}${BAK_SUFFIX}`;
         copyFileSync(paths.settings, bak);
-        backup = { path: bak, hash: sha256(settingsText) };
+        backup = { path: bak, hash: sha256(cp.settingsText) };
       }
-      writeFileSync(paths.settings, settingsContent);
+      writeFileSync(paths.settings, cp.settingsContent);
+    }
+    const prevOc = op !== null && prev?.opencode?.config === op.config.path ? prev.opencode : undefined;
+    let ocBackup = prevOc?.backup;
+    if (op !== null && op.config.kind !== "unchanged") {
+      mkdirSync(dirname(op.config.path), { recursive: true });
+      if (op.config.before !== null) {
+        const bak = `${op.config.path}${BAK_SUFFIX}`;
+        copyFileSync(op.config.path, bak);
+        ocBackup = { path: bak, hash: sha256(op.config.before) };
+      }
+      writeFileSync(op.config.path, op.config.after);
     }
 
-    let added = mcp.state === "unchanged" ? mcp.oursBefore : false;
-    if ((mcp.state === "add" || mcp.state === "replace") && claude !== null) {
+    let added = cp !== null && cp.mcp.state === "unchanged" ? cp.mcp.oursBefore : false;
+    if (cp !== null && (cp.mcp.state === "add" || cp.mcp.state === "replace") && cp.claude !== null) {
       let ok = true;
-      if (mcp.state === "replace") {
-        const r = runClaude(claude, ["mcp", "remove", "--scope", "user", USER_MCP_NAME], deps.env);
+      if (cp.mcp.state === "replace") {
+        const r = runClaude(cp.claude, ["mcp", "remove", "--scope", "user", USER_MCP_NAME], deps.env);
         if (r.code !== 0) {
           ok = false;
-          mcpOutcome = { state: "failed", command: claudeLine(mcp.add), reason: `claude mcp remove: exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` };
+          mcpOutcome = { state: "failed", command: claudeLine(cp.mcp.add), reason: `claude mcp remove: exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` };
         }
       }
       if (ok) {
-        const r = runClaude(claude, mcp.add, deps.env);
+        const r = runClaude(cp.claude, cp.mcp.add, deps.env);
         if (r.code === 0) {
           added = true;
-          mcpOutcome = { state: "added", command: claudeLine(mcp.add) };
+          mcpOutcome = { state: "added", command: claudeLine(cp.mcp.add) };
         } else {
-          mcpOutcome = { state: "failed", command: claudeLine(mcp.add), reason: `exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` };
+          mcpOutcome = { state: "failed", command: claudeLine(cp.mcp.add), reason: `exit ${r.code}${r.out.length > 0 ? ` (${r.out})` : ""}` };
         }
       }
     }
 
-    const rulesOurs = union(prev?.settings?.permissions ?? [], addedRules);
+    // Узлы слоя, которого в этом прогоне не было в --agents, журнал несёт
+    // дальше как лежали: `--agents opencode` не забывает проводку Claude Code.
+    const claudePart: Partial<UserJournal> =
+      cp === null
+        ? {
+            settings: prev?.settings ?? null,
+            mcp: prev?.mcp ?? null,
+            ...(prev?.version !== undefined ? { version: prev.version } : {}),
+            ...(prev?.bin !== undefined ? { bin: prev.bin } : {}),
+            ...(prev?.events !== undefined ? { events: prev.events } : {}),
+            ...(prev?.status_line !== undefined ? { status_line: prev.status_line } : {}),
+          }
+        : (() => {
+            const rulesOurs = union(prev?.settings?.permissions ?? [], cp.addedRules);
+            return {
+              settings: {
+                path: paths.settings,
+                created: prev?.settings?.created ?? cp.settingsText === null,
+                preexisting: union(prev?.settings?.preexisting ?? [], userPreexisting(cp.source.value, cp.helpers, rulesOurs)),
+                permissions: rulesOurs,
+                helpers: union(prev?.settings?.helpers ?? [], cp.helpers),
+                ...(backup !== undefined ? { backup } : {}),
+              },
+              mcp:
+                added || cp.mcp.state === "unchanged"
+                  ? { config: paths.claudeJson, command: cp.mcp.server.command, args: cp.mcp.server.args, added }
+                  : (prev?.mcp ?? null),
+              version: CLI_VERSION,
+              bin: bin.command,
+              events: cp.placedEvents,
+              ...(cp.statusLine !== undefined ? { status_line: cp.statusLine } : {}),
+            };
+          })();
+    let opencodePart: UserOpencodeRecord | undefined = prev?.opencode;
+    if (op !== null) {
+      const written = op.mcp.state === "add" || op.mcp.state === "replace" || (op.mcp.state === "unchanged" && op.oursBefore);
+      opencodePart = {
+        config: op.config.path,
+        // «Создан нами» и «контейнер наш» наследуются, только если прошлый
+        // wire и правда писал узел в этот файл (отказ файла не создаёт).
+        created: prevOc !== undefined && prevOc.mcp !== null ? prevOc.created : op.config.kind === "new",
+        container: op.container,
+        mcp: written ? { command: op.mcp.command } : op.oursBefore && prevOc !== undefined ? prevOc.mcp : null,
+        plugin: paths.opencodePlugin,
+        bin: bin.command,
+        version: CLI_VERSION,
+        ...(ocBackup !== undefined ? { backup: ocBackup } : {}),
+      };
+    }
     const doc: UserJournal = {
       v: 1,
       scope: "user",
       written_at: Date.now(),
-      hook_output: outRaw,
+      hook_output: cp !== null ? outRaw : (prev?.hook_output ?? outRaw),
       files: [
         ...(prev?.files ?? []).filter((e) => !files.some((f) => f.path === e.path) && !baks.some((b) => b.path === e.path)),
         ...files.map((f) => ({ path: f.path, hash: sha256(f.content) })),
         ...baks,
       ],
       dirs: union(prev?.dirs ?? [], madeDirs),
-      settings: {
-        path: paths.settings,
-        created: prev?.settings?.created ?? settingsText === null,
-        preexisting: union(prev?.settings?.preexisting ?? [], userPreexisting(source.value, helpers, rulesOurs)),
-        permissions: rulesOurs,
-        helpers: union(prev?.settings?.helpers ?? [], helpers),
-        ...(backup !== undefined ? { backup } : {}),
-      },
-      mcp:
-        added || mcp.state === "unchanged"
-          ? { config: paths.claudeJson, command: mcp.server.command, args: mcp.server.args, added }
-          : (prev?.mcp ?? null),
-      version: CLI_VERSION,
-      bin: bin.command,
-      events: placedEvents,
-      ...(sl.record !== undefined ? { status_line: sl.record } : {}),
+      settings: null,
+      mcp: null,
+      ...claudePart,
+      ...(opencodePart !== undefined ? { opencode: opencodePart } : {}),
     };
     try {
       mkdirSync(dirname(paths.journal), { recursive: true });
@@ -2938,34 +3637,51 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
 
   for (const skip of skipped) ctx.warn("degraded.hook_missing", `hook ${skip.event} not installed: ${skip.reason}`);
   if (bin.source === "none") {
-    ctx.warn(
-      "degraded.bin_unresolved",
-      "no myc executable found: not in MYC_BIN, ~/.myc/bin/myc or PATH — the helper falls back to `myc` on the session's PATH",
-    );
+    const who = [cp !== null ? "the helper" : "", op !== null ? "the opencode plugin and its MCP server" : ""].filter((s) => s.length > 0).join(" and ");
+    ctx.warn("degraded.bin_unresolved", `no myc executable found: not in MYC_BIN, ~/.myc/bin/myc or PATH — ${who} fall back to \`myc\` on the session's PATH`);
   }
-  if (mcpOutcome.state === "refused" || mcpOutcome.state === "failed") {
+  if (mcpOutcome !== undefined && (mcpOutcome.state === "refused" || mcpOutcome.state === "failed")) {
     ctx.warn(
       "degraded.mcp_unregistered",
       `MCP server myc ${dryRun ? "would not be" : "not"} registered in the user layer: ${mcpOutcome.reason ?? "unknown reason"}. ` +
         `Hooks, skill and permissions ${dryRun ? "would be" : "are"} in place; to register it yourself: ${mcpOutcome.command}`,
     );
   }
+  if (op !== null && op.mcp.state === "refused") {
+    ctx.warn(
+      "degraded.opencode_mcp_unwritten",
+      `mcp.myc ${dryRun ? "would not be" : "not"} written to ${op.config.path}: ${op.mcp.reason ?? "unknown reason"}. ` +
+        `The plugin ${dryRun ? "would be" : "is"} in place; to add the server yourself, put under "mcp" in that file: ` +
+        `"myc": ${JSON.stringify({ type: "local", command: op.mcp.command, enabled: true })}`,
+    );
+  }
 
   const actions = [
     ...files.map((f) => ({ path: f.path, action: f.kind, detail: f.detail })),
-    settingsAction,
+    ...(cp !== null ? [{ path: paths.settings, action: cp.settingsKind, detail: cp.settingsDetail }] : []),
+    ...(op !== null ? [{ path: op.config.path, action: op.config.kind, detail: op.config.detail }] : []),
   ];
   const data: WireUserData = {
     scope: "user",
     home,
+    agents: USER_AGENTS.filter((a) => agents.includes(a)),
     events,
     skipped_events: skipped,
     actions,
-    mcp: mcpOutcome,
+    ...(mcpOutcome !== undefined ? { mcp: mcpOutcome } : {}),
+    ...(op !== null
+      ? {
+          opencode: {
+            config: op.config.path,
+            mcp: { state: op.mcp.state, command: op.mcp.command.join(" "), ...(op.mcp.reason !== undefined ? { reason: op.mcp.reason } : {}) },
+          },
+        }
+      : {}),
     untouched,
     notes,
     dry_run: dryRun,
-    changed: actions.filter((a) => a.action !== "unchanged").length + (mcp.state === "add" || mcp.state === "replace" ? 1 : 0),
+    changed:
+      actions.filter((a) => a.action !== "unchanged").length + (cp !== null && (cp.mcp.state === "add" || cp.mcp.state === "replace") ? 1 : 0),
     journal,
   };
   return { ok: true, data };
@@ -2973,19 +3689,33 @@ function wireUser(ctx: CommandContext, registry: Registry, deps: WireDeps): Comm
 
 function renderWireUser(d: WireUserData): string {
   const show = (p: string): string => tilde(p, d.home);
-  const lines: string[] = [d.dry_run ? "would write (user layer of Claude Code):" : "written (user layer of Claude Code):"];
+  const who = (d.agents ?? USER_DEFAULT_AGENTS).map((a) => USER_LAYERS[a as Harness] ?? a).join(" and ");
+  const lines: string[] = [d.dry_run ? `would write (user layer of ${who}):` : `written (user layer of ${who}):`];
   const width = Math.max(...d.actions.map((a) => show(a.path).length), 10);
   for (const a of d.actions) lines.push(`  ${a.action.padEnd(9)} ${show(a.path).padEnd(width)}  ${a.detail}`);
-  const mcpLine: Record<WireUserData["mcp"]["state"], string> = {
-    add: d.dry_run ? `would run: ${d.mcp.command}` : d.mcp.command,
-    replace: d.dry_run ? `would re-register: ${d.mcp.command}` : d.mcp.command,
-    added: d.mcp.command,
-    unchanged: "already registered",
-    foreign: "someone else's server named myc — left alone",
-    refused: `not registered: ${d.mcp.reason ?? ""}`,
-    failed: `failed: ${d.mcp.reason ?? ""}`,
-  };
-  lines.push(`  ${(d.mcp.state === "added" ? "register" : d.mcp.state).padEnd(9)} ${"MCP server myc (user)".padEnd(width)}  ${mcpLine[d.mcp.state]}`);
+  if (d.mcp !== undefined) {
+    const mcpLine: Record<NonNullable<WireUserData["mcp"]>["state"], string> = {
+      add: d.dry_run ? `would run: ${d.mcp.command}` : d.mcp.command,
+      replace: d.dry_run ? `would re-register: ${d.mcp.command}` : d.mcp.command,
+      added: d.mcp.command,
+      unchanged: "already registered",
+      foreign: "someone else's server named myc — left alone",
+      refused: `not registered: ${d.mcp.reason ?? ""}`,
+      failed: `failed: ${d.mcp.reason ?? ""}`,
+    };
+    lines.push(`  ${(d.mcp.state === "added" ? "register" : d.mcp.state).padEnd(9)} ${"MCP server myc (user)".padEnd(width)}  ${mcpLine[d.mcp.state]}`);
+  }
+  if (d.opencode !== undefined) {
+    const m = d.opencode.mcp;
+    const text: Record<OpencodeMcpState, string> = {
+      add: `${d.dry_run ? "would write" : "written"} to ${show(d.opencode.config)}: ${m.command}`,
+      replace: `${d.dry_run ? "would re-point" : "re-pointed"} in ${show(d.opencode.config)}: ${m.command}`,
+      unchanged: `already in ${show(d.opencode.config)}`,
+      foreign: "someone else's server named myc — left alone",
+      refused: `not written: ${m.reason ?? ""}`,
+    };
+    lines.push(`  ${m.state.padEnd(9)} ${"MCP server myc (opencode)".padEnd(width)}  ${text[m.state]}`);
+  }
   if (d.untouched.length > 0) lines.push(`untouched: ${d.untouched.join(", ")}`);
   for (const note of d.notes) lines.push(`! ${note}`);
   if (d.journal !== null) lines.push(`journal: ${show(d.journal)} (for myc unwire --scope user)`);
@@ -3099,6 +3829,65 @@ function unwireUser(ctx: CommandContext, env: NodeJS.ProcessEnv): CommandResult 
     }
     const bak = s.backup;
     if (settingsClean && bak !== undefined) {
+      const t = fileText(bak.path);
+      if (t !== null && sha256(t) === bak.hash) {
+        if (!dryRun) rmSync(bak.path, { force: true });
+        removed.push(bak.path);
+      }
+    }
+  }
+
+  // 1б. Глобальный конфиг opencode: ровно `mcp.myc`, и только пока это наш
+  //     сервер. Правка точечная, как у wire, и с той же страховкой разбором.
+  const oc = j.opencode;
+  if (oc !== undefined) {
+    let ocClean = true;
+    const label = `${oc.config}: mcp.myc`;
+    const text = oc.mcp !== null ? fileText(oc.config) : null;
+    if (oc.mcp !== null && text === null) gone.push(oc.config);
+    if (oc.mcp !== null && text !== null) {
+      let value: unknown;
+      try {
+        value = parseJsonc(text);
+      } catch {
+        value = undefined;
+      }
+      const current = isPlainObject(value) ? asRecord(value["mcp"])[USER_MCP_NAME] : undefined;
+      if (!isPlainObject(value)) {
+        ocClean = false;
+        kept.push({ path: oc.config, reason: "not valid JSONC — mcp.myc left in place" });
+      } else if (current === undefined) {
+        gone.push(label);
+      } else if (!isOurOpencodeServer(current, oc.mcp.command)) {
+        kept.push({ path: label, reason: "changed after wire wrote it — left alone" });
+      } else {
+        const dropEmpty = oc.container && Object.keys(asRecord(value["mcp"])).length === 1;
+        const expected = structuredClone(value);
+        delete (expected["mcp"] as Record<string, unknown>)[USER_MCP_NAME];
+        if (dropEmpty) delete expected["mcp"];
+        let next: string | null;
+        let got: unknown;
+        try {
+          next = removeOpencodeMcp(text, dropEmpty);
+          got = parseJsonc(next);
+        } catch {
+          next = null;
+        }
+        if (next === null || JSON.stringify(got) !== JSON.stringify(expected)) {
+          ocClean = false;
+          kept.push({ path: label, reason: "can't be taken out without touching other entries — left in place" });
+        } else if (oc.created && Object.keys(expected).every((k) => k === "$schema" && expected[k] === OPENCODE_SCHEMA)) {
+          // Файл создал wire, и кроме `$schema`, который мы же положили, в нём ничего нет.
+          if (!dryRun) rmSync(oc.config, { force: true });
+          removed.push(`${label} (file created by wire — deleted)`);
+        } else {
+          if (!dryRun) writeFileSync(oc.config, next);
+          removed.push(label);
+        }
+      }
+    }
+    const bak = oc.backup;
+    if (ocClean && bak !== undefined) {
       const t = fileText(bak.path);
       if (t !== null && sha256(t) === bak.hash) {
         if (!dryRun) rmSync(bak.path, { force: true });

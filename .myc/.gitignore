@@ -5,3 +5,8 @@ myc.db-wal
 myc.db-shm
 myc.db-journal
 projections/
+state.json
+hooks.json
+wire.json
+bootstrap.cache.json
+anchor-dirty.log

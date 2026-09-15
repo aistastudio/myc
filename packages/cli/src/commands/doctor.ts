@@ -79,8 +79,10 @@ import {
 } from "../statusline-config.ts";
 import {
   generatedFiles,
+  isOpencodeServerOurs,
   isUserHookEntry,
   mycPermissions,
+  readOpencodeMcp,
   readUserJournal,
   readUserMcp,
   readWireJournal,
@@ -90,6 +92,7 @@ import {
   WIRE_JOURNAL,
   type Journal,
   type UserJournal,
+  type UserOpencodeRecord,
   type UserPaths,
 } from "./wire.ts";
 
@@ -502,7 +505,14 @@ export interface HooksSection {
 export interface UserLayerSection {
   /** Журнал `~/.myc/wire-user.json`; null — его нет (слой не проведён, или журнал не здесь). */
   readonly journal: string | null;
+  /** Пункты слоя Claude Code: по ним решается, отвечает ли этот слой за хуки в дереве без проектной проводки. */
   readonly checks: readonly Check[];
+  /**
+   * Пункты слоя opencode (`--agents opencode`): плагин и `mcp.myc` глобального
+   * конфига. Отдельно от `checks`: хуки Claude Code от них не зависят, и
+   * устаревший плагин opencode не должен превращать ответ о них в «не знаю».
+   */
+  readonly opencode?: readonly Check[];
   /**
    * События Claude Code, на которые пользовательский слой поставил наш хук, и
    * когда журнал записан. Нужны проектной сверке там, где проектной проводки
@@ -855,6 +865,7 @@ function checkHooks(
     ...reports.map((r) => ({ name: r.event, verdict: r.verdict, detail: r.detail })),
     ...generated.map((g) => ({ name: g.path, verdict: g.verdict, detail: g.detail })),
     ...user.checks,
+    ...(user.opencode ?? []),
   ];
   // Каталоги разошлись — значит команду позвали из git worktree, и вердикт
   // собран из ДВУХ мест. Назвать это обязаны: молчащий диагност, который
@@ -973,6 +984,18 @@ export function checkUserLayer(env: NodeJS.ProcessEnv, registry: Registry): User
       ],
     };
   }
+  const opencode = j.opencode !== undefined ? checkUserOpencode(paths, j, j.opencode, registry, show) : undefined;
+  // Журнал одного opencode (`--agents opencode` без Claude Code): в `~/.claude`
+  // этот слой ничего не ставил, и сверять там нечего — иначе «хуков нет» было
+  // бы ложным расхождением.
+  if (j.settings === null) {
+    return {
+      journal: paths.journal,
+      checks: [{ name: "user layer", verdict: "n/a", detail: "Claude Code's user layer is not wired (`myc wire --scope user`); only opencode's is" }],
+      ...(opencode !== undefined ? { opencode } : {}),
+      writtenAt: j.written_at,
+    };
+  }
   const settings = readJsonFile(paths.settings);
 
   const checks: Check[] = [];
@@ -1038,7 +1061,90 @@ export function checkUserLayer(env: NodeJS.ProcessEnv, registry: Registry): User
   checks.push(checkUserMcp(paths, j, show));
 
   const events = j.events ?? HOOK_SPECS.filter((s) => registry.hasTop(s.command)).map((s) => s.claudeEvent);
-  return { journal: paths.journal, checks, events, writtenAt: j.written_at };
+  return { journal: paths.journal, checks, ...(opencode !== undefined ? { opencode } : {}), events, writtenAt: j.written_at };
+}
+
+/**
+ * Слой opencode: плагин против того, что записала бы ЭТА сборка (как helper'ы
+ * Claude Code), и `mcp.myc` глобального конфига против журнала. Конфиг только
+ * читается — как opencode, в JSONC.
+ */
+function checkUserOpencode(
+  paths: UserPaths,
+  j: UserJournal,
+  oc: UserOpencodeRecord,
+  registry: Registry,
+  show: (p: string) => string,
+): Check[] {
+  const rerun = "`myc wire --scope user --agents opencode`";
+  const events = HOOK_SPECS.filter((s) => registry.hasTop(s.command)).map((s) => s.event);
+  const at = { ...paths, opencodePlugin: oc.plugin };
+  const expected = userGeneratedFiles(at, events, j.hook_output, oc.bin, oc.bin).opencodePlugin;
+  const recorded = j.files.find((f) => f.path === oc.plugin);
+  const out: Check[] = [];
+  if (recorded !== undefined) {
+    out.push(ownFileCheck(`user:${show(oc.plugin)}`, oc.plugin, recorded.hash, expected, oc.version.length > 0 ? `myc ${oc.version}` : "an earlier myc", rerun));
+  }
+
+  const name = "user:opencode:mcp";
+  const current = readOpencodeMcp(oc.config);
+  if (current.broken) {
+    out.push({ name, verdict: "unknown", detail: `${show(oc.config)} is not valid JSONC — can't see mcp.myc in it` });
+  } else if (oc.mcp === null) {
+    out.push(
+      current.value !== undefined
+        ? { name, verdict: "n/a", detail: `a server named myc is in ${show(oc.config)}, not written by wire — not checked` }
+        : { name, verdict: "drift", detail: `mcp.myc is not in ${show(oc.config)} (wire could not write it): opencode in git worktrees gets no myc tools; ${rerun}` },
+    );
+  } else if (current.value === undefined) {
+    out.push({
+      name,
+      verdict: "drift",
+      detail: `gone: the mcp.myc wire wrote is not in ${show(oc.config)}${current.exists ? "" : " (the file is gone)"} any more — opencode in git worktrees gets no myc tools; ${rerun}`,
+    });
+  } else if (!isOpencodeServerOurs(current.value, oc.mcp.command)) {
+    out.push({
+      name,
+      verdict: "drift",
+      detail: `changed after wire wrote it: now ${JSON.stringify(current.value)}, wire wrote ${oc.mcp.command.join(" ")}; ${rerun}`,
+    });
+  } else if (recordOf(current.value)["enabled"] === false) {
+    out.push({ name, verdict: "n/a", detail: `myc's server in ${show(oc.config)} is disabled by hand ("enabled": false) — opencode does not start it` });
+  } else if (oc.mcp.command[0]!.startsWith("/") && !existsSync(oc.mcp.command[0]!)) {
+    out.push({ name, verdict: "drift", detail: `mcp.myc runs ${oc.mcp.command[0]}, which is not there — the server does not start; ${rerun} with a myc that exists` });
+  } else {
+    out.push({ name, verdict: "ok", detail: `in ${show(oc.config)}: ${oc.mcp.command.join(" ")}` });
+  }
+  return out;
+}
+
+/** Свой файл пользовательского слоя: на месте ли и тот ли, что записала бы эта сборка. */
+function ownFileCheck(name: string, path: string, recordedHash: string, expected: string, writtenBy: string, rerun: string): Check {
+  const text = fileTextOrNull(path);
+  if (text === null) {
+    return {
+      name,
+      verdict: "drift",
+      detail: `gone: the journal remembers it, but the file is not on disk — myc does nothing there; ${rerun}`,
+    };
+  }
+  const actual = wireHash(text);
+  const want = wireHash(expected);
+  if (actual === want) return { name, verdict: "ok", detail: `up to date: matches what this build (myc ${CLI_VERSION}) writes (${actual})` };
+  if (actual === recordedHash) {
+    return {
+      name,
+      verdict: "drift",
+      detail: `stale: exactly what ${rerun} wrote (${writtenBy}, ${recordedHash}), but this build (myc ${CLI_VERSION}) writes a different one (${want}) — rerun ${rerun}`,
+    };
+  }
+  return {
+    name,
+    verdict: "drift",
+    detail:
+      `changed after we wrote it: on disk (${actual}) is neither what wire wrote (${recordedHash}) nor what this build writes ` +
+      `(${want}) — ${rerun} restores ours, the current one goes to .myc.bak`,
+  };
 }
 
 function checkUserFiles(
@@ -1277,7 +1383,8 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
       { name: "recount", description: "materialised counters against a recount from the graph" },
       {
         name: "hooks",
-        description: "when each hook last fired, which events are not installed, and the user layer myc wire --scope user put in ~/.claude",
+        description:
+          "when each hook last fired, which events are not installed, and the user layer myc wire --scope user put in ~/.claude (and ~/.config/opencode)",
       },
       { name: "verbose", description: "list every diverging object, node and row, not just counts" },
     ],
@@ -1298,7 +1405,9 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
       "is reported as stale by name instead of silently doing nothing. The user layer (`myc wire " +
       "--scope user`) is checked by ~/.myc/wire-user.json against ~/.claude: myc's hook entries and " +
       "rules still there, its helpers what this build writes, its status line not replaced by " +
-      "another tool, its MCP server still registered (~/.claude.json is only read).",
+      "another tool, its MCP server still registered (~/.claude.json is only read); with opencode " +
+      "wired (--agents opencode), its plugin is what this build writes and mcp.myc is still in " +
+      "opencode's global config (read as JSONC, never written).",
     handler: async (ctx: CommandContext): Promise<CommandResult> => {
       const want = {
         schema: ctx.flags["schema"] === true,
