@@ -326,9 +326,9 @@
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 3.42,
-    "unpacked_mb": 12.6,
-    "files": 13,
+    "compressed_mb": 5.05,
+    "unpacked_mb": 15.59,
+    "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
       "command": "myc models fetch multilingual-e5-small-q8",
@@ -337,13 +337,13 @@
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.10",
-    "date": "2026-09-11"
+    "version": "0.3.11",
+    "date": "2026-09-15"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-09-14",
-    "source": "myc 0.3.9 (schema 1) · 13 epics of this repository's workspace",
+    "as_of": "2026-09-15",
+    "source": "myc 0.3.10 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -499,10 +499,11 @@
         "title_ru": "самообучение роя: роутинг по цене и результату",
         "status": "open",
         "done": 0,
-        "total": 13,
+        "total": 14,
         "cancelled": 0,
-        "in_progress": 0,
+        "in_progress": 1,
         "open": [
+          { "id": "memory-nkwsbqssm24a", "status": "in_progress", "priority": 1, "title": "Ревизия M5: что сделано в коде, что осталось, порядок" },
           { "id": "memory-0adbcy3rhqj4", "status": "open", "priority": 2, "title": "Приёмка M5: роутинг доказуемо экономит" },
           { "id": "memory-0wfmcf2kgbvb", "status": "open", "priority": 2, "title": "Отпечаток задачи: 28 классов intent × scope" },
           { "id": "memory-76byppzy2a2k", "status": "open", "priority": 2, "title": "myc route, myc report models и MCP-инструмент" },
@@ -1042,6 +1043,12 @@
             "cmd": "myc anchor of <file>",
             "en": "Anchors of a file are found under both of its keys — written from the root or from inside the nested repository — from anywhere in the workspace; worktrees inside the tree are not indexed as another copy.",
             "ru": "Якоря файла находятся под обоими его ключами — записанными из корня и изнутри вложенного репозитория — откуда угодно в воркспейсе; worktree внутри дерева не индексируются как ещё одна копия."
+          },
+          {
+            "since": "0.3.11",
+            "cmd": "myc wire --scope user --agents opencode",
+            "en": "opencode in a worktree gets myc from its global config: one <code>mcp.myc</code> node in <code>opencode.json[c]</code>, comments and other entries kept byte for byte, and a plugin that stays silent where there is no workspace or the project wires opencode itself.",
+            "ru": "opencode в worktree получает myc из своего глобального конфига: один узел <code>mcp.myc</code> в <code>opencode.json[c]</code>, комментарии и чужие записи — байт в байт, и плагин, который молчит там, где нет воркспейса или проект сам подключает opencode."
           }
         ]
       },
@@ -1116,6 +1123,18 @@
             "cmd": "myc --help",
             "en": "Everything the CLI and the MCP server print is English, the messages shown when Bun is missing included; Russian notes and transcripts are still understood.",
             "ru": "Всё, что печатают CLI и MCP-сервер, — на английском, включая сообщения на случай, когда нет Bun; русские заметки и транскрипты по-прежнему понимаются."
+          },
+          {
+            "since": "0.3.11",
+            "cmd": "myc doctor",
+            "en": "The package ships its own SQLite for macOS (3.53.4, arm64 and x86_64), and every command picks the library the same way before it opens the database — <code>MYC_SQLITE</code>, the bundled one, Homebrew. A SQLite too old to write to is refused with what to install, and <code>doctor</code> names the one in use.",
+            "ru": "Пакет везёт свою SQLite для macOS (3.53.4, arm64 и x86_64), и каждая команда выбирает библиотеку одинаково, до открытия базы, — <code>MYC_SQLITE</code>, своя, Homebrew. Слишком старая SQLite, в которую нельзя писать, — отказ с тем, что поставить; <code>doctor</code> называет действующую."
+          },
+          {
+            "since": "0.3.11",
+            "cmd": "myc doctor --background",
+            "en": "<code>doctor</code> warns when the anchor sweep or the code index has not run for two of its periods while work went on; a build checks that the new binary runs the background work before it replaces the old one.",
+            "ru": "<code>doctor</code> предупреждает, когда прогон якорей или индекс кода не шли два своих периода, а работа в воркспейсе шла; сборка проверяет, что новый бинарь делает фоновую работу, прежде чем заменить старый."
           }
         ]
       }
@@ -1412,14 +1431,15 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 3727,
-    "fail": 0,
+    "pass": 3790,
+    "fail": 1,
     "skip": 16,
-    "files": 244,
-    "assertions": 35737,
-    "seconds": 403.5,
-    "sources": "b83af492da7688e3",
-    "date": "2026-09-14",
-    "myc": "0.3.10"
+    "files": 250,
+    "assertions": 36040,
+    "seconds": 468.0,
+    "sources": "9e1473fde0cbae2a",
+    "date": "2026-09-15",
+    "myc": "0.3.11",
+    "failing_test": "queue-hook.multiprocess.test.ts (d): queue hook, heavy command p99 46.3 ms > 30 ms budget (p50 24.0 ms, load1 19 on 14 cores); alone 28.7–30.6 ms at load1 7; the hook is unchanged since 0.3.10"
   }
 }
