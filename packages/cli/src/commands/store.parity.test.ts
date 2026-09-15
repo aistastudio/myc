@@ -13,6 +13,11 @@
  *     зарегистрированного пути. Список путей объявлен один раз в PATHS ниже;
  *     добавление нового пути в PATHS автоматически добавляет его в оба теста.
  *
+ *  1c. ОДНА БИБЛИОТЕКА — пути не имеют права разойтись и движком: каждый,
+ *     открывая базу первым в процессе, сам выбирает SQLite (ensureSqliteLibrary),
+ *     и выбор у всех один (memory-yxzsp11cpv6x). Отличие путей по-прежнему
+ *     одно — загрузка vec0.
+ *
  *  2. ИСЧЕРПАЕМОСТЬ — гарантирует, что PATHS действительно перечисляет ВСЕ
  *     места, которые могут открыть базу для продолжительной записи через
  *     GraphStore. Сравнивать значения PRAGMA можно только у путей, о которых
@@ -39,6 +44,7 @@ import {
   migrations,
   ensureSqliteRuntime,
   openSqlite,
+  STORE_PRAGMAS,
   GraphStore,
   type SqliteDriver,
   type WalGuard,
@@ -143,6 +149,12 @@ describe("S43/myc-qie.12: паритет PRAGMA между всеми путям
       // но все сломаны одинаково".
       expect(referencePragmas.wal_autocheckpoint).toBe(0);
       expect(referencePragmas.journal_size_limit).toBe(0);
+      // Порядок, а не только значения: `journal_mode = WAL` читает базу, и без
+      // обработчика ожидания параллельное открытие во время восстановления WAL
+      // сразу получает SQLITE_BUSY_RECOVERY (стенд memory-e82awcx1ms0b).
+      const order = (p: string): number => STORE_PRAGMAS.findIndex((s) => s.startsWith(`PRAGMA ${p}`));
+      expect(order("busy_timeout")).toBeGreaterThanOrEqual(0);
+      expect(order("busy_timeout")).toBeLessThan(order("journal_mode"));
     } finally {
       for (const { driver } of opened) driver.close();
     }
@@ -267,6 +279,88 @@ describe("S45: рантайм расширений — параметр откр
       withExt.close();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// 1c) Библиотека SQLite — одна на всех путях, и выбирает её КАЖДЫЙ путь сам
+//     (memory-yxzsp11cpv6x, GitHub issue #1).
+// ---------------------------------------------------------------------------
+//
+// Лёгкий путь CLI открывал ту SQLite, что Bun грузит сам (на macOS 14 —
+// системную 3.43.2), а свою библиотеку выбирал только путь с расширениями:
+// пути разошлись не PRAGMA, а движком, и запись падала на триггерах FTS5.
+// В одном процессе такое не видно — библиотеку выбирает первый открывший, и
+// под preload `bun test` это всегда preload. Поэтому каждый путь проверяется
+// ПЕРВЫМ открытием в СВЕЖЕМ процессе (без preload): после него выбор обязан
+// состояться, и действующая SQLite — та же, что у этого прогона.
+
+const REPO = join(import.meta.dir, "..", "..", "..", "..");
+const FIRST_OPEN: readonly { readonly name: string; readonly code: string }[] = [
+  {
+    name: "cli лёгкий (show/ready/close/create)",
+    code: `const { openDriver } = await import(${JSON.stringify(join(import.meta.dir, "store.ts"))});
+           const d = openDriver(DB); db = d.database;`,
+  },
+  {
+    name: "cli с vec0 (recall, дренаж)",
+    code: `const { openDriver } = await import(${JSON.stringify(join(import.meta.dir, "store.ts"))});
+           const d = openDriver(DB, undefined, { extensions: true }); db = d.database;`,
+  },
+  {
+    name: "store-sqlite (движок)",
+    code: `const { openSqlite } = await import(${JSON.stringify(join(REPO, "packages/store-sqlite/src/index.ts"))});
+           db = openSqlite(DB).database;`,
+  },
+  {
+    name: "mcp лёгкий",
+    code: `const { internalOpenDriver } = await import(${JSON.stringify(join(REPO, "packages/mcp/src/index.ts"))});
+           db = internalOpenDriver(DB).database;`,
+  },
+  {
+    name: "web (просмотрщик, только чтение)",
+    code: `const { openReadOnly } = await import(${JSON.stringify(join(REPO, "packages/web/src/db.ts"))});
+           db = openReadOnly(DB).raw();`,
+  },
+];
+
+describe("memory-yxzsp11cpv6x: одна библиотека SQLite на всех путях открытия", () => {
+  test(`каждый из ${FIRST_OPEN.length} путей первым открытием в свежем процессе выбирает ту же SQLite`, async () => {
+    const dbPath = join(dir, "first-open.db");
+    const seed = openCliDriver(dbPath);
+    await migrate(seed.database, { migrations, writable: true });
+    seed.close();
+    const here = new Database(":memory:");
+    const expected = here.query("select sqlite_source_id() as s").get() as { s: string };
+    here.close();
+
+    for (const p of FIRST_OPEN) {
+      const script = join(dir, `first-open-${FIRST_OPEN.indexOf(p)}.ts`);
+      await Bun.write(
+        script,
+        `const DB = ${JSON.stringify(dbPath)};
+         let db;
+         ${p.code}
+         const row = db.query("select sqlite_version() as v, sqlite_source_id() as s").get();
+         const { getSqliteLibraryState } = await import(${JSON.stringify(join(REPO, "packages/store-sqlite/src/runtime.ts"))});
+         console.log(JSON.stringify({ ...row, library: getSqliteLibraryState() }));`,
+      );
+      // `bun <файл>`, не `bun test`: preload из bunfig.toml здесь не работает.
+      const proc = Bun.spawnSync([process.execPath, script], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, NODE_ENV: "test" },
+      });
+      const out = proc.stdout.toString().trim().split("\n").at(-1) ?? "";
+      if (proc.exitCode !== 0 || !out.startsWith("{")) {
+        throw new Error(`${p.name}: подпроцесс ${proc.exitCode}\n${proc.stderr.toString().slice(0, 1200)}`);
+      }
+      const got = JSON.parse(out) as { v: string; s: string; library: { source: string } | null };
+      // Выбор состоялся на самом пути, а не где-то раньше...
+      expect({ path: p.name, chosen: got.library !== null }).toEqual({ path: p.name, chosen: true });
+      // ...и дал ровно ту SQLite, что у всех остальных.
+      expect({ path: p.name, sourceId: got.s }).toEqual({ path: p.name, sourceId: expected.s });
+    }
+  }, 60_000);
 });
 
 describe("myc-qie.12: исчерпаемость реестра путей открытия базы", () => {

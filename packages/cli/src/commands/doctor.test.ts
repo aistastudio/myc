@@ -158,7 +158,7 @@ describe("myc doctor: здоровый воркспейс", () => {
   test("в конверте — все три раздела и вердикт по каждому пункту", async () => {
     const env = await envelope();
     expect(env.ok).toBe(true);
-    expect(env.data?.sections).toEqual(["schema", "recount", "hooks"]);
+    expect(env.data?.sections).toEqual(["schema", "recount", "hooks", "background"]);
     expect(env.data?.ok).toBe(true);
     const names = (env.data?.recount?.checks ?? []).map((c) => c.name);
     expect(names).toEqual(["open_blockers", "anc_blockers", "parent_closure"]);

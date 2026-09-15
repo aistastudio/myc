@@ -49,7 +49,7 @@ import {
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
-import { flagBool, flagNum, flagStr } from "./store.ts";
+import { flagBool, flagNum, flagStr, sqliteGate } from "./store.ts";
 
 export interface RosterHandle {
   readonly roster: Roster;
@@ -73,6 +73,9 @@ function realOpenRoster(ctx: CommandContext): RosterHandle | CommandFailure {
       hint: "myc init",
     };
   }
+  // Библиотека SQLite — до первого `new Database` (memory-yxzsp11cpv6x).
+  const refused = sqliteGate(ctx);
+  if (refused !== undefined) return refused;
   const db = new Database(dbPath);
   for (const pragma of STORE_PRAGMAS) db.exec(pragma);
   ensureSwarmSchema(db);

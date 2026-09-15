@@ -4,9 +4,10 @@
  *
  * PRAGMA и предохранитель WAL — ровно STORE_PRAGMAS/createWalGuard из
  * store-sqlite, не свой список (решение S43, myc-ahy; регрессия myc-qie.12):
- * все пути открытия базы имеют право отличаться только загрузкой рантайма
- * расширений — она здесь есть и включается тем же параметром открытия, что
- * и в CLI (решение S45, продолжение в S46). Остальное (HLC-подсадка, разбор workspace.toml) повторяет
+ * все пути открытия базы имеют право отличаться только загрузкой vec0 — она
+ * здесь есть и включается тем же параметром открытия, что и в CLI (решение
+ * S45, продолжение в S46); библиотеку SQLite все пути выбирают одинаково
+ * (ensureSqliteLibrary). Остальное (HLC-подсадка, разбор workspace.toml) повторяет
  * packages/cli/src/commands/store.ts осознанно — cli экспортирует только
  * run(), а его commands/* недоступны по границе пакета. Бизнес-логика
  * (движок GraphStore/Claims) не дублируется. store.parity.test.ts сравнивает
@@ -31,10 +32,13 @@ import {
   createWalGuard,
   driverMeta,
   ensureSiteId,
+  ensureSqliteLibrary,
   ensureSqliteRuntime,
   applySqliteRuntime,
   getSqliteRuntimeState,
   mintSiteId,
+  SqliteConfigError,
+  SqliteUnsupportedError,
   type WalGuard,
   type WalGuardOptions,
 } from "@myc/store-sqlite";
@@ -60,14 +64,9 @@ export interface McpDriver extends DbDriver {
  */
 export interface OpenOptions {
   /**
-   * Поднять рантайм расширений (кастомная libsqlite3 + vec0) для этого
-   * соединения. ~4-7 мс на процесс, дальше бесплатно.
-   *
-   * ОГРАНИЧЕНИЕ ДВИЖКА: `Database.setCustomSQLite` обязан выполниться до
-   * первого `new Database` в процессе. В долгоживущем MCP-сервере это
-   * значит «до первого открытия базы кем угодно в процессе, включая
-   * команды CLI, которые сервер прогоняет сам» — см. ensureVectorRuntime
-   * в command.ts.
+   * Загрузить vec0 в это соединение (ступень (б) рантайма). Библиотеку
+   * SQLite выбирает каждое открытие, с флагом и без (ступень (а),
+   * ensureSqliteLibrary), — как в CLI.
    */
   readonly extensions?: boolean;
 }
@@ -79,14 +78,18 @@ export function openDriver(
   options?: OpenOptions,
 ): McpDriver {
   const wantExtensions = options?.extensions === true;
+  // Ступень (а) — всегда, до `new Database`; отказы (SQLite ниже минимума,
+  // нерабочая MYC_SQLITE) бросаются и становятся precond-отказом инструмента.
+  const library = ensureSqliteLibrary();
   let vec0Reason: string | undefined;
   if (wantExtensions) {
     try {
-      ensureSqliteRuntime();
-    } catch (error) {
-      // Опоздавший setCustomSQLite — не поломка воркспейса, а порядок
+      const rt = ensureSqliteRuntime();
+      // Опоздавший выбор библиотеки — не поломка воркспейса, а порядок
       // открытия в этом процессе. Инструмент обязан отработать без
       // вектора и СКАЗАТЬ почему, а не упасть.
+      if (!rt.vec.loaded && library.locked !== null) vec0Reason = library.locked;
+    } catch (error) {
       vec0Reason = error instanceof Error ? error.message : String(error);
     }
   }
@@ -295,6 +298,9 @@ export async function openMcpStore(
         ok: false,
         failure: { code: "precond.schema", msg: e.message, hint: "myc doctor --schema" },
       };
+    }
+    if (e instanceof SqliteUnsupportedError || e instanceof SqliteConfigError) {
+      return { ok: false, failure: { code: e.code, msg: e.message, hint: e.hint } };
     }
     return {
       ok: false,

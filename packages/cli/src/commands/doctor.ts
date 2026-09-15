@@ -50,7 +50,12 @@ import {
   schemaObjects,
   vectorMigrations,
   VEC_MIGRATIONS_TABLE,
+  ensureSqliteRuntime,
+  selectSqliteLibrary,
+  sqliteSourceLabel,
+  SqliteConfigError,
   type ClosureRow,
+  type SqliteLibraryState,
 } from "@myc/store-sqlite";
 import { ExitCode } from "../exit.ts";
 import type {
@@ -61,7 +66,8 @@ import type {
   Registry,
 } from "../registry.ts";
 import { swarmMigrations, BOOKKEEPING_TABLE } from "@myc/swarm";
-import { openDriver, type CliDriver } from "./store.ts";
+import { openDriver, sqliteFailure, type CliDriver } from "./store.ts";
+import { checkBackground, type BackgroundSection } from "../background-health.ts";
 import { findWorkspaceDb } from "./wsfind.ts";
 import {
   HOLLOW_STATUS,
@@ -1294,15 +1300,77 @@ function checkUserMcp(paths: UserPaths, j: UserJournal, show: (p: string) => str
 }
 
 // ---------------------------------------------------------------------------
+// SQLite (memory-yxzsp11cpv6x): печатается при любом наборе разделов
+// ---------------------------------------------------------------------------
+
+export interface SqliteSection {
+  readonly checks: readonly Check[];
+}
+
+/**
+ * Какая SQLite действует и откуда она. Раздел не выбирается флагом: от него
+ * зависят все остальные — на SQLite ниже 3.44.0 запись в базу невозможна, и
+ * GitHub issue #1 начался ровно с того, что `doctor --schema` был зелёным,
+ * а `remember` падал. Ниже минимума — drift, ниже рекомендованной — unknown
+ * (безопасность очереди на ней не проверена, memory-e82awcx1ms0b).
+ *
+ * Путей открытия несколько, библиотека одна: её выбирает первое открытие в
+ * процессе одной процедурой (ensureSqliteLibrary), что стережёт
+ * store.parity.test.ts. Отдельно запущенные MCP-сервер и `myc viz` выбирают
+ * так же — если их окружение не задаёт другую MYC_SQLITE.
+ */
+export function checkSqlite(): SqliteSection {
+  let lib: SqliteLibraryState;
+  try {
+    lib = selectSqliteLibrary();
+  } catch (e) {
+    const hint = e instanceof SqliteConfigError ? ` — fix: ${e.hint}` : "";
+    return {
+      checks: [{ name: "library", verdict: "drift", detail: `${e instanceof Error ? e.message : String(e)}${hint}` }],
+    };
+  }
+  const verdict: Verdict = lib.support === "ok" ? "ok" : lib.support === "old" ? "unknown" : "drift";
+  const what = `SQLite ${lib.version} — ${sqliteSourceLabel(lib)}`;
+  const checks: Check[] = [
+    {
+      name: "library",
+      verdict,
+      detail: lib.support === "ok" ? what : `${lib.problem} — fix: ${lib.hint}`,
+      items: [...(lib.locked !== null ? [lib.locked] : []), ...lib.skipped.map((s) => `passed over: ${s}`)],
+    },
+    {
+      name: "open paths",
+      verdict,
+      detail: `cli (show/ready/close/create), cli+vec0 (recall, drain), engine, mcp, web — each chooses the library before its first connection, the same way: ${what}`,
+    },
+  ];
+  if (lib.support !== "unsupported") {
+    try {
+      const vec = ensureSqliteRuntime().vec;
+      checks.push(
+        vec.loaded
+          ? { name: "vec0", verdict: "ok", detail: `${vec.version} — ${vec.path}` }
+          : { name: "vec0", verdict: "unknown", detail: `not loaded — recall falls back to BM25: ${vec.reason}` },
+      );
+    } catch (e) {
+      checks.push({ name: "vec0", verdict: "drift", detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { checks };
+}
+
+// ---------------------------------------------------------------------------
 // Сборка отчёта
 // ---------------------------------------------------------------------------
 
 export interface DoctorData {
   readonly db: string;
   readonly sections: readonly string[];
+  readonly sqlite?: SqliteSection;
   readonly schema?: SchemaSection;
   readonly recount?: RecountSection;
   readonly hooks?: HooksSection;
+  readonly background?: BackgroundSection;
   readonly ok: boolean;
   readonly unknown: number;
 }
@@ -1317,6 +1385,7 @@ const MARK: Record<Verdict, string> = {
 function sectionChecks(data: DoctorData, name: string): readonly Check[] {
   if (name === "schema") return data.schema?.checks ?? [];
   if (name === "recount") return data.recount?.checks ?? [];
+  if (name === "background") return data.background?.checks ?? [];
   return data.hooks?.checks ?? [];
 }
 
@@ -1324,6 +1393,7 @@ const TITLE: Record<string, string> = {
   schema: "schema",
   recount: "counters",
   hooks: "hooks",
+  background: "background",
 };
 
 /**
@@ -1333,8 +1403,8 @@ const TITLE: Record<string, string> = {
  */
 export function renderReport(data: DoctorData, verbose: boolean): string[] {
   const lines: string[] = [`database ${data.db}`];
-  for (const name of data.sections) {
-    const checks = sectionChecks(data, name);
+  for (const name of data.sqlite !== undefined ? ["sqlite", ...data.sections] : data.sections) {
+    const checks = name === "sqlite" ? data.sqlite!.checks : sectionChecks(data, name);
     lines.push(`${TITLE[name] ?? name}`);
     for (const c of checks) {
       lines.push(`  ${MARK[c.verdict]} ${c.name}: ${c.detail}`);
@@ -1386,6 +1456,10 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
         description:
           "when each hook last fired, which events are not installed, and the user layer myc wire --scope user put in ~/.claude (and ~/.config/opencode)",
       },
+      {
+        name: "background",
+        description: "whether the background after commands keeps up: anchor sweeps and code-index refreshes against local writes",
+      },
       { name: "verbose", description: "list every diverging object, node and row, not just counts" },
     ],
     help:
@@ -1407,15 +1481,21 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
       "rules still there, its helpers what this build writes, its status line not replaced by " +
       "another tool, its MCP server still registered (~/.claude.json is only read); with opencode " +
       "wired (--agents opencode), its plugin is what this build writes and mcp.myc is still in " +
-      "opencode's global config (read as JSONC, never written).",
+      "opencode's global config (read as JSONC, never written).\n\n" +
+      "--background compares the marks the background leaves after commands (anchor_swept_at, " +
+      "code_indexed_at) with local writes in the oplog. Age alone is not evidence — an idle " +
+      "workspace has old marks by right; drift is a mark more than two periods overdue while " +
+      "local writes kept coming for a whole period after that: commands ran, the background " +
+      "after them did not.",
     handler: async (ctx: CommandContext): Promise<CommandResult> => {
       const want = {
         schema: ctx.flags["schema"] === true,
         recount: ctx.flags["recount"] === true,
         hooks: ctx.flags["hooks"] === true,
+        background: ctx.flags["background"] === true,
       };
-      const all = !want.schema && !want.recount && !want.hooks;
-      const sections = (["schema", "recount", "hooks"] as const).filter((s) => all || want[s]);
+      const all = !want.schema && !want.recount && !want.hooks && !want.background;
+      const sections = (["schema", "recount", "hooks", "background"] as const).filter((s) => all || want[s]);
       const verbose = ctx.flags["verbose"] === true || !all;
 
       const located = dbPathOf(ctx);
@@ -1431,12 +1511,21 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
       const mycDir = dirname(dbPath);
       const treeMycDir = join(resolve(ctx.globals.directory ?? process.cwd()), ".myc");
 
+      // SQLite — до базы: на неподдерживаемой открытие откажет, и отказ обязан
+      // нести этот раздел с лекарством, а не голое «cannot open».
+      const sqlite = checkSqlite();
+
       let driver: CliDriver | undefined;
-      const needsDb = sections.includes("schema") || sections.includes("recount");
+      const needsDb = sections.includes("schema") || sections.includes("recount") || sections.includes("background");
       if (needsDb) {
         try {
           driver = openDriver(dbPath, undefined, { extensions: true });
         } catch (e) {
+          const refused = sqliteFailure(e);
+          if (refused !== undefined) {
+            const report = renderReport({ db: dbPath, sections: [], sqlite, ok: false, unknown: 0 }, true);
+            return { ...refused, msg: [refused.msg, ...report].join("\n") };
+          }
           return failure(
             "db.open",
             `cannot open the database: ${e instanceof Error ? e.message : String(e)}`,
@@ -1451,11 +1540,16 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
         const hooks = sections.includes("hooks")
           ? checkHooks(mycDir, treeMycDir, registry, env)
           : undefined;
+        const background = sections.includes("background")
+          ? checkBackground(driver!.database, { env, now: Date.now() })
+          : undefined;
 
         const checks = [
+          ...sqlite.checks,
           ...(schema?.checks ?? []),
           ...(recount?.checks ?? []),
           ...(hooks?.checks ?? []),
+          ...(background?.checks ?? []),
         ];
         const { drift, unknown } = verdictOf(checks);
 
@@ -1470,9 +1564,11 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
         const data: DoctorData = {
           db: dbPath,
           sections: [...sections],
+          sqlite,
           ...(schema !== undefined ? { schema } : {}),
           ...(recount !== undefined ? { recount } : {}),
           ...(hooks !== undefined ? { hooks } : {}),
+          ...(background !== undefined ? { background } : {}),
           ok: drift === 0,
           unknown,
         };
@@ -1493,7 +1589,7 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
     // и список строк слился бы в одну (проверено первым живым прогоном).
     renderHuman: (raw, ctx) => {
       const data = raw as DoctorData;
-      const verbose = ctx.flags["verbose"] === true || data.sections.length < 3;
+      const verbose = ctx.flags["verbose"] === true || data.sections.length < 4;
       return `${renderReport(data, verbose).join("\n")}\n`;
     },
   };

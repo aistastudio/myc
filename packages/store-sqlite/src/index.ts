@@ -21,12 +21,17 @@ import {
 // открытия базы — этот файл или CLI-драйвер в packages/cli/src/commands/store.ts —
 // обязан применять ровно STORE_PRAGMAS и подключать createWalGuard. Пути имеют
 // право отличаться только тем, ради чего разделились изначально — загрузкой
-// рантайма расширений (ensureSqliteRuntime/applySqliteRuntime, только здесь).
+// vec0 (ступень (б) рантайма, ./runtime.ts). Библиотеку SQLite выбирают все
+// пути одинаково — ensureSqliteLibrary до первого `new Database`.
+//
+// busy_timeout — ПЕРВЫМ, до journal_mode: `journal_mode = WAL` читает базу, и
+// параллельное открытие во время восстановления WAL без обработчика ожидания
+// сразу получает SQLITE_BUSY_RECOVERY (поймано стендом memory-e82awcx1ms0b).
 export const STORE_PRAGMAS = [
+  "PRAGMA busy_timeout = 5000",
   "PRAGMA journal_mode = WAL",
   "PRAGMA synchronous = NORMAL",
   "PRAGMA foreign_keys = ON",
-  "PRAGMA busy_timeout = 5000",
   "PRAGMA cache_size = -65536",
   "PRAGMA mmap_size = 268435456",
   "PRAGMA temp_store = MEMORY",
@@ -207,17 +212,31 @@ export {
   type WalGuardStats,
 } from "./checkpoint.ts";
 
-// Рантайм расширений — публично, потому что его поднимает не только этот
-// файл. Лёгкие драйверы поверхностей (CLI, MCP) открывают базу без него по
-// умолчанию (решение S43), но обязаны уметь поднять его ПО ПОТРЕБНОСТИ
-// КОМАНДЫ: без этого векторная ветка недостижима с основной поверхности
-// (решение S45, myc-ye3.8). Порядок вызова прежний и обязателен:
-// ensureSqliteRuntime() до первого `new Database` в процессе,
+// Рантайм SQLite — публично, потому что его поднимает не только этот файл.
+// Две ступени (./runtime.ts): БИБЛИОТЕКУ выбирает каждый путь открытия —
+// ensureSqliteLibrary() до первого `new Database` в процессе (memory-yxzsp11cpv6x:
+// лёгкий путь, открывавший то, что Bun грузит сам, писал в системную SQLite
+// 3.43.2 и падал на триггерах FTS5); vec0 поднимают только команды, которым
+// нужен вектор (решение S45, myc-ye3.8): ensureSqliteRuntime(), затем
 // applySqliteRuntime(db) после каждого открытия соединения.
 export {
+  ensureSqliteLibrary,
+  selectSqliteLibrary,
+  getSqliteLibraryState,
   ensureSqliteRuntime,
   applySqliteRuntime,
   getSqliteRuntimeState,
+  compareSqliteVersions,
+  sqliteSupport,
+  sqliteSourceLabel,
+  SqliteConfigError,
+  SqliteUnsupportedError,
+  SQLITE_MIN_VERSION,
+  SQLITE_RECOMMENDED_VERSION,
+  SQLITE_OLD_BUG,
+  BUNDLED_SQLITE_FILE,
+  type SqliteLibraryState,
+  type SqliteSupport,
   type SqliteRuntimeState,
   type SqliteRuntimeOptions,
   type SqliteRuntimeSource,

@@ -16,9 +16,16 @@
  * ним нет node_modules, и резолвер не может случайно найти то, чего у
  * скачавшего бинарь не будет.
  *
- * ЦЕНА. Сборка рецептом ~0.2 с (инкрементальная), три прогона бинаря на 80
- * файлах ~0.3 с каждый. Это дороже обычного теста и дешевле продукта, который
- * не работает.
+ * Бинарь собирается во ВРЕМЕННЫЙ каталог, а не в `dist/myc`. Прежде тест
+ * пересобирал поставляемый артефакт под `bun test`, где NODE_ENV=test, и
+ * бандлер сворачивал сторож тестового режима в drainAfterCommand в
+ * безусловный return: `dist/myc`, на который смотрит MCP, ~21 ч не делал
+ * фона после команд (memory-h5zp5mqcdbay). Тест проверяет пул разбора, а не
+ * поставку, и поставляемому файлу здесь делать нечего.
+ *
+ * ЦЕНА. Сборка рецептом ~1 с и её смоук фона до ~1 с (scripts/build.ts), три
+ * прогона бинаря на 80 файлах ~0.3 с каждый. Это дороже обычного теста и
+ * дешевле продукта, который не работает.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -34,7 +41,9 @@ import {
   PARSE_WORKER_SOURCE,
 } from "./parse_worker_entry.ts";
 
-const BINARY = join(process.cwd(), "dist", "myc");
+/** Свой каталог под бинарь: `dist/myc` — поставляемый артефакт, его здесь не трогают. */
+const BIN_DIR = mkdtempSync(join(tmpdir(), "myc-code-index-binary-"));
+const BINARY = join(BIN_DIR, "myc");
 /** Заведомо выше порога пула: пул обязан завестись, иначе проверять нечего. */
 const FILES = PARSE_POOL_MIN_FILES + 16;
 
@@ -82,7 +91,7 @@ function defsCount(): number {
 }
 
 beforeAll(async () => {
-  await buildBinary({ quiet: true });
+  await buildBinary({ quiet: true, outfile: BINARY });
   dir = mkdtempSync(join(tmpdir(), "myc-code-index-bin-"));
   for (let i = 0; i < FILES; i++) {
     writeFileSync(
@@ -97,6 +106,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+  rmSync(BIN_DIR, { recursive: true, force: true });
 });
 
 describe("собранный бинарь: пул разбора", () => {

@@ -34,7 +34,12 @@
  */
 
 import { Database } from "bun:sqlite";
-import { applySqliteRuntime, ensureSqliteRuntime } from "@myc/store-sqlite";
+import {
+  applySqliteRuntime,
+  ensureSqliteRuntime,
+  SqliteConfigError,
+  SqliteUnsupportedError,
+} from "@myc/store-sqlite";
 
 /** Пробуем ждать чекпойнт, а не падать: 2 с с запасом на fsync большого WAL. */
 const BUSY_TIMEOUT_MS = 2000;
@@ -82,8 +87,18 @@ export interface ReadOnlyDb {
  */
 export function openReadOnly(path: string): ReadOnlyDb {
   // Идемпотентно: второй и последующие вызовы (несколько тестов в одном
-  // процессе) возвращают закешированное состояние, а не падают.
-  ensureSqliteRuntime();
+  // процессе) возвращают закешированное состояние, а не падают. Здесь же
+  // выбирается библиотека SQLite (ступень (а)) — та же процедура, что у
+  // всех путей открытия; ниже минимума или с нерабочей MYC_SQLITE
+  // просмотрщик отказывает с лекарством, как и CLI.
+  try {
+    ensureSqliteRuntime();
+  } catch (error) {
+    if (error instanceof SqliteUnsupportedError || error instanceof SqliteConfigError) {
+      throw new VizDbError(error.code, `${error.message} — fix: ${error.hint}`);
+    }
+    throw error;
+  }
   let db: Database;
   try {
     db = new Database(path, { readonly: true });

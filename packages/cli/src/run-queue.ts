@@ -62,6 +62,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveSession } from "@myc/core";
+import { selectSqliteLibrary } from "@myc/store-sqlite/runtime";
 import { personalHome } from "./commands/wsfind.ts";
 import { QUEUE_MIGRATIONS } from "./migrations/run-queue.ts";
 
@@ -203,6 +204,15 @@ export function openQueue(path: string, options: { readonly create?: boolean } =
   // (тест «первое создание queue.db»). Поэтому открытие целиком повторяется
   // на SQLITE_BUSY — со случайной паузой и потолком: победитель к этому
   // времени уже перевёл файл в WAL, и повтор проходит без повышения.
+  // Библиотека SQLite — до первого `new Database` в процессе: очередь бывает
+  // первым открытием (`myc run`, строка статуса), и тогда весь процесс
+  // остался бы на системной (memory-yxzsp11cpv6x). Нерабочую явную
+  // MYC_SQLITE здесь не кричим — её назовёт путь, открывающий базу воркспейса.
+  try {
+    selectSqliteLibrary();
+  } catch {
+    /* см. выше */
+  }
   const deadline = Date.now() + OPEN_BUSY_RETRY_MS;
   for (let attempt = 1; ; attempt++) {
     const db = new Database(path, create ? { create: true } : { readwrite: true });

@@ -515,15 +515,21 @@ export function shouldAutoCheck(env: NodeJS.ProcessEnv = process.env, now = Date
  *
  * Возвращает true, только если процесс действительно поднят: это же значение
  * читает тест, чтобы отличить «не стали» от «не смогли».
+ *
+ * `processEnv` — окружение процесса, по которому узнаётся тест-раннер;
+ * параметр, а не литерал `process.env.NODE_ENV`, по той же причине, что в
+ * drainAfterCommand (drain.ts): литерал `bun build` сворачивает в константу
+ * из окружения сборки (memory-h5zp5mqcdbay).
  */
 export function maybeSpawnUpdateCheck(
   env: NodeJS.ProcessEnv = process.env,
   spawn: (argv: string[]) => void = spawnDetachedCheck,
+  processEnv: NodeJS.ProcessEnv = process.env,
 ): boolean {
   // Под тестом фон не поднимается никогда — ловушка S51: спавнящие тесты
   // собирают окружение белым списком, поэтому выключатель MYC_UPDATE_CHECK
   // внесён в BACKGROUND_SWITCHES (@myc/core/test-env.ts).
-  if (process.env.NODE_ENV === "test" && env.MYC_UPDATE_CHECK !== "1") return false;
+  if (processEnv.NODE_ENV === "test" && env.MYC_UPDATE_CHECK !== "1") return false;
   if (!shouldAutoCheck(env)) return false;
   try {
     const entry = process.argv[1];

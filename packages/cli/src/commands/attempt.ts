@@ -42,7 +42,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { readRepo, type JsonValue } from "@myc/core";
-import { STORE_PRAGMAS } from "@myc/store-sqlite";
+import { ensureSqliteLibrary, STORE_PRAGMAS } from "@myc/store-sqlite";
 import {
   Attribution,
   AttributionError,
@@ -94,6 +94,7 @@ import {
   realStoreDeps,
   resolveActor,
   resolveId,
+  sqliteFailure,
   type StoreDeps,
 } from "./store.ts";
 import { wsPathOfKey } from "./anchor.ts";
@@ -180,6 +181,15 @@ export function openSwarmAt(
       exit: ExitCode.NOWS,
       hint: "myc init",
     };
+  }
+  // Библиотека SQLite — до первого `new Database` в процессе, как у всех
+  // путей открытия (memory-yxzsp11cpv6x): иначе процесс остаётся на системной.
+  try {
+    ensureSqliteLibrary();
+  } catch (e) {
+    const refused = sqliteFailure(e);
+    if (refused !== undefined) return refused;
+    throw e;
   }
   const db = new Database(dbPath);
   for (const pragma of STORE_PRAGMAS) db.exec(pragma);

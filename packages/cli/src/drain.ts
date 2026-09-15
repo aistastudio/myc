@@ -49,12 +49,14 @@
  * (наблюдаемо через jobs.stats, не молча).
  *
  * БЕЗОПАСНОСТЬ ВЫЗОВА. Дренаж — фон: он не имеет права уронить или заметно
- * задержать команду, ради которой случился. Под команду, уже открывшую базу
- * БЕЗ расширений (`ready`, `show`), vec0 для этого соединения недоступен по
- * правилу движка (setCustomSQLite до первого `new Database`) — openDriver
- * честно вернёт vec0Reason, absorb уйдёт в lexical-режим (его штатная громкая
- * деградация, И2), и это не ошибка дренажа. busy_timeout укорочен до 250 мс:
- * ждать чужой write-lock секундами фон не будет никогда.
+ * задержать команду, ради которой случился. Библиотеку SQLite каждый путь
+ * открытия выбирает до первого `new Database` (memory-yxzsp11cpv6x), поэтому
+ * и под командой, уже открывшей базу без расширений (`ready`, `show`), дренаж
+ * получает vec0 своим открытием. Не получил (vec0 нет на машине, или
+ * соединение в процессе открыли мимо выбора) — openDriver честно вернёт
+ * vec0Reason, absorb уйдёт в lexical-режим (штатная громкая деградация, И2),
+ * и это не ошибка дренажа. busy_timeout укорочен до 250 мс: ждать чужой
+ * write-lock секундами фон не будет никогда.
  *
  * ПЕРЕМЕННЫЕ (тесты): MYC_DRAIN=0 — выключить дренаж; MYC_ANCHOR_CHECK=0 —
  * выключить ТОЛЬКО фон якорей, оставив разбор очереди (оба — в реестре
@@ -163,6 +165,15 @@ export const ANCHOR_SWEEP_BUDGET_MS = 20;
  * остался в commands/anchor.ts.
  */
 export const ANCHOR_SWEEP_PERIOD_MS = 300_000;
+
+/**
+ * Действующий период с учётом MYC_ANCHOR_PERIOD_MS. Одна функция на прогон и
+ * на `myc doctor` (background-health.ts): иначе сверка мерила бы отметку
+ * другим аршином, чем тот, по которому её ставят.
+ */
+export function anchorSweepPeriodMs(env: NodeJS.ProcessEnv = process.env): number {
+  return numFromEnv(env.MYC_ANCHOR_PERIOD_MS, ANCHOR_SWEEP_PERIOD_MS);
+}
 
 /** Сколько строк `anchor_check` снимается за раз; все они дают ОДИН прогон. */
 export const ANCHOR_JOB_CLAIM_LIMIT = 32;
@@ -606,7 +617,7 @@ interface AnchorStepOptions {
 async function runAnchorStep(driver: CliDriver, opts: AnchorStepOptions): Promise<AnchorStepReport | null> {
   const t0 = performance.now();
   const db = driver.database;
-  const periodMs = numFromEnv(opts.env.MYC_ANCHOR_PERIOD_MS, ANCHOR_SWEEP_PERIOD_MS);
+  const periodMs = anchorSweepPeriodMs(opts.env);
   const budgetMs = Math.min(
     numFromEnv(opts.env.MYC_ANCHOR_BUDGET_MS, ANCHOR_SWEEP_BUDGET_MS),
     Math.max(1, Math.floor(opts.budgetMs)),
@@ -950,16 +961,26 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
 /**
  * Точка подключения к жизненному циклу команды (index.ts): дренаж после
  * успешного обработчика, по флагу окружения, никогда не бросает.
+ *
+ * `processEnv` — окружение ПРОЦЕССА, по которому узнаётся тест-раннер. Это
+ * параметр, а не литерал `process.env.NODE_ENV`, и в этом вся разница
+ * (memory-h5zp5mqcdbay): литерал `bun build` заменяет константой из
+ * окружения СБОРКИ, и бинарь, собранный под `bun test`, получал здесь
+ * безусловный return — сутки без фона после каждой команды. Параметр
+ * бандлер заменить не может: define подставляется по синтаксической цепочке
+ * `process.env.NODE_ENV`, а у `processEnv.NODE_ENV` другой корень, значение
+ * которого до вызова неизвестно никому. Сторож — node-env-fold.test.ts.
  */
 export async function drainAfterCommand(
   globals: Globals,
   env: NodeJS.ProcessEnv = process.env,
+  processEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  // Тест-раннер узнаётся по process.env, а не по env вызова: харнессы передают
-  // вызову белый список без NODE_ENV (absorb.test.ts), и фон внутри чужого
-  // теста съедает очередь, которую тест собрался разбирать сам. Боевой
+  // Тест-раннер узнаётся по окружению процесса, а не по env вызова: харнессы
+  // передают вызову белый список без NODE_ENV (absorb.test.ts), и фон внутри
+  // чужого теста съедает очередь, которую тест собрался разбирать сам. Боевой
   // CLI-процесс (включая spawned в тестах дренажа) такого NODE_ENV не имеет.
-  if (process.env.NODE_ENV === "test") return;
+  if (processEnv.NODE_ENV === "test") return;
   if (!queueDrainEnabled(env)) return;
   // База — та же, что открыла команда: подъём к первому `.myc/myc.db`, из git
   // worktree — через основное дерево. Прежде здесь стоял `<cwd>/.myc/myc.db`,

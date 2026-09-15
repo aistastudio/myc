@@ -59,3 +59,60 @@ jobs:
         env:
           MYC_BENCH_ABSOLUTE: "0"
         run: bun run bench:latency
+
+  # Своя SQLite пакета для macOS (memory-yxzsp11cpv6x, GitHub issue #1). Bun на
+  # macOS грузит системную SQLite, а на macOS 14 это 3.43.2 — запись в базу
+  # myc там невозможна. Пакет везёт libmyc-sqlite3.dylib (официальный
+  # амальгамат, arm64+x86_64), и собрать её можно только здесь: `cc -arch arm64
+  # -arch x86_64` есть лишь на macOS.
+  #
+  # Старая SQLite проверяется ТОЛЬКО здесь, и это не пробел в покрытии Linux:
+  # Bun на Linux линкует SQLite статически, setCustomSQLite там не меняет
+  # ничего (Docker: Debian 12, Ubuntu 22.04/24.04, Bun 1.3.0–1.4.2), и
+  # системной библиотеке быть старой негде — сквозной тест на ubuntu-latest
+  # пропускается с этой причиной. Здесь же стенд 3.43.2 (системная macOS 14)
+  # подставляется через DYLD_LIBRARY_PATH, и пропуск запрещён
+  # (MYC_REQUIRE_SQLITE_STAND=1).
+  sqlite-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install
+        run: bun install
+
+      # Архивы амальгамата с sqlite.org: версии и оба хеша зашиты в скрипте,
+      # поэтому ключ — его хеш. Скрипт сверяет sha256 и SHA3-256 и из кеша.
+      - name: cache SQLite amalgamations
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/myc/sqlite
+          key: sqlite-amalgamation-${{ hashFiles('scripts/build-sqlite.ts') }}
+
+      - name: build bundled SQLite (arm64+x86_64, ad-hoc signed)
+        run: bun scripts/build-sqlite.ts
+
+      - name: build SQLite 3.43.2 stand (the system SQLite of macOS 14)
+        run: bun scripts/build-sqlite.ts --old
+
+      - name: test (runtime, path parity, CLI end-to-end under SQLite 3.43.2)
+        env:
+          MYC_REQUIRE_SQLITE_STAND: "1"
+        run: >-
+          bun test
+          packages/store-sqlite/src/runtime.test.ts
+          packages/cli/src/commands/store.parity.test.ts
+          packages/cli/src/sqlite-runtime.e2e.test.ts
+
+      # pack-npm отказывает, если библиотеки нет или её нет в тарболе.
+      - name: pack
+        run: bun scripts/pack-npm.ts --out "$RUNNER_TEMP/pack"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/pack/*.tgz

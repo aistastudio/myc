@@ -78,9 +78,14 @@ import {
   STORE_PRAGMAS,
   PROJECTION_CACHE_DIR,
   createWalGuard,
+  ensureSqliteLibrary,
+  selectSqliteLibrary,
+  getSqliteLibraryState,
   ensureSqliteRuntime,
   applySqliteRuntime,
   getSqliteRuntimeState,
+  SqliteConfigError,
+  SqliteUnsupportedError,
   type WalGuard,
   type WalGuardOptions,
   ClosureError,
@@ -96,11 +101,19 @@ import type { CommandContext, CommandFailure } from "../registry.ts";
 // Лёгкое открытие БД для команд задач
 // ---------------------------------------------------------------------------
 //
-// openSqlite из store-sqlite обязан грузить кастомный SQLite с vec0
-// (ensureSqliteRuntime, ~4-7 мс на процесс) — это нужно векторному поиску,
-// а командам задач вектора не нужны вовсе. Платить эту цену в каждом
-// одноразовом вызове `myc show` (бюджет 3 мс) нельзя, поэтому здесь своё
-// соединение поверх встроенного bun:sqlite — GraphStore разницы не видит.
+// openSqlite из store-sqlite обязан грузить vec0 (ensureSqliteRuntime) — это
+// нужно векторному поиску, а командам задач вектора не нужны вовсе. Платить
+// эту цену в каждом одноразовом вызове `myc show` (бюджет 3 мс) нельзя,
+// поэтому здесь своё соединение — GraphStore разницы не видит.
+//
+// БИБЛИОТЕКА SQLITE — НЕ ЧАСТЬ ЭТОЙ ЭКОНОМИИ (memory-yxzsp11cpv6x, GitHub
+// issue #1). Прежде лёгкий драйвер открывал ту SQLite, что Bun грузит сам, —
+// на macOS это системная, на macOS 14 — 3.43.2, где триггеры в nodes_fts под
+// trusted_schema=OFF запрещены: `remember`/`create` падали, а явная
+// MYC_SQLITE здесь не читалась вовсе. Выбор библиотеки (ступень (а) рантайма,
+// ensureSqliteLibrary) стоит existsSync и dlopen, открытие со своей
+// библиотекой даже быстрее системной — поэтому он здесь всегда, как и на
+// всех прочих путях, а лениво остаётся только vec0 (ступень (б)).
 //
 // РАНТАЙМ РАСШИРЕНИЙ — ПАРАМЕТР ОТКРЫТИЯ, А НЕ ЧЕТВЁРТЫЙ ПУТЬ (решение S45,
 // myc-ye3.8). До этой правки лёгкий драйвер не поднимал рантайм НИКОГДА, и
@@ -112,17 +125,17 @@ import type { CommandContext, CommandFailure } from "../registry.ts";
 //
 // Поэтому `extensions` — флаг ОДНОГО И ТОГО ЖЕ пути открытия: команды с
 // бюджетом 25 мс (`recall`, `search` и будущий `digest` — всё, что реально
-// умеет звать векторный поиск) просят его и платят 4-7 мс, то есть четверть
-// своего бюджета; команды с бюджетом 3 мс (`show`, `ready`, `claim`,
-// `close`) не просят и не платят ничего. Второй функции открытия при этом не
-// появилось — реестр путей в store.parity.test.ts остаётся из трёх.
+// умеет звать векторный поиск) просят vec0 и платят за него; команды с
+// бюджетом 3 мс (`show`, `ready`, `claim`, `close`) не просят и не платят.
+// Второй функции открытия при этом не появилось — реестр путей в
+// store.parity.test.ts остаётся из трёх.
 //
 // PRAGMA и предохранитель WAL — ровно STORE_PRAGMAS/createWalGuard из
 // store-sqlite, не свой список (решение S43, myc-ahy): пути открытия базы
-// имеют право отличаться только загрузкой рантайма расширений, ничем
-// больше. store.parity.test.ts падает, если это утверждение разойдётся
-// с кодом снова, — и отдельным тестом проверяет, что включённый рантайм
-// расширений не меняет в соединении ничего, кроме доступности vec0.
+// имеют право отличаться только загрузкой vec0, ничем больше — ни PRAGMA,
+// ни библиотекой SQLite. store.parity.test.ts падает, если это утверждение
+// разойдётся с кодом снова, — и отдельным тестом проверяет, что включённый
+// рантайм расширений не меняет в соединении ничего, кроме доступности vec0.
 
 export interface CliDriver extends DbDriver {
   readonly database: Database;
@@ -145,15 +158,52 @@ export interface CliDriver extends DbDriver {
  */
 export interface OpenOptions {
   /**
-   * Поднять рантайм расширений (кастомная libsqlite3 + vec0) для этого
-   * соединения. ~4-7 мс на процесс, дальше бесплатно — `ensureSqliteRuntime`
-   * идемпотентен и кеширует состояние.
-   *
-   * ОГРАНИЧЕНИЕ ДВИЖКА: `Database.setCustomSQLite` обязан выполниться до
-   * первого `new Database` в процессе. Значит команда, которой нужен вектор,
-   * просит расширения на ПЕРВОМ же открытии базы, а не на втором.
+   * Загрузить vec0 в это соединение (ступень (б) рантайма). Библиотеку
+   * SQLite выбирает КАЖДОЕ открытие, с этим флагом и без него, поэтому
+   * просить расширения можно на любом открытии в процессе, а не только на
+   * первом: `ensureSqliteRuntime` идемпотентен и кеширует состояние.
    */
   readonly extensions?: boolean;
+}
+
+/**
+ * Отказ по SQLite — с лекарством, а не `internal.unexpected`: действующая
+ * библиотека ниже минимума или явная MYC_SQLITE не работает.
+ */
+export function sqliteFailure(e: unknown): CommandFailure | undefined {
+  if (e instanceof SqliteUnsupportedError || e instanceof SqliteConfigError) {
+    return { ok: false, code: e.code, msg: e.message, exit: ExitCode.PRECOND, hint: e.hint };
+  }
+  return undefined;
+}
+
+const sqliteWarned = new WeakSet<CommandContext>();
+
+/**
+ * WARN `degraded.sqlite_old`: SQLite работает, но ниже рекомендованной —
+ * одна строка на команду, сколько бы баз она ни открыла.
+ */
+export function warnSqliteOld(ctx: CommandContext): void {
+  const lib = getSqliteLibraryState();
+  if (lib === null || lib.support !== "old" || sqliteWarned.has(ctx)) return;
+  sqliteWarned.add(ctx);
+  ctx.warn("degraded.sqlite_old", `${lib.problem} — fix: ${lib.hint}`);
+}
+
+/**
+ * Проверка SQLite для команд, которые открывают базу мимо openStore
+ * (`myc init`): тот же отказ и тот же WARN, что у всех остальных команд.
+ */
+export function sqliteGate(ctx: CommandContext): CommandFailure | undefined {
+  try {
+    ensureSqliteLibrary();
+  } catch (e) {
+    const refused = sqliteFailure(e);
+    if (refused !== undefined) return refused;
+    throw e;
+  }
+  warnSqliteOld(ctx);
+  return undefined;
 }
 
 /** @internal тест паритета (store.parity.test.ts) открывает через wal-опции свои пороги */
@@ -163,23 +213,25 @@ export function openDriver(
   options?: OpenOptions,
 ): CliDriver {
   const wantExtensions = options?.extensions === true;
-  // Строго до первого `new Database` — иначе setCustomSQLite опоздал.
+  // Ступень (а) — всегда и строго до первого `new Database`: иначе
+  // setCustomSQLite опоздал. Бросает SqliteUnsupportedError (действующая
+  // SQLite ниже минимума: запись невозможна) и SqliteConfigError (явная
+  // MYC_SQLITE не работает) — вызывающий превращает их в отказ с лекарством.
+  const library = ensureSqliteLibrary();
+  // Ступень (б). ОТКАЗ ПОДЪЁМА vec0 НЕ ИМЕЕТ ПРАВА УБИВАТЬ КОМАНДУ (И2):
+  // `recall` обязан отработать без вектора и СКАЗАТЬ об этом. Причина
+  // сохраняется дословно и доезжает до WARN-строки вызывающего. Опоздавший
+  // выбор библиотеки (соединение в этом процессе открыли мимо
+  // ensureSqliteLibrary — `library.locked`) — та же причина: вектора нет не
+  // потому, что его нет на машине, а потому, что поднять его здесь нельзя.
   //
-  // ОТКАЗ ПОДЪЁМА НЕ ИМЕЕТ ПРАВА УБИВАТЬ КОМАНДУ (И2). Не из мягкости: в
-  // долгоживущем процессе, который уже открыл своё соединение (MCP-сервер
-  // держит стор и прогоняет `recall` этим же процессом), setCustomSQLite
-  // отказывает по определению — переставить SQLite после первого соединения
-  // невозможно. Это не поломка воркспейса и не ошибка пользователя, а
-  // порядок открытия в чужом процессе; `recall` там обязан отработать без
-  // вектора и СКАЗАТЬ об этом, а не упасть. Причина сохраняется дословно и
-  // доезжает до WARN-строки вызывающего — молчаливого отката не возникает.
-  //
-  // Полный рантайм-путь (openSqlite: движок, MCP/server на старте) по-прежнему
-  // бросает: там расширения не «желательны», а часть контракта открытия.
+  // Полный рантайм-путь (openSqlite: движок, тесты) по-прежнему бросает:
+  // там расширения не «желательны», а часть контракта открытия.
   let vec0Reason: string | undefined;
   if (wantExtensions) {
     try {
-      ensureSqliteRuntime();
+      const rt = ensureSqliteRuntime();
+      if (!rt.vec.loaded && library.locked !== null) vec0Reason = library.locked;
     } catch (error) {
       vec0Reason = error instanceof Error ? error.message : String(error);
     }
@@ -552,7 +604,7 @@ async function openWorkspaceAt(
   },
 ): Promise<OpenWorkspaceResult> {
   // Открытие/миграция при конкурентном CLI может упереться в чужой
-  // write-lock (PRAGMA journal_mode идёт до busy_timeout): ждём до ~5 с.
+  // write-lock (миграция держит его дольше busy_timeout): ждём до ~5 с.
   const maxKnown = migrations.reduce((m, mig) => Math.max(m, mig.version), 0);
   const maxVecKnown = vectorMigrations.reduce((m, mig) => Math.max(m, mig.version), 0);
   let driver: CliDriver | undefined;
@@ -600,6 +652,8 @@ async function openWorkspaceAt(
       driver = d;
       break;
     } catch (e) {
+      const refused = sqliteFailure(e);
+      if (refused !== undefined) return { ok: false, failure: refused };
       lastError = e;
       if (!/locked|busy/i.test(e instanceof Error ? e.message : String(e))) throw e;
       await new Promise((r) => setTimeout(r, 100));
@@ -905,6 +959,7 @@ export async function openStore(
     ...(repo.repo !== undefined ? { repo: repo.repo } : {}),
   });
   if (!opened.ok) return opened;
+  warnSqliteOld(ctx);
   const { driver, store, claims } = opened.workspace;
   return {
     ok: true,
@@ -1005,6 +1060,7 @@ export async function openPersonalStore(
     repo: "",
   });
   if (!opened.ok) return opened;
+  warnSqliteOld(ctx);
   const { driver, store, claims } = opened.workspace;
   return {
     ok: true,
@@ -1049,6 +1105,8 @@ export async function createPersonalWorkspace(
   home: string = personalHome(),
 ): Promise<CreatedPersonalWorkspace> {
   const status = personalWorkspaceStatus(home);
+  // Выбор SQLite — до первого соединения и до первого байта на диске.
+  ensureSqliteLibrary();
   mkdirSync(status.dir, { recursive: true });
   const db = new Database(status.dbPath, { create: true });
   let schemaVersion: number;
@@ -1208,6 +1266,13 @@ function readMemoryCounts(db: Database): { ops: number | undefined; nodes: numbe
  * случаях остаётся прежнее fail-closed: чего не прочли, того не стираем.
  */
 function countPersonalMemory(dbPath: string): PersonalMemoryCounts {
+  // Только чтение: отказ по версии скажет путь записи, здесь — лишь выбор
+  // библиотеки до первого соединения. Нерабочая MYC_SQLITE — «не прочли».
+  try {
+    selectSqliteLibrary();
+  } catch {
+    return unreadableMemory();
+  }
   if (sqliteSidecars(dbPath).length === 0) {
     // База без журнала читается ПО КОПИИ во временном каталоге, а не хитрым
     // режимом открытия. `immutable=1` обещал то же самое и на macOS работал,

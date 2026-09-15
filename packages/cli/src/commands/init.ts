@@ -40,6 +40,7 @@ import { Database } from "bun:sqlite";
 import {
   databaseMeta,
   ensureSiteId,
+  ensureSqliteLibrary,
   migrate,
   migrations,
   mintSiteId,
@@ -64,6 +65,7 @@ import {
   personalHome,
   personalWipePlan,
   personalWorkspaceStatus,
+  sqliteGate,
   wipePersonalWorkspace,
   type PersonalWipePlan,
 } from "./store.ts";
@@ -271,6 +273,8 @@ async function createWorkspaceDb(
   dbPath: string,
   slug: string,
 ): Promise<{ siteId: string; schemaVersion: number }> {
+  // Та же SQLite, что у всех путей открытия, и выбрана до первого соединения.
+  ensureSqliteLibrary();
   const db = new Database(dbPath, { create: true });
   try {
     for (const pragma of PRAGMAS) db.exec(pragma);
@@ -657,6 +661,13 @@ export function createInitCommand(): Command {
       // старше суток поднимается ОТСОЕДИНЁННЫЙ `myc version --check`, который
       // пишет только в кеш. Латентность init не меняется: spawn без await.
       maybeSpawnUpdateCheck();
+
+      // SQLite ниже минимума — отказ ДО создания чего-либо (GitHub issue #1):
+      // init на 3.43.2 проходил, а первая же запись в созданный воркспейс
+      // падала. Воркспейс, в который нельзя писать, создавать незачем.
+      // Ниже рекомендованной — тот же WARN, что у остальных команд.
+      const sqlite = sqliteGate(ctx);
+      if (sqlite !== undefined) return sqlite;
 
       if (flagBool(ctx, "global")) {
         const home = personalHome();

@@ -493,6 +493,14 @@ const SQL_RUN_QUEUE = "SELECT state, session, pid, host, lease_expires, enqueued
 export async function readRunQueue(path: string | null, session: string, now: number): Promise<RunQueuePart | null> {
   if (path === null || !existsSync(path)) return null;
   const { Database } = await import("bun:sqlite");
+  // Очередь читается РАНЬШЕ базы воркспейса: без выбора библиотеки здесь
+  // процесс остался бы на системной SQLite, и openStore ниже отказал бы на
+  // macOS 14/15 (memory-yxzsp11cpv6x). Строка статуса не кричит — молчит.
+  try {
+    (await import("@myc/store-sqlite/runtime")).selectSqliteLibrary();
+  } catch {
+    /* нерабочую явную MYC_SQLITE назовёт openStore */
+  }
   const db = new Database(path, { readwrite: true });
   try {
     db.exec("PRAGMA busy_timeout = 20");

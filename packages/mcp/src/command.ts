@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { run, CLI_VERSION } from "@myc/cli";
 import type { RunOptions, RunResult } from "@myc/cli";
-import { ensureSqliteRuntime } from "@myc/store-sqlite";
+import { ensureSqliteLibrary, ensureSqliteRuntime } from "@myc/store-sqlite";
 import { createDispatcher, UnknownToolError, type CliOutcome } from "./dispatch.ts";
 import { McpServer, serveStdio } from "./server.ts";
 import { openMcpStore } from "./store.ts";
@@ -83,27 +83,32 @@ function makeRunCli(
  * дефект myc-6lc).
  *
  * ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ CLI И ПОЧЕМУ. В CLI команда известна заранее и
- * процесс одноразовый: `recall` просит расширения, `show` — нет, и цена
- * 4–7 мс ложится только на бюджет 25 мс. MCP-сервер живёт долго и
- * обслуживает ЛЮБОЙ инструмент своего профиля в любом порядке, а
+ * процесс одноразовый: `recall` просит vec0, `show` — нет. MCP-сервер живёт
+ * долго и обслуживает ЛЮБОЙ инструмент своего профиля в любом порядке, а
  * `Database.setCustomSQLite` работает только до первого `new Database` в
- * процессе. Значит «лениво по потребности вызова» здесь физически
- * недостижимо: первый же `myc_prime` открыл бы базу и закрыл дорогу
- * вектору навсегда — ровно это и наблюдалось.
+ * процессе. Первый же `myc_prime` открыл бы базу и закрыл дорогу своей
+ * библиотеке SQLite (а с ней и вектору) навсегда — ровно это и наблюдалось.
  *
- * Потребность поэтому считается по ПРОФИЛЮ: если среди его инструментов
- * есть хоть один с needsVector, рантайм поднимается один раз, до первого
- * открытия базы кем угодно в процессе (включая команды CLI, которые
- * сервер прогоняет сам). Профиль без таких инструментов не платит ничего.
+ * Поэтому БИБЛИОТЕКА выбирается на старте любого сервера с воркспейсом —
+ * до первого открытия базы кем угодно в процессе (включая команды CLI,
+ * которые сервер прогоняет сам): это дёшево, и без неё запись на macOS 14
+ * падает (memory-yxzsp11cpv6x). vec0 поднимается там же, но только если в
+ * профиле есть инструмент с needsVector; профиль без них за vec0 не платит.
  *
  * Отказ подъёма сервер не убивает (И2): работа идёт без вектора, причина
- * возвращается вызывающему и попадает в degraded-строку.
+ * возвращается вызывающему и попадает в degraded-строку; SQLite ниже
+ * минимума откажет каждому инструменту precond-отказом с лекарством.
  */
 export function vectorNeeded(tools: readonly McpToolDef[]): boolean {
   return tools.some((t) => t.needsVector === true);
 }
 
 export function raiseVectorRuntime(tools: readonly McpToolDef[]): string | undefined {
+  try {
+    ensureSqliteLibrary();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
   if (!vectorNeeded(tools)) return undefined;
   try {
     ensureSqliteRuntime();
@@ -205,7 +210,8 @@ export function createMcpCommand(registry?: Registry) {
       }
 
       // СТРОГО ДО первого `new Database` в процессе — до buildInstructions,
-      // который прогоняет `bootstrap` и тем самым открывает базу.
+      // который прогоняет `bootstrap` и тем самым открывает базу. Выбор
+      // библиотеки SQLite — здесь же, для любого профиля.
       const wantsVector = vectorNeeded(tools);
       const vectorFailure = raiseVectorRuntime(tools);
 
@@ -232,7 +238,7 @@ export function createMcpCommand(registry?: Registry) {
       process.stderr.write(`myc mcp: profile ${profile}, ${tools.length} tools, stdio\n`);
       if (vectorFailure !== undefined) {
         process.stderr.write(
-          `myc mcp: extension runtime failed to load, vector search unavailable: ${vectorFailure}\n`,
+          `myc mcp: SQLite / extension runtime failed to load, vector search unavailable: ${vectorFailure}\n`,
         );
       }
       await serveStdio(server, Bun.stdin.stream(), (chunk) => {

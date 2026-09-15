@@ -29,6 +29,18 @@
  *   dist/worker.ts    — воркер батч-пула эмбеддера, см. ниже
  *   vendor/ort/       — .wasm ONNX-рантайма, см. ниже
  *   vendor/tree-sitter/ — tree-sitter.wasm, рантайм разбора, см. ниже
+ *   vendor/sqlite/    — своя SQLite для macOS, см. ниже
+ *
+ * ПРО vendor/sqlite (memory-yxzsp11cpv6x, GitHub issue #1). Bun на macOS
+ * своей SQLite не несёт и грузит системную: на macOS 14 это 3.43.2, где
+ * запись в базу myc невозможна (FTS5 в триггерах под trusted_schema=OFF).
+ * Поэтому пакет везёт libmyc-sqlite3.dylib — официальный амальгамат,
+ * arm64+x86_64, собирает `bun scripts/build-sqlite.ts` (версия и хеши
+ * зашиты там). Рантайм ищет её ОТ БАНДЛА (dist/myc.js → ../vendor/sqlite),
+ * как tree-sitter, и выбирает сразу после явной MYC_SQLITE. Нет её — пакет
+ * НЕ собирается: без неё macOS 14 получил бы ровно тот отказ, ради
+ * которого всё это. На Linux файл лежит мёртвым грузом (Bun там линкует
+ * SQLite статически); платформенные пакеты ради него — отдельная история.
  *
  * ПРО dist/worker.ts. packages/embed/src/pool.ts поднимает воркер как
  * `new Worker(new URL("./worker.ts", import.meta.url))`. Бандлер Bun такую
@@ -69,9 +81,22 @@
 import { mkdir, rm, cp, writeFile, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { PARSE_WORKER_SOURCE } from "../packages/code-intel/src/parse_worker_entry.ts";
+import { BUNDLED_SQLITE_FILE } from "../packages/store-sqlite/src/runtime.ts";
+import { NODE_ENV_DEFINE } from "./build.ts";
+import {
+  BUNDLED_SQLITE_OUT_DIR as BUNDLED_OUT_DIR,
+  SQLITE_RELEASES as RELEASES,
+} from "../packages/store-sqlite/src/bundled-sqlite.ts";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const OUT = join(ROOT, "dist/npm");
+/**
+ * `--out <каталог>` — собрать и упаковать туда, а не в dist/: проверка
+ * пакета (CI, тест) не имеет права переписать уже выпущенный тарбол той же
+ * версии и каталог dist/npm, из которого его публикуют.
+ */
+const OUT_ARG = process.argv.indexOf("--out");
+const DEST = OUT_ARG >= 0 && process.argv[OUT_ARG + 1] !== undefined ? process.argv[OUT_ARG + 1]! : join(ROOT, "dist");
+const OUT = join(DEST, "npm");
 
 /** Файлы дистрибутива onnxruntime-web, без которых wasm-бэкенд не поднимется. */
 const ORT_FILES = ["ort-wasm-simd-threaded.wasm", "ort-wasm-simd-threaded.mjs"];
@@ -84,6 +109,9 @@ async function build(entry: string, outfile: string, minify: boolean): Promise<v
     "bun",
     "build",
     "--target=bun",
+    // NODE_ENV — флагом рецепта, не окружением упаковщика: иначе пакет,
+    // собранный из-под `bun test`, печёт "test" (memory-h5zp5mqcdbay).
+    ...NODE_ENV_DEFINE,
     ...(minify ? ["--minify"] : []),
     join(ROOT, entry),
     "--outfile",
@@ -204,6 +232,26 @@ async function main(): Promise<void> {
     ].join("\n"),
   );
 
+  // Своя SQLite (см. «ПРО vendor/sqlite»). Версию сверяем по манифесту
+  // сборки: библиотека от прежней версии скрипта уехала бы в пакет молча.
+  const sqliteLib = join(BUNDLED_OUT_DIR, BUNDLED_SQLITE_FILE);
+  const sqliteManifest = join(BUNDLED_OUT_DIR, "libmyc-sqlite3.json");
+  if (!(await exists(sqliteLib)) || !(await exists(sqliteManifest))) {
+    throw new Error(`нет ${sqliteLib}: сначала bun scripts/build-sqlite.ts (нужна macOS)`);
+  }
+  const built = JSON.parse(await readFile(sqliteManifest, "utf8")) as { version: string; sha256: string };
+  const libSha = new Bun.CryptoHasher("sha256").update(await readFile(sqliteLib)).digest("hex");
+  if (built.version !== RELEASES.bundled.version || built.sha256 !== libSha) {
+    throw new Error(
+      `${sqliteLib}: собрана ${built.version} (sha256 ${built.sha256.slice(0, 12)}…), а скрипт зашивает ` +
+        `${RELEASES.bundled.version}, файл — sha256 ${libSha.slice(0, 12)}…: пересоберите bun scripts/build-sqlite.ts`,
+    );
+  }
+  await mkdir(join(OUT, "vendor/sqlite"), { recursive: true });
+  for (const f of [BUNDLED_SQLITE_FILE, "libmyc-sqlite3.json", "README-sqlite.txt"]) {
+    await cp(join(BUNDLED_OUT_DIR, f), join(OUT, "vendor/sqlite", f));
+  }
+
   // README пишет другой агент; если он есть — кладём, нет — пакет соберётся,
   // но npm покажет пустую страницу.
   for (const f of ["README.md", "LICENSE"]) {
@@ -252,7 +300,7 @@ async function main(): Promise<void> {
 
   await writeFile(join(OUT, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
-  const proc = Bun.spawn(["npm", "pack", "--json", "--pack-destination", join(ROOT, "dist")], {
+  const proc = Bun.spawn(["npm", "pack", "--json", "--pack-destination", DEST], {
     cwd: OUT,
     stdout: "pipe",
     stderr: "inherit",
@@ -264,10 +312,17 @@ async function main(): Promise<void> {
     size: number;
     unpackedSize: number;
     entryCount: number;
+    files: Array<{ path: string; size: number }>;
   }>;
   const t = info[0];
   if (t === undefined) throw new Error("npm pack ничего не вернул");
-  console.log(`тарбол   ${join(ROOT, "dist", t.filename)}`);
+  // Файл в каталоге ещё не значит «в тарболе»: `files` манифеста решает сам.
+  const packedSqlite = t.files.find((f) => f.path === `vendor/sqlite/${BUNDLED_SQLITE_FILE}`);
+  if (packedSqlite === undefined) {
+    throw new Error(`в тарболе нет vendor/sqlite/${BUNDLED_SQLITE_FILE}`);
+  }
+  console.log(`sqlite   ${RELEASES.bundled.version}, ${(packedSqlite.size / 1_048_576).toFixed(2)} МБ в пакете`);
+  console.log(`тарбол   ${join(DEST, t.filename)}`);
   console.log(`сжатый   ${(t.size / 1_048_576).toFixed(2)} МБ`);
   console.log(`распакованный ${(t.unpackedSize / 1_048_576).toFixed(2)} МБ`);
   console.log(`файлов   ${t.entryCount}`);
