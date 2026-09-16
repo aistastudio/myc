@@ -351,12 +351,11 @@
         "title_en": "core and tasks",
         "title_ru": "ядро и задачи",
         "status": "open",
-        "done": 40,
+        "done": 41,
         "total": 43,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-e7gn61sp2mfp", "status": "open", "priority": 0, "title": "Приёмка M0: myc заменяет beads в реальном проекте" },
           { "id": "memory-tatk1jg3qjfs", "status": "open", "priority": 2, "title": "Хук post-edit платит за граф модулей дренажа на каждую правку агента" },
           { "id": "memory-vt0rkpv0xwn2", "status": "open", "priority": 2, "title": "Справедливость очереди ready между агентами" }
         ]
@@ -1144,14 +1143,9 @@
     "epics": [
       {
         "id": "memory-5xravkn0anzk",
-        "en": "The core works and this project runs on it; what is open is the formal acceptance and two known costs.",
-        "ru": "Ядро работает, и этот проект живёт на нём; открыты формальная приёмка и две известные цены.",
+        "en": "The core works, this project and a second one run on it, and the milestone's acceptance is passed; what is open is two known costs.",
+        "ru": "Ядро работает, на нём живут этот проект и второй, приёмка вехи пройдена; открыты две известные цены.",
         "items": [
-          {
-            "id": "memory-e7gn61sp2mfp",
-            "en": "Acceptance: a live project works a week only through myc — no return to beads, no hand repair of the database.",
-            "ru": "Приёмка: живой проект неделю работает только через myc — без возврата к beads и без ручного ремонта базы."
-          },
           {
             "id": "memory-vt0rkpv0xwn2",
             "en": "A fair ready queue between agents: concurrent claims are correct, but the winner of the race keeps winning.",
