@@ -56,6 +56,12 @@ function renderExportHuman(raw: unknown): string {
     `  written ${d.files.written.length}, unchanged ${d.files.unchanged.length}` +
       (d.files.removed.length > 0 ? `, projections removed ${d.files.removed.length}` : ""),
   ];
+  if (d.backfilled.length > 0) {
+    lines.push(
+      `  ${d.backfilled.length} close${d.backfilled.length === 1 ? "" : "s"} written by an older build ` +
+        "went into the oplog now",
+    );
+  }
   if (d.pendingImport > 0) {
     lines.push(
       `  ! the files hold ${d.pendingImport} operation${d.pendingImport === 1 ? "" : "s"} ` +
@@ -88,7 +94,11 @@ export function createExportCommand(deps: StoreDeps = realStoreDeps): Command {
       try {
         let result: ExportResult;
         try {
-          result = exportGraph(h.driver, resolveGraphDir(ctx));
+          // Движок передаётся, чтобы закрытия, записанные старым бинарём
+          // строкой claim, выразились LWW-записями и уехали ЭТИМ же экспортом
+          // (S38: без него они только называются в unexpressedCloses и ждут
+          // ближайшего импорта на этой машине).
+          result = exportGraph(h.driver, resolveGraphDir(ctx), { store: h.store });
         } catch (e) {
           // Коллизия op_id — не сбой программы, а состояние каталога, которое
           // человек может разобрать (S65). Общий обработчик выдавал за неё
@@ -105,6 +115,13 @@ export function createExportCommand(deps: StoreDeps = realStoreDeps): Command {
             };
           }
           throw e;
+        }
+        if (result.unexpressedCloses.length > 0) {
+          ctx.warn(
+            "export.unexpressed_closes",
+            `${result.unexpressedCloses.length} closed task(s) closed by an older build are not in the oplog yet — ` +
+              "they go out with the next export",
+          );
         }
         if (result.pendingImport > 0) {
           ctx.warn(

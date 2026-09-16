@@ -279,9 +279,14 @@ export const Q = defineQueries({
     params: [],
   },
 
-  // ---- отложенные операции (myc-qie.9) ------------------------------------
-  // Повтор op_id — та же операция, приехавшая ещё раз, пока её зависимости
-  // не выполнены: молча оставляем первую запись.
+  // ---- отложенные операции (myc-qie.9, memory-nvx51d0kgf2t) --------------
+  // Повтор op_id — та же операция, приехавшая ещё раз: оставляем первую
+  // запись. Её `needs` мог устареть (один конец ребра с тех пор появился), и
+  // при прежнем дренаже «только по рождённым в applyOps» строка так и ждала
+  // бы узел, который давно есть. Теперь это не ловушка: строка, чей `needs`
+  // уже есть в базе, отпускается pending_ready в той же транзакции, и
+  // перекладывает ключ сам дренаж. Upsert здесь ничего наблюдаемого не
+  // меняет (проверено мутацией) и не нужен.
   pending_insert: {
     name: "pending_insert",
     sql: `INSERT INTO oplog_pending (op_id, needs, origin, op, parked_at)
@@ -294,21 +299,45 @@ export const Q = defineQueries({
     sql: "DELETE FROM oplog_pending WHERE op_id = ?1",
     params: ["op_id"],
   },
-  pending_for_needs: {
-    name: "pending_for_needs",
-    sql: `SELECT op_id, needs, origin, op FROM oplog_pending
-           WHERE needs = ?1 ORDER BY op_id`,
-    params: ["needs"],
+  pending_any: {
+    name: "pending_any",
+    sql: "SELECT 1 AS x FROM oplog_pending LIMIT 1",
+    params: [],
+  },
+  /**
+   * Готовые к применению: узел, которого операция ждёт, уже есть — КАК БЫ
+   * он ни появился (родился в applyOps, создан локально, пришёл переездом).
+   * Прежний дренаж смотрел только на узлы, рождённые в той же транзакции
+   * applyOps, и всё остальное застревало навсегда. Таблица почти всегда
+   * пуста: скан её плюс PK-спуск в nodes на строку.
+   */
+  pending_ready: {
+    name: "pending_ready",
+    sql: `SELECT p.op_id, p.needs, p.origin, p.op FROM oplog_pending p
+           WHERE EXISTS (SELECT 1 FROM nodes n WHERE n.id = p.needs)
+           ORDER BY p.parked_at, p.op_id`,
+    params: [],
+  },
+  /** Фантомы: операция уже в оплоге, а строка ожидания осталась. */
+  pending_phantoms_delete: {
+    name: "pending_phantoms_delete",
+    sql: `DELETE FROM oplog_pending
+           WHERE EXISTS (SELECT 1 FROM oplog o WHERE o.op_id = oplog_pending.op_id)`,
+    params: [],
   },
   pending_list: {
     name: "pending_list",
-    sql: `SELECT op_id, needs, origin, op FROM oplog_pending
+    sql: `SELECT op_id, needs, origin, op FROM oplog_pending p
+           WHERE NOT EXISTS (SELECT 1 FROM oplog o WHERE o.op_id = p.op_id)
            ORDER BY parked_at, op_id LIMIT ?1`,
     params: ["limit"],
   },
+  // Честный счётчик: уже журналированная операция не ждёт ничего, даже если
+  // её строка ожидания пережила применение (база старого кода).
   pending_count: {
     name: "pending_count",
-    sql: "SELECT count(*) AS n FROM oplog_pending",
+    sql: `SELECT count(*) AS n FROM oplog_pending p
+           WHERE NOT EXISTS (SELECT 1 FROM oplog o WHERE o.op_id = p.op_id)`,
     params: [],
   },
 
@@ -378,6 +407,75 @@ export const Q = defineQueries({
     sql: "UPDATE nodes SET excerpt = ?2, content_hash = ?3 WHERE id = ?1",
     params: ["id", "excerpt", "content_hash"],
   },
+
+  // ---- контент-дубликаты (memory-0fs4rfa6xmha) ----------------------------
+  // Предикат домена ux_nodes_content (миграция 9) повторён дословно: только
+  // так планировщик берёт частичный индекс, а не SCAN nodes.
+  node_set_content_hash: {
+    name: "node_set_content_hash",
+    sql: "UPDATE nodes SET content_hash = ?2 WHERE id = ?1",
+    params: ["id", "content_hash"],
+  },
+  node_content_row: {
+    name: "node_content_row",
+    sql: `SELECT kind, scope, title, body, content_hash,
+                 (deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL) AS indexed
+            FROM nodes WHERE id = ?1`,
+    params: ["id"],
+  },
+  /**
+   * Группа одного канонического хеша в (scope, kind): держатель канона и
+   * пониженные `<канон>:<id>`. Диапазон [канон, канон || ';') ровно их и
+   * покрывает: ':' — 0x3A, ';' — 0x3B, а другой 64-символьный hex-канон,
+   * больший этого, отличается раньше и выходит за верхнюю границу.
+   * Старшинство — часы set(kind), то есть момент создания узла: они
+   * реплицируются, и порядок одинаков на всех репликах.
+   */
+  content_group: {
+    name: "content_group",
+    sql: `SELECT n.id AS id, n.content_hash AS content_hash,
+                 CAST(fc.hlc AS TEXT) AS born_hlc, fc.site_id AS born_site
+            FROM nodes n
+            LEFT JOIN field_clock fc ON fc.entity_id = n.id AND fc.field = 'kind'
+           WHERE n.scope = ?1 AND n.kind = ?2
+             AND n.content_hash >= ?3 AND n.content_hash < ?4
+             AND n.deleted_at IS NULL AND json_extract(n.attrs,'$.external_ref') IS NULL`,
+    params: ["scope", "kind", "lo", "hi"],
+  },
+  /** Все пониженные дубликаты с их каноническим узлом — для doctor и web. */
+  content_duplicates: {
+    name: "content_duplicates",
+    sql: `SELECT l.id AS id, w.id AS "of", l.scope AS scope, l.kind AS kind
+            FROM nodes l
+            JOIN nodes w
+              ON w.scope = l.scope AND w.kind = l.kind
+             AND w.content_hash = substr(l.content_hash, 1, instr(l.content_hash, ':') - 1)
+             AND w.deleted_at IS NULL AND json_extract(w.attrs,'$.external_ref') IS NULL
+           WHERE instr(l.content_hash, ':') > 0
+             AND l.deleted_at IS NULL AND json_extract(l.attrs,'$.external_ref') IS NULL
+           ORDER BY l.scope, l.kind, l.id`,
+    params: [],
+  },
+  content_duplicates_count: {
+    name: "content_duplicates_count",
+    sql: `SELECT count(*) AS n FROM nodes
+           WHERE instr(content_hash, ':') > 0
+             AND deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL`,
+    params: [],
+  },
+  // myc_health — то, что читают web и /v1/health (И2). Смена состояния
+  // двигает since, повтор того же состояния — нет.
+  health_set: {
+    name: "health_set",
+    sql: `INSERT INTO myc_health (component, state, reason, since, detail)
+          VALUES (?1, ?2, ?3, ?4, ?5)
+          ON CONFLICT(component) DO UPDATE
+            SET reason = excluded.reason, detail = excluded.detail,
+                since = CASE WHEN myc_health.state = excluded.state
+                             THEN myc_health.since ELSE excluded.since END,
+                state = excluded.state`,
+    params: ["component", "state", "reason", "since", "detail"],
+  },
   node_set_attr: {
     name: "node_set_attr",
     sql: `UPDATE nodes
@@ -430,15 +528,17 @@ export const Q = defineQueries({
       "attrs",
     ],
   },
-  // deleted_at попадает в SET намеренно: триггеры trg_blk_del/trg_blk_res
-  // объявлены как UPDATE OF deleted_at, и только присутствие колонки в SET
-  // заставляет их сработать. Сами триггеры защищены условиями по old/new,
-  // поэтому запись того же значения счётчик не двигает.
-  edge_revive: {
-    name: "edge_revive",
+  // Строка ребра — функция от множества OR-Set (memory-86eqge02q8rd): все
+  // реплицируемые колонки переписываются из пересчёта целиком. deleted_at
+  // попадает в SET намеренно: триггеры trg_blk_del/trg_blk_res объявлены как
+  // UPDATE OF deleted_at, и только присутствие колонки в SET заставляет их
+  // сработать. Сами триггеры защищены условиями по old/new, поэтому запись
+  // того же значения счётчик не двигает.
+  edge_project: {
+    name: "edge_project",
     sql: `UPDATE edges
-             SET weight = ?4, add_tag = ?5, actor = ?6, hlc = ?7, site_id = ?8,
-                 attrs = ?9, deleted_at = ?10
+             SET weight = ?4, add_tag = ?5, hlc = ?6, site_id = ?7,
+                 created_at = ?8, deleted_at = ?9
            WHERE src = ?1 AND type = ?2 AND dst = ?3`,
     params: [
       "src",
@@ -446,31 +546,59 @@ export const Q = defineQueries({
       "dst",
       "weight",
       "add_tag",
-      "actor",
       "hlc",
       "site_id",
-      "attrs",
+      "created_at",
       "deleted_at",
     ],
   },
-  edge_set_deleted: {
-    name: "edge_set_deleted",
-    sql: `UPDATE edges SET deleted_at = ?4
+  /** Локальные, нереплицируемые колонки ребра — пишет только свой addEdge. */
+  edge_set_local: {
+    name: "edge_set_local",
+    sql: `UPDATE edges SET actor = ?4, attrs = ?5
            WHERE src = ?1 AND type = ?2 AND dst = ?3`,
-    params: ["src", "type", "dst", "deleted_at"],
+    params: ["src", "type", "dst", "actor", "attrs"],
   },
+  /**
+   * Множество add-тегов ребра. Отдельной таблицы у него нет и не нужно:
+   * каждое применённое добавление уже лежит в оплоге строкой edge_add с
+   * тегом в value (журнал пишется ДО проекции), а оплог — источник истины
+   * (S42). Один спуск по ix_oplog_entity(entity_id, hlc); у ребра таких
+   * строк единицы. Компактирование оплога (§9.5, не реализовано) обязано
+   * сохранять строки edge_add живых тегов — иначе ребро потеряет добавления.
+   */
+  edge_adds_of: {
+    name: "edge_adds_of",
+    sql: `SELECT value, CAST(hlc AS TEXT) AS hlc, site_id FROM oplog
+           WHERE entity_id = ?1 AND op = 'edge_add'`,
+    params: ["entity_id"],
+  },
+  // Тумбстоун одного тега мог прийти от нескольких удалений. Хранится самое
+  // позднее по (hlc, site_id) — не «первое применённое»: DO NOTHING делал
+  // deleted_at зависимым от порядка доставки.
   edge_tombstone_insert: {
     name: "edge_tombstone_insert",
     sql: `INSERT INTO edge_tombstones (src, type, dst, tag, hlc, site_id)
           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-          ON CONFLICT(src, type, dst, tag) DO NOTHING`,
+          ON CONFLICT(src, type, dst, tag) DO UPDATE
+            SET hlc = excluded.hlc, site_id = excluded.site_id
+          WHERE excluded.hlc > edge_tombstones.hlc
+             OR (excluded.hlc = edge_tombstones.hlc AND excluded.site_id > edge_tombstones.site_id)`,
     params: ["src", "type", "dst", "tag", "hlc", "site_id"],
   },
-  edge_tombstone_get: {
-    name: "edge_tombstone_get",
-    sql: `SELECT CAST(hlc AS TEXT) AS hlc, site_id FROM edge_tombstones
-           WHERE src = ?1 AND type = ?2 AND dst = ?3 AND tag = ?4`,
-    params: ["src", "type", "dst", "tag"],
+  /** Реплицируемое состояние строк рёбер — сверка ремонта reprojectEdges. */
+  edges_state: {
+    name: "edges_state",
+    sql: `SELECT src, type, dst, weight, add_tag, CAST(hlc AS TEXT) AS hlc, site_id,
+                 created_at, deleted_at
+            FROM edges ORDER BY src, type, dst`,
+    params: [],
+  },
+  edge_tombstones_of: {
+    name: "edge_tombstones_of",
+    sql: `SELECT tag, CAST(hlc AS TEXT) AS hlc FROM edge_tombstones
+           WHERE src = ?1 AND type = ?2 AND dst = ?3`,
+    params: ["src", "type", "dst"],
   },
   edges_from: {
     name: "edges_from",
@@ -660,6 +788,35 @@ export const Q = defineQueries({
                  )`,
     params: ["scope", "kind", "now_ms"],
   },
+  /**
+   * Бэкфилл закрытий (memory-tvw65jjgaheh): последнее по часам закрытие
+   * через claim, которое НЕ выражено LWW-записью status — ни одна запись
+   * статуса в field_clock не новее его. До правки closeClaimed журналировал
+   * только строку op='claim' (она не реплицируется) и не двигал field_clock,
+   * так что это ровно закрытия, до реплик не доехавшие. Узел, чей статус
+   * после закрытия поменяла обычная правка, сюда не попадает: закрытие
+   * перекрыто, догонять нечего. Полный проход по оплогу (индекса по op нет) —
+   * это экспорт, не горячий путь; экспорт и так читает оплог целиком.
+   */
+  claim_close_unexpressed: {
+    name: "claim_close_unexpressed",
+    sql: `SELECT c.entity_id AS id, c.scope AS scope, c.ts_ms AS ts_ms, c.value AS value,
+                 c.site_id AS site_id
+            FROM oplog c
+           WHERE c.op = 'claim' AND json_extract(c.value, '$.action') = 'close'
+             AND EXISTS (SELECT 1 FROM nodes n WHERE n.id = c.entity_id)
+             AND NOT EXISTS (
+                   SELECT 1 FROM oplog c2
+                    WHERE c2.entity_id = c.entity_id AND c2.op = 'claim'
+                      AND json_extract(c2.value, '$.action') = 'close'
+                      AND (c2.hlc > c.hlc OR (c2.hlc = c.hlc AND c2.site_id > c.site_id)))
+             AND NOT EXISTS (
+                   SELECT 1 FROM field_clock fc
+                    WHERE fc.entity_id = c.entity_id AND fc.field = 'status'
+                      AND (fc.hlc > c.hlc OR (fc.hlc = c.hlc AND fc.site_id >= c.site_id)))
+           ORDER BY c.seq`,
+    params: [],
+  },
   // Анти-паттерн из §9.4 (SELECT → UPDATE без предиката) — живёт в реестре
   // только как эталон поломки для мутационных тестов claim.test.ts.
   claim_twostep_node: {
@@ -777,6 +934,37 @@ export interface ApplyResult {
    * GraphError graph.clock_collision.
    */
   readonly collided: readonly string[];
+  /**
+   * Контент-дубликаты (memory-0fs4rfa6xmha), затронутые этим пакетом: два
+   * живых узла с одним (scope, kind, title, body) — обычно один и тот же
+   * текст, записанный независимо на двух машинах. Уникальный индекс
+   * ux_nodes_content такой пары не пускает, и раньше UNIQUE откатывал весь
+   * пакет, а каждая следующая синхронизация падала тем же исключением.
+   * Теперь канон остаётся у старшего узла (часы set(kind), одинаково на всех
+   * репликах), у младшего производный content_hash понижен до `<канон>:<id>`,
+   * данные обоих целы. `of` — узел, держащий канон. Молчать нельзя (И2):
+   * список уезжает наверх, итог — в myc_health 'sync.duplicates' и
+   * contentDuplicates().
+   */
+  readonly duplicates: readonly ContentDuplicate[];
+}
+
+export interface ContentDuplicate {
+  /** Пониженный узел. */
+  readonly id: string;
+  /** Узел, держащий канонический content_hash. */
+  readonly of: string;
+}
+
+/** Ключ группы контента узла до правки в этой транзакции. */
+interface ContentKey {
+  readonly scope: string;
+  readonly kind: string;
+  readonly canon: string;
+  /** Узел был в домене ux_nodes_content (живой, без external_ref). */
+  readonly indexed: boolean;
+  /** Держал пониженный хеш — был проигравшим дубликатом до транзакции. */
+  readonly demoted: boolean;
 }
 
 /** Счётчики одного вызова applyOps плюс рабочие очереди транзакции. */
@@ -787,10 +975,74 @@ interface ApplyTally {
   readonly deferred: string[];
   readonly released: string[];
   readonly collided: string[];
-  /** Узлы, у которых менялись title/body — пересчёт производных в конце. */
-  readonly dirty: Set<string>;
-  /** Узлы, материализованные в этой транзакции — ключи дренажа очереди. */
-  readonly born: string[];
+  readonly duplicates: ContentDuplicate[];
+  /**
+   * Узлы, чьё членство в группе контента могло поменяться (title, body,
+   * scope, deleted_at, attrs.external_ref, рождение): ключ группы ДО первой
+   * правки, `null` — узел родился в этой транзакции. Пересчёт — settleContent.
+   */
+  readonly content: Map<string, ContentKey | null>;
+  /** В oplog_pending есть строки: применённую операцию надо из неё вычеркнуть. */
+  pendingKnown: boolean;
+}
+
+/** Поля, от которых зависит членство узла в ux_nodes_content. */
+const CONTENT_FIELDS: ReadonlySet<string> = new Set([
+  "title",
+  "body",
+  "scope",
+  "deleted_at",
+  "attrs.external_ref",
+]);
+
+/**
+ * Производный хеш проигравшего дубликата. ':' в каноне (hex sha256) не
+ * встречается, id уникален — значение уникально по построению, и UNIQUE
+ * ux_nodes_content с ним столкнуться не может ни в какой момент транзакции.
+ */
+function demotedContentHash(canon: string, id: string): string {
+  return `${canon}:${id}`;
+}
+
+function canonOf(stored: string): string {
+  const at = stored.indexOf(":");
+  return at < 0 ? stored : stored.slice(0, at);
+}
+
+/**
+ * Старшинство в группе контента: часы set(kind) — момент создания узла,
+ * реплицируемый и одинаковый везде, — затем сайт, затем id. Узел без часов
+ * kind (не бывает при целом оплоге) идёт последним.
+ */
+function olderContent(a: ContentMember, b: ContentMember): boolean {
+  if (a.born_hlc !== null && b.born_hlc !== null) {
+    const c = compareClock(
+      readHlc(a.born_hlc),
+      a.born_site ?? "",
+      readHlc(b.born_hlc),
+      b.born_site ?? "",
+    );
+    if (c !== 0) return c < 0;
+  } else if (a.born_hlc !== null) {
+    return true;
+  } else if (b.born_hlc !== null) {
+    return false;
+  }
+  return a.id < b.id;
+}
+
+function newTally(): ApplyTally {
+  return {
+    applied: 0,
+    duplicate: 0,
+    stale: 0,
+    deferred: [],
+    released: [],
+    collided: [],
+    duplicates: [],
+    content: new Map(),
+    pendingKnown: false,
+  };
 }
 
 interface PendingRow {
@@ -816,6 +1068,51 @@ interface ClockRow {
 interface EdgeClockRow extends ClockRow {
   readonly add_tag: string;
   readonly deleted_at: number | null;
+}
+
+/** Одно добавление OR-Set ребра, прочитанное из оплога. */
+interface EdgeAdd {
+  readonly tag: string;
+  readonly weight: number;
+  readonly hlc: Hlc;
+  readonly site: string;
+}
+
+/** Порядок добавлений: часы, сайт, тег — полный и одинаковый на любой реплике. */
+function compareEdgeAdd(a: EdgeAdd, b: EdgeAdd): number {
+  const c = compareClock(a.hlc, a.site, b.hlc, b.site);
+  if (c !== 0) return c;
+  return a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0;
+}
+
+interface EdgeRowState {
+  readonly src: string;
+  readonly type: string;
+  readonly dst: string;
+}
+
+interface ContentRow {
+  readonly kind: string;
+  readonly scope: string;
+  readonly title: string;
+  readonly body: string | null;
+  readonly content_hash: string;
+  readonly indexed: number;
+}
+
+interface ContentMember {
+  readonly id: string;
+  readonly content_hash: string;
+  readonly born_hlc: string | null;
+  readonly born_site: string | null;
+}
+
+interface ClaimCloseRow {
+  readonly id: string;
+  readonly scope: string;
+  readonly ts_ms: number;
+  readonly value: string;
+  readonly site_id: string;
 }
 
 interface NodeHeadRow {
@@ -874,6 +1171,8 @@ type ClaimAction = "claim" | "renew" | "release" | "close";
 
 const META_SITE_ID = "site_id";
 const META_LAST_SEQ = "last_seq";
+/** Строки рёбер пересобраны из множества OR-Set хотя бы раз (memory-86eqge02q8rd). */
+export const META_EDGES_REPROJECTED = "edges_reprojected";
 
 /** seq из op_id = `<site_id>:<seq>` (makeOpId); битый хвост читается как 0. */
 function seqOfOpId(opId: string, siteId: string): number {
@@ -1190,6 +1489,15 @@ export class GraphStore {
         ]);
       }
       tx.run(Q.counter_set, [id, "seen_count", this.siteId, 1]);
+      // memory-nvx51d0kgf2t: узел с явным id мог быть нужен отложенной чужой
+      // операции. Её зависимость выполнена здесь и сейчас, а не «когда-нибудь
+      // при следующем applyOps» — пустая таблица стоит одного спуска.
+      if (tx.one(Q.pending_any, []) !== undefined) {
+        const tally = newTally();
+        tally.pendingKnown = true;
+        this.drainPending(tx, tally);
+        this.settleContent(tx, tally, false);
+      }
       this.persistSeq(tx);
 
       const created = tx.one<RawRow>(Q.node_get, [id]);
@@ -1330,7 +1638,7 @@ export class GraphStore {
       }
       const op = this.ops.edgeAdd(src, edgeType, dst, opts.weight);
       this.journalLocal(tx, op, "edge", entityId, source.scope);
-      if (this.projectEdgeAdd(tx, op, attrs) === "collided") {
+      if (this.projectEdgeAdd(tx, op, { actor: this.actor, attrs }) === "collided") {
         throw collisionError(op, entityId);
       }
       if (edgeType === "parent") this.applyParentEdgeAdd(tx, src, dst);
@@ -1345,9 +1653,13 @@ export class GraphStore {
   }
 
   /**
-   * Мягкое удаление ребра. В операцию попадают теги, живые в базе НА МОМЕНТ
-   * удаления, — добавления, которых этот сайт не видел, переживут удаление.
-   * Это add-wins из OR-Set, а не «удалить всё, что похоже».
+   * Мягкое удаление ребра. В операцию попадают ВСЕ теги, живые в базе НА
+   * МОМЕНТ удаления, — добавления, которых этот сайт не видел, переживут
+   * удаление. Это add-wins из OR-Set, а не «удалить всё, что похоже».
+   * Прежде уходил один тег представителя: второе живое добавление, уже
+   * увиденное этим сайтом, удаление переживало, и ребро воскресало на
+   * реплике, применившей операции в другом порядке (memory-86eqge02q8rd).
+   * Теги читаются под блокировкой записи: соседний процесс мог добавить.
    */
   removeEdge(src: string, type: EdgeKind, dst: string): boolean {
     const edgeType = assertEdgeKind(type);
@@ -1356,15 +1668,17 @@ export class GraphStore {
     const scope = this.getNode(src, true)?.scope ?? "";
     const entityId = edgeEntityId(src, edgeType, dst);
 
-    this.driver.tx("immediate", (tx) => {
+    return this.driver.tx("immediate", (tx) => {
       this.syncTail(tx);
-      const op = this.ops.edgeDel(src, edgeType, dst, [edge.add_tag]);
+      const tags = this.liveEdgeTags(tx, src, edgeType, dst);
+      if (tags.length === 0) return false;
+      const op = this.ops.edgeDel(src, edgeType, dst, tags);
       this.journalLocal(tx, op, "edge", entityId, scope);
       this.projectEdgeDel(tx, op);
       if (edgeType === "parent") this.applyParentEdgeRemove(tx, src, dst);
       this.persistSeq(tx);
+      return true;
     });
-    return true;
   }
 
   /**
@@ -1387,9 +1701,10 @@ export class GraphStore {
       return;
     }
     const oldEdge = tx.one<EdgeClockRow>(Q.edge_clock_get, [child, "parent", current]);
-    if (oldEdge !== undefined && oldEdge.deleted_at === null) {
+    const oldTags = oldEdge?.deleted_at === null ? this.liveEdgeTags(tx, child, "parent", current) : [];
+    if (oldTags.length > 0) {
       const scope = tx.one<NodeHeadRow>(Q.node_head, [child])?.scope ?? "";
-      const delOp = this.ops.edgeDel(child, "parent", current, [oldEdge.add_tag]);
+      const delOp = this.ops.edgeDel(child, "parent", current, oldTags);
       const oldEntityId = edgeEntityId(child, "parent", current);
       this.journalLocal(tx, delOp, "edge", oldEntityId, scope);
       this.projectEdgeDel(tx, delOp);
@@ -1425,10 +1740,13 @@ export class GraphStore {
    * Порядок МЕЖДУ пакетами не гарантирован в принципе (myc-qie.9): ребро
    * может приехать раньше своих концов, `set(title)` — раньше `set(kind)`.
    * Такая операция не падает и не теряется: она паркуется в oplog_pending
-   * с именем недостающего узла и применяется в той же транзакции, где этот
-   * узел материализуется — этим ли пакетом или любым следующим. Итог не
+   * с именем недостающего узла и применяется в первой транзакции, где этот
+   * узел уже есть, — как бы он ни появился (memory-nvx51d0kgf2t). Итог не
    * зависит от нарезки на пакеты: тот же набор операций в любом порядке
    * даёт то же состояние, что и упорядоченный.
+   *
+   * Контент-дубликат одного узла не роняет пакет (memory-0fs4rfa6xmha): он
+   * разрешается детерминированно и попадает в `duplicates`.
    */
   applyOps(ops: readonly Op[], origin: 0 | 1 = 0): ApplyResult {
     const sorted = [...ops].sort((a, b) =>
@@ -1445,28 +1763,24 @@ export class GraphStore {
       }
     }
 
-    const tally: ApplyTally = {
-      applied: 0,
-      duplicate: 0,
-      stale: 0,
-      deferred: [],
-      released: [],
-      collided: [],
-      dirty: new Set(),
-      born: [],
-    };
+    const tally = newTally();
 
     this.driver.tx("immediate", (tx) => {
       // Локальных op_id здесь не выдаём, но persistSeq в конце не имеет права
       // откатить myc_meta.last_seq ниже того, что уже зафиксировал соседний
       // процесс этого же site_id.
       this.syncTail(tx);
+      if (tx.one(Q.pending_any, []) !== undefined) {
+        tally.pendingKnown = true;
+        // База, где строка ожидания пережила применение своей операции.
+        tx.run(Q.pending_phantoms_delete, []);
+      }
       for (const op of sorted) {
         const needs = this.applyOne(tx, op, origin, kindInBatch, tally);
         if (needs !== undefined) this.park(tx, op, origin, needs, tally);
       }
-      this.drainPending(tx, tally);
-      for (const id of tally.dirty) this.refreshDerived(tx, id);
+      if (tally.pendingKnown) this.drainPending(tx, tally);
+      this.settleContent(tx, tally, false);
       this.persistSeq(tx);
     });
 
@@ -1477,6 +1791,7 @@ export class GraphStore {
       deferred: tally.deferred,
       released: tally.released,
       collided: tally.collided,
+      duplicates: tally.duplicates,
     };
   }
 
@@ -1502,16 +1817,18 @@ export class GraphStore {
       const entityId = edgeEntityId(src, type, dst);
       if (!this.journal(tx, op, "edge", entityId, srcHead.scope, origin)) {
         tally.duplicate++;
+        this.unpark(tx, op.op_id, tally, false);
         return undefined;
       }
       if (op.op === "edge_add") {
-        const outcome = this.projectEdgeAdd(tx, op, "{}");
+        const outcome = this.projectEdgeAdd(tx, op);
         if (outcome === "collided") tally.collided.push(op.op_id);
         else tally.applied++;
       } else {
         this.projectEdgeDel(tx, op);
         tally.applied++;
       }
+      this.unpark(tx, op.op_id, tally, true);
       return undefined;
     }
 
@@ -1525,22 +1842,24 @@ export class GraphStore {
           ? op.value
           : kindHint.get(op.entity_id);
       if (this.materializeNode(tx, op.entity_id, kind)) {
-        tally.born.push(op.entity_id);
+        // Родился в этой транзакции: прежней группы контента у него нет.
+        tally.content.set(op.entity_id, null);
         head = tx.one<NodeHeadRow>(Q.node_head, [op.entity_id]);
       }
     }
     if (head === undefined) return op.entity_id;
     if (!this.journal(tx, op, "node", op.entity_id, head.scope, origin)) {
       tally.duplicate++;
+      this.unpark(tx, op.op_id, tally, false);
       return undefined;
     }
     if (op.op === "set") {
-      const outcome = this.projectSet(tx, op);
+      const touch = CONTENT_FIELDS.has(op.field)
+        ? () => this.touchContent(tx, op.entity_id, tally)
+        : undefined;
+      const outcome = this.projectSet(tx, op, touch);
       if (outcome === "applied") {
         tally.applied++;
-        if (op.field === "title" || op.field === "body") {
-          tally.dirty.add(op.entity_id);
-        }
       } else if (outcome === "stale") {
         tally.stale++;
       } else {
@@ -1550,6 +1869,7 @@ export class GraphStore {
       this.projectInc(tx, op);
       tally.applied++;
     }
+    this.unpark(tx, op.op_id, tally, true);
     return undefined;
   }
 
@@ -1568,25 +1888,46 @@ export class GraphStore {
       JSON.stringify(op),
       this.now(),
     ]);
+    tally.pendingKnown = true;
     tally.deferred.push(op.op_id);
   }
 
   /**
-   * Применить отложенное, чьи зависимости появились в этой транзакции.
-   * Узел, материализованный при дренаже, сам попадает в очередь `born`,
-   * так что цепочки (ребро ждало узел, узел ждал kind) раскручиваются
-   * до конца одним вызовом. Операция, которой всё ещё чего-то не хватает
-   * (второй конец ребра), перекладывается на новый недостающий узел.
+   * Операция журналирована — её строка ожидания больше не нужна. Прежде она
+   * оставалась, если операцию применила повторная доставка, а не дренаж:
+   * фантом навсегда висел в pendingCount(). Применённая сейчас после
+   * парковки в прошлом вызове — это `released`: вызывающий показывал её как
+   * deferred. Повтор по op_id (`appliedNow = false`) — только уборка.
+   */
+  private unpark(tx: DbDriver, opId: string, tally: ApplyTally, appliedNow: boolean): void {
+    if (!tally.pendingKnown) return;
+    if (tx.run(Q.pending_delete, [opId]).changes === 0 || !appliedNow) return;
+    const i = tally.deferred.indexOf(opId);
+    if (i >= 0) tally.deferred.splice(i, 1);
+    if (!tally.released.includes(opId)) tally.released.push(opId);
+  }
+
+  /**
+   * Применить отложенное, чей недостающий узел уже есть в базе — как бы он
+   * ни появился: родился в этой транзакции, создан локально с явным id,
+   * приехал переездом, лежал в базе, где строка ожидания застряла при
+   * прежнем коде. Прежний дренаж видел только узлы, рождённые в той же
+   * транзакции applyOps, остальное ждало вечно (memory-nvx51d0kgf2t).
+   * Круги повторяются, пока появляются узлы: цепочки (ребро ждало узел,
+   * узел ждал kind) раскручиваются до конца. Операция, которой всё ещё
+   * чего-то не хватает (второй конец ребра), перекладывается на новый
+   * недостающий узел — которого нет, так что круг конечен.
    */
   private drainPending(tx: DbDriver, tally: ApplyTally): void {
     const none: ReadonlyMap<string, string> = new Map();
-    while (tally.born.length > 0) {
-      const id = tally.born.shift()!;
-      const rows = tx.all<PendingRow>(Q.pending_for_needs, [id]);
+    for (;;) {
+      const rows = tx.all<PendingRow>(Q.pending_ready, []);
+      if (rows.length === 0) return;
       for (const row of rows) {
         tx.run(Q.pending_delete, [row.op_id]);
         const op = JSON.parse(row.op) as Op;
         const origin: 0 | 1 = row.origin === 1 ? 1 : 0;
+        this.clock.recv(op.hlc);
         const needs = this.applyOne(tx, op, origin, none, tally);
         if (needs !== undefined) {
           // Один раз она уже в deferred этого или прошлого вызова; здесь
@@ -1597,12 +1938,16 @@ export class GraphStore {
         }
         const wasDeferredNow = tally.deferred.indexOf(row.op_id);
         if (wasDeferredNow >= 0) tally.deferred.splice(wasDeferredNow, 1);
-        tally.released.push(row.op_id);
+        if (!tally.released.includes(row.op_id)) tally.released.push(row.op_id);
       }
     }
   }
 
-  /** Сколько операций ждёт своих зависимостей — для doctor и sync (И2). */
+  /**
+   * Сколько операций ждёт своих зависимостей — для doctor и sync (И2).
+   * Честно: уже журналированная операция не ждёт ничего, даже если её
+   * строка ожидания пережила применение.
+   */
   pendingCount(): number {
     return this.driver.one<{ n: number }>(Q.pending_count, [])?.n ?? 0;
   }
@@ -1614,6 +1959,15 @@ export class GraphStore {
       needs: row.needs,
       origin: row.origin === 1 ? 1 : 0,
     }));
+  }
+
+  /**
+   * Живые контент-дубликаты с их каноническим узлом (memory-0fs4rfa6xmha) —
+   * для doctor и web. Пусто ⇒ дубликатов нет. Полный проход по nodes: это
+   * диагностика, не горячий путь.
+   */
+  contentDuplicates(): Array<{ readonly id: string; readonly of: string; readonly scope: string; readonly kind: string }> {
+    return this.driver.all(Q.content_duplicates, []);
   }
 
   /**
@@ -1773,6 +2127,15 @@ export class GraphStore {
    * Закрыть взятую задачу: status='closed' (шкала статусов task, §2.2) плюс
    * очистка lease одним CAS-стейтментом. Задача, перехваченная другим агентом,
    * у воскресшего держателя не закроется — эпоха уже не его.
+   *
+   * memory-tvw65jjgaheh: закрытие — не аренда, а конец задачи, и обязано
+   * доехать до реплик. Строка op='claim' локальна (не реплицируется, см.
+   * REPLICATED_OPS), а CAS писал status и closed_at мимо field_clock. Итог:
+   * на другой машине задача оставалась open и бралась в работу повторно, а
+   * здесь любая чужая правка статуса, старшая записи создания, молча
+   * переписывала 'closed'. Поэтому в той же транзакции закрытие выражается
+   * обычными LWW-записями — status, closed_at и assignee (кто закрыл; claim
+   * писал его в колонку без операции) — и реплицируется как любая правка.
    */
   closeClaimed(id: string, holder: string, epoch: number): boolean {
     return this.driver.tx("immediate", (tx) => {
@@ -1789,9 +2152,113 @@ export class GraphStore {
       ]);
       if (row === undefined) return false;
       this.journalClaim(tx, meta, id, row.scope, "close", holder, epoch, 0);
+      this.expressClose(tx, id, row.scope, meta.hlc.ts, holder);
       this.persistSeq(tx);
       return true;
     });
+  }
+
+  /**
+   * Закрытие как LWW-записи: status='closed', closed_at, assignee. Операции
+   * минтятся здесь, под той же блокировкой записи (myc-4dy).
+   */
+  private expressClose(
+    tx: DbDriver,
+    id: string,
+    scope: string,
+    closedAt: number,
+    holder: string,
+  ): void {
+    const sets: SetOp[] = [
+      this.ops.set(id, "status", "closed"),
+      this.ops.set(id, "closed_at", closedAt),
+    ];
+    if (holder.length > 0) sets.push(this.ops.set(id, "assignee", holder));
+    for (const op of sets) {
+      this.journalLocal(tx, op, "node", id, scope);
+      if (this.projectSet(tx, op) === "collided") throw collisionError(op, id);
+    }
+  }
+
+  /**
+   * Бэкфилл закрытий, журналированных до правки memory-tvw65jjgaheh только
+   * строкой op='claim': такие закрытия не доехали ни до одной реплики. Для
+   * каждого узла, где последнее закрытие через claim новее любой LWW-записи
+   * статуса (см. Q.claim_close_unexpressed), закрытие выражается сейчас —
+   * теми же тремя set, что пишет closeClaimed; closed_at и assignee берутся
+   * из самой строки claim. Часы у новых операций свежие, а не часы исходного
+   * закрытия: выдать старую метку под новым seq значило бы сломать
+   * инвариант «seq и hlc сайта растут вместе» (восстановление seq из хвоста
+   * оплога). Цена — окно: чужая правка статуса, сделанная между исходным
+   * закрытием и бэкфиллом и ещё не импортированная сюда, проиграет ему.
+   *
+   * Идемпотентно: после бэкфилла field_clock статуса новее строки claim,
+   * второй вызов не находит ничего. `ids` — ограничить узлами (переезд).
+   * Возвращает узлы, чьи закрытия выражены.
+   */
+  backfillClaimCloses(ids?: readonly string[]): string[] {
+    const only = ids === undefined ? undefined : new Set(ids);
+    const pick = (rows: readonly ClaimCloseRow[]): ClaimCloseRow[] =>
+      only === undefined ? [...rows] : rows.filter((r) => only.has(r.id));
+    if (pick(this.driver.all<ClaimCloseRow>(Q.claim_close_unexpressed, [])).length === 0) return [];
+    return this.driver.tx("immediate", (tx) => {
+      this.syncTail(tx);
+      // Перечитать под блокировкой: соседний процесс мог успеть сам.
+      const rows = pick(tx.all<ClaimCloseRow>(Q.claim_close_unexpressed, []));
+      const done: string[] = [];
+      for (const row of rows) {
+        let holder = "";
+        try {
+          const v = JSON.parse(row.value) as { holder?: unknown };
+          if (typeof v.holder === "string") holder = v.holder;
+        } catch {
+          // значение строки claim битое — закрываем без assignee
+        }
+        this.expressClose(tx, row.id, row.scope, row.ts_ms, holder);
+        done.push(row.id);
+      }
+      this.persistSeq(tx);
+      return done;
+    });
+  }
+
+  /**
+   * Пересобрать строки всех рёбер из множества OR-Set (оплог + тумбстоуны) —
+   * ремонт реплик, разошедшихся при прежней проекции (memory-86eqge02q8rd).
+   * Новые операции чинят только свой ключ; ключ, который больше никто не
+   * тронет, остался бы разошедшимся навсегда — дедупликация по op_id
+   * переиграть его не даст. Одна транзакция, полный проход по edges: это
+   * ремонт (doctor), не горячий путь. open_blockers ведут триггеры на
+   * deleted_at. Возвращает, сколько строк отличалось от пересчёта.
+   */
+  reprojectEdges(): number {
+    return this.driver.tx("immediate", (tx) => {
+      tx.run(Q.meta_set, [META_EDGES_REPROJECTED, "1"]);
+      const before = tx.all<EdgeRowState>(Q.edges_state, []);
+      for (const e of before) {
+        this.reprojectEdge(tx, e.src, e.type, e.dst, this.readEdgeAdds(tx, edgeEntityId(e.src, e.type, e.dst)));
+      }
+      const after = new Map(
+        tx.all<EdgeRowState>(Q.edges_state, []).map((e) => [`${e.src}|${e.type}|${e.dst}`, JSON.stringify(e)]),
+      );
+      let changed = 0;
+      for (const e of before) {
+        if (after.get(`${e.src}|${e.type}|${e.dst}`) !== JSON.stringify(e)) changed++;
+      }
+      return changed;
+    });
+  }
+
+  /**
+   * Одноразовый ремонт (см. reprojectEdges) для базы, где он ещё не шёл:
+   * флаг в myc_meta, не миграция схемы. Зовёт importGraph — точка, где
+   * реплика и так сверяется с остальными. `undefined` — ремонт уже был.
+   */
+  reprojectEdgesOnce(): number | undefined {
+    if (this.driver.one<{ value: string }>(Q.meta_get, [META_EDGES_REPROJECTED])?.value === "1") {
+      return undefined;
+    }
+    return this.reprojectEdges();
   }
 
   /** Срез lease-состояния. Для наблюдения; решения о захвате принимает только CAS. */
@@ -1906,19 +2373,21 @@ export class GraphStore {
     this.driver.tx("immediate", (tx) => {
       this.syncTail(tx);
       const ops = mint(tx);
-      let touchedText = false;
+      const tally = newTally();
       for (const op of ops) {
         this.journalLocal(tx, op, "node", entityId, scope);
         if (op.op === "set") {
-          if (this.projectSet(tx, op) === "collided") {
+          const touch = CONTENT_FIELDS.has(op.field)
+            ? () => this.touchContent(tx, entityId, tally)
+            : undefined;
+          if (this.projectSet(tx, op, touch) === "collided") {
             throw collisionError(op, entityId);
           }
-          if (op.field === "title" || op.field === "body") touchedText = true;
         } else if (op.op === "inc") {
           this.projectInc(tx, op);
         }
       }
-      if (touchedText) this.refreshDerived(tx, entityId);
+      this.settleContent(tx, tally, true);
       this.persistSeq(tx);
     });
   }
@@ -1931,8 +2400,13 @@ export class GraphStore {
    * одними часами — нарушение инварианта, а не конфликт LWW. Тихо оставить
    * «первого» значит скрыть класс ошибок (S38, myc-4dy) — исход `collided`
    * уходит наверх: локально ошибкой, в applyOps списком.
+   *
+   * `beforeWrite` зовётся ровно тогда, когда запись состоится, и ДО неё:
+   * смена scope/deleted_at/external_ref меняет членство узла в уникальном
+   * индексе ux_nodes_content, и хеш узла обязан стать уникальным раньше,
+   * чем UPDATE колонки упрётся в чужой (см. touchContent).
    */
-  private projectSet(tx: DbDriver, op: SetOp): ProjectOutcome {
+  private projectSet(tx: DbDriver, op: SetOp, beforeWrite?: () => void): ProjectOutcome {
     const spec = assertNodeField(op.field);
     const guard = tx.one<ClockRow>(Q.field_clock_get, [
       op.entity_id,
@@ -1950,6 +2424,7 @@ export class GraphStore {
         return this.sameStoredValue(tx, op, spec) ? "stale" : "collided";
       }
     }
+    beforeWrite?.();
     const hlc = packHlc(op.hlc);
     if (spec === "attr") {
       const key = attrKeyOf(op.field)!;
@@ -2005,76 +2480,38 @@ export class GraphStore {
   }
 
   /**
-   * OR-Set add (§9.3). Тумбстоун по этому же тегу означает, что удаление
-   * видело именно это добавление: ребро рождается уже мёртвым.
+   * OR-Set add (§9.3) — memory-86eqge02q8rd. Строка ребра — функция от
+   * МНОЖЕСТВА добавлений и тумбстоунов (reprojectEdge), а не от порядка
+   * применения. Прежняя проекция держала в колонке `add_tag` одного
+   * представителя и гасила ребро, когда удаление видело именно его, забывая
+   * про второе, более старое и не удалённое добавление: набор {add a,
+   * add b, del[b]} в порядке «a, b, del» давал мёртвое ребро, в порядке
+   * «b, del, a» — живое, а дедупликация по op_id не давала разойтись назад.
    *
-   * Сверх §9.3 здесь есть проверка часов: более старое добавление не
-   * перезаписывает метаданные живого ребра. В колонке `add_tag` помещается
-   * ровно один тег, то есть SQL-проекция OR-Set хранит представителя, а не
-   * всё множество; представителем обязан быть самый свежий живой add,
-   * иначе два конкурентных добавления сходились бы к разным строкам.
+   * `local` — свой addEdge: только он пишет нереплицируемые actor и attrs.
+   * Те же часы и тот же сайт у другого тега — не ничья OR-Set, а нарушение
+   * инварианта «один сайт — одна последовательность часов» (см. projectSet):
+   * исход `collided`. Проекция при этом всё равно пересчитывается — порядок
+   * добавлений полный (часы, сайт, тег), и строка остаётся функцией множества.
    */
   private projectEdgeAdd(
     tx: DbDriver,
     op: EdgeAddOp,
-    attrs: string,
+    local?: { readonly actor: string; readonly attrs: string },
   ): ProjectOutcome {
     const { src, type, dst } = splitMemoryEdgeKey(op.entity_id);
-    const tag = op.value.tag;
-    const weight = op.value.weight ?? 1.0;
-    const hlc = packHlc(op.hlc);
-    const tomb = tx.one<ClockRow>(Q.edge_tombstone_get, [src, type, dst, tag]);
-    const tombTs = tomb === undefined ? null : readHlc(tomb.hlc).ts;
-
-    const cur = tx.one<EdgeClockRow>(Q.edge_clock_get, [src, type, dst]);
-    if (cur === undefined) {
-      tx.run(Q.edge_insert, [
-        src,
-        type,
-        dst,
-        weight,
-        tag,
-        this.actor,
-        op.hlc.ts,
-        hlc,
-        op.site_id,
-        tombTs,
-        attrs,
-      ]);
-      return "applied";
-    }
-
-    const cmp = compareClock(op.hlc, op.site_id, readHlc(cur.hlc), cur.site_id);
-    // Те же часы, тот же сайт, другой тег: два добавления одного сайта в одно
-    // мгновение. Не ничья OR-Set, а нарушение инварианта — см. projectSet.
-    if (cmp === 0 && cur.add_tag !== tag) return "collided";
-    if (cmp > 0) {
-      tx.run(Q.edge_revive, [
-        src,
-        type,
-        dst,
-        weight,
-        tag,
-        this.actor,
-        hlc,
-        op.site_id,
-        attrs,
-        tombTs,
-      ]);
-      return "applied";
-    }
-    // Добавление старее текущей строки: метаданные не трогаем, но живое
-    // добавление обязано воскресить ребро — add-wins.
-    if (cur.deleted_at !== null && tombTs === null) {
-      tx.run(Q.edge_set_deleted, [src, type, dst, null]);
-    }
-    return "applied";
+    const adds = this.readEdgeAdds(tx, edgeEntityId(src, type, dst));
+    const collided = adds.some(
+      (a) => a.tag !== op.value.tag && compareClock(a.hlc, a.site, op.hlc, op.site_id) === 0,
+    );
+    this.reprojectEdge(tx, src, type, dst, adds, local);
+    return collided ? "collided" : "applied";
   }
 
   /**
-   * OR-Set remove (§9.3): тумбстоун на каждый увиденный тег, и только если
-   * текущий представитель — один из них, ребро гасится. Если `add_tag`
-   * другой, значит ребро добавлено заново: add wins, не трогаем.
+   * OR-Set remove (§9.3): тумбстоун на каждый увиденный тег, затем пересчёт.
+   * Ребро гаснет, только когда не осталось ни одного живого добавления:
+   * добавление, которого удаление не видело, его переживает (add wins).
    */
   private projectEdgeDel(tx: DbDriver, op: EdgeDelOp): void {
     const { src, type, dst } = splitMemoryEdgeKey(op.entity_id);
@@ -2082,10 +2519,89 @@ export class GraphStore {
     for (const tag of op.value.tags) {
       tx.run(Q.edge_tombstone_insert, [src, type, dst, tag, hlc, op.site_id]);
     }
-    const cur = tx.one<EdgeClockRow>(Q.edge_clock_get, [src, type, dst]);
-    if (cur === undefined || cur.deleted_at !== null) return;
-    if (!op.value.tags.includes(cur.add_tag)) return;
-    tx.run(Q.edge_set_deleted, [src, type, dst, op.hlc.ts]);
+    this.reprojectEdge(tx, src, type, dst, this.readEdgeAdds(tx, edgeEntityId(src, type, dst)));
+  }
+
+  /** Добавления ребра из оплога (Q.edge_adds_of). */
+  private readEdgeAdds(tx: DbDriver, entityId: string): EdgeAdd[] {
+    return tx
+      .all<{ value: string; hlc: string; site_id: string }>(Q.edge_adds_of, [entityId])
+      .map((row) => {
+        const v = JSON.parse(row.value) as { tag: string; weight?: number };
+        return { tag: v.tag, weight: v.weight ?? 1.0, hlc: readHlc(row.hlc), site: row.site_id };
+      });
+  }
+
+  /** Живые теги ребра — всё, что обязано уйти в edge_del, чтобы удалить его сейчас. */
+  private liveEdgeTags(tx: DbDriver, src: string, type: string, dst: string): string[] {
+    const dead = new Set(
+      tx.all<{ tag: string }>(Q.edge_tombstones_of, [src, type, dst]).map((t) => t.tag),
+    );
+    return this.readEdgeAdds(tx, edgeEntityId(src, type, dst))
+      .map((a) => a.tag)
+      .filter((tag) => !dead.has(tag))
+      .sort();
+  }
+
+  /**
+   * Строка ребра из множества OR-Set — одна и та же на любой реплике с тем
+   * же набором операций, в любом порядке их применения:
+   *
+   *   живо         ⇔ есть добавление, чей тег не покрыт тумбстоуном;
+   *   представитель = старшее по (hlc, site_id, tag) среди живых добавлений,
+   *                   а у мёртвого ребра — среди всех: его тег, вес и часы
+   *                   идут в add_tag, weight, hlc/site_id;
+   *   created_at   = самое раннее добавление;
+   *   deleted_at   = у мёртвого — самое позднее удаление его тегов, иначе NULL.
+   *
+   * Добавлений ещё нет (удаление приехало раньше) — строки нет, лежат одни
+   * тумбстоуны; они учтутся, когда добавление приедет.
+   */
+  private reprojectEdge(
+    tx: DbDriver,
+    src: string,
+    type: string,
+    dst: string,
+    adds: readonly EdgeAdd[],
+    local?: { readonly actor: string; readonly attrs: string },
+  ): void {
+    if (adds.length === 0) return;
+    const tombs = new Map<string, number>();
+    for (const t of tx.all<{ tag: string; hlc: string }>(Q.edge_tombstones_of, [src, type, dst])) {
+      tombs.set(t.tag, readHlc(t.hlc).ts);
+    }
+    const live = adds.filter((a) => !tombs.has(a.tag));
+    const pool = live.length > 0 ? live : adds;
+    let rep = pool[0]!;
+    for (const a of pool) if (compareEdgeAdd(a, rep) > 0) rep = a;
+    let createdAt = adds[0]!.hlc.ts;
+    for (const a of adds) if (a.hlc.ts < createdAt) createdAt = a.hlc.ts;
+    let deletedAt: number | null = null;
+    if (live.length === 0) {
+      for (const a of adds) {
+        const ts = tombs.get(a.tag)!;
+        if (deletedAt === null || ts > deletedAt) deletedAt = ts;
+      }
+    }
+    const hlc = packHlc(rep.hlc);
+    if (tx.one<EdgeClockRow>(Q.edge_clock_get, [src, type, dst]) === undefined) {
+      tx.run(Q.edge_insert, [
+        src,
+        type,
+        dst,
+        rep.weight,
+        rep.tag,
+        local?.actor ?? this.actor,
+        createdAt,
+        hlc,
+        rep.site,
+        deletedAt,
+        local?.attrs ?? "{}",
+      ]);
+      return;
+    }
+    tx.run(Q.edge_project, [src, type, dst, rep.weight, rep.tag, hlc, rep.site, createdAt, deletedAt]);
+    if (local !== undefined) tx.run(Q.edge_set_local, [src, type, dst, local.actor, local.attrs]);
   }
 
   /**
@@ -2116,7 +2632,10 @@ export class GraphStore {
       salience: 1.0,
       seen_count: 0,
       head_id: null,
-      content_hash: contentHash(kind, id, null),
+      // Уникальный по построению (см. demotedContentHash): узлы, рождённые в
+      // одном пакете до своих title/body, не сталкиваются в ux_nodes_content.
+      // Настоящий хеш ставит settleContent в конце транзакции.
+      content_hash: demotedContentHash(contentHash(kind, "", null), id),
       acl: "team",
       owner_id: "",
       team_id: "",
@@ -2141,14 +2660,145 @@ export class GraphStore {
     return true;
   }
 
-  /** Пересчёт производных после правки title/body (решение S5). */
-  private refreshDerived(tx: DbDriver, id: string): void {
-    const head = tx.one<NodeHeadRow>(Q.node_head, [id]);
-    if (head === undefined) return;
-    tx.run(Q.node_refresh_derived, [
-      id,
-      makeExcerpt(head.body),
-      contentHash(head.kind, head.title, head.body),
+  // -------------------------------------------------------------------------
+  // Контент-дубликаты (memory-0fs4rfa6xmha)
+  //
+  // ux_nodes_content запрещает два живых узла с одним (scope, kind,
+  // content_hash). Локально это правило верно и остаётся: createNode и правка
+  // текста в дубликат по-прежнему падают. Но два сайта вправе НЕЗАВИСИМО
+  // записать один и тот же текст (два агента запомнили один факт, два якоря
+  // на одном участке кода), и мерж CRDT не может такую пару отвергнуть.
+  // Раньше refreshDerived упирался в UNIQUE и откатывал весь пакет, а каждая
+  // следующая синхронизация падала тем же исключением.
+  //
+  // Правило (одно на всех репликах): в группе живых узлов одного канона
+  // канонический content_hash держит СТАРШИЙ — по часам set(kind), то есть по
+  // моменту создания, при равенстве по id; остальные держат пониженный
+  // `<канон>:<id>`. content_hash — производная, не реплицируемое поле, так
+  // что понижение ничего не пишет в оплог и не трогает данных узла. Уходит
+  // победитель (удалён, правлен, переехал) — канон переходит к следующему.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Первая в транзакции правка поля, от которого зависит членство узла в
+   * ux_nodes_content: запомнить группу ДО правки и сразу сделать хеш узла
+   * уникальным — последующие UPDATE колонок (scope, deleted_at, attrs) уже
+   * не могут упереться в UNIQUE. Окончательный хеш ставит settleContent.
+   */
+  private touchContent(tx: DbDriver, id: string, tally: ApplyTally): void {
+    if (tally.content.has(id)) return;
+    const row = tx.one<ContentRow>(Q.node_content_row, [id]);
+    if (row === undefined) return;
+    const canon = canonOf(row.content_hash);
+    tally.content.set(id, {
+      scope: row.scope,
+      kind: row.kind,
+      canon,
+      indexed: row.indexed === 1,
+      demoted: canon !== row.content_hash,
+    });
+    tx.run(Q.node_set_content_hash, [id, demotedContentHash(canon, id)]);
+  }
+
+  /**
+   * Конец транзакции: производные (excerpt, content_hash, решение S5) всех
+   * тронутых узлов и перебалансировка их прежних и новых групп.
+   *
+   * `local` — своя запись: создать дубликат она не вправе, как и прежде.
+   * Узел, ВОШЕДШИЙ в чужую группу (новый текст, новый scope, восстановление),
+   * занимает канон прямой записью — занятый канон даёт тот же UNIQUE, что и
+   * до правки. Прежние группы при этом перебалансируются так же, как при
+   * репликации: иначе канон ушедшего узла остался бы ничьим здесь и
+   * перешёл бы к следующему на реплике — расхождение того же класса.
+   */
+  private settleContent(tx: DbDriver, tally: ApplyTally, local: boolean): void {
+    if (tally.content.size === 0) return;
+    const groups = new Map<string, { scope: string; kind: string; canon: string }>();
+    const groupKey = (scope: string, kind: string, canon: string): string => {
+      const key = `${scope}\u0000${kind}\u0000${canon}`;
+      if (!groups.has(key)) groups.set(key, { scope, kind, canon });
+      return key;
+    };
+    const joined: Array<{ id: string; canon: string; key: string }> = [];
+    let dupSeen = false;
+    for (const [id, before] of tally.content) {
+      const row = tx.one<ContentRow>(Q.node_content_row, [id]);
+      if (row === undefined) continue;
+      const canon = contentHash(row.kind, row.title, row.body);
+      const indexed = row.indexed === 1;
+      // Вне домена индекса хеш канонический и ни с кем не сталкивается;
+      // в домене — пока уникальный пониженный, решает перебалансировка.
+      tx.run(Q.node_refresh_derived, [
+        id,
+        makeExcerpt(row.body),
+        indexed ? demotedContentHash(canon, id) : canon,
+      ]);
+      if (before !== null && before.indexed) groupKey(before.scope, before.kind, before.canon);
+      if (before?.demoted === true) dupSeen = true;
+      if (!indexed) continue;
+      const key = groupKey(row.scope, row.kind, canon);
+      const entered =
+        before === null || !before.indexed || before.scope !== row.scope || before.canon !== canon;
+      if (local && entered) joined.push({ id, canon, key });
+    }
+    const joinedKeys = new Set(joined.map((j) => j.key));
+    for (const [key, g] of groups) {
+      if (joinedKeys.has(key)) continue;
+      if (this.rebalanceContent(tx, g, tally)) dupSeen = true;
+    }
+    for (const j of joined) {
+      tx.run(Q.node_set_content_hash, [j.id, j.canon]);
+      if (this.rebalanceContent(tx, groups.get(j.key)!, tally)) dupSeen = true;
+    }
+    if (dupSeen || tally.duplicates.length > 0) this.recordDuplicatesHealth(tx);
+  }
+
+  /**
+   * Канон группы — старшему живому узлу, остальным — пониженный хеш.
+   * Сначала понижаются все, кроме победителя, и только потом он повышается:
+   * ни в какой момент два узла не держат один канон. `true` — в группе был
+   * или есть дубликат: тогда пересчитывается myc_health. Пониженный на время
+   * этой транзакции (touchContent) дубликатом не считается — иначе полный
+   * проход по nodes стоял бы в каждой правке заголовка.
+   */
+  private rebalanceContent(
+    tx: DbDriver,
+    g: { readonly scope: string; readonly kind: string; readonly canon: string },
+    tally: ApplyTally,
+  ): boolean {
+    const members = tx.all<ContentMember>(Q.content_group, [g.scope, g.kind, g.canon, `${g.canon};`]);
+    if (members.length === 0) return false;
+    let winner = members[0]!;
+    for (const m of members) if (olderContent(m, winner)) winner = m;
+    const wasDemoted = (m: ContentMember): boolean => {
+      if (!tally.content.has(m.id)) return m.content_hash !== g.canon;
+      return tally.content.get(m.id)?.demoted === true;
+    };
+    const touched = members.length > 1 || members.some(wasDemoted);
+    for (const m of members) {
+      if (m.id === winner.id) continue;
+      const want = demotedContentHash(g.canon, m.id);
+      if (m.content_hash !== want) tx.run(Q.node_set_content_hash, [m.id, want]);
+      if (!tally.duplicates.some((d) => d.id === m.id)) {
+        tally.duplicates.push({ id: m.id, of: winner.id });
+      }
+    }
+    if (winner.content_hash !== g.canon) tx.run(Q.node_set_content_hash, [winner.id, g.canon]);
+    return touched;
+  }
+
+  /** myc_health 'sync.duplicates': сколько живых узлов сейчас понижено. */
+  private recordDuplicatesHealth(tx: DbDriver): void {
+    const n = tx.one<{ n: number }>(Q.content_duplicates_count, [])?.n ?? 0;
+    tx.run(Q.health_set, [
+      "sync.duplicates",
+      n > 0 ? "degraded" : "ok",
+      n > 0
+        ? `${n} live ${n === 1 ? "node repeats" : "nodes repeat"} another node's kind, title and body in the same scope ` +
+          "(written independently on two sites); the older node keeps the canonical content_hash"
+        : "",
+      this.now(),
+      JSON.stringify({ duplicates: n }),
     ]);
   }
 

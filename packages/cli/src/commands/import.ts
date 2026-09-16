@@ -135,7 +135,32 @@ export function createImportCommand(deps: StoreDeps = realStoreDeps): Command {
           });
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
+          // Не всякий отказ импорта — порча файлов: UNIQUE по индексу базы
+          // говорит о состоянии базы, а не о формате, и «oplog file does not
+          // parse» уводил бы разбор в другую сторону (S38).
+          if (/UNIQUE constraint failed/i.test(msg)) {
+            return failure(
+              "conflict.unique",
+              `the database refused an operation: ${msg}`,
+              ExitCode.CONFLICT,
+              "myc doctor; a content duplicate is resolved on import, another unique index is not — report it",
+            );
+          }
           return failure("precond.graph_format", `oplog file does not parse: ${msg}`, ExitCode.PRECOND);
+        }
+        if (result.duplicates.length > 0) {
+          ctx.warn(
+            "import.duplicates",
+            `${result.duplicates.length} content duplicate${result.duplicates.length === 1 ? "" : "s"} resolved: ` +
+              `${result.duplicates.slice(0, 3).map((d) => `${d.id} of ${d.of}`).join(", ")}${result.duplicates.length > 3 ? "…" : ""}`,
+          );
+        }
+        if (result.backfilled.length > 0) {
+          ctx.warn(
+            "import.backfilled",
+            `${result.backfilled.length} close${result.backfilled.length === 1 ? "" : "s"} written by an older build ` +
+              "went into the oplog now — run myc export",
+          );
         }
         if (result.deferred.length > 0) {
           ctx.warn(

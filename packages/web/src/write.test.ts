@@ -108,6 +108,10 @@ function opsOf(db: Database, id: string): string[] {
     .all(id) as OpRow[];
   return rows.map((r) => {
     let value = r.value ?? "";
+    // Момент закрытия — тоже время: два закрытия в разные моменты обязаны
+    // различаться значением `closed_at`, но не решением (S38: закрытие взятой
+    // задачи выражается LWW-записями status/closed_at/assignee).
+    if (r.field === "closed_at") value = "<time>";
     try {
       const parsed: unknown = JSON.parse(value);
       if (parsed !== null && typeof parsed === "object") {

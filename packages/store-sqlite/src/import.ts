@@ -29,7 +29,7 @@ import {
   type GraphFiles,
   type ProjectionCacheResult,
 } from "./export.ts";
-import { rowToOp, type GraphStore, type OplogRow } from "./queries.ts";
+import { rowToOp, type ContentDuplicate, type GraphStore, type OplogRow } from "./queries.ts";
 import { defineQueries, type Op } from "@myc/core";
 
 const QI = defineQueries({
@@ -55,6 +55,24 @@ export interface ImportResult {
   readonly deferred: string[];
   /** неразрешимые ничьи часов — нарушение инварианта, не конфликт LWW */
   readonly collided: string[];
+  /**
+   * Контент-дубликаты, затронутые импортом (memory-0fs4rfa6xmha): один и тот
+   * же текст, записанный независимо на двух сайтах. Импорт не падает, канон
+   * у старшего узла; список — чтобы сказать об этом вслух.
+   */
+  readonly duplicates: ContentDuplicate[];
+  /**
+   * Закрытия через claim, журналированные старым кодом одной строкой
+   * op='claim' и выраженные сейчас LWW-записями (memory-tvw65jjgaheh):
+   * следующий `myc export` увезёт их на реплики.
+   */
+  readonly backfilled: string[];
+  /**
+   * Строки рёбер, которые разошлись с множеством OR-Set при прежней проекции
+   * и починены одноразовым ремонтом (memory-86eqge02q8rd); `undefined` —
+   * ремонт на этой базе уже был.
+   */
+  readonly reprojected?: number;
   readonly sites: number;
   /** кеш проекций пересобран (undefined — не запрашивалось или dry-run) */
   readonly cache?: ProjectionCacheResult;
@@ -85,7 +103,10 @@ export function parseOplogFiles(files: GraphFiles): { rows: OplogRow[]; files: n
  * пакете) переигрываются, пока пакет уменьшается: kind мог прийти в
  * пакете другого сайта.
  */
-export function importOplogRows(store: GraphStore, rows: readonly OplogRow[]): Omit<ImportResult, "dir" | "files" | "cache"> {
+export function importOplogRows(
+  store: GraphStore,
+  rows: readonly OplogRow[],
+): Omit<ImportResult, "dir" | "files" | "cache" | "backfilled"> {
   const bySite = new Map<string, OplogRow[]>();
   for (const row of rows) {
     let list = bySite.get(row.site_id);
@@ -115,6 +136,7 @@ export function importOplogRows(store: GraphStore, rows: readonly OplogRow[]): O
   let duplicate = 0;
   let stale = 0;
   const collided: string[] = [];
+  const duplicates: ContentDuplicate[] = [];
   let deferred: string[] = [];
   const byId = new Map<string, Op>();
   for (const op of foreign) byId.set(op.op_id, op);
@@ -127,6 +149,9 @@ export function importOplogRows(store: GraphStore, rows: readonly OplogRow[]): O
     duplicate += r.duplicate;
     stale += r.stale;
     collided.push(...r.collided);
+    for (const d of r.duplicates) {
+      if (!duplicates.some((x) => x.id === d.id)) duplicates.push(d);
+    }
     // Отложенное прошлым вызовом applyOps сам применяет, когда приезжают
     // зависимости (myc-qie.9): такие операции выбывают из deferred.
     if (r.released.length > 0) {
@@ -170,6 +195,7 @@ export function importOplogRows(store: GraphStore, rows: readonly OplogRow[]): O
     stale,
     deferred,
     collided,
+    duplicates,
     sites: bySite.size,
   };
 }
@@ -222,11 +248,22 @@ export function importGraph(
       stale: 0,
       deferred: [],
       collided: [],
+      duplicates: [],
+      backfilled: [],
       sites: bySite.size,
     };
   }
 
+  // Реплика, разошедшаяся при прежней проекции рёбер, чинится один раз:
+  // новые операции чинят только свой ключ, а дедупликация по op_id не даст
+  // переиграть остальные.
+  const reprojected = store.reprojectEdgesOnce();
   const result = importOplogRows(store, parsed.rows);
+  // Бэкфилл закрытий — ПОСЛЕ чужих операций: правило «закрытие новее любой
+  // LWW-записи статуса» обязано видеть и приехавшие только что. У импорта
+  // движок есть всегда, и в git-потоке (pull → import → export) до реплик
+  // закрытие доезжает следующим же экспортом, какой бы вызов его ни делал.
+  const backfilled = store.backfillClaimCloses();
   let cache: ProjectionCacheResult | undefined;
   if (opts.rebuildCache !== false) {
     cache = writeProjectionCache(store.driver, opts.cacheDir ?? defaultCacheDir(dir));
@@ -235,6 +272,8 @@ export function importGraph(
     dir,
     files: parsed.files,
     ...result,
+    backfilled,
+    ...(reprojected !== undefined ? { reprojected } : {}),
     ...(cache !== undefined ? { cache } : {}),
   };
 }

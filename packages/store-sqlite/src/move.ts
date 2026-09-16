@@ -428,7 +428,22 @@ export function executeMove(
   };
 
   // Фаза 1 — история в приёмник. Владения ещё не передаём.
-  const ingested = ingest(target.store, plan.ops, opts.mutant);
+  // Закрытие через claim, журналированное старым кодом одной строкой
+  // op='claim', в историю переезда не входит (строка локальна) — и задача
+  // приехала бы в приёмник открытой (memory-tvw65jjgaheh). Бэкфилл выражает
+  // такое закрытие LWW-записями в источнике, и они едут вместе с историей.
+  // Идемпотентен: при повторе после обрыва догонять уже нечего, а сами
+  // записи повторный planMove найдёт в оплоге как обычную историю.
+  let history = plan.ops;
+  const backfilled = source.store.backfillClaimCloses(plan.members);
+  if (backfilled.length > 0) {
+    const known = new Set(plan.ops.map((row) => row.op_id));
+    const extra = backfilled
+      .flatMap((member) => source.driver.all<OplogRow>(QMV.ops_of_entity!, [member]))
+      .filter((row) => !known.has(row.op_id));
+    history = [...plan.ops, ...extra].sort((a, b) => a.seq - b.seq);
+  }
+  const ingested = ingest(target.store, history, opts.mutant);
   brk("after-ingest");
 
   // Фаза 2 — точка фиксации: источник минтит переезд.
@@ -463,7 +478,7 @@ export function executeMove(
     members: plan.members,
     edges: plan.edges,
     staying: plan.staying,
-    ops: plan.ops.length + tail.length,
+    ops: history.length + tail.length,
     applied: ingested.applied + shipped.applied,
     duplicate: ingested.duplicate + shipped.duplicate,
     minted: resumed ? 0 : mintedIds.length,

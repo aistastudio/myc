@@ -302,11 +302,33 @@ export async function migrate(
     };
   }
 
+  // memory-yc7np0eyy2s0: список pending выше прочитан БЕЗ блокировки. Два
+  // процесса на свежей базе (два агента стартуют разом) оба видят пустой
+  // schema_migrations и оба решают накатывать с первой миграции; второй ждёт
+  // write-lock первого и, дождавшись, накатывал бы миграцию повторно —
+  // «table … already exists», мимо регэкспа ретрая /locked|busy/ у вызывающих.
+  // Решение принимается там же, где пишется: под BEGIN IMMEDIATE версия
+  // перечитывается, и накатанная соседом пропускается (с той же сверкой
+  // checksum, что и для применённых раньше).
   const appliedNow: number[] = [];
   for (const migration of pending) {
     const checksum = await sha256Hex(migration.sql);
     db.exec("BEGIN IMMEDIATE");
     try {
+      const done = db
+        .query("SELECT checksum FROM schema_migrations WHERE version = ?1")
+        .get(migration.version) as { checksum: string } | null;
+      if (done !== null) {
+        if (done.checksum !== checksum) {
+          throw new SchemaError(
+            "schema.checksum",
+            `migration ${migration.version} changed after it was applied — the database and the binary diverged. ` +
+              "`myc doctor --schema` shows the difference.",
+          );
+        }
+        db.exec("COMMIT");
+        continue;
+      }
       applyMigrationStatementByStatement(db, migration);
       db.query(
         "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, ?2, ?3, ?4)",

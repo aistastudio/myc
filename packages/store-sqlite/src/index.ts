@@ -260,6 +260,7 @@ export type {
   GraphStoreOptions,
   ClaimReceipt,
   NodeLease,
+  ContentDuplicate,
 } from "./queries.ts";
 // Общая очередь фоновых работ поверх таблицы `jobs` (решение S7). Экспорт
 // пространством имён: `enqueue`/`claim`/`complete`/`fail`/`sweep`/`stats` —
@@ -303,6 +304,7 @@ export {
   OPLOG_MERGE_DRIVER,
   REPLICATED_OPS,
   type ExportResult,
+  type ExportOptions,
   type ProjectionCacheResult,
   type GraphFiles,
   type OplogLine,

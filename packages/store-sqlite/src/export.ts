@@ -82,7 +82,7 @@ import {
   type DbDriver,
   type JsonValue,
 } from "@myc/core";
-import type { OplogRow } from "./queries.ts";
+import { Q, type GraphStore, type OplogRow } from "./queries.ts";
 
 // ---------------------------------------------------------------------------
 // Константы формата
@@ -108,7 +108,22 @@ export const PROJECTION_CACHE_DIR = "projections";
 /** Единственный драйвер слияния в git config (merge.<name>.driver). */
 export const OPLOG_MERGE_DRIVER = "myc-oplog";
 
-/** Виды операций, которые реплицируются. claim — lease, локальное состояние (§9.4). */
+/**
+ * Виды операций, которые реплицируются. `claim` — нет, и это решение, а не
+ * недосмотр (memory-tvw65jjgaheh, §9.4 docs/design/01-core-data-model.md):
+ *
+ *  - закрытие взятой задачи реплицируется, но не строкой claim, а обычными
+ *    LWW-записями status/closed_at/assignee, которые closeClaimed минтит в
+ *    той же транзакции; закрытия, журналированные до этой правки одной
+ *    строкой claim, догоняет exportGraph (GraphStore.backfillClaimCloses);
+ *  - аренда (claim/renew/release: holder, epoch, expires) локальна по
+ *    смыслу. TTL 15 мин с продлением каждые 5 мин — сигнал реального
+ *    времени, а обмен через git идёт со скоростью человека: приехавшая
+ *    аренда почти всегда уже истекла (а истёкшая по §9.4 = открыта), то есть
+ *    исключения она не даёт, а каждое продление стоило бы строки в истории
+ *    git. Взаимное исключение между машинами — дело хаба M4 (`myc serve`:
+ *    один CAS в Postgres, FOR UPDATE SKIP LOCKED), а не CRDT-мержа строк claim.
+ */
 export const REPLICATED_OPS: ReadonlySet<string> = new Set([
   "set",
   "inc",
@@ -575,17 +590,45 @@ export interface ExportResult {
    * их не терял и не переписывал, но база без них неполна — `myc import`.
    */
   readonly pendingImport: number;
+  /**
+   * Узлы, чьи закрытия через claim, журналированные старым кодом одной
+   * строкой op='claim', экспорт выразил LWW-записями и выгрузил впервые
+   * (memory-tvw65jjgaheh). Только при переданном `store`.
+   */
+  readonly backfilled: readonly string[];
+  /**
+   * Такие же закрытия, которые экспорт БЕЗ движка выразить не может (минт
+   * операций — дело GraphStore) и потому в этот экспорт не вошли. Их
+   * выразит следующий importGraph этой базы или экспорт с `store` — а пока
+   * о них сказано вслух, а не промолчано.
+   */
+  readonly unexpressedCloses: readonly string[];
+}
+
+export interface ExportOptions {
+  /**
+   * Движок той же базы: им бэкфилл минтит операции до рендера, и закрытия
+   * уходят в этот же экспорт. Движок здесь не поднимается нарочно: связать
+   * базу с site_id — дело того, кто её открыл (S65, ensureSiteId).
+   */
+  readonly store?: GraphStore;
 }
 
 /**
  * Экспорт в каталог графа: оплог, meta.json и .gitattributes — и ничего
- * производного. Оплог пишется МОНОТОННО: существующий файл объединяется с
+ * производного. С `store` перед рендером идёт бэкфилл закрытий через claim
+ * (ExportResult.backfilled) — единственное, что экспорт пишет в базу; без
+ * него такие закрытия только называются (unexpressedCloses). Оплог пишется МОНОТОННО: существующий файл объединяется с
  * рендером по op_id, поэтому экспорт до импорта после `git pull` не сотрёт
  * чужие операции и не усечёт файл до подмножества. Проекции, оставшиеся в
  * каталоге от первой редакции S42, удаляются: git увидит удаление, и
  * производных файлов в репозитории не останется.
  */
-export function exportGraph(driver: DbDriver, dir: string): ExportResult {
+export function exportGraph(driver: DbDriver, dir: string, opts: ExportOptions = {}): ExportResult {
+  let backfilled: readonly string[] = [];
+  let unexpressedCloses: readonly string[] = [];
+  if (opts.store !== undefined) backfilled = opts.store.backfillClaimCloses();
+  else unexpressedCloses = driver.all<{ id: string }>(Q.claim_close_unexpressed, []).map((r) => r.id);
   const oplog = renderOplogFiles(driver);
   const existing = readOplogFiles(dir);
   let pendingImport = 0;
@@ -632,7 +675,7 @@ export function exportGraph(driver: DbDriver, dir: string): ExportResult {
   }
   const sites = new Set([...all.keys()].filter(isOplogPath).map((p) => p.split("/")[1]))
     .size;
-  return { dir, ops, sites, files, pendingImport };
+  return { dir, ops, sites, files, pendingImport, backfilled, unexpressedCloses };
 }
 
 export interface ProjectionCacheResult {
