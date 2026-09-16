@@ -339,7 +339,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.12",
+    "version": "0.3.13",
     "date": "2026-09-16"
   },
   "roadmap": {
@@ -1644,12 +1644,12 @@ window.MYC_DATA = {
     "fail": 0,
     "skip": 16,
     "files": 256,
-    "assertions": 36601,
-    "seconds": 404.8,
-    "sources": "37ca4ea7fe7afb24",
+    "assertions": 36600,
+    "seconds": 399.1,
+    "sources": "14474012c89eaffe",
     "date": "2026-09-16",
-    "myc": "0.3.12"
+    "myc": "0.3.13"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-16T05:30:01.279Z", assertions: 77 };
-window.MYC_DATA.release = "0.3.12";
+window.MYC_DATA.verified = { at: "2026-09-16T05:51:50.750Z", assertions: 77 };
+window.MYC_DATA.release = "0.3.13";

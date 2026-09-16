@@ -52,7 +52,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 5.06 MB compressed, 15.62 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.3.12 (schema 1)
+myc --version                     # myc 0.3.13 (schema 1)
 ```
 
 It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside

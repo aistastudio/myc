@@ -260,6 +260,11 @@ async function main(): Promise<void> {
 
   const manifest = {
     name: "@aistastudio/myc",
+    // Имя сервера в официальном MCP Registry. Реестр сверяет это поле в
+    // ОПУБЛИКОВАННОМ пакете: без него `mcp-publisher publish` отказывает
+    // («Registry validation failed for package»). Значение должно совпадать
+    // с `name` в server.json корня репозитория.
+    mcpName: "io.github.aistastudio/myc",
     version,
     description:
       "Local, fast task-and-memory layer for coding agents: task queue, oplog of decisions, hybrid search. Requires Bun.",

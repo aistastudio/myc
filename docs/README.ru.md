@@ -52,7 +52,7 @@ Node). **На голом Node.js или Deno проект не запустит�
 
 ```bash
 bun install -g @aistastudio/myc   # 5.06 МБ сжатый, 15.62 МБ распакованный, 16 файлов; модели не качаются
-myc --version                     # myc 0.3.12 (schema 1)
+myc --version                     # myc 0.3.13 (schema 1)
 ```
 
 Работает на macOS и Linux. На Windows — через WSL, Bun и myc ставятся внутри
