@@ -17,15 +17,25 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-ENV BUN_INSTALL=/root/.bun
-ENV PATH=/root/.bun/bin:$PATH
+# The global install goes to a shared prefix, not to /root: the container runs
+# as a non-root user (below), and that user has to reach the binary.
+ENV BUN_INSTALL=/usr/local
+ENV PATH=/usr/local/bin:$PATH
 
-ARG MYC_VERSION=latest
+# Pinned: the same Dockerfile built twice must give the same myc. Raise it with
+# --build-arg MYC_VERSION=<version>.
+ARG MYC_VERSION=0.3.13
 RUN bun install -g @aistastudio/myc@${MYC_VERSION} && myc --version
 
-WORKDIR /workspace
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+ && mkdir -p /workspace && chown bun:bun /workspace
+
+# Not root: a mounted project gets its .myc/ and episode files owned by the
+# user who ran the container, not by root. Pass --user "$(id -u):$(id -g)" to
+# match your own uid on a Linux host.
+WORKDIR /workspace
+USER bun
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["mcp", "--profile", "agent"]
