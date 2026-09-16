@@ -244,6 +244,49 @@ export function isSelfAttributed(ctx: OrphanContext): boolean {
 }
 
 /**
+ * Чья сессия записана у попытки — для РАСХОДА (memory-1s8dcfkfz20r, ревизия
+ * M5 §4.3). Родственник `isSelfAttributed`: тот же признак «диспетчера нет»,
+ * только вопрос другой — не «сирота ли процесс», а «можно ли класть расход
+ * этой сессии в попытку».
+ *
+ * `attempt start` записывает окружение ТОГО процесса, который его набрал.
+ * Набрал исполнитель под оркестратором — диспетчер известен (env/flag/lookup),
+ * сессия его. Набрал координатор, записывая попытку за исполнителя, —
+ * диспетчера нет, а сессия — его собственная: так легли три строки аудита,
+ * и расход 88-мегабайтной стенограммы координатора ушёл в чужие попытки.
+ *
+ * Правило: сессия исполнителя подтверждена, если диспетчер известен ИЛИ
+ * сессия привязана явно (`--session` при старте, `attempt link` — источник
+ * flag/search: это заявление человека «вот сессия исполнителя»). Сессия,
+ * взятая из окружения при `dispatch_source='none'`, — не подтверждена.
+ * Цена: агент, запущенный человеком без оркестратора, тоже получает `none`
+ * и теряет автоматический расход; для него есть явный `--from-session`, и
+ * отказ называется WARN, а не молчанием.
+ */
+export type ExecutorSession =
+  | { readonly confirmed: true; readonly sessionId: string; readonly by: "dispatch" | "linked" }
+  | { readonly confirmed: false; readonly sessionId: string | null; readonly reason: "no_session" | "no_dispatch" };
+
+export function executorSession(
+  run:
+    | {
+        readonly sessionId: string | null;
+        readonly sessionSource: LinkSource;
+        readonly dispatchSource: DispatchSource;
+      }
+    | undefined,
+): ExecutorSession {
+  if (run === undefined || run.sessionId === null) {
+    return { confirmed: false, sessionId: null, reason: "no_session" };
+  }
+  if (run.sessionSource === "flag" || run.sessionSource === "search") {
+    return { confirmed: true, sessionId: run.sessionId, by: "linked" };
+  }
+  if (run.dispatchSource !== "none") return { confirmed: true, sessionId: run.sessionId, by: "dispatch" };
+  return { confirmed: false, sessionId: run.sessionId, reason: "no_dispatch" };
+}
+
+/**
  * Классификация запуска. `alive === null` значит «спросить было не о чем»
  * (pid не записан) — и тогда ответ `unknown`, а не `done`: молча выдать
  * закрытую попытку без pid за «всё в порядке» значит спрятать ровно те

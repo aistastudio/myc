@@ -157,10 +157,14 @@ describe("myc mcp: stdio end-to-end", () => {
         const list = await mcp.request("tools/list");
         expect((list.result!["tools"] as unknown[]).length).toBe(13);
 
-        // 3. myc_prime
+        // 3. myc_prime — тот же пакет, что у хука старта сессии (`myc prime`):
+        //    очередь готового с обеими задачами, а не второй раз bootstrap,
+        //    который уже приехал в instructions (memory-rkmcfqmaw4sc)
         const prime = await mcp.call("myc_prime", { budget: 800 });
         expect(prime.result!.isError).toBeUndefined();
-        expect(prime.result!.content![0]!.text).toContain("MYC BOOTSTRAP");
+        expect(prime.result!.content![0]!.text).toContain(t1);
+        expect(prime.result!.content![0]!.text).not.toContain("MYC BOOTSTRAP");
+        expect(prime.result!.structuredContent!["ready_total"]).toBe(2);
         expect(prime.result!.structuredContent!["meta"]).toBeDefined();
 
         // 4. myc_ready списком: обе задачи видны

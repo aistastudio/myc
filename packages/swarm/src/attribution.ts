@@ -810,6 +810,86 @@ export class Attribution {
     return this.getAttempt(attemptId)!;
   }
 
+  /**
+   * Пересчёт расхода ЗАКРЫТОЙ попытки (memory-1s8dcfkfz20r): токены
+   * заменяются, стоимость замораживается заново — по той же строке цены,
+   * что действовала на started_at. Инвариант 3 («стоимость заморожена»)
+   * не нарушается: он запрещает менять исход от ПРАВКИ ЦЕНЫ, а здесь
+   * исправляются токены, взятые не из той стенограммы; цена остаётся той
+   * же, и повторный пересчёт тех же токенов даёт ту же стоимость до цента.
+   *
+   * Вердикт, оговорки, класс и время не трогаются — в UPDATE их нет.
+   * `apply=false` — только посчитать: вернуть, какой стала бы запись.
+   */
+  recostAttempt(
+    attemptId: string,
+    usage: Required<TokenUsage>,
+    apply: boolean,
+  ): { readonly before: AttemptRecord; readonly after: AttemptRecord } {
+    const tokens = {
+      tokensIn: count(usage.tokensIn, "tokensIn"),
+      tokensOut: count(usage.tokensOut, "tokensOut"),
+      tokensCacheRead: count(usage.tokensCacheRead, "tokensCacheRead"),
+      tokensCacheWrite: count(usage.tokensCacheWrite, "tokensCacheWrite"),
+    };
+    const compute = (): { before: AttemptRow; after: AttemptRow } => {
+      const row = this.#db
+        .query("SELECT * FROM swarm_attempt WHERE attempt_id = ?1")
+        .get(attemptId) as AttemptRow | null;
+      if (row === null) {
+        throw new AttributionError("notfound.attempt", `attempt "${attemptId}" not found`);
+      }
+      if (row.finished_at === null) {
+        throw new AttributionError(
+          "usage.input",
+          `attempt "${attemptId}" is still open: its usage is taken at finish, not recomputed`,
+        );
+      }
+      const cost = this.#freezeCost(row.model_id, row.started_at, tokens);
+      return {
+        before: row,
+        after: {
+          ...row,
+          tokens_in: tokens.tokensIn,
+          tokens_out: tokens.tokensOut,
+          tokens_cache_read: tokens.tokensCacheRead,
+          tokens_cache_write: tokens.tokensCacheWrite,
+          cost_usd: cost.costUsd,
+          price_valid_from: cost.priceValidFrom,
+          cost_basis: cost.basis,
+        },
+      };
+    };
+    if (!apply) {
+      const { before, after } = compute();
+      return { before: toAttempt(before), after: toAttempt(after) };
+    }
+    let out: { before: AttemptRow; after: AttemptRow } | undefined;
+    this.#writeTx(() => {
+      out = compute();
+      const a = out.after;
+      this.#db
+        .query(
+          `UPDATE swarm_attempt
+              SET tokens_in = ?2, tokens_out = ?3, tokens_cache_read = ?4,
+                  tokens_cache_write = ?5, cost_usd = ?6, price_valid_from = ?7,
+                  cost_basis = ?8
+            WHERE attempt_id = ?1 AND finished_at IS NOT NULL`,
+        )
+        .run(
+          attemptId,
+          a.tokens_in,
+          a.tokens_out,
+          a.tokens_cache_read,
+          a.tokens_cache_write,
+          a.cost_usd,
+          a.price_valid_from,
+          a.cost_basis,
+        );
+    });
+    return { before: toAttempt(out!.before), after: this.getAttempt(attemptId)! };
+  }
+
   getAttempt(attemptId: string): AttemptRecord | undefined {
     const row = this.#db
       .query("SELECT * FROM swarm_attempt WHERE attempt_id = ?1")

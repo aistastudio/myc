@@ -47,6 +47,7 @@ export {
 export {
   DISPATCH_SOURCES,
   EMPTY_LAUNCH,
+  executorSession,
   isAlive,
   isEmptyLaunch,
   isSelfAttributed,
@@ -61,6 +62,7 @@ export {
   pidAlive,
   PROC_STATES,
   type DispatchSource,
+  type ExecutorSession,
   type LaunchContext,
   type LinkSource,
   type LiveState,
@@ -124,14 +126,20 @@ export {
   type SwarmMigration,
 } from "./migrations/index.ts";
 export {
+  checkTranscriptModels,
   findSessionTranscript,
   findTaskTranscripts,
+  findUsagePrefix,
+  locateSessionTranscript,
   readTranscriptUsage,
   taskNeedle,
   transcriptDir,
+  transcriptRoot,
   TranscriptError,
   USAGE_FIELDS,
+  type ReadTranscriptOptions,
   type TranscriptErrorCode,
+  type TranscriptModelCheck,
   type TranscriptTotals,
   type TranscriptUsage,
 } from "./transcript.ts";

@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { generateId, prefixRange, HlcClock, unpackHlc } from "@myc/core";
 import type { DbDriver, EdgeKind, NodeRecord, QueryDef, TxMode } from "@myc/core";
@@ -161,9 +161,13 @@ export function openDriver(
   return driver;
 }
 
-/** slug из .myc/workspace.toml (см. store.ts в cli — тот же подset TOML). */
-function workspaceSlug(dir: string): string {
-  const tomlPath = join(dir, ".myc", "workspace.toml");
+/**
+ * slug из `workspace.toml` в каталоге базы (см. store.ts в cli — тот же
+ * подset TOML). Каталог — тот, где лежит база: `<dir>/.myc` при обычном
+ * открытии, каталог файла при явном `--db` (memory-dyjt6fafz8j9).
+ */
+function workspaceSlug(configDir: string): string {
+  const tomlPath = join(configDir, "workspace.toml");
   if (!existsSync(tomlPath)) return "myc";
   try {
     for (const rawLine of readFileSync(tomlPath, "utf8").split("\n")) {
@@ -255,12 +259,23 @@ export function resolveActor(): string {
   return process.env.MYC_ACTOR ?? process.env.USER ?? "agent";
 }
 
+/**
+ * Открытие стора воркспейса `directory` (`<directory>/.myc/myc.db`) — или
+ * ровно файла `options.dbPath`, если он назван. Второе — путь явного
+ * `myc --db <база> mcp`: прямой стор обязан писать туда же, куда пишут
+ * команды CLI того же сервера, а не в базу воркспейса вокруг cwd
+ * (memory-dyjt6fafz8j9). Конфиг воркспейса в обоих случаях —
+ * `workspace.toml` рядом с базой. Файла нет — отказ с его путём, без поиска
+ * другой базы.
+ */
 export async function openMcpStore(
   directory?: string,
-  options?: OpenOptions,
+  options?: OpenOptions & { readonly dbPath?: string },
 ): Promise<OpenMcpStoreResult> {
-  const dir = resolve(directory ?? process.cwd());
-  const dbPath = join(dir, ".myc", "myc.db");
+  const dbPath =
+    options?.dbPath !== undefined
+      ? resolve(options.dbPath)
+      : join(resolve(directory ?? process.cwd()), ".myc", "myc.db");
   if (!existsSync(dbPath)) {
     return {
       ok: false,
@@ -272,7 +287,7 @@ export async function openMcpStore(
     };
   }
 
-  const slug = workspaceSlug(dir);
+  const slug = workspaceSlug(dirname(dbPath));
   const maxKnown = migrations.reduce((m, mig) => Math.max(m, mig.version), 0);
   let driver: McpDriver;
   try {

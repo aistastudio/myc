@@ -8,15 +8,19 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  checkTranscriptModels,
   findSessionTranscript,
   findTaskTranscripts,
+  findUsagePrefix,
+  locateSessionTranscript,
   readTranscriptUsage,
   taskNeedle,
   transcriptDir,
+  transcriptRoot,
   TranscriptError,
 } from "./transcript.ts";
 
@@ -309,6 +313,103 @@ describe("transcriptDir", () => {
       "/.claude/projects/-Users-x-src-memory",
     );
     expect(transcriptDir("/Users/x", { MYC_TRANSCRIPT_DIR: "/tmp/т" })).toBe("/tmp/т");
+  });
+
+  // Слаг Claude Code меняет на '-' всё, кроме букв и цифр: worktree из
+  // `.claude/worktrees/x` лежит в `…--claude-worktrees-x` (так в
+  // ~/.claude/projects на этой машине). Прежний «'/' → '-'» давал `-.claude-`.
+  test("точка и подчёркивание в пути — тоже '-' (worktree в .claude/worktrees)", () => {
+    expect(transcriptDir("/Users/x/src/docs/.claude/worktrees/local_doc", {})).toEndWith(
+      "/.claude/projects/-Users-x-src-docs--claude-worktrees-local-doc",
+    );
+  });
+
+  test("$CLAUDE_CONFIG_DIR переносит корень каталогов проектов, как у Claude Code", () => {
+    expect(transcriptRoot({ CLAUDE_CONFIG_DIR: "/cfg" })).toBe("/cfg/projects");
+    expect(transcriptDir("/Users/x/app", { CLAUDE_CONFIG_DIR: "/cfg" })).toBe("/cfg/projects/-Users-x-app");
+  });
+});
+
+describe("locateSessionTranscript: сессия по uuid в любом каталоге проекта", () => {
+  const ID = "0e1a4c33-5b7d-4a7e-9d61-2f3b8c9d0a11";
+
+  test("стенограмма исполнителя в каталоге его worktree находится из каталога координатора", () => {
+    const env = { CLAUDE_CONFIG_DIR: dir };
+    const wtDir = join(dir, "projects", "-repo--claude-worktrees-feat");
+    mkdirSync(wtDir, { recursive: true });
+    mkdirSync(join(dir, "projects", "-repo"), { recursive: true });
+    writeFileSync(join(wtDir, `${ID}.jsonl`), `${assistant("m1", usage(1, 2, 3, 4))}\n`);
+    expect(locateSessionTranscript(ID, "/repo", env)).toBe(join(wtDir, `${ID}.jsonl`));
+    expect(failure(() => locateSessionTranscript("нет-такой", "/repo", env)).code).toBe("notfound.session");
+  });
+
+  test("быстрый путь — каталог cwd; $MYC_TRANSCRIPT_DIR — только он", () => {
+    const near = join(dir, "projects", "-repo");
+    mkdirSync(near, { recursive: true });
+    writeFileSync(join(near, `${ID}.jsonl`), `${assistant("m1", usage(1, 2, 3, 4))}\n`);
+    expect(locateSessionTranscript(ID, "/repo", { CLAUDE_CONFIG_DIR: dir })).toBe(join(near, `${ID}.jsonl`));
+    const pinned = join(dir, "pinned");
+    mkdirSync(pinned);
+    expect(
+      failure(() => locateSessionTranscript(ID, "/repo", { CLAUDE_CONFIG_DIR: dir, MYC_TRANSCRIPT_DIR: pinned })).code,
+    ).toBe("notfound.session");
+  });
+});
+
+describe("readTranscriptUsage { until }: стенограмма на момент финиша", () => {
+  test("ответы позже среза не считаются, записи без времени — считаются", () => {
+    const path = writeTranscript("until.jsonl", [
+      assistant("m1", usage(1, 10, 100, 1000), { timestamp: "2026-09-07T09:00:00.000Z" }),
+      assistant("m2", usage(2, 20, 200, 2000), { timestamp: "2026-09-07T11:00:00.000Z" }),
+    ]);
+    const all = readTranscriptUsage(path);
+    expect(all.tokensCacheRead).toBe(300);
+    const cut = readTranscriptUsage(path, { until: Date.parse("2026-09-07T10:00:00.000Z") });
+    expect(cut).toMatchObject({ tokensIn: 1, tokensOut: 10, tokensCacheRead: 100, tokensCacheWrite: 1000, responses: 1 });
+    expect(cut.endedAt).toBe("2026-09-07T09:00:00.000Z");
+  });
+});
+
+describe("findUsagePrefix: был ли расход прочитан из этой стенограммы", () => {
+  test("совпадение четырёх сумм на префиксе файла — да; копии одного ответа не удваивают", () => {
+    const path = writeTranscript("prefix.jsonl", [
+      assistant("m1", usage(1, 10, 100, 1000), { timestamp: "2026-09-07T09:00:00.000Z" }),
+      assistant("m1", usage(1, 12, 100, 1000), { timestamp: "2026-09-07T09:00:01.000Z" }),
+      assistant("m2", usage(2, 20, 200, 2000), { timestamp: "2026-09-07T09:05:00.000Z" }),
+    ]);
+    expect(findUsagePrefix(path, { tokensIn: 1, tokensOut: 12, tokensCacheRead: 100, tokensCacheWrite: 1000 })).toEqual({
+      records: 2,
+      at: "2026-09-07T09:00:01.000Z",
+    });
+    expect(findUsagePrefix(path, { tokensIn: 3, tokensOut: 32, tokensCacheRead: 300, tokensCacheWrite: 3000 })?.records).toBe(3);
+    // похоже, но не то: ни один префикс не даёт ровно этих чисел
+    expect(findUsagePrefix(path, { tokensIn: 3, tokensOut: 31, tokensCacheRead: 300, tokensCacheWrite: 3000 })).toBeNull();
+    expect(findUsagePrefix(join(dir, "нет.jsonl"), { tokensIn: 1, tokensOut: 1, tokensCacheRead: 1, tokensCacheWrite: 1 })).toBeNull();
+  });
+});
+
+describe("checkTranscriptModels: чей это расход", () => {
+  const sonnet = { modelId: "sonnet", family: "claude-sonnet" };
+
+  test("своя модель — ok; служебная <synthetic> не в счёт", () => {
+    expect(checkTranscriptModels(["claude-sonnet-5"], sonnet).ok).toBe(true);
+    expect(checkTranscriptModels(["<synthetic>", "claude-sonnet-4-5-20250929"], sonnet).ok).toBe(true);
+  });
+
+  test("чужая модель — не ok и названа (att_6289a214d584: sonnet, в стенограмме opus)", () => {
+    const r = checkTranscriptModels(["claude-opus-5"], sonnet);
+    expect(r.ok).toBe(false);
+    expect(r.foreign).toEqual(["claude-opus-5"]);
+    expect(checkTranscriptModels(["claude-sonnet-5", "claude-haiku-4-5-20251001"], sonnet).foreign).toEqual([
+      "claude-haiku-4-5-20251001",
+    ]);
+  });
+
+  test("семейство или хвост id модели; без единой модели проверить нечем", () => {
+    expect(checkTranscriptModels(["claude-opus-4-5-20251101"], { modelId: "opus", family: "" }).ok).toBe(true);
+    expect(checkTranscriptModels(["p/big"], { modelId: "p/big", family: "big" }).ok).toBe(true);
+    expect(checkTranscriptModels(["<synthetic>"], sonnet).ok).toBe(false);
+    expect(checkTranscriptModels([], sonnet).ok).toBe(false);
   });
 });
 

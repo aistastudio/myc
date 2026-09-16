@@ -11,6 +11,8 @@
  *   myc attempt list   [--task <id>] [--model <id>] [--open] [--since 7d]
  *   myc attempt show   <attempt-id>
  *   myc attempt reclass [--task <id>] [--dry-run]
+ *   myc attempt recost [<attempt-id>] [--task <id>] [--from-session <uuid>]
+ *                      [--apply [--clear-foreign]]
  *   myc report models  [--class intent:scope] [--since 30d] [--min N]
  *
  * ПОЧЕМУ ЭТО НЕ ШЕСТЬ ФЛАГОВ НА ЗАКРЫТИЕ. Схема исхода в `myc close`
@@ -47,17 +49,20 @@ import {
   Attribution,
   AttributionError,
   CAVEATS,
+  checkTranscriptModels,
   classifyTask,
   compareModels,
   EFFORTS,
   ensureSwarmSchema,
-  findSessionTranscript,
+  executorSession,
+  findUsagePrefix,
   HARNESSES,
   isAlive,
   isTaskClass,
   launchContext,
   LIVE_STATE_MEANING,
   liveStateOf,
+  locateSessionTranscript,
   overrideLaunch,
   pathsInText,
   pidAlive,
@@ -66,7 +71,6 @@ import {
   RosterError,
   snapshotCheckouts,
   touchedSince,
-  transcriptDir,
   TranscriptError,
   VERDICTS,
   type AttemptRecord,
@@ -80,7 +84,9 @@ import {
   type LiveState,
   type OrphanContext,
   type RunRecord,
+  type TokenUsage,
   type TouchedKey,
+  type TranscriptModelCheck,
   type TranscriptUsage,
 } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
@@ -467,13 +473,13 @@ export function tokenSource(ctx: CommandContext): TokenSource | CommandFailure {
   }
 
   try {
+    // Сессия ищется по uuid во всех каталогах проектов, а не только в
+    // каталоге того, кто набрал команду: исполнитель из worktree пишет
+    // стенограмму в каталог worktree (memory-1s8dcfkfz20r).
     const path =
       file !== undefined
         ? expandHome(file)
-        : findSessionTranscript(
-            transcriptDir(resolve(ctx.globals.directory ?? process.cwd())),
-            session!,
-          );
+        : locateSessionTranscript(session!, resolve(ctx.globals.directory ?? process.cwd()));
     const read = readTranscriptUsage(path);
     return {
       tokens: {
@@ -1210,6 +1216,9 @@ function buildStartCommand(deps: AttemptDeps): Command {
         const cwd = resolve(ctx.globals.directory ?? process.cwd());
         const { launch, lookupFailed } = resolveLaunch(ctx, deps.probe);
         const gitBase = await deps.probe.gitBase(cwd, h.wsDir);
+        // Файл стенограммы — НА СТАРТЕ, пока известно, где работает процесс:
+        // на финише его ищет уже другой процесс из другого каталога.
+        const transcriptPath = launch.sessionId === null ? null : transcriptOfSession(launch.sessionId, cwd);
         const record = swarm.attribution.startAttempt({
           taskId: node.id,
           modelId: model.modelId,
@@ -1221,7 +1230,7 @@ function buildStartCommand(deps: AttemptDeps): Command {
           harness: flagStr(ctx, "harness") as never,
           actor: resolveActor(ctx),
           note: flagStr(ctx, "note"),
-          run: { launch, gitHead: gitBase?.checkouts[0]?.head ?? null, gitBase },
+          run: { launch, transcriptPath, gitHead: gitBase?.checkouts[0]?.head ?? null, gitBase },
           ...tokenArgs(ctx),
         });
         // Молчать тут нельзя: связь, которой нет, потом ищут перебором
@@ -1263,6 +1272,53 @@ export function swarmOn(
   return { roster: new Roster(db, now), attribution: new Attribution(db, now) };
 }
 
+/** Стенограмма сессии без отказа: не нашлась — null (старт не обязан её видеть). */
+function transcriptOfSession(sessionId: string, cwd: string): string | null {
+  try {
+    return locateSessionTranscript(sessionId, cwd);
+  } catch (e) {
+    if (e instanceof TranscriptError) return null;
+    throw e;
+  }
+}
+
+/**
+ * Файл стенограммы записанной сессии: путь со старта, если файл на месте,
+ * иначе поиск по uuid во всех каталогах проектов — не по cwd того, кто
+ * финиширует (исполнитель из worktree пишет в каталог worktree).
+ */
+function sessionTranscriptPath(run: RunRecord, sessionId: string, cwd: string): string {
+  if (run.transcriptPath !== null && existsSync(run.transcriptPath)) return run.transcriptPath;
+  return locateSessionTranscript(sessionId, cwd);
+}
+
+/** Модель попытки и её семейство из ростера — для сверки со стенограммой. */
+function attemptModel(db: Database, modelId: string): { readonly modelId: string; readonly family: string } {
+  return { modelId, family: new Roster(db).getModel(modelId)?.model.family ?? "" };
+}
+
+function modelMismatchText(
+  attemptId: string,
+  path: string,
+  check: TranscriptModelCheck,
+  model: { readonly modelId: string; readonly family: string },
+): string {
+  const seen = check.seen.length > 0 ? check.seen.join(", ") : "no model at all";
+  return (
+    `${attemptId}: transcript ${path} was written by ${seen}, ` +
+    `but the attempt ran ${model.modelId} (family ${model.family || "unknown"})`
+  );
+}
+
+function spendTokens(read: TranscriptUsage): Required<TokenUsage> {
+  return {
+    tokensIn: read.tokensIn,
+    tokensOut: read.tokensOut,
+    tokensCacheRead: read.tokensCacheRead,
+    tokensCacheWrite: read.tokensCacheWrite,
+  };
+}
+
 /**
  * Расход из записанной сессии, если руками не назвали ничего другого.
  *
@@ -1273,36 +1329,73 @@ export function swarmOn(
  * знает только координатор и вводит его один раз. Поэтому отказ разбора
  * тут WARN, а не отказ. Тихого нуля всё равно нет: строка про отказ
  * попадает и в человеческий вывод, и в конверт.
+ *
+ * ЧЕЙ РАСХОД (memory-1s8dcfkfz20r, ревизия M5 §4.3). Записанная сессия —
+ * это сессия того, кто набрал `attempt start`. Две защиты от чужого расхода:
+ *   1. сессия должна быть подтверждена как сессия исполнителя
+ *      (`executorSession`: диспетчер известен или привязка явная); сессия
+ *      координатора, записавшего попытку за исполнителя, — нет;
+ *   2. модели стенограммы должны принадлежать модели попытки: токены opus
+ *      по ставкам sonnet — не расход sonnet.
+ * Не прошла любая — расход НЕ берётся, и это WARN с тем, как добавить его
+ * руками (`myc attempt recost … --from-session`), а не молчаливый ноль.
+ * Явный источник (`--from-*`) сверяется тоже, но только предупреждением:
+ * его назвал человек.
  */
 export function recordedSpend(
   ctx: CommandContext,
-  attribution: Attribution,
+  swarm: { readonly db: Database; readonly attribution: Attribution },
   attemptId: string,
   spend: TokenSource,
 ): TokenSource & { via: "flags" | "transcript" | "recorded" | "none" } {
-  if (spend.transcript !== undefined) return { ...spend, via: "transcript" };
+  const attempt = swarm.attribution.getAttempt(attemptId);
+  if (spend.transcript !== undefined) {
+    if (attempt !== undefined) {
+      const model = attemptModel(swarm.db, attempt.modelId);
+      const check = checkTranscriptModels(spend.transcript.models, model);
+      if (!check.ok) {
+        ctx.warn(
+          "spend.model_mismatch",
+          `${modelMismatchText(attemptId, spend.transcript.path, check, model)}; ` +
+            "taken anyway because the transcript was named explicitly",
+        );
+      }
+    }
+    return { ...spend, via: "transcript" };
+  }
   if (Object.keys(spend.tokens).length > 0) return { ...spend, via: "flags" };
-  const run = attribution.getRun(attemptId);
-  if (run?.sessionId == null) return { ...spend, via: "none" };
+  const run = swarm.attribution.getRun(attemptId);
+  const who = executorSession(run);
+  if (!who.confirmed) {
+    if (who.reason === "no_session") return { ...spend, via: "none" };
+    ctx.warn(
+      "spend.not_executor",
+      `${attemptId}: usage not taken — recorded session ${who.sessionId} is not confirmed as the ` +
+        "executor's: attempt start ran without an orchestrator dispatch, as when the coordinator " +
+        "records the attempt from its own session " +
+        `(add the executor's usage: myc attempt recost ${attemptId} --from-session <executor session uuid> --apply)`,
+    );
+    return { ...spend, via: "none" };
+  }
   try {
-    const dir = transcriptDir(resolve(ctx.globals.directory ?? process.cwd()));
-    const path = run.transcriptPath ?? findSessionTranscript(dir, run.sessionId);
+    const path = sessionTranscriptPath(run!, who.sessionId, resolve(ctx.globals.directory ?? process.cwd()));
     const read = readTranscriptUsage(path);
-    return {
-      tokens: {
-        tokensIn: read.tokensIn,
-        tokensOut: read.tokensOut,
-        tokensCacheRead: read.tokensCacheRead,
-        tokensCacheWrite: read.tokensCacheWrite,
-      },
-      transcript: read,
-      via: "recorded",
-    };
+    const model = attemptModel(swarm.db, attempt?.modelId ?? "");
+    const check = checkTranscriptModels(read.models, model);
+    if (!check.ok) {
+      ctx.warn(
+        "spend.model_mismatch",
+        `${modelMismatchText(attemptId, path, check, model)} — usage not taken ` +
+          `(myc attempt recost ${attemptId} --from-session <uuid> --apply)`,
+      );
+      return { ...spend, via: "none" };
+    }
+    return { tokens: spendTokens(read), transcript: read, via: "recorded" };
   } catch (e) {
     const code = e instanceof TranscriptError ? e.code : "transcript.unreadable";
     ctx.warn(
       code,
-      `usage of recorded session ${run.sessionId} not read: ${(e as Error).message}`,
+      `usage of recorded session ${who.sessionId} not read: ${(e as Error).message}`,
     );
     return { ...spend, via: "none" };
   }
@@ -1357,7 +1450,7 @@ export async function finishWithFact(
   // ответ на «считать расход без перебора файлов»: стенограмма берётся по
   // uuid из строки запуска, а не ищется по строке брифа, которую человек
   // может написать иначе.
-  const recorded = recordedSpend(ctx, swarm.attribution, attemptId, spend);
+  const recorded = recordedSpend(ctx, swarm, attemptId, spend);
   const record = swarm.attribution.finishAttempt(attemptId, {
     verdict: outcome.verdict,
     caveats: outcome.caveats,
@@ -1539,12 +1632,22 @@ function buildLinkCommand(deps: AttemptDeps): Command {
             : {}),
         });
         const found = flagBool(ctx, "found");
+        // Путь стенограммы принадлежит СЕССИИ: сменилась сессия — прежний
+        // путь указывал бы на чужой расход, и финиш прочитал бы его.
+        const sameSession = merged.sessionId === (existing?.sessionId ?? null);
+        const transcriptPath =
+          flagStr(ctx, "transcript") ??
+          (sameSession
+            ? (existing?.transcriptPath ?? null)
+            : merged.sessionId === null
+              ? null
+              : transcriptOfSession(merged.sessionId, resolve(ctx.globals.directory ?? process.cwd())));
         const run = opened.attribution.attachRun(attemptId, {
           launch:
             found && merged.sessionId !== null
               ? { ...merged, sessionSource: "search" }
               : merged,
-          transcriptPath: flagStr(ctx, "transcript") ?? existing?.transcriptPath ?? null,
+          transcriptPath,
           gitHead: existing?.gitHead ?? null,
           gitBase: existing?.gitBase ?? null,
           procState: existing?.procState,
@@ -1816,6 +1919,374 @@ function buildReclassCommand(deps: AttemptDeps): Command {
   };
 }
 
+// ---------------------------------------------------------------------------
+// attempt recost — пересчёт уже записанного расхода (memory-1s8dcfkfz20r)
+// ---------------------------------------------------------------------------
+
+/**
+ * Что пересчёт делает с одной закрытой попыткой:
+ *   recost    — расход исполнителя найден и отличается от записанного;
+ *   unchanged — найден и совпал;
+ *   foreign   — записанный расход ДОКАЗУЕМО взят из стенограммы сессии,
+ *               которая не подтверждена как сессия исполнителя (её же
+ *               стенограмма, срезанная на момент финиша, даёт ровно
+ *               записанные числа); стенограммы исполнителя нет — снимается
+ *               только явным `--clear-foreign`;
+ *   refused   — стенограмму исполнителя не найти или она чужой модели:
+ *               ничего не пишется;
+ *   skipped   — пересчитывать нечего (сессия не записана, расход не из неё).
+ */
+export const RECOST_ACTIONS = ["recost", "unchanged", "foreign", "refused", "skipped"] as const;
+export type RecostAction = (typeof RECOST_ACTIONS)[number];
+
+interface SpendView {
+  readonly tokensIn: number;
+  readonly tokensOut: number;
+  readonly tokensCacheRead: number;
+  readonly tokensCacheWrite: number;
+  readonly costUsd: number | null;
+  readonly costBasis: string | null;
+}
+
+export interface RecostRow {
+  readonly attemptId: string;
+  readonly taskId: string;
+  readonly modelId: string;
+  readonly action: RecostAction;
+  readonly reason: string;
+  /** Код отказа — тот же, что у разбора стенограммы (notfound.session, …). */
+  readonly code: string | null;
+  readonly sessionId: string | null;
+  readonly transcript: string | null;
+  readonly before: SpendView;
+  /** Какой станет запись; null — не меняется. */
+  readonly after: SpendView | null;
+  readonly written: boolean;
+}
+
+function spendView(a: AttemptRecord): SpendView {
+  return {
+    tokensIn: a.tokensIn,
+    tokensOut: a.tokensOut,
+    tokensCacheRead: a.tokensCacheRead,
+    tokensCacheWrite: a.tokensCacheWrite,
+    costUsd: a.costUsd,
+    costBasis: a.costBasis,
+  };
+}
+
+function sameSpend(a: AttemptRecord, t: Required<TokenUsage>): boolean {
+  return (
+    a.tokensIn === t.tokensIn &&
+    a.tokensOut === t.tokensOut &&
+    a.tokensCacheRead === t.tokensCacheRead &&
+    a.tokensCacheWrite === t.tokensCacheWrite
+  );
+}
+
+const NO_SPEND: Required<TokenUsage> = { tokensIn: 0, tokensOut: 0, tokensCacheRead: 0, tokensCacheWrite: 0 };
+
+type RecostPlan =
+  | {
+      readonly action: "recost" | "unchanged" | "foreign";
+      readonly reason: string;
+      readonly tokens: Required<TokenUsage>;
+      readonly sessionId: string | null;
+      readonly transcript: string | null;
+    }
+  | {
+      readonly action: "refused" | "skipped";
+      readonly reason: string;
+      readonly code: string | null;
+      readonly sessionId: string | null;
+      readonly transcript: string | null;
+    };
+
+function refusedPlan(e: unknown, what: string, sessionId: string | null): RecostPlan {
+  if (!(e instanceof TranscriptError)) throw e;
+  return { action: "refused", code: e.code, reason: `${what}: ${e.message}`, sessionId, transcript: null };
+}
+
+/**
+ * План пересчёта одной закрытой попытки — ПО ТЕМ ЖЕ ПРАВИЛАМ, что финиш
+ * (`recordedSpend`): сессия исполнителя подтверждена, модели стенограммы —
+ * модели попытки. Стенограмма читается до момента финиша (`until`): финиш
+ * видел её такой, а после приёмки та же сессия могла работать дальше.
+ */
+function planRecost(
+  swarm: { readonly db: Database; readonly attribution: Attribution },
+  attempt: AttemptRecord,
+  run: RunRecord | undefined,
+  cwd: string,
+  explicit: { readonly file?: string; readonly session?: string } | undefined,
+  warn: (code: string, msg: string) => void,
+): RecostPlan {
+  const until = attempt.finishedAt ?? undefined;
+  const model = attemptModel(swarm.db, attempt.modelId);
+  const decide = (read: TranscriptUsage, sessionId: string | null, why: string): RecostPlan => {
+    const tokens = spendTokens(read);
+    const same = sameSpend(attempt, tokens);
+    return {
+      action: same ? "unchanged" : "recost",
+      reason: same ? `${why}: recorded usage matches` : `${why}: usage differs from the recorded one`,
+      tokens,
+      sessionId,
+      transcript: read.path,
+    };
+  };
+
+  if (explicit !== undefined) {
+    let read: TranscriptUsage;
+    try {
+      const path =
+        explicit.file !== undefined ? expandHome(explicit.file) : locateSessionTranscript(explicit.session!, cwd);
+      read = readTranscriptUsage(path, { ...(until !== undefined ? { until } : {}) });
+    } catch (e) {
+      return refusedPlan(e, "named transcript not read", explicit.session ?? null);
+    }
+    const check = checkTranscriptModels(read.models, model);
+    if (!check.ok) {
+      warn(
+        "spend.model_mismatch",
+        `${modelMismatchText(attempt.attemptId, read.path, check, model)}; taken anyway because the transcript was named explicitly`,
+      );
+    }
+    return decide(read, read.sessionId, "named transcript");
+  }
+
+  const who = executorSession(run);
+  if (!who.confirmed && who.reason === "no_session") {
+    return {
+      action: "skipped",
+      code: null,
+      reason: "no session recorded: the usage came from flags or nowhere, there is nothing to recompute",
+      sessionId: null,
+      transcript: null,
+    };
+  }
+
+  if (!who.confirmed) {
+    // Сессия записана из окружения без диспетчера — сессия того, кто набрал
+    // `attempt start`. Чья она, по записи не сказать, но ДОКАЗАТЬ, что расход
+    // взят из неё, можно: какой-то префикс её стенограммы даёт ровно те же
+    // четыре числа (findUsagePrefix — почему префикс, а не срез по времени).
+    if (sameSpend(attempt, NO_SPEND)) {
+      return {
+        action: "skipped",
+        code: null,
+        reason:
+          `no usage recorded, and session ${who.sessionId} is not confirmed as the executor's ` +
+          "— nothing to drop (--from-session <uuid> adds the executor's usage)",
+        sessionId: who.sessionId,
+        transcript: null,
+      };
+    }
+    let path: string;
+    try {
+      path = sessionTranscriptPath(run!, who.sessionId!, cwd);
+    } catch (e) {
+      return refusedPlan(e, "cannot tell whose usage is recorded", who.sessionId);
+    }
+    const prefix = findUsagePrefix(path, spendView(attempt));
+    if (prefix === null) {
+      return {
+        action: "skipped",
+        code: null,
+        reason:
+          `recorded usage does not come from session ${who.sessionId} ` +
+          "(flags or a named transcript): kept as recorded",
+        sessionId: who.sessionId,
+        transcript: path,
+      };
+    }
+    return {
+      action: "foreign",
+      reason:
+        `recorded usage is session ${who.sessionId}'s (its transcript up to ${prefix.at ?? "the start"}), ` +
+        "which is not confirmed as the executor's (no orchestrator dispatch); the executor's transcript " +
+        "is unknown — --clear-foreign drops it, --from-session <uuid> replaces it",
+      tokens: NO_SPEND,
+      sessionId: who.sessionId,
+      transcript: path,
+    };
+  }
+
+  let path: string;
+  let read: TranscriptUsage;
+  try {
+    path = sessionTranscriptPath(run!, who.sessionId, cwd);
+    read = readTranscriptUsage(path, { ...(until !== undefined ? { until } : {}) });
+  } catch (e) {
+    return refusedPlan(e, "executor transcript not found", who.sessionId);
+  }
+
+  const check = checkTranscriptModels(read.models, model);
+  if (!check.ok) {
+    return {
+      action: "refused",
+      code: "spend.model_mismatch",
+      reason: modelMismatchText(attempt.attemptId, path, check, model),
+      sessionId: who.sessionId,
+      transcript: path,
+    };
+  }
+  return decide(read, who.sessionId, `executor session (${who.by})`);
+}
+
+function buildRecostCommand(deps: AttemptDeps): Command {
+  return {
+    name: "recost",
+    summary: "recompute the usage of finished attempts from the executor's transcript",
+    help:
+      "Dry run by default: shows what would change and writes nothing; --apply writes. Usage is " +
+      "taken by the same rules as at finish: only from a session confirmed as the executor's " +
+      "(an orchestrator dispatch, or a session linked explicitly), only when the transcript models " +
+      "belong to the attempt's model, and the transcript is cut at the moment the attempt finished. " +
+      "The price stays the one valid at the attempt's start. An executor transcript that cannot be " +
+      "found is a refusal, not zero. Usage proven to be another session's is dropped only with " +
+      "--clear-foreign.",
+    flags: [
+      { name: "task", value: "string", description: "only finished attempts of this task" },
+      { name: "apply", description: "write the changes (default: dry run)" },
+      {
+        name: "clear-foreign",
+        description: "with --apply: drop usage proven to be a non-executor session's",
+      },
+      ...TRANSCRIPT_FLAGS,
+    ],
+    handler: (ctx): CommandResult => {
+      const file = flagStr(ctx, "from-transcript");
+      const session = flagStr(ctx, "from-session");
+      const one = ctx.args[0];
+      if (file !== undefined && session !== undefined) {
+        return usage("usage.token_source", "--from-transcript and --from-session together: usage has exactly one source");
+      }
+      const explicit =
+        file !== undefined || session !== undefined
+          ? { ...(file !== undefined ? { file } : {}), ...(session !== undefined ? { session } : {}) }
+          : undefined;
+      if (explicit !== undefined && one === undefined) {
+        return usage(
+          "usage.invalid",
+          "--from-transcript/--from-session name ONE attempt's usage: myc attempt recost <attempt-id> --from-session <uuid>",
+        );
+      }
+      const apply = flagBool(ctx, "apply");
+      const clearForeign = flagBool(ctx, "clear-foreign");
+      if (clearForeign && !apply) {
+        return usage("usage.invalid", "--clear-foreign writes: use it together with --apply");
+      }
+
+      const opened = deps.openSwarm(ctx, deps.probe.now);
+      if (!("db" in opened)) return opened;
+      try {
+        const cwd = resolve(ctx.globals.directory ?? process.cwd());
+        let targets: AttemptWithRun[];
+        if (one !== undefined) {
+          const attempt = opened.attribution.getAttempt(one);
+          if (attempt === undefined) {
+            return { ok: false, code: "notfound.attempt", msg: `attempt "${one}" not found`, exit: ExitCode.NOTFOUND };
+          }
+          if (attempt.finishedAt === null) {
+            return usage(
+              "usage.invalid",
+              `attempt "${one}" is still open: its usage is taken at finish (myc attempt finish ${one} --verdict …)`,
+            );
+          }
+          targets = [{ attempt, run: opened.attribution.getRun(one) }];
+        } else {
+          const task = flagStr(ctx, "task");
+          targets = opened.attribution
+            .listWithRuns({ ...(task !== undefined ? { taskId: task } : {}), limit: Number.MAX_SAFE_INTEGER })
+            .filter((r) => r.attempt.finishedAt !== null);
+        }
+
+        const rows: RecostRow[] = targets.map(({ attempt, run }) => {
+          const plan = planRecost(opened, attempt, run, cwd, explicit, ctx.warn);
+          const base = {
+            attemptId: attempt.attemptId,
+            taskId: attempt.taskId,
+            modelId: attempt.modelId,
+            action: plan.action,
+            reason: plan.reason,
+            sessionId: plan.sessionId,
+            transcript: plan.transcript,
+            before: spendView(attempt),
+          };
+          if (!("tokens" in plan)) {
+            return { ...base, code: plan.code, after: null, written: false };
+          }
+          const write = apply && (plan.action === "recost" || (plan.action === "foreign" && clearForeign));
+          const { after } = opened.attribution.recostAttempt(attempt.attemptId, plan.tokens, write);
+          return {
+            ...base,
+            code: null,
+            after: plan.action === "unchanged" ? null : spendView(after),
+            written: write,
+          };
+        });
+
+        const refused = rows.filter((r) => r.action === "refused");
+        if (one !== undefined && refused.length === 1) {
+          const r = refused[0]!;
+          return {
+            ok: false,
+            code: r.code ?? "recost.refused",
+            msg: `${r.attemptId}: ${r.reason}`,
+            exit:
+              r.code === "notfound.session" || r.code === "transcript.missing" || r.code === "transcript.dir_missing"
+                ? ExitCode.NOTFOUND
+                : ExitCode.PRECOND,
+            hint: `myc attempt recost ${r.attemptId} --from-session <executor session uuid>`,
+          };
+        }
+        if (refused.length > 0) {
+          ctx.warn(
+            "recost.refused",
+            `${refused.length} attempt(s) not recomputed — executor transcript not found or of another model: ` +
+              `${refused.map((r) => r.attemptId).join(", ")} (myc attempt recost <attempt-id> --from-session <uuid>)`,
+          );
+        }
+        const counts = Object.fromEntries(RECOST_ACTIONS.map((a) => [a, rows.filter((r) => r.action === a).length]));
+        return {
+          ok: true,
+          data: { applied: apply, clearForeign, rows },
+          meta: { ...counts, written: rows.filter((r) => r.written).length },
+        };
+      } catch (e) {
+        return attemptFailure(e);
+      } finally {
+        opened.close();
+      }
+    },
+    renderHuman: (raw) => {
+      const d = raw as { applied: boolean; clearForeign: boolean; rows: RecostRow[] };
+      if (d.rows.length === 0) return "no finished attempts\n";
+      const lines = d.rows.map((r) => {
+        const after = r.after === null ? "" : ` → ${fmtUsd(r.after.costUsd)}`;
+        return [
+          r.attemptId.padEnd(16),
+          r.modelId.padEnd(12),
+          r.action.padEnd(9),
+          `${fmtUsd(r.before.costUsd)}${after}`.padEnd(22),
+          `${r.written ? "written · " : ""}${r.reason}`,
+        ].join(" ");
+      });
+      const n = (a: RecostAction) => d.rows.filter((r) => r.action === a).length;
+      const written = d.rows.filter((r) => r.written).length;
+      lines.push(
+        "",
+        `recost ${n("recost")} · unchanged ${n("unchanged")} · foreign ${n("foreign")} · ` +
+          `refused ${n("refused")} · skipped ${n("skipped")} · written ${written}`,
+      );
+      if (!d.applied) {
+        lines.push("dry run: nothing written — --apply writes, --apply --clear-foreign also drops foreign usage");
+      }
+      return `${lines.join("\n")}\n`;
+    },
+  };
+}
+
 export function createAttemptCommand(deps: AttemptDeps = realAttemptDeps): Command {
   return {
     name: "attempt",
@@ -1827,6 +2298,7 @@ export function createAttemptCommand(deps: AttemptDeps = realAttemptDeps): Comma
       buildListCommand(deps),
       buildShowCommand(deps),
       buildReclassCommand(deps),
+      buildRecostCommand(deps),
     ],
   };
 }

@@ -225,6 +225,47 @@ describe("цена кеша (memory-501fa4jp7xpw)", () => {
     });
   });
 
+  test("update без флагов кеша сохраняет явно заданные ставки (memory-s4t6yzs3kxz7)", async () => {
+    await jsonOf([...ADD, "--price-cache-read", "0.5", "--price-cache-write", "6", "--price-date", "2026-01-01"]);
+    // Новая пара in/out без флагов кеша: явные 0.5/6 не сбрасываются на доли от 4.
+    const priced = await jsonOf([
+      "model", "update", ID, "--price-in", "4", "--price-out", "20", "--price-date", "2026-02-01",
+    ]);
+    expect(priced.code).toBe(ExitCode.OK);
+    expect(priced.envelope.data.price).toMatchObject({
+      usdPerMIn: 4,
+      usdPerMOut: 20,
+      usdPerMCacheRead: 0.5,
+      usdPerMCacheWrite: 6,
+    });
+    const warn = priced.envelope.warn as Array<{ code: string }>;
+    expect(warn.map((w) => w.code)).not.toContain("price.cache_defaulted");
+    expect(priced.envelope.meta.cacheRates).toEqual({ read: "kept", write: "kept" });
+
+    // Одна ставка кеша: вторая остаётся явной, а не выводится долей.
+    const one = await jsonOf(["model", "update", ID, "--price-cache-read", "0.45", "--price-date", "2026-03-01"]);
+    expect(one.code).toBe(ExitCode.OK);
+    expect(one.envelope.data.price).toMatchObject({ usdPerMIn: 4, usdPerMCacheRead: 0.45, usdPerMCacheWrite: 6 });
+    expect(one.envelope.meta.cacheRates).toEqual({ read: "flag", write: "kept" });
+
+    const shown = await jsonOf(["model", "show", ID]);
+    expect(shown.envelope.data.priceHistory.map((p: { usdPerMCacheWrite: number }) => p.usdPerMCacheWrite)).toEqual([
+      6, 6, 6,
+    ]);
+  });
+
+  test("умолчание остаётся умолчанием: ставки-доли пересчитываются от новой цены и называются вслух", async () => {
+    await jsonOf([...ADD, "--price-date", "2026-01-01"]);
+    const res = await jsonOf([
+      "model", "update", ID, "--price-in", "4", "--price-out", "20", "--price-date", "2026-02-01",
+    ]);
+    expect(res.code).toBe(ExitCode.OK);
+    expect(res.envelope.data.price).toMatchObject({ usdPerMCacheRead: 0.4, usdPerMCacheWrite: 5 });
+    const warn = res.envelope.warn as Array<{ code: string }>;
+    expect(warn.map((w) => w.code)).toEqual(["price.cache_defaulted"]);
+    expect(res.envelope.meta.cacheRates).toEqual({ read: "default", write: "default" });
+  });
+
   test("нулевые ставки в базе — cacheUnpriced говорит вслух", async () => {
     await jsonOf([...ADD, "--price-cache-read", "0", "--price-cache-write", "0"]);
     const shown = await jsonOf(["model", "show", ID]);

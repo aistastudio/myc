@@ -656,8 +656,12 @@ describe("формы вывода bd: три ловушки на фактиче�
     try {
       snap = collectBeadsSnapshot(repoRoot);
     } catch (e) {
-      // bd недоступен в этом окружении — проверять нечего
-      if (String(e).includes("bd failed to start")) return;
+      // Нечего проверять: bd недоступен в этом окружении, или beads в этом
+      // репозитории больше нет (его сняли, когда проект перешёл на myc, —
+      // именно этого перехода и требует приёмка M0). Сама сборка снимка
+      // пришпилена фикстурами выше; здесь — только живой `bd` там, где он есть.
+      const why = String(e);
+      if (why.includes("bd failed to start") || /no beads database/i.test(why)) return;
       throw e;
     }
     expect(snap.issues.length).toBeGreaterThan(0);

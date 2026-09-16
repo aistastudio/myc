@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   EMPTY_LAUNCH,
+  executorSession,
   isAlive,
   isEmptyLaunch,
   isSelfAttributed,
@@ -242,5 +243,48 @@ describe("pidAlive", () => {
 
   test("чужой процесс (EPERM) считается живым: pid 1 есть всегда", () => {
     expect(pidAlive(1)).toBe(true);
+  });
+});
+
+/**
+ * Чья сессия у попытки — для расхода (memory-1s8dcfkfz20r, ревизия M5 §4.3):
+ * три строки аудита — `session_source='env'`, `dispatch_source='none'`,
+ * сессия координатора.
+ */
+describe("executorSession", () => {
+  const S = "a4814339-819f-40fd-964f-9f054a508e43";
+
+  test("сессия из окружения без диспетчера — не подтверждена (строки аудита)", () => {
+    expect(executorSession({ sessionId: S, sessionSource: "env", dispatchSource: "none" })).toEqual({
+      confirmed: false,
+      sessionId: S,
+      reason: "no_dispatch",
+    });
+  });
+
+  test("диспетчер известен — сессия исполнителя (единственная хорошая строка: lookup)", () => {
+    for (const d of ["env", "flag", "lookup"] as const) {
+      expect(executorSession({ sessionId: S, sessionSource: "env", dispatchSource: d })).toMatchObject({
+        confirmed: true,
+        by: "dispatch",
+      });
+    }
+  });
+
+  test("явная привязка (--session, attempt link) — подтверждена и без диспетчера", () => {
+    for (const s of ["flag", "search"] as const) {
+      expect(executorSession({ sessionId: S, sessionSource: s, dispatchSource: "none" })).toMatchObject({
+        confirmed: true,
+        by: "linked",
+      });
+    }
+  });
+
+  test("сессии нет — нечего брать", () => {
+    expect(executorSession(undefined)).toMatchObject({ confirmed: false, reason: "no_session" });
+    expect(executorSession({ sessionId: null, sessionSource: "none", dispatchSource: "lookup" })).toMatchObject({
+      confirmed: false,
+      reason: "no_session",
+    });
   });
 });

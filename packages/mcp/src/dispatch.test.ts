@@ -52,17 +52,34 @@ function dispatchWith(handler: (argv: readonly string[], json: boolean) => CliOu
 const text = (r: { content: readonly { text: string }[] }): string => r.content[0]!.text;
 
 describe("dispatch: грамматика и формат ответа", () => {
-  test("myc_prime: текст — готовый блок bootstrap, структура — data + meta", async () => {
-    const { d, fake } = dispatchWith((_argv, json) => {
-      expect(json).toBe(true);
-      return { code: 0, stdout: okEnvelope({ text: "# MYC BOOTSTRAP\nблок", chars: 20, took_ms: 1 }) };
+  test("myc_prime: стартовый пакет — `myc prime`, как у хука, а не bootstrap (memory-rkmcfqmaw4sc)", async () => {
+    const { d, fake } = dispatchWith((argv, json) => {
+      expect(argv[0]).toBe("prime");
+      return json
+        ? { code: 0, stdout: okEnvelope({ ws: "myc", ready_total: 1, chars: 40, took_ms: 1 }) }
+        : { code: 0, stdout: "myc 0.3 · ws=myc\n\n# READY 1 of 1\nmyc-1  P1 task  дело\n" };
     });
     const r = await d("myc_prime", { budget: 900 });
-    expect(fake.calls[0]).toEqual(["bootstrap", "--budget", "900", "--json"]);
-    expect(text(r)).toBe("# MYC BOOTSTRAP\nблок");
-    const sc = r.structuredContent as { chars: number; meta: { degraded: string[] } };
-    expect(sc.chars).toBe(20);
+    expect(fake.calls).toEqual([
+      ["prime", "--budget", "900", "--json"],
+      ["prime", "--budget", "900"],
+    ]);
+    expect(fake.calls.some((c) => c[0] === "bootstrap")).toBe(false);
+    expect(text(r)).toBe("myc 0.3 · ws=myc\n\n# READY 1 of 1\nmyc-1  P1 task  дело\n");
+    const sc = r.structuredContent as { ready_total: number; meta: { degraded: string[] } };
+    expect(sc.ready_total).toBe(1);
     expect(sc.meta.degraded).toEqual([]);
+  });
+
+  test("myc_prime: отказ движка — отказ инструмента, текстовый прогон не зовётся", async () => {
+    const { d, fake } = dispatchWith(() => ({
+      code: 7,
+      stdout: errEnvelope("ws.not_initialized", "workspace not initialized", "myc init"),
+    }));
+    const r = await d("myc_prime", {});
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("myc: ws.not_initialized");
+    expect(fake.calls).toEqual([["prime", "--budget", "2000", "--json"]]);
   });
 
   test("myc_ready список: два прогона (human+json), текст дословно из CLI", async () => {

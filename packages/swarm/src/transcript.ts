@@ -143,11 +143,38 @@ function requireCount(value: unknown, field: string, line: number, path: string)
   return value;
 }
 
+export interface ReadTranscriptOptions {
+  /**
+   * Учитывать только записи с `timestamp` не позже этого момента (unix ms).
+   * Нужен пересчёту уже закрытой попытки: сессия исполнителя могла работать
+   * и после приёмки (тот же терминал получил следующую задачу), а финиш читал
+   * стенограмму такой, какой она была В МОМЕНТ финиша. Запись без
+   * `timestamp` учитывается: время ей не приписать, а usage у неё не бывает.
+   */
+  readonly until?: number;
+}
+
+/** Время записи для среза `until`; нечитаемое — `undefined` (запись учитывается). */
+function recordTime(rec: Record<string, unknown>): number | undefined {
+  const ts = rec["timestamp"];
+  if (typeof ts !== "string") return undefined;
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 /**
  * Расход одной стенограммы. Бросает TranscriptError на любом расхождении
  * с ожидаемым форматом: тихого нуля здесь быть не может.
+ *
+ * ЦЕНА. Файл читается целиком: 96 МБ стенограммы координатора — 160 мс
+ * (замер 2026-09-16, три прогона 177/161/160 мс). Автоматический расход
+ * такую стенограмму больше не читает вовсе (сессия без диспетчера — не
+ * исполнитель, attempt.ts), а стенограммы исполнителей — единицы мегабайт.
+ * Потоковый разбор или отсев строк без `"usage"` сэкономили бы доли
+ * секунды ценой второго, неточного пути подсчёта `records`, `startedAt` и
+ * `endedAt` — не взято.
  */
-export function readTranscriptUsage(path: string): TranscriptUsage {
+export function readTranscriptUsage(path: string, options: ReadTranscriptOptions = {}): TranscriptUsage {
   if (!existsSync(path)) {
     throw new TranscriptError(
       "transcript.missing",
@@ -187,6 +214,10 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
       continue;
     }
     if (!isRecord(rec)) continue;
+    if (options.until !== undefined) {
+      const at = recordTime(rec);
+      if (at !== undefined && at > options.until) continue;
+    }
     records += 1;
 
     const ts = rec["timestamp"];
@@ -302,18 +333,196 @@ export function readTranscriptUsage(path: string): TranscriptUsage {
   };
 }
 
+/**
+ * Был ли расход `totals` прочитан из ЭТОЙ стенограммы — когда-нибудь, на
+ * каком-то её префиксе. Нужен пересчёту (memory-1s8dcfkfz20r): доказать, что
+ * записанный у попытки расход взят из сессии координатора, а не просто
+ * похож на неё.
+ *
+ * ПОЧЕМУ ПРЕФИКС, А НЕ СРЕЗ ПО ВРЕМЕНИ ФИНИША. Финиш читал файл таким, каким
+ * тот был в момент чтения, а ответ, чей вызов инструмента и запустил
+ * `myc close`, в файл ещё не лёг: его записи пишутся позже, но с отметкой
+ * времени ДО финиша. Замер на копии базы 2026-09-16: у att_696c6767c557
+ * срез по finished_at больше записанного ровно на один ответ (+2 in, +837
+ * out, +816 747 чтений кеша), а префикс, совпадающий до токена по всем
+ * четырём полям, есть. Совпадение четырёх сумм по префиксу случайным не
+ * бывает, и файл стенограммы только дописывается — префикс, который видел
+ * финиш, в нём остался.
+ *
+ * Суммирование то же, что у readTranscriptUsage (склейка по message.id,
+ * максимум поля по группе); записи, которые тот отверг бы, здесь просто
+ * пропускаются — это сверка, а не чтение расхода. `null` — ни один префикс
+ * не дал ровно этих чисел.
+ */
+export function findUsagePrefix(
+  path: string,
+  totals: TranscriptTotals,
+): { readonly records: number; readonly at: string | null } | null {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const same = (t: Record<TotalsKey, number>): boolean =>
+    t.tokensIn === totals.tokensIn &&
+    t.tokensOut === totals.tokensOut &&
+    t.tokensCacheRead === totals.tokensCacheRead &&
+    t.tokensCacheWrite === totals.tokensCacheWrite;
+  const running: Record<TotalsKey, number> = { tokensIn: 0, tokensOut: 0, tokensCacheRead: 0, tokensCacheWrite: 0 };
+  if (same(running)) return { records: 0, at: null };
+  const groups = new Map<string, Partial<Record<TotalsKey, number>>>();
+  let records = 0;
+  for (const raw of text.split("\n")) {
+    if (raw.trim() === "") continue;
+    let rec: unknown;
+    try {
+      rec = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!isRecord(rec)) continue;
+    records += 1;
+    const msg = rec["message"];
+    if (!isRecord(msg)) continue;
+    const usage = msg["usage"];
+    if (!isRecord(usage)) continue;
+    const msgId = msg["id"];
+    const reqId = rec["requestId"];
+    const key = typeof msgId === "string" && msgId !== "" ? msgId : typeof reqId === "string" && reqId !== "" ? reqId : undefined;
+    if (key === undefined) continue;
+    const group = groups.get(key) ?? {};
+    for (const [wire, field] of USAGE_FIELDS) {
+      const v = usage[wire];
+      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) continue;
+      const prev = group[field] ?? 0;
+      if (v > prev) {
+        running[field] += v - prev;
+        group[field] = v;
+      }
+    }
+    groups.set(key, group);
+    if (same(running)) {
+      const ts = rec["timestamp"];
+      return { records, at: typeof ts === "string" ? ts : null };
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Где лежат стенограммы и какая из них чья
 // ---------------------------------------------------------------------------
 
-/** Тот же слаг, что делает Claude Code: путь проекта с '/' → '-'. */
-export function transcriptDir(
-  cwd: string,
-  env: Record<string, string | undefined> = process.env,
-): string {
+type Env = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Каталог, в котором Claude Code держит каталоги проектов:
+ * `$CLAUDE_CONFIG_DIR/projects`, по умолчанию `~/.claude/projects`.
+ */
+export function transcriptRoot(env: Env = process.env): string {
+  const config = env["CLAUDE_CONFIG_DIR"];
+  return join(config !== undefined && config.trim() !== "" ? config : join(homedir(), ".claude"), "projects");
+}
+
+/**
+ * Тот же слаг, что делает Claude Code: в пути проекта всё, кроме букв и
+ * цифр, → '-'. Не только '/': worktree из `.claude/worktrees/x` лежит в
+ * `…--claude-worktrees-x` (проверено по ~/.claude/projects 2026-09-16), и
+ * прежний слаг «'/' → '-'» указывал для такого агента в несуществующий
+ * каталог.
+ */
+export function transcriptDir(cwd: string, env: Env = process.env): string {
   const override = env["MYC_TRANSCRIPT_DIR"];
   if (override !== undefined && override.trim() !== "") return override;
-  return join(homedir(), ".claude", "projects", cwd.replace(/\//g, "-"));
+  return join(transcriptRoot(env), cwd.replace(/[^A-Za-z0-9]/g, "-"));
+}
+
+/**
+ * Стенограмма сессии по её uuid — где бы ни лежал каталог её проекта.
+ *
+ * Каталог стенограммы — это каталог, где работал ИСПОЛНИТЕЛЬ (его worktree,
+ * вложенный репозиторий), а закрывает попытку обычно координатор из своего
+ * каталога. Поиск только в `transcriptDir(cwd)` финиширующего поэтому
+ * отвечал `notfound.session` на каждую попытку агента из worktree. uuid
+ * сессии уникален на машине, поэтому после быстрого пути (каталог `cwd`)
+ * смотрим `<uuid>.jsonl` в каждом каталоге проектов: ~170 stat, миллисекунды.
+ *
+ * `$MYC_TRANSCRIPT_DIR` — явный каталог: тогда только он, как и прежде.
+ */
+export function locateSessionTranscript(sessionId: string, cwd: string, env: Env = process.env): string {
+  const override = env["MYC_TRANSCRIPT_DIR"];
+  if (override !== undefined && override.trim() !== "") return findSessionTranscript(override, sessionId);
+  const id = sessionId.endsWith(".jsonl") ? sessionId.slice(0, -".jsonl".length) : sessionId;
+  const near = join(transcriptDir(cwd, env), `${id}.jsonl`);
+  if (existsSync(near)) return near;
+  const root = transcriptRoot(env);
+  requireDir(root);
+  let dirs: string[];
+  try {
+    dirs = readdirSync(root);
+  } catch (e) {
+    throw new TranscriptError(
+      "transcript.unreadable",
+      `transcript directory ${root} is unreadable: ${(e as Error).message}`,
+    );
+  }
+  for (const d of dirs.sort()) {
+    const path = join(root, d, `${id}.jsonl`);
+    if (existsSync(path)) return path;
+  }
+  throw new TranscriptError(
+    "notfound.session",
+    `session "${id}" not found in any project directory under ${root}`,
+    "myc attempt finish … --from-transcript <file>",
+  );
+}
+
+/** Сверка моделей стенограммы с моделью попытки. */
+export interface TranscriptModelCheck {
+  /** Все модели стенограммы (без служебных `<…>`) принадлежат модели попытки. */
+  readonly ok: boolean;
+  /** Модели стенограммы без служебных. */
+  readonly seen: readonly string[];
+  /** Те из них, что модели попытки не принадлежат. */
+  readonly foreign: readonly string[];
+}
+
+function nameTokens(name: string): string[] {
+  return name.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t !== "");
+}
+
+function tokensWithin(needle: readonly string[], hay: ReadonlySet<string>): boolean {
+  return needle.length > 0 && needle.every((t) => hay.has(t));
+}
+
+/**
+ * Принадлежат ли модели стенограммы модели попытки. Имя модели в
+ * стенограмме — провайдерское (`claude-sonnet-5`, `claude-opus-4-5-20251101`),
+ * в ростере — своё (`sonnet`, семейство `claude-sonnet`). Совпадением
+ * считается, когда все слова семейства (или последнего сегмента id модели)
+ * есть среди слов имени из стенограммы: `claude-sonnet` ⊂ `claude-sonnet-5`,
+ * но не ⊂ `claude-opus-5`.
+ *
+ * Служебная `<synthetic>` (так Claude Code помечает ответы, которых модель
+ * не давала) в сверке не участвует. Стенограмма без единой модели — `ok:
+ * false`: проверить, чей это расход, нечем.
+ *
+ * Зачем: у att_6289a214d584 записан sonnet, а в стенограмме только opus —
+ * её токены легли по ставкам sonnet ($553.37 против медианы $7.78).
+ */
+export function checkTranscriptModels(
+  models: readonly string[],
+  attempt: { readonly modelId: string; readonly family: string },
+): TranscriptModelCheck {
+  const seen = models.filter((m) => !m.startsWith("<"));
+  const family = nameTokens(attempt.family);
+  const tail = nameTokens(attempt.modelId.split("/").pop() ?? attempt.modelId);
+  const foreign = seen.filter((m) => {
+    const hay = new Set(nameTokens(m));
+    return !tokensWithin(family, hay) && !tokensWithin(tail, hay);
+  });
+  return { ok: seen.length > 0 && foreign.length === 0, seen, foreign };
 }
 
 function requireDir(dir: string): void {

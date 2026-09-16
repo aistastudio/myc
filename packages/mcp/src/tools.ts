@@ -33,7 +33,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
   {
     name: "myc_prime",
     description:
-      "Project start packet: environment, working rules, ready queue state. " +
+      "Project start packet: ready queue, work in progress, core and recent decisions. " +
       "Call ONCE at session start and again right after context compaction — " +
       "replaces reading the README, plans and task history.",
     inputSchema: {

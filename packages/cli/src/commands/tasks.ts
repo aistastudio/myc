@@ -15,7 +15,7 @@ import { REPO_KEY, commentInput, readRepo, repoReasonText } from "@myc/core";
 import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
 import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat, type ClassifyResult } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
-import type { Command, CommandContext, CommandFailure } from "../registry.ts";
+import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import {
   anchorFlagLine,
@@ -1342,8 +1342,8 @@ interface CloseData {
 
 function renderCloseHuman(raw: unknown): string {
   const d = raw as CloseData;
-  if (d.already === true) return `${d.id} already ${d.status}\n`;
-  const headParts = [`closed ${d.id}`];
+  if (d.already === true && d.attribution === undefined) return `${d.id} already ${d.status}\n`;
+  const headParts = [d.already === true ? `${d.id} already ${d.status}` : `closed ${d.id}`];
   if (d.in_progress_ms !== undefined) headParts.push(`in_progress ${fmtAge(d.in_progress_ms)}`);
   headParts.push(`@${d.closed_by}`);
   const lines = [headParts.join(" · ")];
@@ -1428,6 +1428,39 @@ function prepareAttribution(
   const modelFlag = flagStr(ctx, "model");
   const modelEnv = verdict === undefined ? undefined : process.env["MYC_MODEL"];
   const modelRaw = modelFlag ?? modelEnv;
+  const attemptFlag = flagStr(ctx, "attempt");
+  if (attemptFlag !== undefined) {
+    if (verdict === undefined) {
+      return failure("usage.attempt", "--attempt without --verdict: it names where the verdict goes", ExitCode.USAGE);
+    }
+    // Попытка названа явно — ей и вердикт. Чужая задача — ошибка ввода,
+    // закрытая — конфликт: исход закрытой попытки не переписывается.
+    const named = swarmTableExists(h) ? swarmOn(h.driver.database).attribution.getAttempt(attemptFlag) : undefined;
+    if (named === undefined || named.taskId !== node.id) {
+      return failure(
+        "usage.attempt",
+        named === undefined
+          ? `attempt ${attemptFlag} not found`
+          : `attempt ${attemptFlag} belongs to ${named.taskId}, not to ${node.id}`,
+        ExitCode.USAGE,
+        `myc attempt list --task ${node.id}`,
+      );
+    }
+    if (named.finishedAt !== null) {
+      return failure(
+        "conflict.finished",
+        `attempt ${named.attemptId} already has an outcome (${named.verdict}); it cannot be rewritten`,
+        ExitCode.CONFLICT,
+      );
+    }
+    let canonical: string | undefined;
+    if (modelFlag !== undefined) {
+      const resolved = resolveModelId(swarmOn(h.driver.database).roster, modelFlag);
+      if (!resolved.ok) return resolved.failure;
+      canonical = resolved.modelId;
+    }
+    return { plan: { kind: "finish", attempt: named }, canonicalModel: canonical ?? named.modelId };
+  }
   if (verdict === undefined && modelRaw === undefined) {
     if (!swarmTableExists(h)) return { plan: { kind: "none" } };
     const open = swarmOn(h.driver.database).attribution.openAttemptForTask(node.id);
@@ -1569,6 +1602,72 @@ async function applyAttribution(
 }
 
 /**
+ * Вердикт по УЖЕ закрытой задаче (memory-swbmm4qhqkeh) — ретро-сценарий
+ * записи исходов: задачу закрыли, исход решили записать потом. Прежде ответ
+ * `{ok:true, already:true}` уходил раньше разбора вердикта, и вердикт
+ * пропадал молча.
+ *
+ * Задача не трогается (статус, attrs, связи — уже состоялись); вердикт идёт в
+ * попытку тем же путём, что при закрытии: открытая попытка (или названная
+ * `--attempt`), иначе ретро-попытка по `--model`. Записать некуда — ОТКАЗ,
+ * а не WARN: кроме записи исхода команда ничего не делала, и «ok» соврал
+ * бы, что вердикт принят. Исход у задачи уже есть, а открытой попытки нет —
+ * тоже отказ: повтор той же команды не имеет права завести второй исход
+ * одной и той же работы.
+ */
+async function verdictOnClosed(
+  ctx: CommandContext,
+  h: StoreHandle,
+  node: NodeRecord,
+  verdict: string,
+  caveats: readonly Caveat[],
+  probe: Pick<LaunchProbe, "touchedSince">,
+  t0: number,
+): Promise<CommandResult> {
+  const prepared = prepareAttribution(ctx, h, node, verdict);
+  if ("ok" in prepared) return prepared;
+  const plan = prepared.plan;
+  if (plan.kind !== "finish") {
+    const recorded = swarmTableExists(h)
+      ? swarmOn(h.driver.database)
+          .attribution.listAttempts({ taskId: node.id })
+          .filter((a) => a.finishedAt !== null)
+      : [];
+    if (recorded.length > 0) {
+      const last = recorded[0]!;
+      return failure(
+        "conflict.finished",
+        `${node.id} is already ${node.status} and its outcome is already recorded ` +
+          `(${last.attemptId}: ${last.verdict}); a second verdict would record the same work twice`,
+        ExitCode.CONFLICT,
+        `myc attempt list --task ${node.id}; another attempt: myc attempt start ${node.id} --model <id>`,
+      );
+    }
+    if (plan.kind === "none") {
+      return failure(
+        "attribution.not_recorded",
+        `${node.id} is already ${node.status}: the verdict was not recorded — ` +
+          `${plan.skipped ?? "there is no attempt to record it in"}`,
+        ExitCode.PRECOND,
+        `myc close ${node.id} --verdict ${verdict} --model <roster model id>`,
+      );
+    }
+  }
+  const applied = await applyAttribution(ctx, h, node, plan, verdict, caveats, probe);
+  if ("ok" in applied) return applied;
+  const data: CloseData = {
+    id: node.id,
+    status: node.status,
+    closed_by: node.assignee || h.actor,
+    already: true,
+    unblocked: [],
+    attribution: applied,
+    took_ms: tookMs(t0),
+  };
+  return { ok: true, data, meta: { took_ms: data.took_ms } };
+}
+
+/**
  * `probe` — только git: тронутые файлы попытки со снимка на старте. Тестам
  * он нужен, чтобы подменить мир (`inertProbe`); по умолчанию — настоящий.
  */
@@ -1602,6 +1701,11 @@ export function createCloseCommand(
         description: `accepted-but: ${CAVEATS.join(", ")}`,
       },
       { name: "retries", value: "number", description: "rework rounds before acceptance (L4)" },
+      {
+        name: "attempt",
+        value: "string",
+        description: "attempt that gets the verdict (default: the task's latest open attempt)",
+      },
       AS_FLAG,
     ],
     handler: async (ctx) => {
@@ -1659,6 +1763,9 @@ export function createCloseCommand(
         const node = resolved.node;
 
         if (node.status === "closed" || node.status === "cancelled") {
+          if (verdict !== undefined) {
+            return await verdictOnClosed(ctx, h, node, verdict, caveats, probe, t0);
+          }
           const data: CloseData = {
             id: node.id,
             status: node.status,

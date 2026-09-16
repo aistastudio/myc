@@ -5,7 +5,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { run, CLI_VERSION } from "@myc/cli";
 import type { RunOptions, RunResult } from "@myc/cli";
 import { ensureSqliteLibrary, ensureSqliteRuntime } from "@myc/store-sqlite";
@@ -140,16 +140,27 @@ export function mcpProjectDir(
 
 /**
  * Воркспейс, который обслужит сервер, — тем же правилом, что у CLI: явный
- * `--db` — ровно этот файл, иначе подъём с разрешением git worktree в
- * основное дерево (workspace.ts). `undefined` — воркспейса нет.
+ * `--db` — это база И её воркспейс (конфиг `workspace.toml` рядом с ней),
+ * иначе подъём с разрешением git worktree в основное дерево (workspace.ts).
+ * `undefined` — воркспейса нет.
+ *
+ * `dbPath` — файл, который откроет ПРЯМОЙ стор (myc_link, заметки, аренда).
+ * Прежде при `--db` сервер отдавал `wsDir = cwd`, прямой стор открывал
+ * `<cwd>/.myc/myc.db`, и при воркспейсе вокруг cwd заметки и связи уезжали
+ * в его базу, а не в названную (memory-dyjt6fafz8j9).
  */
 export function mcpWorkspace(
   globals: { readonly db?: string | undefined },
   startDir: string,
-): { readonly wsDir: string } | undefined {
-  if (globals.db !== undefined) return existsSync(globals.db) ? { wsDir: resolve(startDir) } : undefined;
+): { readonly wsDir: string; readonly dbPath: string } | undefined {
+  if (globals.db !== undefined) {
+    const dbPath = resolve(globals.db);
+    if (!existsSync(dbPath)) return undefined;
+    const mycDir = dirname(dbPath);
+    return { wsDir: basename(mycDir) === ".myc" ? dirname(mycDir) : mycDir, dbPath };
+  }
   const wsDir = findMcpWorkspace(startDir);
-  return wsDir !== undefined ? { wsDir } : undefined;
+  return wsDir !== undefined ? { wsDir, dbPath: join(wsDir, ".myc", "myc.db") } : undefined;
 }
 
 export function createMcpCommand(registry?: Registry) {
@@ -202,7 +213,11 @@ export function createMcpCommand(registry?: Registry) {
             throw new UnknownToolError(`unknown tool '${name}': no myc workspace here`);
           },
         });
-        process.stderr.write(`myc mcp: no myc workspace at ${resolve(directory ?? process.cwd())} — 0 tools, stdio\n`);
+        process.stderr.write(
+          ctx.globals.db !== undefined
+            ? `myc mcp: no database at ${resolve(ctx.globals.db)} (--db) — 0 tools, stdio\n`
+            : `myc mcp: no myc workspace at ${resolve(directory ?? process.cwd())} — 0 tools, stdio\n`,
+        );
         await serveStdio(idle, Bun.stdin.stream(), (chunk) => {
           process.stdout.write(chunk);
         });
@@ -227,10 +242,11 @@ export function createMcpCommand(registry?: Registry) {
         version: CLI_VERSION,
         dispatch: createDispatcher({
           runCli,
-          // Прямой стор открывается в НАЙДЕННОМ воркспейсе: openMcpStore
-          // смотрит ровно в `<каталог>/.myc`, и из git worktree или вложенного
-          // репозитория экосистемы myc_link и заметки иначе отказывали бы.
-          openStore: () => openMcpStore(ws.wsDir, { extensions: wantsVector }),
+          // Прямой стор открывает ТУ ЖЕ базу, что и команды CLI этого
+          // сервера: найденную подъёмом (из git worktree или вложенного
+          // репозитория экосистемы myc_link и заметки иначе отказывали бы)
+          // или названную `--db` — вместе с конфигом рядом с ней.
+          openStore: () => openMcpStore(ws.wsDir, { extensions: wantsVector, dbPath: ws.dbPath }),
         }),
         instructions: () => buildInstructions(runCli),
       });

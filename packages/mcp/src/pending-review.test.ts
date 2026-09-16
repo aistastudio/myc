@@ -6,8 +6,9 @@
  *
  *   myc_recall — кандидат не отдаётся (фильтр ретривала, @myc/retrieval);
  *   myc_show   — по id показан, но помечен: `review: pending_review`;
- *   myc_prime  — это `myc bootstrap`: правила работы, а не память, и
- *                кандидату туда дороги нет; проверяется, что так и осталось.
+ *   myc_prime  — это `myc prime`, тот же пакет, что у хука старта сессии
+ *                (memory-rkmcfqmaw4sc): память в нём есть, и кандидата из
+ *                неё там нет.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -114,9 +115,11 @@ describe("MCP: кандидат хука сжатия", () => {
     expect((recall.structuredContent as { rows: { id: string }[] }).rows[0]!.id).toBe(cand);
   });
 
-  test("myc_prime — блок bootstrap, кандидата в нём нет", async () => {
+  test("myc_prime — пакет prime (память, а не bootstrap): кандидата в нём нет", async () => {
     const r = await d("myc_prime", {});
     expect(r.content[0]!.text).not.toContain("сервис ломает офлайн");
+    expect(r.content[0]!.text).not.toContain("MYC BOOTSTRAP");
+    expect((r.structuredContent as { ready_total?: number }).ready_total).toBe(0);
   });
 });
 

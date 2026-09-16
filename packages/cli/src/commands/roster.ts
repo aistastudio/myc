@@ -164,18 +164,42 @@ function priceDate(ctx: CommandContext): number | CommandFailure {
   return ms;
 }
 
+/** Откуда ставка кеша: флаг, прежняя строка цены, умолчание-доля. */
+type CacheRateSource = "flag" | "kept" | "default";
+
 interface CachePrice {
   readonly usdPerMCacheRead: number;
   readonly usdPerMCacheWrite: number;
   /** Какие ставки пришли из умолчания, а не из флагов. */
   readonly defaulted: readonly string[];
+  readonly sources: { readonly read: CacheRateSource; readonly write: CacheRateSource };
+}
+
+/** Доля от цены входа, округлённая до миллионной: 0.30000000000000004 — мусор, а не точность. */
+function shareOf(usdPerMIn: number, share: number): number {
+  return Math.round(usdPerMIn * share * 1e6) / 1e6;
 }
 
 /**
  * Ставки кеша из флагов; недостающие — по долям от цены входа. Возвращает
  * и то, что вывели, чтобы вызывающий назвал умолчание вслух.
+ *
+ * `carried` — действующая строка цены, на которую ложится правка
+ * (`myc model update`, memory-s4t6yzs3kxz7). Прежде недостающая ставка
+ * выводилась долей ВСЕГДА, и явно заданная (скажем, чтение кеша $0.5 при
+ * входе $3) молча сбрасывалась на 10 % от новой цены входа — подмена ложилась
+ * в историю цен и во все будущие заморозки стоимости. Теперь явное значение
+ * сохраняется, пока его явно не сменили. Отличить явное от выведенного
+ * долей база не умеет (в ней лежат только числа), поэтому различаем по
+ * самому числу: ставка, равная доле от входа СВОЕЙ строки, — это умолчание
+ * (или совпадающее с ним явное — пропорция та же) и выводится заново от
+ * новой цены входа, вслух; любая другая — явная и переносится как есть.
  */
-function cachePrice(ctx: CommandContext, usdPerMIn: number): CachePrice | CommandFailure {
+function cachePrice(
+  ctx: CommandContext,
+  usdPerMIn: number,
+  carried?: { readonly usdPerMIn: number; readonly usdPerMCacheRead: number; readonly usdPerMCacheWrite: number },
+): CachePrice | CommandFailure {
   const read = flagNum(ctx, "price-cache-read");
   const write = flagNum(ctx, "price-cache-write");
   for (const [flag, value] of [
@@ -187,15 +211,26 @@ function cachePrice(ctx: CommandContext, usdPerMIn: number): CachePrice | Comman
     }
   }
   const defaulted: string[] = [];
-  if (read === undefined) defaulted.push(`read=${CACHE_PRICE_SHARES.read * 100}%`);
-  if (write === undefined) defaulted.push(`write=${CACHE_PRICE_SHARES.write * 100}%`);
-  // Округление до цента за 1M: доля от цены даёт 0.30000000000000004,
-  // и такой хвост в прайсе — мусор, а не точность.
-  const share = (value: number): number => Math.round(usdPerMIn * value * 1e6) / 1e6;
+  const pick = (
+    given: number | undefined,
+    key: "read" | "write",
+    stored: number | undefined,
+  ): { value: number; source: CacheRateSource } => {
+    if (given !== undefined) return { value: given, source: "flag" };
+    const share = CACHE_PRICE_SHARES[key];
+    if (carried !== undefined && stored !== undefined && stored !== shareOf(carried.usdPerMIn, share)) {
+      return { value: stored, source: "kept" };
+    }
+    defaulted.push(`${key}=${share * 100}%`);
+    return { value: shareOf(usdPerMIn, share), source: "default" };
+  };
+  const r = pick(read, "read", carried?.usdPerMCacheRead);
+  const w = pick(write, "write", carried?.usdPerMCacheWrite);
   return {
-    usdPerMCacheRead: read ?? share(CACHE_PRICE_SHARES.read),
-    usdPerMCacheWrite: write ?? share(CACHE_PRICE_SHARES.write),
+    usdPerMCacheRead: r.value,
+    usdPerMCacheWrite: w.value,
     defaulted,
+    sources: { read: r.source, write: w.source },
   };
 }
 
@@ -356,21 +391,22 @@ function buildUpdateCommand(deps: RosterDeps): Command {
       const opened = deps.openRoster(ctx);
       if (!("roster" in opened)) return opened;
       try {
+        let cacheRates: CachePrice["sources"] | undefined;
         if (priceTouched) {
-          // Правка одних лишь ставок кеша — это по-прежнему полный факт
-          // цены: недостающие in/out берём из действующей на ту же дату
-          // строки, а не пишем строку с дырами.
+          // Правка — это по-прежнему полный факт цены: недостающее (in/out,
+          // ставки кеша) берётся из строки, действующей на ту же дату, а не
+          // пишется дырой или умолчанием поверх явного.
+          const current = opened.roster.getModel(modelId, validFrom);
+          if (current === undefined) {
+            return {
+              ok: false,
+              code: "notfound.model",
+              msg: `model "${modelId}" not found in the roster`,
+              exit: ExitCode.NOTFOUND,
+            };
+          }
           let base: { in: number; out: number } | undefined;
           if (priceIn === undefined) {
-            const current = opened.roster.getModel(modelId, validFrom);
-            if (current === undefined) {
-              return {
-                ok: false,
-                code: "notfound.model",
-                msg: `model "${modelId}" not found in the roster`,
-                exit: ExitCode.NOTFOUND,
-              };
-            }
             if (current.price === null) {
               return usage(
                 "usage.price",
@@ -381,9 +417,10 @@ function buildUpdateCommand(deps: RosterDeps): Command {
           } else {
             base = { in: priceIn, out: priceOut! };
           }
-          const cache = cachePrice(ctx, base.in);
+          const cache = cachePrice(ctx, base.in, current.price ?? undefined);
           if (!("usdPerMCacheRead" in cache)) return cache;
           warnDefaulted(ctx, cache, base.in);
+          cacheRates = cache.sources;
           patch.price = {
             usdPerMIn: base.in,
             usdPerMOut: base.out,
@@ -394,7 +431,13 @@ function buildUpdateCommand(deps: RosterDeps): Command {
         }
         opened.roster.updateModel(modelId, patch);
         const entry = opened.roster.getModel(modelId);
-        return { ok: true, data: entryView(entry!) };
+        // Откуда каждая ставка кеша — flag | kept | default: перенос явной
+        // ставки не предупреждение, но и не тайна.
+        return {
+          ok: true,
+          data: entryView(entry!),
+          ...(cacheRates !== undefined ? { meta: { cacheRates } } : {}),
+        };
       } catch (e) {
         return rosterFailure(e);
       } finally {

@@ -266,13 +266,30 @@ async function addNote(
 // тулы
 // ---------------------------------------------------------------------------
 
+/**
+ * Стартовый пакет — `myc prime`, тот же, что агент получает хуком старта
+ * сессии (дизайн 03 §4.4: очередь, в работе, ядро и свежие решения).
+ *
+ * Прежде здесь стоял `bootstrap` (memory-rkmcfqmaw4sc): агент через MCP
+ * получал второй раз блок, который уже приехал ему в
+ * initialize.instructions, и не получал ни очереди, ни памяти вовсе.
+ * Осознанной разницы за этим нет: bootstrap.ts прямо говорит «это НЕ
+ * `myc prime`», решения в дизайне и ARCHITECTURE нет, а описание
+ * инструмента обещало состояние очереди. Правила работы (bootstrap)
+ * остаются в instructions — они переживают сжатие контекста сами, пакет
+ * prime после сжатия запрашивается заново.
+ *
+ * Чтение — два прогона, как у остальных чтений: структура, затем текст
+ * дословно. Последовательно, а не параллельно: второй прогон берёт дайджест
+ * из кеша первого, и провал первого экономит второй.
+ */
 async function toolPrime(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
   const budget = optInt(args, "budget", 2000, 200, 8000);
-  const env = await runJson(deps.runCli, ["bootstrap", "--budget", String(budget)]);
+  const argv = ["prime", "--budget", String(budget)];
+  const env = await runJson(deps.runCli, argv);
   if (!env.ok) return envelopeFailure(env);
-  const data = env.data as { text?: string };
-  const text = `${warnBlock(env.warn ?? [])}${data.text ?? ""}`;
-  return textResult(text, { ...env.data, meta: metaOf(env) });
+  const text = await runText(deps.runCli, argv);
+  return textResult(`${warnBlock(env.warn ?? [])}${text}`, { ...env.data, meta: metaOf(env) });
 }
 
 function readyFilters(args: Args): string[] {

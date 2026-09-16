@@ -283,6 +283,95 @@ describe("close --verdict: один флаг на закрытие", () => {
   });
 });
 
+/**
+ * Вердикт по УЖЕ закрытой задаче (memory-swbmm4qhqkeh) — ровно ретро-сценарий
+ * записи исходов: задачу закрыли, исход решили записать потом. Прежде ответ
+ * `{ok:true, already:true}` уходил раньше разбора вердикта, и вердикт
+ * пропадал молча. Теперь он либо записан, либо отказ назван вслух.
+ */
+describe("close --verdict по закрытой задаче", () => {
+  test("вердикт записывается в открытую попытку закрытой задачи", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("Исправить падение импорта");
+    await json("attempt", "start", id, "--model", "p/big");
+    expect((await json("close", id)).envelope.data.status).toBe("closed");
+
+    const r = await json("close", id, "--verdict", "accepted", "--caveat", "tests-weak");
+    expect(r.code).toBe(ExitCode.OK);
+    expect(r.envelope.data).toMatchObject({ status: "closed", already: true });
+    expect(r.envelope.data.attribution).toMatchObject({
+      recorded: true,
+      model_id: "p/big",
+      verdict: "accepted",
+      caveats: ["tests_weak"],
+    });
+    expect((await json("attempt", "list", "--task", id, "--open")).envelope.data).toHaveLength(0);
+    const human = await myc("close", id, "--verdict", "accepted");
+    expect(human.code).toBe(ExitCode.CONFLICT);
+  });
+
+  test("ретро-запись: закрытая задача без попыток, --model — попытка заводится и закрывается", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("Обновить зависимости");
+    await json("close", id);
+    const r = await json("close", id, "--verdict", "rework", "--model", "p/big");
+    expect(r.code).toBe(ExitCode.OK);
+    expect(r.envelope.data.attribution).toMatchObject({ recorded: true, model_id: "p/big", verdict: "rework" });
+    const list = await json("attempt", "list", "--task", id);
+    expect(list.envelope.data).toHaveLength(1);
+    expect(list.envelope.data[0]).toMatchObject({ verdict: "rework", source: "close" });
+  });
+
+  test("ни попытки, ни модели — отказ вслух с подсказкой, а не ok", async () => {
+    const id = await newTask("Что-то сделать");
+    await json("close", id);
+    const r = await json("close", id, "--verdict", "accepted");
+    expect(r.code).toBe(ExitCode.PRECOND);
+    expect(r.envelope.ok).toBe(false);
+    expect(r.envelope.error.code).toBe("attribution.not_recorded");
+    expect(r.envelope.error.msg).toContain("already closed");
+    expect(r.envelope.error.hint).toContain("--model");
+  });
+
+  test("исход уже записан — повтор вердикта не заводит второй исход, а отказывает", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("Что-то сделать");
+    await json("close", id, "--verdict", "accepted", "--model", "p/big");
+    const again = await json("close", id, "--verdict", "accepted", "--model", "p/big");
+    expect(again.code).toBe(ExitCode.CONFLICT);
+    expect(again.envelope.error.code).toBe("conflict.finished");
+    expect((await json("attempt", "list", "--task", id)).envelope.data).toHaveLength(1);
+  });
+
+  test("--attempt называет попытку явно; чужая или закрытая — отказ", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("Что-то сделать");
+    const other = await newTask("Другая задача");
+    const mine = (await json("attempt", "start", id, "--model", "p/big")).envelope.data.attemptId as string;
+    const foreign = (await json("attempt", "start", other, "--model", "p/big")).envelope.data.attemptId as string;
+    await json("close", id);
+
+    const wrong = await json("close", id, "--verdict", "accepted", "--attempt", foreign);
+    expect(wrong.code).toBe(ExitCode.USAGE);
+    expect(wrong.envelope.error.code).toBe("usage.attempt");
+
+    const r = await json("close", id, "--verdict", "accepted", "--attempt", mine);
+    expect(r.code).toBe(ExitCode.OK);
+    expect(r.envelope.data.attribution).toMatchObject({ recorded: true, attempt_id: mine });
+    const twice = await json("close", id, "--verdict", "rework", "--attempt", mine);
+    expect(twice.code).toBe(ExitCode.CONFLICT);
+  });
+
+  test("без вердикта закрытая задача — по-прежнему тихое already", async () => {
+    const id = await newTask("Что-то сделать");
+    await json("close", id);
+    const r = await json("close", id);
+    expect(r.code).toBe(ExitCode.OK);
+    expect(r.envelope.data).toMatchObject({ already: true, status: "closed" });
+    expect(r.envelope.data.attribution).toBeUndefined();
+  });
+});
+
 describe("человеческий вывод", () => {
   test("список — одна плотная строка на попытку, а не таблица в 21 колонку", async () => {
     await addModel("p/big", "3", "15");

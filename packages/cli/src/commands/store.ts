@@ -893,6 +893,39 @@ function deriveRepoAcrossWorktrees(
 }
 
 /**
+ * Рядом с базой из `--db` конфига нет — действуют умолчания самой базы.
+ * Прежде в этом месте молча подставлялся конфиг воркспейса вокруг
+ * `-C`/cwd; кто звал так раньше, ждёт того слага. Не подставляем, но если
+ * тот конфиг дал бы ДРУГОЙ слаг — говорим вслух (И2), а не молчим.
+ * Цена — подъём по каталогам и чтение одного файла, и только в этой ветке.
+ */
+function warnBorrowedConfig(
+  ctx: CommandContext,
+  startDir: string,
+  dbPath: string,
+  tomlPath: string,
+  slug: string,
+): void {
+  const around = findWorkspaceDb(startDir);
+  if (!("dbPath" in around) || resolve(around.dbPath) === resolve(dbPath)) return;
+  const theirs = join(around.wsDir, ".myc", "workspace.toml");
+  if (!existsSync(theirs)) return;
+  let other: string;
+  try {
+    other = parseWorkspaceToml(readFileSync(theirs, "utf8")).slug;
+  } catch {
+    return;
+  }
+  if (other === slug) return;
+  ctx.warn(
+    "ws.db_config",
+    `no ${tomlPath} next to the database ${dbPath}: its defaults apply (slug "${slug}"), ` +
+      `not the config of the workspace at ${around.wsDir} (slug "${other}") — ` +
+      "put workspace.toml next to the database to give it its own slug",
+  );
+}
+
+/**
  * Открытие проектного яруса. `options.extensions` поднимает рантайм vec0 —
  * его просят команды, которые умеют звать векторный поиск (S45); остальные
  * не просят и не платят.
@@ -935,13 +968,25 @@ export async function openStore(
   }
 
   let config: WorkspaceConfig = { slug: "myc", weights: { ...DEFAULT_READY_WEIGHTS } };
-  const tomlPath = join(wsDir, ".myc", "workspace.toml");
-  if (existsSync(tomlPath)) {
+  // `--db` — это база И её воркспейс (memory-h0d5p1smqb5v): конфиг лежит
+  // РЯДОМ С БАЗОЙ (для `<dir>/.myc/myc.db` это `<dir>/.myc/workspace.toml`,
+  // ровно как без флага; так же его ищет `findMycDir`). Прежде он брался из
+  // каталога `-C`/cwd, и слаг — а с ним id и scope каждого нового узла —
+  // приезжал от воркспейса, ИЗ которого позвали: `import-beads` на копии
+  // cherry положил 105 задач в scope '' вместо 'cherry'.
+  const tomlPath =
+    ctx.globals.db !== undefined
+      ? join(dirname(resolve(dbPath)), "workspace.toml")
+      : join(wsDir, ".myc", "workspace.toml");
+  const hasConfig = existsSync(tomlPath);
+  if (hasConfig) {
     try {
       config = parseWorkspaceToml(readFileSync(tomlPath, "utf8"));
     } catch {
       // битый конфиг не должен ронять чтение графа — дефолты выше
     }
+  } else if (ctx.globals.db !== undefined) {
+    warnBorrowedConfig(ctx, startDir, dbPath, tomlPath, config.slug);
   }
 
   const actor = resolveActor(ctx);
