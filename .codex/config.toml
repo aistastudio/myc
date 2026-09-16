@@ -1,2 +1,9 @@
 [features]
 hooks = true
+
+# myc:mcp:start
+[mcp_servers.myc]
+command = "myc"
+args    = ["mcp", "--profile", "agent"]
+startup_timeout_sec = 10
+# myc:mcp:end
