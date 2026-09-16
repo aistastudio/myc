@@ -328,8 +328,8 @@ window.MYC_DATA = {
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 5.05,
-    "unpacked_mb": 15.59,
+    "compressed_mb": 5.06,
+    "unpacked_mb": 15.62,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.11",
-    "date": "2026-09-15"
+    "version": "0.3.12",
+    "date": "2026-09-16"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-09-15",
-    "source": "myc 0.3.10 (schema 1) · 13 epics of this repository's workspace",
+    "as_of": "2026-09-16",
+    "source": "myc 0.3.11 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -600,17 +600,11 @@ window.MYC_DATA = {
         "title_en": "swarm self-learning: routing by cost and outcome",
         "title_ru": "самообучение роя: роутинг по цене и результату",
         "status": "open",
-        "done": 0,
-        "total": 14,
+        "done": 2,
+        "total": 15,
         "cancelled": 0,
-        "in_progress": 1,
+        "in_progress": 0,
         "open": [
-          {
-            "id": "memory-nkwsbqssm24a",
-            "status": "in_progress",
-            "priority": 1,
-            "title": "Ревизия M5: что сделано в коде, что осталось, порядок"
-          },
           {
             "id": "memory-0adbcy3rhqj4",
             "status": "open",
@@ -1657,17 +1651,16 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 3790,
-    "fail": 1,
+    "pass": 3862,
+    "fail": 0,
     "skip": 16,
-    "files": 250,
-    "assertions": 36040,
-    "seconds": 468,
-    "sources": "9e1473fde0cbae2a",
-    "date": "2026-09-15",
-    "myc": "0.3.11",
-    "failing_test": "queue-hook.multiprocess.test.ts (d): queue hook, heavy command p99 46.3 ms > 30 ms budget (p50 24.0 ms, load1 19 on 14 cores); alone 28.7–30.6 ms at load1 7; the hook is unchanged since 0.3.10"
+    "files": 256,
+    "assertions": 36601,
+    "seconds": 404.8,
+    "sources": "37ca4ea7fe7afb24",
+    "date": "2026-09-16",
+    "myc": "0.3.12"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-15T20:13:55.846Z", assertions: 77 };
-window.MYC_DATA.release = "0.3.11";
+window.MYC_DATA.verified = { at: "2026-09-16T04:45:11.275Z", assertions: 77 };
+window.MYC_DATA.release = "0.3.12";

@@ -51,8 +51,8 @@ Install Bun: https://bun.sh
 Installation is one command:
 
 ```bash
-bun install -g @aistastudio/myc   # 5.05 MB compressed, 15.59 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.3.11 (schema 1)
+bun install -g @aistastudio/myc   # 5.06 MB compressed, 15.62 MB unpacked, 16 files; no models pulled
+myc --version                     # myc 0.3.12 (schema 1)
 ```
 
 It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside
@@ -460,9 +460,8 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 3790 pass / 1 fail / 16 skip
-(`bun test`, 2026-09-15; the one failure is the queue hook's latency budget —
-p99 46 ms against 30 ms on a loaded laptop, the hook itself unchanged since 0.3.10).
+is treated as absent. The full suite: 3862 pass / 0 fail / 16 skip
+(`bun test`, 2026-09-16).
 
 ## What myc does
 
