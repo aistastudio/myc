@@ -12,7 +12,10 @@
  *    UNIQUE ux_nodes_content откатывал весь applyOps, и каждая следующая
  *    синхронизация падала тем же исключением;
  *  - memory-nvx51d0kgf2t — oplog_pending: park() не upsert, дренаж только
- *    для узлов, рождённых внутри applyOps, фантомы в pendingCount().
+ *    для узлов, рождённых внутри applyOps, фантомы в pendingCount();
+ *  - memory-gemeb3d8wj41 — тот же класс, что контент-дубликат, у второй
+ *    идентичности: одна запись beads, ввезённая на двух машинах, роняла
+ *    applyOps на UNIQUE ux_nodes_external (разрешитель — миграция 13).
  *
  * Гонка миграторов (memory-yc7np0eyy2s0) живёт между процессами и
  * проверяется в migrate.race.test.ts; сквозной путь export → git → import —
@@ -77,6 +80,18 @@ function opsOf(site: Site): Op[] {
     .opsSince(0, 1_000_000)
     .filter((row) => REPLICATED_OPS.has(row.op))
     .map(rowToOp);
+}
+
+/**
+ * Колонка-разрешитель ux_nodes_external (миграция 13): '' — узел держит
+ * внешнюю ссылку, собственный id — узел понижен как дубликат ссылки.
+ */
+function extDup(s: Site, id: string): string {
+  const row = s.driver.database.query("SELECT ext_dup FROM nodes WHERE id = ?1").get(id) as
+    | { ext_dup: string }
+    | null;
+  if (row === null) throw new Error(`no node ${id}`);
+  return row.ext_dup;
 }
 
 function isEdgeOp(op: Op): boolean {
@@ -584,8 +599,8 @@ describe("memory-0fs4rfa6xmha: контент-дубликат не ломает
     expect(hashes(a)[0]).toBe(canon);
     expect(hashes(a)[1]).not.toBe(canon);
     // Громко: в результате применения и в запросе для doctor.
-    expect(rb.duplicates).toEqual([{ id: nb, of: na }]);
-    expect(ra.duplicates).toEqual([{ id: nb, of: na }]);
+    expect(rb.duplicates).toEqual([{ id: nb, of: na, by: "content" }]);
+    expect(ra.duplicates).toEqual([{ id: nb, of: na, by: "content" }]);
     expect(b.store.contentDuplicates()).toEqual([{ id: nb, of: na, scope: "s", kind: "note" }]);
   });
 
@@ -594,7 +609,7 @@ describe("memory-0fs4rfa6xmha: контент-дубликат не ломает
     const graph = join(dir, "graph");
     exportGraph(a.driver, graph);
     const first = importGraph(b.store, graph, { rebuildCache: false });
-    expect(first.duplicates).toEqual([{ id: nb, of: na }]);
+    expect(first.duplicates).toEqual([{ id: nb, of: na, by: "content" }]);
     const second = importGraph(b.store, graph, { rebuildCache: false });
     expect(second.fresh).toBe(0);
     expect(b.store.getNode(na)).toBeDefined();
@@ -645,7 +660,7 @@ describe("memory-0fs4rfa6xmha: контент-дубликат не ломает
     // x старше (часы A раньше) — канон переходит к нему, y понижен.
     expect(b.store.getNode(x)!.content_hash).toBe(canon);
     expect(b.store.getNode(y)!.content_hash).not.toBe(canon);
-    expect(r.duplicates).toEqual([{ id: y, of: x }]);
+    expect(r.duplicates).toEqual([{ id: y, of: x, by: "content" }]);
   });
 
   test("myc_health 'sync.duplicates': degraded при дубликате, ok после разрешения; правка без дубликатов его не пишет", async () => {
@@ -668,10 +683,16 @@ describe("memory-0fs4rfa6xmha: контент-дубликат не ломает
     expect(health(a)).toBeUndefined();
 
     b.store.applyOps(opsOf(a));
-    expect(health(b)).toMatchObject({ state: "degraded", detail: JSON.stringify({ duplicates: 1 }) });
+    expect(health(b)).toMatchObject({
+      state: "degraded",
+      detail: JSON.stringify({ duplicates: 1, content: 1, external: 0 }),
+    });
     // Проигравший удалён — дубликата больше нет, и это тоже видно.
     b.store.deleteNode(nb);
-    expect(health(b)).toMatchObject({ state: "ok", detail: JSON.stringify({ duplicates: 0 }) });
+    expect(health(b)).toMatchObject({
+      state: "ok",
+      detail: JSON.stringify({ duplicates: 0, content: 0, external: 0 }),
+    });
     expect(b.store.contentDuplicates()).toEqual([]);
     expect(b.store.getNode(na)!.content_hash).toBe(contentHash("note", "одинаковый факт", "тело"));
   });
@@ -696,6 +717,238 @@ describe("memory-0fs4rfa6xmha: контент-дубликат не ломает
     const y = a.store.createNode({ kind: "note", scope: "s", title: "y", body: "тело" }).id;
     expect(() => a.store.updateNode(y, { title: "x" })).toThrow(/UNIQUE|duplicate/);
     expect(a.store.getNode(y)!.title).toBe("y");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memory-gemeb3d8wj41 — ux_nodes_external: тот же класс, что контент-дубликат
+// ---------------------------------------------------------------------------
+
+describe("memory-gemeb3d8wj41: ввезённый дубликат не ломает синхронизацию", () => {
+  /**
+   * Сценарий из жизни: одна и та же база beads ввезена `myc import-beads` на
+   * двух машинах. Запись `bd-42` получила там РАЗНЫЕ id узлов и один и тот же
+   * `attrs.external_ref` — идентичность ввезённого (миграция 9). Тексты
+   * совпадают дословно: это одна запись источника, и ux_nodes_content её не
+   * касается (ввезённые из него исключены предикатом).
+   *
+   * Старший узел нарочно с БОЛЬШИМ id — правило «держит меньший id» было бы
+   * детерминированным, но другим, и тест обязан их различать.
+   */
+  async function twoSitesWithSameRef(): Promise<{
+    a: Site;
+    b: Site;
+    na: string;
+    nb: string;
+    other: string;
+  }> {
+    const a = await openSite("siteA", T0);
+    const b = await openSite("siteB", T0 + 1000);
+    const imported = { kind: "task" as const, scope: "s", title: "починить дренаж", body: "тело записи" };
+    const na = a.store.createNode({ ...imported, id: "myc-zzzzzzzzzzz1", attrs: { external_ref: "bd-42" } }).id;
+    const other = a.store.createNode({ kind: "task", scope: "s", title: "другая", attrs: { external_ref: "bd-43" } }).id;
+    const nb = b.store.createNode({ ...imported, id: "myc-000000000001", attrs: { external_ref: "bd-42" } }).id;
+    return { a, b, na, nb, other };
+  }
+
+  const refOf = (s: Site, id: string): unknown => s.store.getNode(id, true)!.attrs["external_ref"];
+
+  test("одна запись beads с двух машин: applyOps не падает, остальное применяется, держатель ссылки один на обеих", async () => {
+    const { a, b, na, nb, other } = await twoSitesWithSameRef();
+    const rb = b.store.applyOps(opsOf(a));
+    const ra = a.store.applyOps(opsOf(b));
+    for (const s of [a, b]) {
+      expect(s.store.getNode(na)).toBeDefined();
+      expect(s.store.getNode(nb)).toBeDefined();
+      expect(s.store.getNode(other)).toBeDefined();
+      // Данные узлов целы: понижается производная, а не сама ссылка.
+      expect(refOf(s, na)).toBe("bd-42");
+      expect(refOf(s, nb)).toBe("bd-42");
+      expect(s.store.getNode(nb)!.title).toBe("починить дренаж");
+    }
+    const holders = (s: Site): string[] => [na, nb].map((id) => extDup(s, id));
+    expect(holders(a)).toEqual(holders(b));
+    // Ссылку держит созданный раньше (часы set(kind)) — na, хотя его id больше.
+    expect(extDup(a, na)).toBe("");
+    expect(extDup(a, nb)).toBe(nb);
+    expect(rb.duplicates).toEqual([{ id: nb, of: na, by: "external" }]);
+    expect(ra.duplicates).toEqual([{ id: nb, of: na, by: "external" }]);
+    expect(b.store.externalDuplicates()).toEqual([
+      { id: nb, of: na, scope: "s", kind: "task", ref: "bd-42" },
+    ]);
+  });
+
+  test("повторная синхронизация после ввезённого дубликата не падает", async () => {
+    const { a, b, na, nb } = await twoSitesWithSameRef();
+    const graph = join(dir, "graph-ext");
+    exportGraph(a.driver, graph);
+    const first = importGraph(b.store, graph, { rebuildCache: false });
+    expect(first.duplicates).toEqual([{ id: nb, of: na, by: "external" }]);
+    const second = importGraph(b.store, graph, { rebuildCache: false });
+    expect(second.fresh).toBe(0);
+    expect(b.store.getNode(na)).toBeDefined();
+  });
+
+  test("держатель удалён — ссылка переходит к следующему одинаково на всех репликах, в любом порядке", async () => {
+    const { a, b, na, nb } = await twoSitesWithSameRef();
+    const c = await openSite("siteC", T0 + 2000);
+    const nc = c.store.createNode({
+      id: "myc-000000000000",
+      kind: "task",
+      scope: "s",
+      title: "починить дренаж",
+      body: "тело записи",
+      attrs: { external_ref: "bd-42" },
+    }).id;
+    b.store.applyOps(opsOf(a));
+    b.store.deleteNode(na);
+    const all = uniqueOps([...opsOf(a), ...opsOf(b), ...opsOf(c)]);
+    const states = new Set<string>();
+    for (let p = 0; p < 12; p++) {
+      const rep = await openSite(`ext${p}`, T0 + 9000);
+      const order = shuffle(rng(p + 1), all);
+      for (let i = 0; i < order.length; i += 3) rep.store.applyOps(order.slice(i, i + 3));
+      const got = [na, nb, nc].map((id) => extDup(rep, id));
+      states.add(JSON.stringify(got));
+      // na удалён; среди живых nb старше nc — ссылку держит nb.
+      expect(got[1]).toBe("");
+      expect(got[2]).toBe(nc);
+      rep.driver.close();
+    }
+    expect(states.size).toBe(1);
+  });
+
+  test("восстановление в занятую группу приезжает отдельным пакетом: UPDATE колонки не упирается в UNIQUE", async () => {
+    const a = await openSite("siteA", T0);
+    const b = await openSite("siteB", T0 + 1000);
+    const imported = { kind: "task" as const, scope: "s", title: "починить дренаж", attrs: { external_ref: "bd-42" } };
+    const y = b.store.createNode({ ...imported, id: "myc-000000000001" }).id;
+    const x = a.store.createNode({ ...imported, id: "myc-zzzzzzzzzzz1" }).id;
+    a.store.deleteNode(x);
+    const beforeRestore = opsOf(a);
+    a.store.restoreNode(x);
+    const restore = opsOf(a).filter((op) => !beforeRestore.some((o) => o.op_id === op.op_id));
+    expect(restore.map((op) => op.field)).toEqual(["deleted_at"]);
+
+    b.store.applyOps(beforeRestore);
+    expect(b.store.getNode(x, true)!.deleted_at).not.toBeNull();
+    const r = b.store.applyOps(restore);
+    expect(r.applied).toBe(1);
+    // x старше (часы A раньше) — ссылка переходит к нему, y понижен.
+    expect(extDup(b, x)).toBe("");
+    expect(extDup(b, y)).toBe(y);
+    expect(r.duplicates).toEqual([{ id: y, of: x, by: "external" }]);
+  });
+
+  test("смена external_ref уводит узел из группы: прежняя ссылка возвращается оставшемуся", async () => {
+    const { a, b, na, nb } = await twoSitesWithSameRef();
+    b.store.applyOps(opsOf(a));
+    expect(extDup(b, nb)).toBe(nb);
+    // На A запись переехала в другой источник — ссылка узла na сменилась.
+    a.store.updateNode(na, { attrs: { external_ref: "bd-99" } });
+    b.store.applyOps(opsOf(a));
+    expect(extDup(b, na)).toBe("");
+    expect(extDup(b, nb)).toBe("");
+    expect(b.store.externalDuplicates()).toEqual([]);
+  });
+
+  test("смена scope уводит узел из группы: ссылка возвращается оставшемуся", async () => {
+    const { a, b, na, nb } = await twoSitesWithSameRef();
+    b.store.applyOps(opsOf(a));
+    expect(extDup(b, nb)).toBe(nb);
+    // Группа — (scope, kind, ref): узел, уехавший в другой охват, перестаёт
+    // спорить за ссылку, и держателем становится оставшийся.
+    a.store.updateNode(na, { scope: "other" });
+    b.store.applyOps(opsOf(a));
+    expect(extDup(b, na)).toBe("");
+    expect(extDup(b, nb)).toBe("");
+    expect(b.store.externalDuplicates()).toEqual([]);
+  });
+
+  test("myc_health 'sync.duplicates': ввезённый дубликат виден так же, как контентный", async () => {
+    const { a, b, nb } = await twoSitesWithSameRef();
+    const health = (s: Site): { state: string; detail: string } | undefined =>
+      s.driver.one(
+        {
+          name: "t_health_ext",
+          sql: "SELECT state, detail FROM myc_health WHERE component = 'sync.duplicates'",
+          params: [],
+        },
+        [],
+      );
+    expect(health(b)).toBeUndefined();
+    b.store.applyOps(opsOf(a));
+    expect(health(b)).toMatchObject({
+      state: "degraded",
+      detail: JSON.stringify({ duplicates: 1, content: 0, external: 1 }),
+    });
+    b.store.deleteNode(nb);
+    expect(health(b)).toMatchObject({
+      state: "ok",
+      detail: JSON.stringify({ duplicates: 0, content: 0, external: 0 }),
+    });
+    expect(b.store.externalDuplicates()).toEqual([]);
+  });
+
+  test("локальный запрет не ослаблен: второй узел с той же внешней ссылкой отвергается", async () => {
+    const a = await openSite("siteA", T0);
+    a.store.createNode({ kind: "task", scope: "s", title: "x", attrs: { external_ref: "bd-7" } });
+    expect(() =>
+      a.store.createNode({ kind: "task", scope: "s", title: "y", attrs: { external_ref: "bd-7" } }),
+    ).toThrow(/UNIQUE|duplicate/);
+    const z = a.store.createNode({ kind: "task", scope: "s", title: "z", attrs: { external_ref: "bd-8" } }).id;
+    // И правка в занятую ссылку — тоже: понижение чужого узла локальной
+    // записи не полагается, иначе правило держалось бы только на импорте.
+    expect(() => a.store.updateNode(z, { attrs: { external_ref: "bd-7" } })).toThrow(/UNIQUE|duplicate/);
+    expect(refOf(a, z)).toBe("bd-8");
+    expect(extDup(a, z)).toBe("");
+  });
+
+  test("группа, которую бинарь 0.3.11–0.3.13 оставил без держателя, своей записью второго узла не принимает", async () => {
+    // Миграция 13 совместимая: прежний бинарь пишет в поднятую базу, но групп
+    // не перебалансирует — удалив держателя, он оставляет понижённого одного.
+    // Это воспроизведено прямой записью, какой её делает прежний код.
+    const { a, b, na, nb } = await twoSitesWithSameRef();
+    b.store.applyOps(opsOf(a));
+    expect([extDup(b, na), extDup(b, nb)]).toEqual(["", nb]);
+    b.driver.database.run("UPDATE nodes SET deleted_at = 1 WHERE id = ?1", [na]);
+    // Живой узел со ссылкой bd-42 есть — nb, — значит ссылка занята, хотя
+    // держателя в индексе сейчас нет.
+    expect(() =>
+      b.store.createNode({ kind: "task", scope: "s", title: "третья", attrs: { external_ref: "bd-42" } }),
+    ).toThrow(/UNIQUE|duplicate/);
+    const z = b.store.createNode({ kind: "task", scope: "s", title: "z", attrs: { external_ref: "bd-44" } }).id;
+    expect(() => b.store.updateNode(z, { attrs: { external_ref: "bd-42" } })).toThrow(/UNIQUE|duplicate/);
+    expect(refOf(b, z)).toBe("bd-44");
+  });
+
+  test("группа внешней ссылки читается по ux_nodes_external, без SCAN", async () => {
+    const a = await openSite("siteA", T0);
+    const plan = (sql: string, ...params: string[]): string =>
+      (a.driver.database.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>)
+        .map((r) => r.detail)
+        .join(" | ");
+    const group = plan(Q.external_group.sql, "s", "task", "bd-42");
+    expect(group).toContain("ux_nodes_external");
+    expect(group).not.toMatch(/SCAN n\b/);
+  });
+
+  test("база, которую прежний бинарь оставил со вставшей синхронизацией, доезжает первым же импортом — ремонт не нужен", async () => {
+    // Прежний код ронял ВЕСЬ applyOps на UNIQUE, и транзакция откатывалась
+    // целиком: чужие операции не журналировались и состояния после себя не
+    // оставляли. Ровно это здесь и воспроизведено — на B нет ни одной
+    // операции A, — и новая версия доводит обмен без разового ремонта.
+    const { a, b, na, nb } = await twoSitesWithSameRef();
+    const graph = join(dir, "graph-stuck");
+    exportGraph(a.driver, graph);
+    expect(b.store.opsSince(0, 1000).filter((r) => r.site_id === "siteA")).toEqual([]);
+    const r = importGraph(b.store, graph, { rebuildCache: false });
+    expect(r.duplicates).toEqual([{ id: nb, of: na, by: "external" }]);
+    expect(b.store.getNode(na)).toBeDefined();
+    expect(extDup(b, na)).toBe("");
+    // Сходимость: A ввозит B и приходит к тому же состоянию.
+    a.store.applyOps(opsOf(b));
+    expect([extDup(a, na), extDup(a, nb)]).toEqual([extDup(b, na), extDup(b, nb)]);
   });
 });
 

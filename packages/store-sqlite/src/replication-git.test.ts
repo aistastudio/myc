@@ -8,6 +8,7 @@
  *    закрытие, журналированное старым бинарём (бэкфилл экспортом);
  *  - конкурентные add/remove одного ребра сходятся (memory-86eqge02q8rd);
  *  - контент-дубликат с двух сайтов не ломает импорт (memory-0fs4rfa6xmha);
+ *  - одна запись beads, ввезённая на обеих машинах, — тоже (memory-gemeb3d8wj41);
  *  - операция, отложенная ранней частичной доставкой, догоняется, когда её
  *    узел приходит импортом (memory-nvx51d0kgf2t).
  *
@@ -173,6 +174,8 @@ interface Scenario {
   readonly n: readonly string[];
   readonly dupA: string;
   readonly dupB: string;
+  readonly extA: string;
+  readonly extB: string;
   readonly late: string;
   readonly lateEdge: Op;
   readonly exportA: ExportResult;
@@ -228,6 +231,12 @@ beforeAll(async () => {
   const dupA = a.store.createNode({ kind: "note", title: "одинаковый факт", body: "тело", scope: "s" }).id;
   const dupB = b.store.createNode({ kind: "note", title: "одинаковый факт", body: "тело", scope: "s" }).id;
 
+  // Одна и та же запись beads, ввезённая `myc import-beads` на обеих
+  // машинах: разные id узлов, одна attrs.external_ref (memory-gemeb3d8wj41).
+  const imported = { kind: "task" as const, scope: "s", title: "починить дренаж", body: "тело записи" };
+  const extA = a.store.createNode({ ...imported, attrs: { external_ref: "bd-42" } }).id;
+  const extB = b.store.createNode({ ...imported, attrs: { external_ref: "bd-42" } }).id;
+
   // Ребро на узел, которого B ещё не видел, приехало к B раньше узла
   // (частичная доставка вне git — sync-файл, перенос): оно отложено.
   const late = a.store.createNode({ kind: "task", title: "поздний узел", scope: "s" }).id;
@@ -275,6 +284,8 @@ beforeAll(async () => {
     n,
     dupA,
     dupB,
+    extA,
+    extB,
     late,
     lateEdge,
     exportA,
@@ -324,13 +335,31 @@ describe("сквозная репликация export → git → import", () =
   });
 
   test("контент-дубликат не ломает импорт и разрешён одинаково на обеих репликах", () => {
-    expect(sc.importB.duplicates).toEqual([{ id: sc.dupB, of: sc.dupA }]);
-    expect(sc.importA.duplicates).toEqual([{ id: sc.dupB, of: sc.dupA }]);
+    const byContent = (r: ImportResult): unknown[] => r.duplicates.filter((d) => d.by === "content");
+    expect(byContent(sc.importB)).toEqual([{ id: sc.dupB, of: sc.dupA, by: "content" }]);
+    expect(byContent(sc.importA)).toEqual([{ id: sc.dupB, of: sc.dupA, by: "content" }]);
     const canon = contentHash("note", "одинаковый факт", "тело");
     for (const s of [sc.a, sc.b]) {
       expect(s.store.getNode(sc.dupA)!.content_hash).toBe(canon);
       expect(s.store.getNode(sc.dupB)!.content_hash).not.toBe(canon);
       expect(s.store.contentDuplicates()).toEqual([{ id: sc.dupB, of: sc.dupA, scope: "s", kind: "note" }]);
+    }
+  });
+
+  test("одна запись beads с двух машин не ломает импорт и разрешена одинаково на обеих репликах", () => {
+    const byExternal = (r: ImportResult): unknown[] => r.duplicates.filter((d) => d.by === "external");
+    // extA создан раньше (часы A идут с T0, B — с T0+1000): ссылку держит он.
+    expect(byExternal(sc.importB)).toEqual([{ id: sc.extB, of: sc.extA, by: "external" }]);
+    expect(byExternal(sc.importA)).toEqual([{ id: sc.extB, of: sc.extA, by: "external" }]);
+    for (const s of [sc.a, sc.b]) {
+      // Данные обоих узлов целы: понижен разрешитель, не ссылка.
+      for (const id of [sc.extA, sc.extB]) {
+        expect(s.store.getNode(id)!.attrs["external_ref"]).toBe("bd-42");
+        expect(s.store.getNode(id)!.title).toBe("починить дренаж");
+      }
+      expect(s.store.externalDuplicates()).toEqual([
+        { id: sc.extB, of: sc.extA, scope: "s", kind: "task", ref: "bd-42" },
+      ]);
     }
   });
 

@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openSqlite } from "./index.ts";
-import { migrate } from "./migrate.ts";
+import { COMPAT_MIGRATIONS_TABLE, migrate } from "./migrate.ts";
 import { migrations } from "./migrations/index.ts";
 
 const PROCESSES = 8;
@@ -56,9 +56,12 @@ function schemaOf(path: string): string {
 function versionsOf(path: string): number[] {
   const db = new Database(path, { readonly: true });
   try {
-    return (db.query("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{
-      version: number;
-    }>).map((r) => r.version);
+    // Обе таблицы учёта: совместимая миграция (13) лежит не в schema_migrations.
+    return (db
+      .query(
+        `SELECT version FROM schema_migrations UNION ALL SELECT version FROM ${COMPAT_MIGRATIONS_TABLE} ORDER BY version`,
+      )
+      .all() as Array<{ version: number }>).map((r) => r.version);
   } finally {
     db.close();
   }

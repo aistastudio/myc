@@ -314,7 +314,15 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         db.one<{ v: number }>("SELECT 1 AS v");
         const latency = Math.round((performance.now() - t0) * 100) / 100;
         const schema = db.has("schema_migrations")
-          ? (db.one<{ v: number | null }>("SELECT max(version) AS v FROM schema_migrations")?.v ?? null)
+          ? (db.one<{ v: number | null }>(
+              // Версия — по обеим таблицам учёта: совместимые миграции
+              // (store-sqlite migrate.ts, COMPAT_MIGRATIONS_TABLE) лежат не в
+              // schema_migrations. Пакет не зависит от store-sqlite — текст здесь.
+              db.has("schema_migrations_compat")
+                ? `SELECT max(v) AS v FROM (SELECT max(version) AS v FROM schema_migrations
+                                            UNION ALL SELECT max(version) FROM schema_migrations_compat)`
+                : "SELECT max(version) AS v FROM schema_migrations",
+            )?.v ?? null)
           : null;
         return json({
           ok: true,

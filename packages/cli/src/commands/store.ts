@@ -65,6 +65,7 @@ import type {
   TxMode,
 } from "@myc/core";
 import {
+  appliedSchemaVersion,
   migrate,
   migrations,
   migrateVectors,
@@ -615,16 +616,9 @@ async function openWorkspaceAt(
       try {
         // migrate на актуальной схеме — холостая ~1 мс на каждый вызов;
         // сверяем версию дёшево и мигрируем только при отставании.
-        let appliedVersion: number | null = null;
-        try {
-          const row = d.database
-            .query("SELECT max(version) AS v FROM schema_migrations")
-            .get() as { v: number | null } | null;
-          appliedVersion = row?.v ?? null;
-        } catch {
-          appliedVersion = null; // таблицы ещё нет — полная миграция ниже
-        }
-        if (appliedVersion !== maxKnown) {
+        // Версия — по обеим таблицам учёта (совместимые миграции лежат не в
+        // schema_migrations); null — таблицы ещё нет, полная миграция ниже.
+        if (appliedSchemaVersion(d.database) !== maxKnown) {
           await migrate(d.database, { migrations, writable: true });
         }
         // Векторный набор (S26) — своя таблица учёта и своё условие: только

@@ -8,12 +8,12 @@
     "id": "1360074658"
   },
   "websiteUrl": "https://aistastudio.github.io/myc/",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@aistastudio/myc",
-      "version": "0.3.13",
+      "version": "0.3.14",
       "runtimeHint": "bunx",
       "transport": { "type": "stdio" },
       "packageArguments": [

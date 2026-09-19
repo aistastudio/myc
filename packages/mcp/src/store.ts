@@ -21,6 +21,7 @@ import { Database, type Statement } from "bun:sqlite";
 import { generateId, prefixRange, HlcClock, unpackHlc } from "@myc/core";
 import type { DbDriver, EdgeKind, NodeRecord, QueryDef, TxMode } from "@myc/core";
 import {
+  appliedSchemaVersion,
   migrate,
   migrations,
   migrateVectors,
@@ -292,16 +293,7 @@ export async function openMcpStore(
   let driver: McpDriver;
   try {
     driver = openDriver(dbPath, undefined, options);
-    let appliedVersion: number | null = null;
-    try {
-      const row = driver.database
-        .query("SELECT max(version) AS v FROM schema_migrations")
-        .get() as { v: number | null } | null;
-      appliedVersion = row?.v ?? null;
-    } catch {
-      appliedVersion = null;
-    }
-    if (appliedVersion !== maxKnown) {
+    if (appliedSchemaVersion(driver.database) !== maxKnown) {
       await migrate(driver.database, { migrations, writable: true });
     }
     // Векторный набор — только когда vec0 реально загружен в это соединение

@@ -329,7 +329,7 @@ window.MYC_DATA = {
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 5.06,
-    "unpacked_mb": 15.62,
+    "unpacked_mb": 15.63,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.13",
-    "date": "2026-09-16"
+    "version": "0.3.14",
+    "date": "2026-09-19"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-09-16",
-    "source": "myc 0.3.11 (schema 1) · 13 epics of this repository's workspace",
+    "as_of": "2026-09-19",
+    "source": "myc 0.3.14 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -1640,16 +1640,16 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 3862,
+    "pass": 3882,
     "fail": 0,
     "skip": 16,
     "files": 256,
-    "assertions": 36600,
-    "seconds": 399.1,
-    "sources": "14474012c89eaffe",
-    "date": "2026-09-16",
-    "myc": "0.3.13"
+    "assertions": 36720,
+    "seconds": 414.9,
+    "sources": "811e8e3accaa0c68",
+    "date": "2026-09-19",
+    "myc": "0.3.14"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-16T05:51:50.750Z", assertions: 77 };
-window.MYC_DATA.release = "0.3.13";
+window.MYC_DATA.verified = { at: "2026-09-19T15:52:54.621Z", assertions: 77 };
+window.MYC_DATA.release = "0.3.14";

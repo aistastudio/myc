@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, SchemaError, type Migration } from "./migrate.ts";
+import { appliedSchemaVersion, COMPAT_MIGRATIONS_TABLE, migrate, SchemaError, type Migration } from "./migrate.ts";
 
 let dir: string;
 let dbPath: string;
@@ -264,6 +264,70 @@ describe("splitStatements через накат", () => {
     db.query("INSERT INTO t (id) VALUES (1)").run();
     expect(db.query("SELECT msg FROM log").all()).toEqual([{ msg: "ins" }]);
     expect(db.query("SELECT n FROM t WHERE id = 1").get()).toEqual({ n: 1 });
+    db.close();
+  });
+});
+
+/**
+ * Совместимые миграции (Migration.readableFrom, COMPAT_MIGRATIONS_TABLE):
+ * бинарь, знающий схему readableFrom, открывает базу после них, их не зная.
+ * Выпущенные бинари читают только schema_migrations — поэтому совместимая
+ * туда не пишется; следующие бинари читают обе таблицы и сверяют обещание.
+ */
+describe("совместимые миграции", () => {
+  const C3: Migration = { ...M3, readableFrom: 2 };
+  const C4: Migration = {
+    version: 4,
+    name: "add_a_col",
+    sql: "ALTER TABLE a ADD COLUMN w TEXT NOT NULL DEFAULT ''",
+    objects: ["a"],
+    readableFrom: 3,
+  };
+
+  test("пишется не в schema_migrations: старый бинарь видит знакомую схему", async () => {
+    const db = new Database(dbPath, { create: true });
+    const r = await migrate(db, { migrations: [M1, M2, C3], writable: true });
+    expect(r.appliedVersions).toEqual([1, 2, 3]);
+    expect((db.query("SELECT max(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(2);
+    expect(
+      db.query(`SELECT version, name, readable_from FROM ${COMPAT_MIGRATIONS_TABLE}`).all(),
+    ).toEqual([{ version: 3, name: "add_c", readable_from: 2 }]);
+    expect(appliedSchemaVersion(db)).toBe(3);
+    // Повторное открытие тем же набором — холостое: версия читается по обеим таблицам.
+    expect((await migrate(db, { migrations: [M1, M2, C3], writable: true })).appliedVersions).toEqual([]);
+    db.close();
+  });
+
+  test("незнакомая совместимая открывается, пока её обещание не выше известного бинарю", async () => {
+    const db = new Database(dbPath, { create: true });
+    await migrate(db, { migrations: [M1, M2, C3, C4], writable: true });
+    // Знает 3: C4 обещает совместимость с 3 — открывает, ничего не наносит.
+    const r = await migrate(db, { migrations: [M1, M2, C3], writable: true });
+    expect(r.appliedVersions).toEqual([]);
+    expect(r.degraded).toEqual([]);
+    // Знает 2: C3 ему по силам, а C4 требует знать 3 — отказ, как у несовместимой.
+    const err = await migrate(db, { migrations: [M1, M2], writable: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SchemaError);
+    expect((err as SchemaError).code).toBe("schema.newer");
+    expect((err as Error).message).toContain("schema 4, this binary knows 2");
+    db.close();
+  });
+
+  test("checksum совместимой сверяется так же, как у любой применённой", async () => {
+    const db = new Database(dbPath, { create: true });
+    await migrate(db, { migrations: [M1, M2, C3], writable: true });
+    const tampered: Migration = { ...C3, sql: "CREATE TABLE c (id INTEGER PRIMARY KEY, z TEXT, extra TEXT)" };
+    const err = await migrate(db, { migrations: [M1, M2, tampered], writable: true }).catch((e: unknown) => e);
+    expect((err as SchemaError).code).toBe("schema.checksum");
+    db.close();
+  });
+
+  test("обещание, которое нарушает несовместимая миграция между ними, отвергается до наката", async () => {
+    const db = new Database(dbPath, { create: true });
+    // C4 обещает «знающий 1 откроет», но M2 и M3 между ними несовместимы.
+    const lying: Migration = { ...C4, readableFrom: 1 };
+    await expect(migrate(db, { migrations: [M1, M2, M3, lying], writable: true })).rejects.toThrow(/is a lie/);
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'a'").get()).toBeNull();
     db.close();
   });
 });

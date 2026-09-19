@@ -463,6 +463,66 @@ export const Q = defineQueries({
              AND deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL`,
     params: [],
   },
+
+  // ---- ввезённые дубликаты (memory-gemeb3d8wj41) --------------------------
+  // ux_nodes_external запрещает двум живым узлам держать одну внешнюю
+  // ссылку. Ключ индекса — само реплицируемое значение attrs.external_ref,
+  // понизить его нельзя (это было бы ложью о записи источника), поэтому
+  // конфликт разводит производная колонка ext_dup: '' у держателя, id у
+  // понижённого (миграция 13).
+  node_set_ext_dup: {
+    name: "node_set_ext_dup",
+    sql: "UPDATE nodes SET ext_dup = ?2 WHERE id = ?1",
+    params: ["id", "ext_dup"],
+  },
+  node_external_row: {
+    name: "node_external_row",
+    sql: `SELECT kind, scope, json_extract(attrs,'$.external_ref') AS ref, ext_dup,
+                 (deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NOT NULL) AS indexed
+            FROM nodes WHERE id = ?1`,
+    params: ["id"],
+  },
+  /**
+   * Группа одной внешней ссылки в (scope, kind): держатель и понижённые.
+   * Предикат домена ux_nodes_external повторён дословно — только так
+   * планировщик берёт частичный индекс, а не SCAN nodes (тест плана).
+   * Старшинство — часы set(kind), то есть момент создания узла: они
+   * реплицируются, и порядок одинаков на всех репликах.
+   */
+  external_group: {
+    name: "external_group",
+    sql: `SELECT n.id AS id, n.ext_dup AS ext_dup,
+                 CAST(fc.hlc AS TEXT) AS born_hlc, fc.site_id AS born_site
+            FROM nodes n
+            LEFT JOIN field_clock fc ON fc.entity_id = n.id AND fc.field = 'kind'
+           WHERE n.scope = ?1 AND n.kind = ?2
+             AND json_extract(n.attrs,'$.external_ref') = ?3
+             AND n.deleted_at IS NULL
+             AND json_extract(n.attrs,'$.external_ref') IS NOT NULL`,
+    params: ["scope", "kind", "ref"],
+  },
+  /** Все понижённые ввезённые узлы с их держателем — для doctor и web. */
+  external_duplicates: {
+    name: "external_duplicates",
+    sql: `SELECT l.id AS id, w.id AS "of", l.scope AS scope, l.kind AS kind,
+                 json_extract(l.attrs,'$.external_ref') AS ref
+            FROM nodes l
+            JOIN nodes w
+              ON w.scope = l.scope AND w.kind = l.kind
+             AND json_extract(w.attrs,'$.external_ref') = json_extract(l.attrs,'$.external_ref')
+             AND w.ext_dup = '' AND w.deleted_at IS NULL
+           WHERE l.ext_dup <> '' AND l.deleted_at IS NULL
+             AND json_extract(l.attrs,'$.external_ref') IS NOT NULL
+           ORDER BY l.scope, l.kind, l.id`,
+    params: [],
+  },
+  external_duplicates_count: {
+    name: "external_duplicates_count",
+    sql: `SELECT count(*) AS n FROM nodes
+           WHERE ext_dup <> '' AND deleted_at IS NULL
+             AND json_extract(attrs,'$.external_ref') IS NOT NULL`,
+    params: [],
+  },
   // myc_health — то, что читают web и /v1/health (И2). Смена состояния
   // двигает since, повтор того же состояния — нет.
   health_set: {
@@ -946,14 +1006,21 @@ export interface ApplyResult {
    * список уезжает наверх, итог — в myc_health 'sync.duplicates' и
    * contentDuplicates().
    */
-  readonly duplicates: readonly ContentDuplicate[];
+  readonly duplicates: readonly IdentityDuplicate[];
 }
 
-export interface ContentDuplicate {
+export interface IdentityDuplicate {
   /** Пониженный узел. */
   readonly id: string;
-  /** Узел, держащий канонический content_hash. */
+  /** Узел, держащий идентичность: канонический content_hash или ссылку. */
   readonly of: string;
+  /**
+   * Какая идентичность повторилась. `content` — (kind, title, body) в одном
+   * scope у узлов, заведённых myc (ux_nodes_content); `external` — одна
+   * `attrs.external_ref` у ввезённых (ux_nodes_external). Домены индексов
+   * не пересекаются, поэтому один узел не может быть дубликатом обоих.
+   */
+  readonly by: "content" | "external";
 }
 
 /** Ключ группы контента узла до правки в этой транзакции. */
@@ -967,6 +1034,17 @@ interface ContentKey {
   readonly demoted: boolean;
 }
 
+/** Ключ группы внешней ссылки узла до правки в этой транзакции. */
+interface ExternalKey {
+  readonly scope: string;
+  readonly kind: string;
+  readonly ref: string;
+  /** Узел был в домене ux_nodes_external (живой, с external_ref). */
+  readonly indexed: boolean;
+  /** Был понижен — ссылку до транзакции держал кто-то другой. */
+  readonly demoted: boolean;
+}
+
 /** Счётчики одного вызова applyOps плюс рабочие очереди транзакции. */
 interface ApplyTally {
   applied: number;
@@ -975,13 +1053,19 @@ interface ApplyTally {
   readonly deferred: string[];
   readonly released: string[];
   readonly collided: string[];
-  readonly duplicates: ContentDuplicate[];
+  readonly duplicates: IdentityDuplicate[];
   /**
    * Узлы, чьё членство в группе контента могло поменяться (title, body,
    * scope, deleted_at, attrs.external_ref, рождение): ключ группы ДО первой
    * правки, `null` — узел родился в этой транзакции. Пересчёт — settleContent.
    */
   readonly content: Map<string, ContentKey | null>;
+  /**
+   * То же для ux_nodes_external: узлы, чьё членство в группе внешней ссылки
+   * могло поменяться (scope, deleted_at, attrs.external_ref, рождение).
+   * Пересчёт — settleExternal.
+   */
+  readonly external: Map<string, ExternalKey | null>;
   /** В oplog_pending есть строки: применённую операцию надо из неё вычеркнуть. */
   pendingKnown: boolean;
 }
@@ -990,6 +1074,20 @@ interface ApplyTally {
 const CONTENT_FIELDS: ReadonlySet<string> = new Set([
   "title",
   "body",
+  "scope",
+  "deleted_at",
+  "attrs.external_ref",
+]);
+
+/**
+ * Поля, от которых зависит членство узла в ux_nodes_external. Текст узла
+ * сюда не входит: идентичность ввезённого даёт ссылка на источник, а не
+ * содержимое (миграция 9).
+ */
+/** Никто не входит в группу этой транзакцией (holdExternal из createNode). */
+const NO_IDS: ReadonlySet<string> = new Set();
+
+const EXTERNAL_FIELDS: ReadonlySet<string> = new Set([
   "scope",
   "deleted_at",
   "attrs.external_ref",
@@ -1010,11 +1108,11 @@ function canonOf(stored: string): string {
 }
 
 /**
- * Старшинство в группе контента: часы set(kind) — момент создания узла,
- * реплицируемый и одинаковый везде, — затем сайт, затем id. Узел без часов
- * kind (не бывает при целом оплоге) идёт последним.
+ * Старшинство в группе (и контентной, и по внешней ссылке): часы set(kind) —
+ * момент создания узла, реплицируемый и одинаковый везде, — затем сайт,
+ * затем id. Узел без часов kind (не бывает при целом оплоге) идёт последним.
  */
-function olderContent(a: ContentMember, b: ContentMember): boolean {
+function olderBorn(a: BornMember, b: BornMember): boolean {
   if (a.born_hlc !== null && b.born_hlc !== null) {
     const c = compareClock(
       readHlc(a.born_hlc),
@@ -1041,6 +1139,7 @@ function newTally(): ApplyTally {
     collided: [],
     duplicates: [],
     content: new Map(),
+    external: new Map(),
     pendingKnown: false,
   };
 }
@@ -1100,11 +1199,28 @@ interface ContentRow {
   readonly indexed: number;
 }
 
-interface ContentMember {
+/** Член группы идентичности: id плюс часы рождения (set(kind)). */
+interface BornMember {
   readonly id: string;
-  readonly content_hash: string;
   readonly born_hlc: string | null;
   readonly born_site: string | null;
+}
+
+interface ContentMember extends BornMember {
+  readonly content_hash: string;
+}
+
+interface ExternalMember extends BornMember {
+  readonly ext_dup: string;
+}
+
+/** Строка узла в терминах ux_nodes_external. */
+interface ExternalRow {
+  readonly kind: string;
+  readonly scope: string;
+  readonly ref: string | null;
+  readonly ext_dup: string;
+  readonly indexed: number;
 }
 
 interface ClaimCloseRow {
@@ -1478,6 +1594,11 @@ export class GraphStore {
 
       for (const op of setOps) this.journalLocal(tx, op, "node", id, scope);
       this.journalLocal(tx, incOp, "node", id, scope);
+      // Новый узел рождается держателем (ext_dup = '') и держится правилом
+      // одним UNIQUE. Группа без держателя (holdExternal) его бы пропустила:
+      // сначала ссылка достаётся её старшему живому члену.
+      const ref = attrs["external_ref"];
+      if (typeof ref === "string") this.holdExternal(tx, { scope, kind, ref }, NO_IDS);
       tx.run(Q.node_insert, bound);
 
       for (const op of setOps) {
@@ -1496,7 +1617,7 @@ export class GraphStore {
         const tally = newTally();
         tally.pendingKnown = true;
         this.drainPending(tx, tally);
-        this.settleContent(tx, tally, false);
+        this.settleIdentity(tx, tally, false);
       }
       this.persistSeq(tx);
 
@@ -1780,7 +1901,7 @@ export class GraphStore {
         if (needs !== undefined) this.park(tx, op, origin, needs, tally);
       }
       if (tally.pendingKnown) this.drainPending(tx, tally);
-      this.settleContent(tx, tally, false);
+      this.settleIdentity(tx, tally, false);
       this.persistSeq(tx);
     });
 
@@ -1842,8 +1963,10 @@ export class GraphStore {
           ? op.value
           : kindHint.get(op.entity_id);
       if (this.materializeNode(tx, op.entity_id, kind)) {
-        // Родился в этой транзакции: прежней группы контента у него нет.
+        // Родился в этой транзакции: прежних групп — ни контентной, ни по
+        // внешней ссылке — у него нет.
         tally.content.set(op.entity_id, null);
+        tally.external.set(op.entity_id, null);
         head = tx.one<NodeHeadRow>(Q.node_head, [op.entity_id]);
       }
     }
@@ -1854,10 +1977,7 @@ export class GraphStore {
       return undefined;
     }
     if (op.op === "set") {
-      const touch = CONTENT_FIELDS.has(op.field)
-        ? () => this.touchContent(tx, op.entity_id, tally)
-        : undefined;
-      const outcome = this.projectSet(tx, op, touch);
+      const outcome = this.projectSet(tx, op, this.identityTouch(tx, op.field, op.entity_id, tally));
       if (outcome === "applied") {
         tally.applied++;
       } else if (outcome === "stale") {
@@ -1968,6 +2088,21 @@ export class GraphStore {
    */
   contentDuplicates(): Array<{ readonly id: string; readonly of: string; readonly scope: string; readonly kind: string }> {
     return this.driver.all(Q.content_duplicates, []);
+  }
+
+  /**
+   * Живые ввезённые дубликаты с их держателем ссылки (memory-gemeb3d8wj41) —
+   * для doctor и web. `ref` назван явно: две машины, ввёзшие одну запись
+   * beads, — это вопрос к источнику, и человеку нужен именно его id.
+   */
+  externalDuplicates(): Array<{
+    readonly id: string;
+    readonly of: string;
+    readonly scope: string;
+    readonly kind: string;
+    readonly ref: string;
+  }> {
+    return this.driver.all(Q.external_duplicates, []);
   }
 
   /**
@@ -2377,9 +2512,7 @@ export class GraphStore {
       for (const op of ops) {
         this.journalLocal(tx, op, "node", entityId, scope);
         if (op.op === "set") {
-          const touch = CONTENT_FIELDS.has(op.field)
-            ? () => this.touchContent(tx, entityId, tally)
-            : undefined;
+          const touch = this.identityTouch(tx, op.field, entityId, tally);
           if (this.projectSet(tx, op, touch) === "collided") {
             throw collisionError(op, entityId);
           }
@@ -2387,7 +2520,7 @@ export class GraphStore {
           this.projectInc(tx, op);
         }
       }
-      this.settleContent(tx, tally, true);
+      this.settleIdentity(tx, tally, true);
       this.persistSeq(tx);
     });
   }
@@ -2657,6 +2790,14 @@ export class GraphStore {
       Q.node_insert,
       NODE_INSERT_COLUMNS.map((c) => row[c] ?? null),
     );
+    // То же, что с content_hash строкой выше, и по той же причине: узел
+    // родился без attrs, а `set attrs.external_ref` приедет следующей
+    // операцией этого же пакета и внесёт его в ux_nodes_external. Держателем
+    // ссылки он становиться не вправе, пока не выяснено, кто в группе
+    // старший, поэтому рождается понижённым (ext_dup = id — уникально по
+    // построению). Настоящее значение ставит settleExternal в конце
+    // транзакции: узлу, оставшемуся без ссылки, оно вернёт ''.
+    tx.run(Q.node_set_ext_dup, [id, id]);
     return true;
   }
 
@@ -2678,6 +2819,28 @@ export class GraphStore {
   // что понижение ничего не пишет в оплог и не трогает данных узла. Уходит
   // победитель (удалён, правлен, переехал) — канон переходит к следующему.
   // -------------------------------------------------------------------------
+
+  /**
+   * Подготовка обоих уникальных индексов к правке одного поля. Узел держит
+   * ДВЕ идентичности (§9.3), и поле `attrs.external_ref` меняет членство
+   * сразу в обеих: пока оно NULL, узел спорит содержимым, как только
+   * появилось — ссылкой. Поэтому оба «до записи» живут в одном месте:
+   * забыть здесь один из них значит вернуть UNIQUE в середину транзакции.
+   */
+  private identityTouch(
+    tx: DbDriver,
+    field: string,
+    id: string,
+    tally: ApplyTally,
+  ): (() => void) | undefined {
+    const content = CONTENT_FIELDS.has(field);
+    const external = EXTERNAL_FIELDS.has(field);
+    if (!content && !external) return undefined;
+    return () => {
+      if (content) this.touchContent(tx, id, tally);
+      if (external) this.touchExternal(tx, id, tally);
+    };
+  }
 
   /**
    * Первая в транзакции правка поля, от которого зависит членство узла в
@@ -2711,8 +2874,8 @@ export class GraphStore {
    * репликации: иначе канон ушедшего узла остался бы ничьим здесь и
    * перешёл бы к следующему на реплике — расхождение того же класса.
    */
-  private settleContent(tx: DbDriver, tally: ApplyTally, local: boolean): void {
-    if (tally.content.size === 0) return;
+  private settleContent(tx: DbDriver, tally: ApplyTally, local: boolean): boolean {
+    if (tally.content.size === 0) return false;
     const groups = new Map<string, { scope: string; kind: string; canon: string }>();
     const groupKey = (scope: string, kind: string, canon: string): string => {
       const key = `${scope}\u0000${kind}\u0000${canon}`;
@@ -2750,7 +2913,19 @@ export class GraphStore {
       tx.run(Q.node_set_content_hash, [j.id, j.canon]);
       if (this.rebalanceContent(tx, groups.get(j.key)!, tally)) dupSeen = true;
     }
-    if (dupSeen || tally.duplicates.length > 0) this.recordDuplicatesHealth(tx);
+    return dupSeen;
+  }
+
+  /**
+   * Обе идентичности узла разом (§9.3): по содержимому для заведённого myc,
+   * по ссылке на источник для ввезённого. Считаются они независимо — домены
+   * индексов не пересекаются, — но здоровье пишется один раз: 'sync.duplicates'
+   * называет одно число, которое человек и увидит.
+   */
+  private settleIdentity(tx: DbDriver, tally: ApplyTally, local: boolean): void {
+    const content = this.settleContent(tx, tally, local);
+    const external = this.settleExternal(tx, tally, local);
+    if (content || external || tally.duplicates.length > 0) this.recordDuplicatesHealth(tx);
   }
 
   /**
@@ -2769,7 +2944,7 @@ export class GraphStore {
     const members = tx.all<ContentMember>(Q.content_group, [g.scope, g.kind, g.canon, `${g.canon};`]);
     if (members.length === 0) return false;
     let winner = members[0]!;
-    for (const m of members) if (olderContent(m, winner)) winner = m;
+    for (const m of members) if (olderBorn(m, winner)) winner = m;
     const wasDemoted = (m: ContentMember): boolean => {
       if (!tally.content.has(m.id)) return m.content_hash !== g.canon;
       return tally.content.get(m.id)?.demoted === true;
@@ -2780,25 +2955,189 @@ export class GraphStore {
       const want = demotedContentHash(g.canon, m.id);
       if (m.content_hash !== want) tx.run(Q.node_set_content_hash, [m.id, want]);
       if (!tally.duplicates.some((d) => d.id === m.id)) {
-        tally.duplicates.push({ id: m.id, of: winner.id });
+        tally.duplicates.push({ id: m.id, of: winner.id, by: "content" });
       }
     }
     if (winner.content_hash !== g.canon) tx.run(Q.node_set_content_hash, [winner.id, g.canon]);
     return touched;
   }
 
-  /** myc_health 'sync.duplicates': сколько живых узлов сейчас понижено. */
+  // -------------------------------------------------------------------------
+  // Ввезённые дубликаты (memory-gemeb3d8wj41)
+  //
+  // Ровно тот же класс, что контент-дубликат выше, и разводится тем же
+  // правилом — но понижать здесь нечего. Ключ ux_nodes_content, content_hash,
+  // производный: его можно заменить на `<канон>:<id>`, ничего не сказав
+  // оплогу. Ключ ux_nodes_external — сама `attrs.external_ref`, значение
+  // РЕПЛИЦИРУЕМОЕ: подменив его, мы соврали бы о том, какую запись источника
+  // представляет узел, и разослали бы эту ложь дальше. Поэтому миграция 13
+  // завела производную колонку-разрешитель `ext_dup` — четвёртую в индексе:
+  // '' у держателя ссылки, собственный id у понижённого.
+  //
+  // Правило (одно на всех репликах): в группе живых узлов одной ссылки
+  // (scope, kind, external_ref) ссылку держит СТАРШИЙ — по часам set(kind),
+  // при равенстве по id; остальные понижены. Уходит держатель (удалён,
+  // сменил scope или ссылку) — ссылка переходит к следующему.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Первая в транзакции правка поля, от которого зависит членство узла в
+   * ux_nodes_external: запомнить группу ДО правки и сразу сделать узел
+   * понижённым — тогда последующий UPDATE колонки (scope, deleted_at, attrs)
+   * не упрётся в чужую ссылку. Кто держит ссылку, решит settleExternal.
+   * `ext_dup = id` уникален по построению: id уникален, а всякий другой член
+   * группы держит либо '', либо СВОЙ id.
+   */
+  private touchExternal(tx: DbDriver, id: string, tally: ApplyTally): void {
+    if (tally.external.has(id)) return;
+    const row = tx.one<ExternalRow>(Q.node_external_row, [id]);
+    if (row === undefined) return;
+    tally.external.set(id, {
+      scope: row.scope,
+      kind: row.kind,
+      ref: row.ref ?? "",
+      indexed: row.indexed === 1,
+      demoted: row.ext_dup !== "",
+    });
+    if (row.ext_dup !== id) tx.run(Q.node_set_ext_dup, [id, id]);
+  }
+
+  /**
+   * Конец транзакции: кто держит внешнюю ссылку в каждой тронутой группе.
+   * Зеркало settleContent, и `local` значит здесь то же самое: своя запись
+   * не вправе завести второго держателя одной ссылки, поэтому вошедший в
+   * чужую группу узел берёт `ext_dup = ''` прямой записью — занятая ссылка
+   * даёт тот же UNIQUE, что и до правки. Прежние группы при этом
+   * перебалансируются так же, как при репликации: иначе ссылка ушедшего
+   * узла осталась бы здесь ничьей, а на реплике перешла бы к следующему —
+   * расхождение того же класса.
+   */
+  private settleExternal(tx: DbDriver, tally: ApplyTally, local: boolean): boolean {
+    if (tally.external.size === 0) return false;
+    const groups = new Map<string, { scope: string; kind: string; ref: string }>();
+    const groupKey = (scope: string, kind: string, ref: string): string => {
+      const key = `${scope}\u0000${kind}\u0000${ref}`;
+      if (!groups.has(key)) groups.set(key, { scope, kind, ref });
+      return key;
+    };
+    const joined: Array<{ id: string; key: string }> = [];
+    let dupSeen = false;
+    for (const [id, before] of tally.external) {
+      const row = tx.one<ExternalRow>(Q.node_external_row, [id]);
+      if (row === undefined) continue;
+      const indexed = row.indexed === 1;
+      // Вне домена индекса разрешитель ни с кем не спорит и обязан быть
+      // одинаков на всех репликах — значит пустой.
+      if (!indexed && row.ext_dup !== "") tx.run(Q.node_set_ext_dup, [id, ""]);
+      if (before !== null && before.indexed) groupKey(before.scope, before.kind, before.ref);
+      if (before?.demoted === true) dupSeen = true;
+      if (!indexed) continue;
+      const ref = row.ref ?? "";
+      const key = groupKey(row.scope, row.kind, ref);
+      const entered =
+        before === null || !before.indexed || before.scope !== row.scope || before.ref !== ref;
+      if (local && entered) joined.push({ id, key });
+    }
+    const joinedKeys = new Set(joined.map((j) => j.key));
+    for (const [key, g] of groups) {
+      if (joinedKeys.has(key)) continue;
+      if (this.rebalanceExternal(tx, g, tally)) dupSeen = true;
+    }
+    const joinedIds = new Set(joined.map((j) => j.id));
+    for (const j of joined) {
+      this.holdExternal(tx, groups.get(j.key)!, joinedIds);
+      tx.run(Q.node_set_ext_dup, [j.id, ""]);
+      if (this.rebalanceExternal(tx, groups.get(j.key)!, tally)) dupSeen = true;
+    }
+    return dupSeen;
+  }
+
+  /**
+   * Своя запись входит в группу, где ссылку сейчас не держит никто, хотя
+   * живые члены есть — все понижены. Так бывает, когда держатель ушёл той
+   * же транзакцией, и когда его удалил бинарь 0.3.11–0.3.13: миграция 13
+   * совместима, старый код пишет в эту базу, но групп не перебалансирует.
+   * Не отдай здесь ссылку старшему из прежних членов, вошедший узел взял бы
+   * её без UNIQUE, и своя запись завела бы второй узел с занятой ссылкой —
+   * ровно то, что локально запрещено. Вошедшие этой транзакцией не
+   * считаются: они ссылку ещё не держат, а только пробуют взять.
+   */
+  private holdExternal(
+    tx: DbDriver,
+    g: { readonly scope: string; readonly kind: string; readonly ref: string },
+    joining: ReadonlySet<string>,
+  ): void {
+    const members = tx
+      .all<ExternalMember>(Q.external_group, [g.scope, g.kind, g.ref])
+      .filter((m) => !joining.has(m.id));
+    if (members.length === 0 || members.some((m) => m.ext_dup === "")) return;
+    let winner = members[0]!;
+    for (const m of members) if (olderBorn(m, winner)) winner = m;
+    tx.run(Q.node_set_ext_dup, [winner.id, ""]);
+  }
+
+  /**
+   * Ссылка — старшему живому узлу группы, остальным — понижение. Сначала
+   * понижаются все, кроме победителя, и только потом он берёт ссылку: ни в
+   * какой момент два узла не держат одну. `true` — в группе был или есть
+   * дубликат: тогда пересчитывается myc_health. Понижённый на время этой
+   * транзакции (touchExternal) дубликатом не считается — иначе полный проход
+   * по nodes стоял бы в каждой правке ввезённого узла.
+   */
+  private rebalanceExternal(
+    tx: DbDriver,
+    g: { readonly scope: string; readonly kind: string; readonly ref: string },
+    tally: ApplyTally,
+  ): boolean {
+    const members = tx.all<ExternalMember>(Q.external_group, [g.scope, g.kind, g.ref]);
+    if (members.length === 0) return false;
+    let winner = members[0]!;
+    for (const m of members) if (olderBorn(m, winner)) winner = m;
+    const wasDemoted = (m: ExternalMember): boolean => {
+      if (!tally.external.has(m.id)) return m.ext_dup !== "";
+      return tally.external.get(m.id)?.demoted === true;
+    };
+    const touched = members.length > 1 || members.some(wasDemoted);
+    for (const m of members) {
+      if (m.id === winner.id) continue;
+      if (m.ext_dup !== m.id) tx.run(Q.node_set_ext_dup, [m.id, m.id]);
+      if (!tally.duplicates.some((d) => d.id === m.id)) {
+        tally.duplicates.push({ id: m.id, of: winner.id, by: "external" });
+      }
+    }
+    if (winner.ext_dup !== "") tx.run(Q.node_set_ext_dup, [winner.id, ""]);
+    return touched;
+  }
+
+  /**
+   * myc_health 'sync.duplicates': сколько живых узлов сейчас понижено — по
+   * содержимому и по внешней ссылке. Компонент один на оба случая: человек
+   * читает одно число «столько узлов повторяют чужую идентичность», а чем
+   * именно — говорят detail и списки contentDuplicates/externalDuplicates.
+   */
   private recordDuplicatesHealth(tx: DbDriver): void {
-    const n = tx.one<{ n: number }>(Q.content_duplicates_count, [])?.n ?? 0;
+    const content = tx.one<{ n: number }>(Q.content_duplicates_count, [])?.n ?? 0;
+    const external = tx.one<{ n: number }>(Q.external_duplicates_count, [])?.n ?? 0;
+    const n = content + external;
+    const why: string[] = [];
+    if (content > 0) {
+      why.push(
+        `${content} ${content === 1 ? "node repeats" : "nodes repeat"} another node's kind, title and body in the same scope ` +
+          "(written independently on two sites); the older node keeps the canonical content_hash",
+      );
+    }
+    if (external > 0) {
+      why.push(
+        `${external} imported ${external === 1 ? "node repeats" : "nodes repeat"} another node's attrs.external_ref ` +
+          "(the same source record imported on two machines); the older node holds the reference",
+      );
+    }
     tx.run(Q.health_set, [
       "sync.duplicates",
       n > 0 ? "degraded" : "ok",
-      n > 0
-        ? `${n} live ${n === 1 ? "node repeats" : "nodes repeat"} another node's kind, title and body in the same scope ` +
-          "(written independently on two sites); the older node keeps the canonical content_hash"
-        : "",
+      why.join("; "),
       this.now(),
-      JSON.stringify({ duplicates: n }),
+      JSON.stringify({ duplicates: n, content, external }),
     ]);
   }
 

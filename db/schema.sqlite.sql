@@ -49,6 +49,18 @@ CREATE TABLE schema_migrations (
   by_version TEXT    NOT NULL            -- версия бинаря myc
 );
 
+-- Совместимые миграции (Migration.readableFrom): бинарь, знающий схему
+-- readable_from, открывает базу после них, их не зная. Отдельная таблица —
+-- потому что выпущенные бинари отказывают базе по max(version) из
+-- schema_migrations (packages/store-sqlite/src/migrate.ts).
+CREATE TABLE schema_migrations_compat (
+  version       INTEGER PRIMARY KEY,
+  name          TEXT    NOT NULL,
+  checksum      TEXT    NOT NULL,
+  applied_at    INTEGER NOT NULL,
+  readable_from INTEGER NOT NULL
+);
+
 CREATE TABLE myc_health (
   component TEXT PRIMARY KEY,
   state     TEXT NOT NULL CHECK (state IN ('ok','degraded','down')),
@@ -116,6 +128,13 @@ CREATE TABLE nodes (
   -- с текстом DDL в рабочей базе дословно (schema-parity.test.ts).
   anc_blockers  INTEGER NOT NULL DEFAULT 0,
 
+  -- Разрешитель конфликта ux_nodes_external (§9.3, миграция 13,
+  -- memory-gemeb3d8wj41): '' — узел держит свою attrs.external_ref, его
+  -- собственный id — узел понижен, ту же ссылку держит другой. Данные узла
+  -- не трогаются: понижается производная колонка, а не сама ссылка. Место
+  -- в объявлении опять же не по вкусу — сюда её кладёт ALTER TABLE.
+  ext_dup       TEXT NOT NULL DEFAULT '',
+
   CHECK (kind IN ('task','note','doc','fragment','session','message','entity','anchor','skill')),
   CHECK (layer BETWEEN 0 AND 3),
   CHECK (priority BETWEEN 0 AND 3),
@@ -134,9 +153,13 @@ CREATE UNIQUE INDEX ux_nodes_content
     ON nodes(scope, kind, content_hash)
  WHERE deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL;
 
--- на этом же индексе стоит идемпотентность повторного импорта
+-- на этом же индексе стоит идемпотентность повторного импорта. Четвёртая
+-- колонка ext_dup разводит тот случай, который CRDT отвергнуть не может:
+-- одну запись источника ввезли на ДВУХ машинах (миграция 13). У держателя
+-- ссылки там '', у понижённого — его id, поэтому два держателя по-прежнему
+-- сталкиваются (локальный запрет цел), а пара с двух сайтов применяется.
 CREATE UNIQUE INDEX ux_nodes_external
-    ON nodes(scope, kind, json_extract(attrs,'$.external_ref'))
+    ON nodes(scope, kind, json_extract(attrs,'$.external_ref'), ext_dup)
  WHERE deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NOT NULL;
 
 -- ready-очередь: один скан частичного индекса

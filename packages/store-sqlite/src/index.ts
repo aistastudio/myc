@@ -260,7 +260,7 @@ export type {
   GraphStoreOptions,
   ClaimReceipt,
   NodeLease,
-  ContentDuplicate,
+  IdentityDuplicate,
 } from "./queries.ts";
 // Общая очередь фоновых работ поверх таблицы `jobs` (решение S7). Экспорт
 // пространством имён: `enqueue`/`claim`/`complete`/`fail`/`sweep`/`stats` —
@@ -268,7 +268,15 @@ export type {
 export * as jobs from "./jobs.ts";
 export { Claims, ClaimTicket } from "./claim.ts";
 export type { ClaimsOptions } from "./claim.ts";
-export { migrate, SchemaError, SCHEMA_UPGRADE_HINT } from "./migrate.ts";
+export {
+  appliedSchemaVersion,
+  COMPAT_MIGRATIONS_TABLE,
+  migrate,
+  SchemaError,
+  readSchemaLedger,
+  SCHEMA_UPGRADE_HINT,
+  schemaVersionSql,
+} from "./migrate.ts";
 export type { MigrateOptions, MigrateResult } from "./migrate.ts";
 
 // Обмен через git (решение S42): в git только оплог, проекции — локальный кеш.

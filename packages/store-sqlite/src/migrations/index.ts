@@ -11,6 +11,7 @@ import { migration009NodesExternalId } from "./009-nodes-external-id.ts";
 import { migration010AncBlockers } from "./010-anc-blockers.ts";
 import { migration011CodeRefSites } from "./011-code-ref-sites.ts";
 import { migration012CodeSearch } from "./012-code-search.ts";
+import { migration013NodesExtDup } from "./013-nodes-ext-dup.ts";
 
 /**
  * Базовый набор миграций SQLite. Версия 1 — вся схема §8.1 целиком,
@@ -26,7 +27,10 @@ import { migration012CodeSearch } from "./012-code-search.ts";
  * версия 11 — ссылки с местом и владельцем (memory-e34bfse29jdw): без них у
  * код-интеллекта есть определения, но нет рёбер, то есть нет `callers`,
  * версия 12 — корпус поиска по коду (memory-5nvk1hwcene2): определения и шапки
- * файлов в отдельном FTS5, без которого `myc code symbol` требует ЗНАТЬ имя.
+ * файлов в отдельном FTS5, без которого `myc code symbol` требует ЗНАТЬ имя,
+ * версия 13 — разрешитель `nodes.ext_dup` в ux_nodes_external
+ * (memory-gemeb3d8wj41): две машины, ввозящие одну запись beads, роняли
+ * applyOps на UNIQUE, и синхронизация вставала навсегда.
  * Векторные объекты сюда не входят намеренно (решение S26) — см. ./vec.ts.
  */
 export const migrations: readonly Migration[] = [
@@ -42,6 +46,7 @@ export const migrations: readonly Migration[] = [
   migration010AncBlockers,
   migration011CodeRefSites,
   migration012CodeSearch,
+  migration013NodesExtDup,
 ];
 
 export { migration001Init } from "./001-init.ts";
@@ -56,6 +61,7 @@ export { migration009NodesExternalId } from "./009-nodes-external-id.ts";
 export { migration010AncBlockers } from "./010-anc-blockers.ts";
 export { migration011CodeRefSites } from "./011-code-ref-sites.ts";
 export { migration012CodeSearch } from "./012-code-search.ts";
+export { migration013NodesExtDup } from "./013-nodes-ext-dup.ts";
 export { vecMigration001Init } from "./vec-001-init.ts";
 export {
   migrateVectors,

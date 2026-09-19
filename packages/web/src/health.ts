@@ -17,6 +17,7 @@
 import type { CountRow, Degradation, HealthComponent, HealthPayload } from "./types.ts";
 import type { ReadOnlyDb } from "./db.ts";
 import { fileBytes } from "./workspace.ts";
+import { COMPAT_MIGRATIONS_TABLE, schemaVersionSql } from "@myc/store-sqlite";
 
 /** Мягкий потолок WAL из предохранителя store-sqlite (решение S35). */
 export const WAL_SOFT_LIMIT_BYTES = 8 * 1024 * 1024;
@@ -60,10 +61,11 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
   }
 
   // --- версия схемы --------------------------------------------------------
-  // Источник истины — schema_migrations (учёт наката миграций), а не
-  // myc_meta: там номер версии никогда не писался.
+  // Источник истины — учёт наката миграций, а не myc_meta: там номер версии
+  // никогда не писался. Учёт — две таблицы: совместимые миграции лежат не в
+  // schema_migrations (store-sqlite migrate.ts, COMPAT_MIGRATIONS_TABLE).
   const schemaVersion = hasSchemaMigrations
-    ? (db.one<{ v: number | null }>("SELECT max(version) AS v FROM schema_migrations")?.v ?? null)
+    ? (db.one<{ v: number | null }>(schemaVersionSql(db.has(COMPAT_MIGRATIONS_TABLE)))?.v ?? null)
     : null;
   if (schemaVersion === null) {
     degraded.push({

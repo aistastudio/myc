@@ -143,16 +143,30 @@ export function createImportCommand(deps: StoreDeps = realStoreDeps): Command {
               "conflict.unique",
               `the database refused an operation: ${msg}`,
               ExitCode.CONFLICT,
-              "myc doctor; a content duplicate is resolved on import, another unique index is not — report it",
+              "myc doctor; duplicates of content and of attrs.external_ref are resolved on import, " +
+                "another unique index is not — report it",
             );
           }
           return failure("precond.graph_format", `oplog file does not parse: ${msg}`, ExitCode.PRECOND);
         }
         if (result.duplicates.length > 0) {
+          // Два узла с одной идентичностью — это либо один и тот же текст,
+          // записанный на двух машинах, либо одна запись чужого трекера,
+          // ввезённая на двух машинах (memory-gemeb3d8wj41). Разбираться
+          // человеку по-разному, поэтому счётчики названы отдельно.
+          const n = result.duplicates.length;
+          const content = result.duplicates.filter((d) => d.by === "content").length;
+          const external = n - content;
+          const by = [
+            content > 0 ? `${content} by content` : "",
+            external > 0 ? `${external} by attrs.external_ref` : "",
+          ]
+            .filter((x) => x !== "")
+            .join(", ");
           ctx.warn(
             "import.duplicates",
-            `${result.duplicates.length} content duplicate${result.duplicates.length === 1 ? "" : "s"} resolved: ` +
-              `${result.duplicates.slice(0, 3).map((d) => `${d.id} of ${d.of}`).join(", ")}${result.duplicates.length > 3 ? "…" : ""}`,
+            `${n} identity duplicate${n === 1 ? "" : "s"} resolved (${by}): ` +
+              `${result.duplicates.slice(0, 3).map((d) => `${d.id} of ${d.of}`).join(", ")}${n > 3 ? "…" : ""}`,
           );
         }
         if (result.backfilled.length > 0) {

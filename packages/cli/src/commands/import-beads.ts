@@ -1314,11 +1314,17 @@ function scopeIndexes(h: StoreHandle): {
   const byRef = new Map<string, string>();
   const byContent = new Map<string, string>();
   const repoByRef = new Map<string, RepoInfo>();
+  // Ссылку держит узел с пустым разрешителем; понижённый (та же запись
+  // источника, ввезённая на другой машине, — миграция 13) идентичностью не
+  // считается, иначе синхронизация досталась бы тому из двух, кто попался
+  // первым в обходе.
+  const demoted = new Set(h.store.externalDuplicates().map((d) => d.id));
   for (const kind of ["task", "note"] as const) {
     for (const n of h.store.listNodes(h.scope, kind, SCAN_LIMIT)) {
       const ref = n.attrs["external_ref"];
       if (typeof ref === "string") {
-        if (!byRef.has(ref)) {
+        const seen = byRef.get(ref);
+        if (seen === undefined || (demoted.has(seen) && !demoted.has(n.id))) {
           byRef.set(ref, n.id);
           repoByRef.set(ref, readRepo(n.attrs));
         }

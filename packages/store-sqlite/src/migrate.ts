@@ -44,6 +44,16 @@ export interface Migration {
   readonly name: string;
   readonly sql: string;
   readonly objects: readonly string[];
+  /**
+   * Миграция СОВМЕСТИМА: бинарь, знающий схему `readableFrom`, продолжает
+   * работать с базой после неё, самой миграции не зная. Такая миграция
+   * учитывается в {@link COMPAT_MIGRATIONS_TABLE}, а не в schema_migrations,
+   * — см. там, почему это единственный способ не сломать уже выпущенные
+   * бинари. Все миграции между `readableFrom` и этой обязаны быть
+   * совместимыми тоже: несовместимая между ними подняла бы schema_migrations
+   * выше `readableFrom`, и обещание стало бы ложью (сверка в migrate).
+   */
+  readonly readableFrom?: number;
 }
 
 export interface MigrationRecord {
@@ -51,6 +61,110 @@ export interface MigrationRecord {
   readonly name: string;
   readonly checksum: string;
   readonly appliedAt: number;
+  /** null — запись schema_migrations; число — совместимая, см. Migration.readableFrom. */
+  readonly readableFrom: number | null;
+}
+
+/**
+ * Таблица учёта СОВМЕСТИМЫХ миграций базового набора (memory-gemeb3d8wj41).
+ *
+ * ЗАЧЕМ ВТОРАЯ ТАБЛИЦА. Выпущенный бинарь отказывает базе по одному правилу:
+ * `max(version)` в schema_migrations больше известного ему (schema.newer
+ * ниже). Правило верное — незнакомая схема может значить что угодно, — но
+ * оно не различает «добавили колонку, которую старый код не видит» и
+ * «переписали таблицу». Миграция 13 — первое: колонка с DEFAULT и индекс,
+ * о которых старый код не знает и которых не касается. Запиши её в
+ * schema_migrations — и каждый уже выпущенный бинарь на этой машине (агент
+ * в соседней сессии, хук, MCP-сервер, запущенный до обновления) встанет с
+ * precond.schema. Уже выпущенный код не поменять; поменять можно только то,
+ * что он читает. Поэтому совместимая миграция пишется сюда, schema_migrations
+ * остаётся на последней несовместимой, и старый бинарь видит знакомую ему
+ * схему — ровно ту, с которой умеет работать.
+ *
+ * ЧТО ОБЕЩАЕТ `readable_from`. Число — схема, которую бинарь обязан знать,
+ * чтобы работать с базой после этой миграции. Бинарь, читающий эту таблицу
+ * (с 0.3.14), сверяет по нему незнакомые ему совместимые миграции будущих
+ * версий: отказ только когда их `readable_from` выше известного ему.
+ *
+ * Версия схемы базы — максимум по ОБЕИМ таблицам ({@link appliedSchemaVersion});
+ * порядок наката и сверка checksum общие.
+ */
+export const COMPAT_MIGRATIONS_TABLE = "schema_migrations_compat";
+
+const COMPAT_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS ${COMPAT_MIGRATIONS_TABLE} (
+       version       INTEGER PRIMARY KEY,
+       name          TEXT    NOT NULL,
+       checksum      TEXT    NOT NULL,
+       applied_at    INTEGER NOT NULL,
+       readable_from INTEGER NOT NULL
+     )`;
+
+function hasTable(db: Database, name: string): boolean {
+  return db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1").get(name) !== null;
+}
+
+/**
+ * Версия схемы базы: максимум по schema_migrations и таблице совместимых
+ * миграций. `null` — ни одной записи учёта (схема не накатывалась). Этим, а
+ * не `max(version) FROM schema_migrations`, обязан читать версию всякий, кто
+ * сравнивает её с известной бинарю: иначе база после совместимой миграции
+ * казалась бы вечно отстающей.
+ */
+export function appliedSchemaVersion(db: Database): number | null {
+  let base: number | null = null;
+  try {
+    base = (db.query("SELECT max(version) AS v FROM schema_migrations").get() as { v: number | null } | null)?.v ?? null;
+  } catch {
+    return null; // таблицы учёта нет — схема не накатывалась вовсе
+  }
+  if (!hasTable(db, COMPAT_MIGRATIONS_TABLE)) return base;
+  const compat =
+    (db.query(`SELECT max(version) AS v FROM ${COMPAT_MIGRATIONS_TABLE}`).get() as { v: number | null } | null)?.v ??
+    null;
+  return compat === null ? base : Math.max(base ?? 0, compat);
+}
+
+/**
+ * Все записи учёта базового набора по обеим таблицам — для doctor. `null` —
+ * таблицы schema_migrations нет (схема не накатывалась).
+ */
+export function readSchemaLedger(db: Database): MigrationRecord[] | null {
+  if (!hasTable(db, "schema_migrations")) return null;
+  return readAppliedMigrations(db);
+}
+
+/**
+ * Тот же ответ для поверхностей со своим драйвером (web, сервер): текст
+ * запроса версии по тому, есть ли в базе таблица совместимых миграций.
+ */
+export function schemaVersionSql(hasCompatTable: boolean): string {
+  return hasCompatTable
+    ? `SELECT max(v) AS v FROM (SELECT max(version) AS v FROM schema_migrations
+                                UNION ALL SELECT max(version) FROM ${COMPAT_MIGRATIONS_TABLE})`
+    : "SELECT max(version) AS v FROM schema_migrations";
+}
+
+/**
+ * Сверка набора: совместимая миграция обещает, что бинарь, знающий
+ * `readableFrom`, базу откроет, — значит всё между `readableFrom` и ею
+ * тоже совместимо. Ошибка здесь — ошибка сборки, а не данных.
+ */
+function checkCompatChain(known: readonly Migration[]): void {
+  for (const m of known) {
+    if (m.readableFrom === undefined) continue;
+    if (!(m.readableFrom < m.version)) {
+      throw new Error(`migration ${m.version} '${m.name}': readableFrom ${m.readableFrom} must be below its version`);
+    }
+    const breaking = known.find(
+      (x) => x.version > m.readableFrom! && x.version < m.version && x.readableFrom === undefined,
+    );
+    if (breaking !== undefined) {
+      throw new Error(
+        `migration ${m.version} '${m.name}': readableFrom ${m.readableFrom} is a lie — ` +
+          `migration ${breaking.version} between them is not compatible`,
+      );
+    }
+  }
 }
 
 export type SchemaErrorCode = "schema.newer" | "schema.checksum" | "schema.pending";
@@ -111,21 +225,28 @@ function ensureMigrationsTable(db: Database): void {
 }
 
 function readAppliedMigrations(db: Database): MigrationRecord[] {
+  const compat = hasTable(db, COMPAT_MIGRATIONS_TABLE);
   const rows = db
     .query(
-      "SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version ASC",
+      "SELECT version, name, checksum, applied_at, NULL AS readable_from FROM schema_migrations" +
+        (compat
+          ? ` UNION ALL SELECT version, name, checksum, applied_at, readable_from FROM ${COMPAT_MIGRATIONS_TABLE}`
+          : "") +
+        " ORDER BY version ASC",
     )
     .all() as Array<{
     version: number;
     name: string;
     checksum: string;
     applied_at: number;
+    readable_from: number | null;
   }>;
   return rows.map((r) => ({
     version: r.version,
     name: r.name,
     checksum: r.checksum,
     appliedAt: r.applied_at,
+    readableFrom: r.readable_from,
   }));
 }
 
@@ -240,7 +361,9 @@ function applyMigrationStatementByStatement(db: Database, migration: Migration):
  * GUARD версии схемы + forward-only накат миграций.
  * Три отказных случая (docs/design/03-interfaces-and-integration.md §2.2,
  * exit=PRECOND(5)):
- *   - schema.newer    — max(version) в БД больше максимально известной бинарю
+ *   - schema.newer    — в БД есть незнакомая бинарю миграция, и она либо
+ *                       несовместима, либо совместима только со схемой новее
+ *                       известной бинарю (COMPAT_MIGRATIONS_TABLE)
  *   - schema.checksum — checksum применённой миграции разошёлся с текстом в бинаре
  *   - schema.pending   — есть неприменённые миграции и открытие только на чтение
  */
@@ -250,15 +373,21 @@ export async function migrate(
 ): Promise<MigrateResult> {
   const degraded: string[] = [];
   const known = [...options.migrations].sort((a, b) => a.version - b.version);
+  checkCompatChain(known);
   const maxKnown = known.reduce((m, mig) => Math.max(m, mig.version), 0);
   const byVersion = new Map(known.map((m) => [m.version, m]));
 
   ensureMigrationsTable(db);
   const applied = readAppliedMigrations(db);
   const maxApplied = applied.reduce((m, r) => Math.max(m, r.version), 0);
+  // Незнакомая бинарю миграция мешает, только если она несовместима или
+  // обещает совместимость со схемой новее той, что бинарь знает.
+  const blocking = applied.filter(
+    (r) => r.version > maxKnown && (r.readableFrom === null || r.readableFrom > maxKnown),
+  );
 
   const skewIgnored = options.ignoreSchemaSkew ?? readIgnoreSchemaSkewEnv();
-  if (maxApplied > maxKnown) {
+  if (blocking.length > 0) {
     if (!skewIgnored) {
       throw new SchemaError(
         "schema.newer",
@@ -313,10 +442,19 @@ export async function migrate(
   const appliedNow: number[] = [];
   for (const migration of pending) {
     const checksum = await sha256Hex(migration.sql);
+    const compat = migration.readableFrom !== undefined;
     db.exec("BEGIN IMMEDIATE");
     try {
+      if (compat) db.exec(COMPAT_MIGRATIONS_DDL);
+      // Сосед мог записать её в любую из двух таблиц: сборка, где эта
+      // миграция ещё не была совместимой, писала в schema_migrations.
       const done = db
-        .query("SELECT checksum FROM schema_migrations WHERE version = ?1")
+        .query(
+          "SELECT checksum FROM schema_migrations WHERE version = ?1" +
+            (compat || hasTable(db, COMPAT_MIGRATIONS_TABLE)
+              ? ` UNION ALL SELECT checksum FROM ${COMPAT_MIGRATIONS_TABLE} WHERE version = ?1`
+              : ""),
+        )
         .get(migration.version) as { checksum: string } | null;
       if (done !== null) {
         if (done.checksum !== checksum) {
@@ -330,9 +468,15 @@ export async function migrate(
         continue;
       }
       applyMigrationStatementByStatement(db, migration);
-      db.query(
-        "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, ?2, ?3, ?4)",
-      ).run(migration.version, migration.name, checksum, Date.now());
+      if (compat) {
+        db.query(
+          `INSERT INTO ${COMPAT_MIGRATIONS_TABLE} (version, name, checksum, applied_at, readable_from) VALUES (?1, ?2, ?3, ?4, ?5)`,
+        ).run(migration.version, migration.name, checksum, Date.now(), migration.readableFrom!);
+      } else {
+        db.query(
+          "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, ?2, ?3, ?4)",
+        ).run(migration.version, migration.name, checksum, Date.now());
+      }
       db.exec("COMMIT");
     } catch (error) {
       try {

@@ -29,7 +29,7 @@ import {
   type GraphFiles,
   type ProjectionCacheResult,
 } from "./export.ts";
-import { rowToOp, type ContentDuplicate, type GraphStore, type OplogRow } from "./queries.ts";
+import { rowToOp, type IdentityDuplicate, type GraphStore, type OplogRow } from "./queries.ts";
 import { defineQueries, type Op } from "@myc/core";
 
 const QI = defineQueries({
@@ -60,7 +60,7 @@ export interface ImportResult {
    * же текст, записанный независимо на двух сайтах. Импорт не падает, канон
    * у старшего узла; список — чтобы сказать об этом вслух.
    */
-  readonly duplicates: ContentDuplicate[];
+  readonly duplicates: IdentityDuplicate[];
   /**
    * Закрытия через claim, журналированные старым кодом одной строкой
    * op='claim' и выраженные сейчас LWW-записями (memory-tvw65jjgaheh):
@@ -136,7 +136,7 @@ export function importOplogRows(
   let duplicate = 0;
   let stale = 0;
   const collided: string[] = [];
-  const duplicates: ContentDuplicate[] = [];
+  const duplicates: IdentityDuplicate[] = [];
   let deferred: string[] = [];
   const byId = new Map<string, Op>();
   for (const op of foreign) byId.set(op.op_id, op);

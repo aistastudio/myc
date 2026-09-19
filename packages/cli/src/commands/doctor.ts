@@ -46,6 +46,7 @@ import {
   dumpParentClosure,
   migrate,
   migrations,
+  readSchemaLedger,
   schemaConverges,
   schemaObjects,
   vectorMigrations,
@@ -230,27 +231,29 @@ interface SchemaObjectLike {
 async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
   const db = driver.database;
   const known = migrations.reduce((m, x) => Math.max(m, x.version), 0);
-  const applied = appliedVersion(db, "schema_migrations");
+  // Обе таблицы учёта базового набора: совместимые миграции (migrate.ts,
+  // COMPAT_MIGRATIONS_TABLE) лежат не в schema_migrations.
+  const records = readSchemaLedger(db) ?? [];
+  const applied = records.length === 0 ? null : Math.max(...records.map((r) => r.version));
   const checks: Check[] = [];
   const side = ledgers(driver);
 
   // 1. Версия базового набора. Три исхода, а не два: база может быть и НОВЕЕ
   //    бинаря — ровно тот случай, из которого сюда и присылают.
-  const appliedSet = new Set<number>(
-    applied === null
-      ? []
-      : (db.query("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map(
-          (r) => r.version,
-        ),
-  );
+  const appliedSet = new Set<number>(records.map((r) => r.version));
   const pending = migrations.filter((m) => !appliedSet.has(m.version)).map((m) => m.version);
+  const newer = records.filter((r) => r.version > known);
+  const blocking = newer.filter((r) => r.readableFrom === null || r.readableFrom > known);
+  // Какую схему обязан знать бинарь, чтобы открыть эту базу: последняя
+  // несовместимая миграция или обещание совместимой.
+  const floor = Math.max(0, ...records.map((r) => r.readableFrom ?? r.version));
   if (applied === null) {
     checks.push({
       name: "version",
       verdict: "drift",
       detail: "no schema_migrations table in the database — the schema was never applied",
     });
-  } else if (applied > known) {
+  } else if (blocking.length > 0) {
     checks.push({
       name: "version",
       verdict: "drift",
@@ -263,8 +266,20 @@ async function checkSchema(driver: CliDriver): Promise<SchemaSection> {
       detail: `migrations not applied: ${pending.join(", ")} (the binary knows up to ${known})`,
       items: pending.map(String),
     });
+  } else if (newer.length > 0) {
+    checks.push({
+      name: "version",
+      verdict: "ok",
+      detail:
+        `schema ${applied} of ${known}: ${newer.map((r) => r.version).join(", ")} written by a newer myc ` +
+        `and compatible with this binary`,
+    });
   } else {
-    checks.push({ name: "version", verdict: "ok", detail: `schema ${applied} of ${known}` });
+    checks.push({
+      name: "version",
+      verdict: "ok",
+      detail: `schema ${applied} of ${known}` + (floor < applied ? `; myc that knows schema ${floor} opens it too` : ""),
+    });
   }
 
   // 2. Объекты. Эталон — та же база, построенная миграциями ЭТОГО бинаря;

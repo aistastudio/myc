@@ -24,7 +24,7 @@ ENV PATH=/usr/local/bin:$PATH
 
 # Pinned: the same Dockerfile built twice must give the same myc. Raise it with
 # --build-arg MYC_VERSION=<version>.
-ARG MYC_VERSION=0.3.13
+ARG MYC_VERSION=0.3.14
 RUN bun install -g @aistastudio/myc@${MYC_VERSION} && myc --version
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

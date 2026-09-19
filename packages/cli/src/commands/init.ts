@@ -38,6 +38,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { basename, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import {
+  appliedSchemaVersion,
   databaseMeta,
   ensureSiteId,
   ensureSqliteLibrary,
@@ -155,10 +156,7 @@ function readExistingWorkspace(dir: string): ExistingWorkspace {
     const db = new Database(dbPath, { readonly: true });
     try {
       schemaVersion =
-        (db.query("SELECT max(version) AS v FROM schema_migrations").get() as
-          | { v: number | null }
-          | null
-        )?.v ?? undefined;
+        appliedSchemaVersion(db) ?? undefined;
       nodeCount =
         (db.query("SELECT count(*) AS n FROM nodes").get() as { n: number } | null)?.n ??
         undefined;
@@ -350,10 +348,7 @@ function readPersonalSummary(): PersonalSummary {
     const db = new Database(status.dbPath, { readonly: true });
     try {
       schemaVersion =
-        (db.query("SELECT max(version) AS v FROM schema_migrations").get() as
-          | { v: number | null }
-          | null
-        )?.v ?? undefined;
+        appliedSchemaVersion(db) ?? undefined;
       nodeCount =
         (db.query("SELECT count(*) AS n FROM nodes").get() as { n: number } | null)?.n ??
         undefined;
@@ -845,10 +840,7 @@ export function createInitCommand(): Command {
         try {
           db.prepare(Q.meta_set.sql).run("slug", slug);
           schemaVersion =
-            (db.query("SELECT max(version) AS v FROM schema_migrations").get() as
-              | { v: number | null }
-              | null
-            )?.v ?? undefined;
+            appliedSchemaVersion(db) ?? undefined;
         } finally {
           db.close();
         }

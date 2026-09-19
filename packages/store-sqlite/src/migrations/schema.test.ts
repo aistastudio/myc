@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { migrate, type Migration } from "../migrate.ts";
+import { appliedSchemaVersion, migrate, SCHEMA_UPGRADE_HINT, SchemaError, type Migration } from "../migrate.ts";
 import {
   migrations,
   migrateVectors,
@@ -87,7 +87,7 @@ describe("миграция 1 — базовая схема", () => {
   test("чистая БД поднимается одной командой, все заявленные объекты в sqlite_master", async () => {
     store = open();
     const result = await migrate(store, { migrations, writable: true });
-    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     expect(result.pendingVersions).toEqual([]);
     expect(result.degraded).toEqual([]);
 
@@ -626,5 +626,93 @@ describe("миграция 9 — идентичность: содержимое 
     insertNode(store, "live", { content_hash: "same", ...EXT("cherry-1") });
     insertNode(store, "own", { content_hash: "same" });
     expect(store.query("SELECT count(*) AS n FROM nodes").get()).toEqual({ n: 3 });
+  });
+});
+
+describe("миграция 13 — ext_dup: одна запись источника с двух машин", () => {
+  /** Набор миграций до 13-й — состояние базы прежнего бинаря. */
+  const upTo12 = migrations.filter((m) => m.version <= 12);
+
+  test("накат на существующую базу: живые ввезённые узлы становятся держателями своих ссылок", async () => {
+    store = open();
+    await migrate(store, { migrations: upTo12, writable: true });
+    insertNode(store, "n1", { attrs: JSON.stringify({ external_ref: "bd-1" }) });
+    insertNode(store, "n2", { attrs: JSON.stringify({ external_ref: "bd-2" }) });
+    // Удалённый узел с той же ссылкой лежал в базе и раньше: частичный
+    // индекс его не касается, и миграция не имеет права его потерять.
+    insertNode(store, "n3", { attrs: JSON.stringify({ external_ref: "bd-1" }), deleted_at: 5 });
+    insertNode(store, "n4", { content_hash: "h-own" });
+
+    const applied = await migrate(store, { migrations, writable: true });
+    expect(applied.appliedVersions).toEqual([13]);
+
+    const rows = store
+      .query("SELECT id, ext_dup, json_extract(attrs,'$.external_ref') AS ref FROM nodes ORDER BY id")
+      .all() as Array<{ id: string; ext_dup: string; ref: string | null }>;
+    expect(rows).toEqual([
+      { id: "n1", ext_dup: "", ref: "bd-1" },
+      { id: "n2", ext_dup: "", ref: "bd-2" },
+      { id: "n3", ext_dup: "", ref: "bd-1" },
+      { id: "n4", ext_dup: "", ref: null },
+    ]);
+  });
+
+  test("после наката правило цело: второй ДЕРЖАТЕЛЬ той же ссылки отвергается, понижённый — нет", async () => {
+    store = open();
+    await migrate(store, { migrations, writable: true });
+    insertNode(store, "n1", { attrs: JSON.stringify({ external_ref: "bd-1" }) });
+    expect(() =>
+      insertNode(store, "n2", { attrs: JSON.stringify({ external_ref: "bd-1" }) }),
+    ).toThrow(/UNIQUE constraint failed/);
+    // Понижённый (ext_dup = собственный id) уникален по построению — он и
+    // есть тот узел, который приезжает со второй машины.
+    insertNode(store, "n2", { attrs: JSON.stringify({ external_ref: "bd-1" }), ext_dup: "n2" });
+    expect(() =>
+      insertNode(store, "n3", { attrs: JSON.stringify({ external_ref: "bd-1" }), ext_dup: "n2" }),
+    ).toThrow(/UNIQUE constraint failed/);
+    // Узлы без ссылки в этот индекс не входят вовсе.
+    insertNode(store, "n5", { content_hash: "h-5" });
+    insertNode(store, "n6", { content_hash: "h-6" });
+    expect(
+      (store.query("SELECT count(*) AS n FROM nodes").get() as { n: number }).n,
+    ).toBe(4);
+  });
+
+  test("база, поднятая до 13, открывается бинарём, знающим только 12: миграция совместимая", async () => {
+    store = open();
+    await migrate(store, { migrations, writable: true });
+    // Правило отказа выпущенных бинарей (0.3.11–0.3.13) — max(version) из
+    // schema_migrations против их 12, и больше они ничего не читают. Его и
+    // держим: запиши 13 туда — и каждый старый бинарь на машине (соседний
+    // агент, хук, MCP-сервер) встаёт с precond.schema.
+    expect((store.query("SELECT max(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(12);
+    expect(appliedSchemaVersion(store)).toBe(13);
+    store.close();
+
+    store = open();
+    // Набор, кончающийся на 12, — ровно то, что знает прежний бинарь.
+    const r = await migrate(store, { migrations: upTo12, writable: true });
+    expect(r.appliedVersions).toEqual([]);
+    expect(r.degraded).toEqual([]);
+    // Запись прежнего бинаря: ext_dup он не называет, DEFAULT делает узел
+    // держателем, и занятая ссылка упирается в UNIQUE — как до миграции.
+    insertNode(store, "n1", { attrs: JSON.stringify({ external_ref: "bd-1" }) });
+    expect(() => insertNode(store, "n2", { attrs: JSON.stringify({ external_ref: "bd-1" }) })).toThrow(
+      /UNIQUE constraint failed/,
+    );
+    expect((store.query("SELECT ext_dup FROM nodes WHERE id = 'n1'").get() as { ext_dup: string }).ext_dup).toBe("");
+  });
+
+  test("несовместимая миграция после 13 по-прежнему отвергается бинарём, знающим 12", async () => {
+    store = open();
+    await migrate(store, { migrations, writable: true });
+    store.run(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (14, 'future', 'x', 0)",
+    );
+    const err = await migrate(store, { migrations: upTo12, writable: true }).catch((e: unknown) => e);
+    expect((err as SchemaError).code).toBe("schema.newer");
+    expect((err as SchemaError).exit).toBe(5);
+    expect((err as Error).message).toContain("schema 14, this binary knows 12");
+    expect((err as Error).message).toContain(SCHEMA_UPGRADE_HINT);
   });
 });
