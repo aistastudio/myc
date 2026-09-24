@@ -8,6 +8,7 @@ import {
   ALREADY_LOADED_MESSAGE,
   BUNDLED_SQLITE_FILE,
   SQLITE_MIN_VERSION,
+  SQLITE_OLD_BUG,
   SQLITE_RECOMMENDED_VERSION,
   buildLibCandidates,
   buildVecCandidates,
@@ -358,17 +359,23 @@ describe("версия SQLite: минимум, рекомендованная, �
     expect(compareSqliteVersions("3.9.0", "3.10.0")).toBeLessThan(0);
   });
 
-  test("границы: ниже 3.44.0 — unsupported, до 3.51.2 — old, дальше — ok", () => {
-    expect(SQLITE_MIN_VERSION).toBe("3.44.0");
+  test("границы: ниже 3.50.4 — unsupported, до 3.51.2 — old, дальше — ok", () => {
+    expect(SQLITE_MIN_VERSION).toBe("3.50.4");
     expect(SQLITE_RECOMMENDED_VERSION).toBe("3.51.2");
     expect(sqliteSupport("3.37.2")).toBe("unsupported");
     expect(sqliteSupport("3.43.2")).toBe("unsupported");
-    expect(sqliteSupport("3.44.0")).toBe("old");
-    expect(sqliteSupport("3.46.0")).toBe("old");
+    expect(sqliteSupport("3.44.0")).toBe("unsupported");
+    // Версии, на которых дубли работ очереди ИЗМЕРЕНЫ (memory-e82awcx1ms0b),
+    // обязаны отказывать, а не предупреждать: работа выполняется дважды молча.
+    expect(sqliteSupport("3.46.0")).toBe("unsupported");
+    // 3.50.4 — SQLite минимально поддерживаемого Bun (engines: >= 1.3.0):
+    // порог обязан её пускать, иначе поддерживаемый Linux не запустится вовсе.
+    expect(sqliteSupport("3.50.4")).toBe("old");
     expect(sqliteSupport("3.51.0")).toBe("old");
     expect(sqliteSupport("3.51.2")).toBe("ok");
     expect(sqliteSupport("3.53.4")).toBe("ok");
   });
+
 
   test("своя библиотека пакета не ниже рекомендованной", () => {
     expect(sqliteSupport(RELEASES.bundled.version)).toBe("ok");
@@ -446,6 +453,12 @@ describe("выбор библиотеки: кандидат ниже миним�
     expect(result.stderr).toContain("SqliteUnsupportedError");
     expect(result.stderr).toContain(`SQLite ${RELEASES.old.version} (MYC_SQLITE ${oldLib})`);
     expect(result.stderr).toContain(SQLITE_MIN_VERSION);
+    // Отказ обязан назвать ОБЕ причины порога: запись FTS5 (ниже 3.44.0) и
+    // измеренные дубли работ очереди (memory-e82awcx1ms0b) — иначе человек
+    // прочтёт «старая SQLite» и решит, что дело в одной несовместимости.
+    expect(result.stderr).toContain("unsafe use of virtual table nodes_fts");
+    expect(result.stderr).toContain("two or three times");
+    expect(result.stderr).toContain(SQLITE_OLD_BUG);
   });
 
   /**

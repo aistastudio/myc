@@ -1651,5 +1651,5 @@ window.MYC_DATA = {
     "myc": "0.3.14"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-19T15:52:54.621Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-09-24T19:46:09.108Z", assertions: 77 };
 window.MYC_DATA.release = "0.3.14";

@@ -51,8 +51,25 @@ export type SqliteRuntimeSource =
   | "system"
   | "builtin";
 
-/** Минимум: с 3.44.0 FTS5 innocuous и пишется из триггера при trusted_schema=OFF. */
-export const SQLITE_MIN_VERSION = "3.44.0";
+/**
+ * Минимум — 3.50.4, и у него ДВЕ причины, младшая из которых 3.44.0.
+ *
+ * 3.44.0: ниже FTS5 не innocuous и не пишется из триггера при
+ * trusted_schema=OFF — падает всякая запись («unsafe use of virtual table
+ * nodes_fts», issue #1).
+ *
+ * 3.50.4: на 3.43.2 и 3.46.0 ИЗМЕРЕНЫ дубли работ очереди — параллельные CLI
+ * выполняли одну работу 2–3 раза, а fail ловил «database disk image is
+ * malformed» (memory-e82awcx1ms0b, 2026-09-15). Причина не найдена, и потому
+ * порог поставлен не по ней, а по тому, что ДОСТУПНО: 3.50.4 — SQLite
+ * минимально поддерживаемого Bun (engines: bun >= 1.3.0; Bun 1.3.0 — 3.50.4,
+ * 1.3.14 — 3.53.0, замер в образе 2026-09-24), а на macOS пакет несёт свою
+ * 3.53.4. То есть ни одной поддерживаемой конфигурации порог не запирает:
+ * ниже него библиотека берётся только из неподдерживаемого Bun или явной
+ * MYC_SQLITE, а пускать туда, где дубли измерены, незачем — ремонта у такой
+ * базы нет, а работа выполняется дважды молча.
+ */
+export const SQLITE_MIN_VERSION = "3.50.4";
 /**
  * Ниже — WARN `degraded.sqlite_old`: на 3.43.2 и 3.46.0 параллельные CLI
  * выполняют работы очереди по 2–3 раза, а fail ловит «database disk image is
@@ -462,8 +479,11 @@ function describeSupport(
     return {
       problem:
         `SQLite ${state.version} (${label}) is older than ${SQLITE_MIN_VERSION}, the minimum myc supports: ` +
-        "before 3.44.0 FTS5 cannot be written from triggers under trusted_schema=OFF, so every write " +
-        'fails with "unsafe use of virtual table nodes_fts"',
+        "below 3.44.0 FTS5 cannot be written from triggers under trusted_schema=OFF, so every write " +
+        'fails with "unsafe use of virtual table nodes_fts"; and on 3.43.2 and 3.46.0 parallel myc ' +
+        'processes were measured running one background job two or three times, with a failing job ' +
+        `reporting "database disk image is malformed" (${SQLITE_OLD_BUG}). ` +
+        `Every supported setup has ${SQLITE_MIN_VERSION} or newer: Bun 1.3.0 carries it, and on macOS myc ships its own`,
       hint,
     };
   }

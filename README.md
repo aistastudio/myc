@@ -30,19 +30,25 @@ The runtime is bound to `bun:sqlite` (no native bindings on the Node side).
 **It will not start on plain Node.js or Deno.** Bun ≥ 1.3.0 is required and
 pinned in `package.json` → `engines.bun`.
 
-**SQLite ≥ 3.44.0.** Below 3.44.0, FTS5 cannot be written from triggers under
-`trusted_schema = OFF`, so every write fails. On Linux, Bun links its own SQLite
-(3.53.0 in Bun 1.3.14). On macOS, Bun uses the system SQLite — 3.43.2 on
-macOS 14 — so the package ships its own: `vendor/sqlite/libmyc-sqlite3.dylib`,
+**SQLite ≥ 3.50.4.** The floor has two reasons. Below 3.44.0, FTS5 cannot be
+written from triggers under `trusted_schema = OFF`, so every write fails. And on
+3.43.2 and 3.46.0, parallel myc processes were measured running one background
+job two or three times, with a failing job reporting "database disk image is
+malformed"; the cause is not known, so myc refuses every library below what a
+supported setup gives it. Nothing supported loses anything: on Linux, Bun links
+its own SQLite (3.50.4 in Bun 1.3.0, the minimum in `engines.bun`; 3.53.0 in
+Bun 1.3.14), and on macOS, where Bun would use the system SQLite — 3.43.2 on
+macOS 14 — the package ships its own: `vendor/sqlite/libmyc-sqlite3.dylib`,
 SQLite 3.53.4 built from the official amalgamation for arm64 and x86_64
 (`scripts/build-sqlite.ts`), chosen before anything else except an explicit
 `MYC_SQLITE=/path/to/libsqlite3.dylib`. If the SQLite in use is still below
-3.44.0 — a broken install, or `MYC_SQLITE` pointing at an old library — every
-command, `myc init` included, refuses with `precond.sqlite_unsupported` and says
-what to do, instead of creating a workspace it cannot write to. From 3.44.0 up
-to 3.51.2 myc works but warns (`WARN degraded.sqlite_old`): parallel processes
-may run a background job more than once; on Linux the cure is `bun upgrade`.
-`myc doctor` names the SQLite in use and where it came from.
+3.50.4 — a broken install, an unsupported Bun, or `MYC_SQLITE` pointing at an
+old library — every command, `myc init` included, refuses with
+`precond.sqlite_unsupported` and says what to do, instead of creating a
+workspace it cannot write to. From 3.50.4 up to 3.51.2 myc works but warns
+(`WARN degraded.sqlite_old`): that band is not proven safe for the queue, and on
+Linux the cure is `bun upgrade`. `myc doctor` names the SQLite in use and where
+it came from.
 
 Install Bun: https://bun.sh
 

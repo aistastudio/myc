@@ -784,8 +784,10 @@ rebind_elsewhere(a):                                   # S68: вместо graft
 
 ## 8. Дуальный DDL
 
-Требования к среде: **SQLite ≥ 3.44** (нужен `contentless_delete=1` в FTS5;
-входит в Bun ≥ 1.1), расширение **sqlite-vec ≥ 0.1.6** (partition keys),
+Требования к среде: **SQLite ≥ 3.50.4** (ниже 3.44 нет `contentless_delete=1` в
+FTS5 и записи из триггера при `trusted_schema=OFF`; на 3.43.2 и 3.46.0 измерены
+дубли работ очереди, memory-e82awcx1ms0b, поэтому порог поднят до SQLite
+минимально поддерживаемого Bun 1.3.0), расширение **sqlite-vec ≥ 0.1.6** (partition keys),
 **PostgreSQL ≥ 16** + **pgvector ≥ 0.7** (HNSW с `iterative scan`).
 
 ### 8.1 SQLite — полный DDL
