@@ -1292,7 +1292,7 @@ One graph: tasks with dependencies, project memory, links to code.
 
 ## Rules
 
-- One fact = one \`remember\`. Don't write paragraphs.
+- One fact = one \`remember\`: the claim and its reason.
 - Don't record code or secrets — record findings.
 - A contradiction does not overwrite the old note: \`myc link A supersedes B --reason "..."\`.
 - A \`WARN degraded.*\` line in a response means part of the index is not working

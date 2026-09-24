@@ -34,7 +34,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
     name: "myc_prime",
     description:
       "Project start packet: ready queue, work in progress, core and recent decisions. " +
-      "Call ONCE at session start and again right after context compaction — " +
+      "Call at session start and again right after context compaction — " +
       "replaces reading the README, plans and task history.",
     inputSchema: {
       type: "object",
@@ -60,7 +60,7 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
         kind: { type: "array", items: { type: "string", enum: ["task", "bug", "epic", "chore"] }, maxItems: 1 },
         priority: { type: "array", items: { type: "string", enum: ["P0", "P1", "P2", "P3"] }, maxItems: 1 },
         tag: { type: "array", items: { type: "string" }, maxItems: 1 },
-        lease_minutes: { type: "integer", default: 30, minimum: 5, maximum: 480 },
+        lease_minutes: { type: "integer", default: 30, minimum: 5, maximum: 480, description: "how long the task stays yours before the lease expires" },
         why: { type: "boolean", default: false, description: "explain the sort order" },
         // Разбор кандидатов хука сжатия (memory-79mq6fccg0jm) — не новым
         // инструментом, а режимом очереди: «что ждёт действия» и есть ready,
@@ -95,14 +95,14 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
             "say in your report that the work is not needed",
         },
         reason: { type: "string", description: "required for close, reopen, reject" },
-        outcome: { type: "string", enum: ["done", "wontfix", "duplicate", "superseded"], default: "done" },
+        outcome: { type: "string", enum: ["done", "wontfix", "duplicate", "superseded"], default: "done", description: "how the task ended; for op=close" },
         duplicate_of: { type: "string", description: "canonical node for outcome=duplicate" },
         assignee: { type: "string" },
         priority: { type: "string", enum: ["P0", "P1", "P2", "P3"] },
         note: { type: "string", description: "note text for op=note" },
         lease_minutes: { type: "integer", minimum: 5, maximum: 480 },
         steal: { type: "boolean", default: false, description: "take over an expired lease" },
-        verify: { type: "string", enum: ["tests", "review", "human", "none"], default: "none" },
+        verify: { type: "string", enum: ["tests", "review", "human", "none"], default: "none", description: "what proves the work: recorded with the close" },
         cost: {
           type: "object",
           description: "filled in by the host: tokens_in, tokens_out, model, retries",
@@ -131,14 +131,14 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
       required: ["query"],
       properties: {
         query: { type: "string", minLength: 2 },
-        n: { type: "integer", default: 6, minimum: 1, maximum: 50 },
-        budget: { type: "integer", default: 2000, minimum: 200, maximum: 8000 },
+        n: { type: "integer", default: 6, minimum: 1, maximum: 50, description: "how many nodes at most" },
+        budget: { type: "integer", default: 2000, minimum: 200, maximum: 8000, description: "answer budget in chars" },
         kind: { type: "array", items: { type: "string" }, description: "task,bug,epic,memory,decision,document,skill,message" },
         layer: { type: "array", items: { type: "string", enum: ["L0", "L1", "L2", "L3"] }, description: "default L1-L3" },
         tag: { type: "array", items: { type: "string" } },
         since: { type: "string", description: "e.g. 7d, 3w, 12h" },
         anchor: { type: "string", description: "file path — narrow to nodes anchored there" },
-        mode: { type: "string", enum: ["hybrid", "vec", "bm25"], default: "hybrid" },
+        mode: { type: "string", enum: ["hybrid", "vec", "bm25"], default: "hybrid", description: "hybrid is default; vec — meaning only, bm25 — words only" },
         ws: WS,
       },
       additionalProperties: false,
@@ -288,15 +288,15 @@ export const CODE_TOOLS: readonly McpToolDef[] = [
     name: "myc_callers",
     description:
       "Who calls a symbol (in) or what it calls (out): one edge per caller, " +
-      "with the code lines inside. depth N or \"all\" — the blast radius of an edit: call it BEFORE " +
-      "renaming or changing a signature. The graph is by name: WARN callers.ambiguous — " +
+      "with the code lines inside. depth N or \"all\" — the blast radius of an edit, " +
+      "before renaming or changing a signature. The graph is by name: WARN callers.ambiguous — " +
       "same-name symbols are merged.",
     inputSchema: {
       type: "object",
       required: ["name"],
       properties: {
         name: { type: "string", minLength: 1 },
-        direction: { type: "string", enum: ["in", "out"], default: "in" },
+        direction: { type: "string", enum: ["in", "out"], default: "in", description: "in — who calls this symbol; out — what it calls" },
         // Без type — как у graft_trace_calls: целое ИЛИ "all", а объединение
         // типов часть клиентов не переваривает.
         depth: { default: 1, description: "1, N or \"all\"" },

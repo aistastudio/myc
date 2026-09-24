@@ -631,16 +631,23 @@ describe("автодетект", () => {
   });
 
   test("видит скилы проекта и пользователя, длинный список сворачивает числом", () => {
-    mkdirSync(join(dir, ".claude", "skills", "alpha"), { recursive: true });
+    // Скилы ПРОЕКТА перечисляются поимённо (их немного, и они про эту работу),
+    // длинный список сворачивается числом. Личные — только счётом: их имена
+    // хост перечисляет сам, с описаниями, и второй список стоит токенов в
+    // каждой сессии (та же причина, по которой блок mcp не зовёт инструменты).
     for (let i = 0; i < 20; i++) {
+      mkdirSync(join(dir, ".claude", "skills", `p${String(i).padStart(2, "0")}`), {
+        recursive: true,
+      });
       mkdirSync(join(home, ".claude", "skills", `s${String(i).padStart(2, "0")}`), {
         recursive: true,
       });
     }
     const skills = autoBlocks(dir, env, COMMANDS).find((b) => b.key === "skills");
-    expect(skills?.text).toContain("project .claude/skills 1: alpha");
-    expect(skills?.text).toContain("personal ~/.claude/skills 20:");
-    expect(skills?.text).toContain(",+8");
+    expect(skills?.text).toContain("project .claude/skills 20: p00");
+    expect(skills?.text).toContain(",+4");
+    expect(skills?.text).toContain("personal ~/.claude/skills 20; the host lists them");
+    for (let i = 0; i < 20; i++) expect(skills?.text).not.toContain(`s${String(i).padStart(2, "0")}`);
   });
 
   test("видит graft: и индекс в репозитории, и бинарь в PATH", () => {

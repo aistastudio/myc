@@ -584,7 +584,10 @@ function probeSkills(dir: string, env: ProbeEnv): BootstrapBlock | null {
     lines.push(`project .claude/skills ${project.length}: ${names(project, 16)}`);
   }
   if (user.length > 0) {
-    lines.push(`personal ~/.claude/skills ${user.length}: ${names(user, 12)}`);
+    // Имена личных скиллов хост перечисляет сам, с описаниями. Дублировать их
+    // здесь — платить вторым списком в каждой сессии; та же причина, по которой
+    // блок mcp не перечисляет инструменты.
+    lines.push(`personal ~/.claude/skills ${user.length}; the host lists them`);
   }
   if (orca.length > 0) lines.push(`orca skills ${orca.length}: ${names(orca, 12)}`);
   else if (orcaBin !== null) {
