@@ -30,6 +30,7 @@ import { CODE_INDEXED_AT_KEY, CODE_REFRESH_JOB_KIND } from "@myc/code-intel/refr
 import { run } from "./index.ts";
 import { Registry } from "./registry.ts";
 import { createCodeCommand } from "./commands/code.ts";
+import { expectCostAtMost, measureAsync, report } from "@myc/bench";
 
 const CLI_ENTRY = join(import.meta.dir, "main.ts");
 const HOUR = 3_600_000;
@@ -154,10 +155,6 @@ async function waitFor(cond: () => boolean, timeoutMs: number, what: string): Pr
   }
 }
 
-function median(xs: readonly number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)]!;
-}
 
 describe("старт сессии ставит обновление устаревшего индекса", () => {
   test("индекс старше порога: после двух стартов подряд — одна работа и один воркер", async () => {
@@ -286,40 +283,61 @@ describe("воркер исполняет работу", () => {
 });
 
 describe("prime не ждёт индекс (И1)", () => {
+  /**
+   * Потолок цены постановки: prime, который ставит работу, захватывает её и
+   * поднимает НАСТОЯЩИЙ воркер, против prime, которому делать нечего.
+   * Ожидание воркера стоило бы его прогона — скан, разбор, корпус, сотни
+   * миллисекунд из исходников, — то есть удвоило бы prime и дало бы ×2 и
+   * больше; постановка и спавн — единицы миллисекунд.
+   */
+  const MAX_COST_RATIO = 1.3;
+  /**
+   * Абсолютная разница медиан — слабейшее утверждение, и держится оно только
+   * при годных условиях замера (m.quiet, методика @myc/bench). Прежде здесь
+   * стоял голый `mA - mB < 25`, и на занятом раннере CI он падал от разброса
+   * старта подпроцесса, а не от ожидания воркера (memory-d77vr3zfs48s,
+   * прогон 2026-09-24: ci красный, перезапуск зелёный).
+   */
+  const MAX_DIFF_MS = 25;
+
   test("prime с постановкой и без — в пределах шума", async () => {
-    // Два воркспейса: в A индекс каждый раунд состарен (дренаж prime ставит
-    // работу, захватывает и поднимает НАСТОЯЩИЙ воркер), в B свежий (дренаж
-    // prime не делает ничего). Раунды чередуются, порядок внутри раунда —
-    // тоже: медленная минута машины достаётся обоим поровну.
+    // Два воркспейса: в A индекс каждый замер состарен (дренаж prime ставит
+    // работу, захватывает и поднимает настоящий воркер), в B свежий (дренаж
+    // prime не делает ничего). measureAsync чередует их в одном цикле, так
+    // что медленная минута машины достаётся обоим поровну, а из отношения
+    // уходит; замеряется ТОЛЬКО время подпроцесса (op возвращает out.ms),
+    // подготовка раунда в него не входит.
     const a = await makeWs();
     const b = await makeWs();
     await buildIndex(a);
     await buildIndex(b);
-    const withQueue: number[] = [];
-    const without: number[] = [];
-    const ROUNDS = 7;
-    for (let i = 0; i < ROUNDS; i++) {
-      await waitFor(() => refreshRows(a) === 0, 45_000, "the previous worker to finish");
-      setStamp(a, Date.now() - 9 * HOUR);
-      const order = i % 2 === 0 ? (["a", "b"] as const) : (["b", "a"] as const);
-      for (const which of order) {
-        const out = await prime(which === "a" ? a : b, hookEnv(which === "a" ? a : b), `r${i}`);
+    let rounds = 0;
+    const m = await measureAsync(
+      "prime (subprocess): постановка + захват + спавн воркера",
+      async () => {
+        await waitFor(() => refreshRows(a) === 0, 45_000, "the previous worker to finish");
+        setStamp(a, Date.now() - 9 * HOUR);
+        const out = await prime(a, hookEnv(a), `r${rounds++}`);
         expect(out.code).toBe(0);
-        (which === "a" ? withQueue : without).push(out.ms);
-      }
-      // Постановка действительно была: работа стоит или уже снята воркером.
-      await waitFor(() => stampOf(a) > Date.now() - HOUR, 45_000, "the worker of this round to stamp the index");
-    }
-    const mA = median(withQueue);
-    const mB = median(without);
-    console.log(
-      `[bench] prime (subprocess, median of ${ROUNDS}): with enqueue+claim+spawn ${mA.toFixed(1)}ms, ` +
-        `without ${mB.toFixed(1)}ms, diff ${(mA - mB).toFixed(1)}ms`,
+        return out.ms;
+      },
+      {
+        warmup: 1,
+        iters: 3,
+        rival: async () => {
+          const out = await prime(b, hookEnv(b), `r${rounds}`);
+          expect(out.code).toBe(0);
+          return out.ms;
+        },
+        rivalLabel: "prime без постановки: индекс свежий, дренажу нечего делать",
+      },
     );
-    // Ждать воркер значило бы платить его прогоном (скан, разбор, корпус и
-    // его собственный дренаж — сотни миллисекунд из исходников). Постановка
-    // и спавн — единицы. Порог — 25 мс: выше шума старта процесса, ниже
-    // любого ожидания воркера.
-    expect(mA - mB).toBeLessThan(25);
-  }, 240_000);
+    report(m);
+    expectCostAtMost(m, MAX_COST_RATIO);
+    if (m.quiet) expect(m.stats.p50 - m.rival!.p50).toBeLessThan(MAX_DIFF_MS);
+    // Постановка действительно была: воркер прогнался и отметил индекс.
+    await waitFor(() => stampOf(a) > Date.now() - HOUR, 45_000, "the worker to stamp the index");
+    // Лимит — потолок «зациклилось», а не бюджет: замер поднимает десятки
+    // подпроцессов и ждёт воркеров, и на раннере это минуты.
+  }, 900_000);
 });

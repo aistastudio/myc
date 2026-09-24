@@ -1644,12 +1644,12 @@ window.MYC_DATA = {
     "fail": 0,
     "skip": 16,
     "files": 256,
-    "assertions": 36723,
-    "seconds": 400.3,
-    "sources": "b1ce0a4391e200df",
+    "assertions": 36740,
+    "seconds": 385.8,
+    "sources": "5b19ff17367d1824",
     "date": "2026-09-24",
     "myc": "0.3.14"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-24T19:56:50.650Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-09-24T20:34:05.530Z", assertions: 77 };
 window.MYC_DATA.release = "0.3.14";
