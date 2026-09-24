@@ -139,6 +139,14 @@ function seedAnchor(ws: Ws, id: string, rel: string, start: number, end: number,
   driver.close();
 }
 
+/** Состояние якоря прямо в базе — так его оставляет прогон, объявивший `lost`. */
+function setState(ws: Ws, id: string, state: string): void {
+  const driver = openSqlite(ws.dbPath);
+  driver.database.prepare("UPDATE anchors SET state = ?2 WHERE node_id = ?1").run(id, state);
+  driver.database.prepare("UPDATE nodes SET status = ?2 WHERE id = ?1").run(id, state);
+  driver.close();
+}
+
 function anchorRow(ws: Ws, id: string): { state: string; checked_at: number; span_start: number } {
   const driver = openSqlite(ws.dbPath);
   try {
@@ -424,6 +432,60 @@ describe("боевой процесс", () => {
   }, 20_000);
 });
 
+
+// ---------------------------------------------------------------------------
+// Вернувшийся файл (memory-m349085n0w1d)
+// ---------------------------------------------------------------------------
+
+describe("потерянный якорь и вернувшийся файл", () => {
+  test("файл вернулся мимо хука — обход проверяет потерянный якорь и оживляет его", async () => {
+    const ws = await workspace();
+    const rel = fileWith(ws, "alpha.ts", SRC_A);
+    seedAnchor(ws, "a1", rel, 1, 3, 0);
+    // Так выглядит якорь, чей файл жил в ветке: прогон объявил его lost, а
+    // потом файл вернулся мержем или переключением worktree — никакой хук
+    // при этом ничего не метил, журнал грязных пуст.
+    setState(ws, "a1", "lost");
+
+    const r = await drainQueueTail({ dbPath: ws.dbPath, env: LIVE });
+    expect(r.anchor?.checked).toBe(1);
+    expect(anchorRow(ws, "a1").state).toBe("fresh");
+  });
+
+  test("файла по-прежнему нет — лестница не гоняется, но время взгляда записано", async () => {
+    const ws = await workspace();
+    const rel = fileWith(ws, "alpha.ts", SRC_A);
+    seedAnchor(ws, "a1", rel, 1, 3, 0);
+    setState(ws, "a1", "lost");
+    rmSync(join(ws.root, rel));
+
+    const r = await drainQueueTail({ dbPath: ws.dbPath, env: LIVE });
+    // Ради этого потерянные и были исключены из обхода: гонять по ним
+    // лестницу (со ступенью 3, десятки миллисекунд на якорь) вечно — налог
+    // на каждый прогон. Уровень 0 — один stat, и он платится.
+    expect(r.anchor?.checked).toBe(0);
+    expect(anchorRow(ws, "a1").state).toBe("lost");
+    // Время взгляда сдвинуто: иначе очередь потерянных не вращается и
+    // якорь за пределами окна не проверится никогда.
+    expect(anchorRow(ws, "a1").checked_at).toBeGreaterThan(0);
+  });
+
+  test("файл помечен грязным и вернулся — якорь оживает тем же прогоном", async () => {
+    const ws = await workspace();
+    const rel = fileWith(ws, "alpha.ts", SRC_A);
+    seedAnchor(ws, "a1", rel, 1, 3, Date.now());
+    setState(ws, "a1", "lost");
+    writeFileSync(join(ws.root, ".myc", DIRTY_LOG), `${join(ws.root, rel)}\n`);
+
+    const r = await drainQueueTail({ dbPath: ws.dbPath, env: LIVE });
+    // Выборка по журналу потерянных не берёт (SQL_SWEEP_DIRTY) — и не
+    // должна: якорь возвращает щуп. Счётчик же считает строки батча, чей
+    // файл помечен, каким бы запросом строка ни пришла.
+    expect(r.anchor?.checked).toBe(1);
+    expect(r.anchor?.fromDirty).toBe(1);
+    expect(anchorRow(ws, "a1").state).toBe("fresh");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Отложенная привязка (мутация 7, решение S66)

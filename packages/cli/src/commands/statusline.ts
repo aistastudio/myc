@@ -242,6 +242,7 @@ interface StatsCache {
   readonly queue: QueueStats;
   readonly memory: number;
   readonly anchors_stale: number;
+  readonly anchors_lost: number;
   readonly jobs_dead: number;
 }
 
@@ -262,7 +263,13 @@ interface CodeCache {
  * (statusline-session.ts), счётчики базы — TTL 30 с и max(oplog.seq),
  * код-индекса — TTL 60 с. 1 — первая сдача (без сборки в документе).
  */
-const CACHE_FORMAT = 2;
+/**
+ * Формат документа кеша. Растёт, когда меняется ФОРМА записанного (новое
+ * поле в счётчиках — тоже смена формы): документ прежнего формата не
+ * читается, и строка честно пересчитывает, вместо того чтобы показать
+ * `undefined` из старой записи.
+ */
+export const CACHE_FORMAT = 3;
 
 interface CacheDoc {
   readonly v: typeof CACHE_FORMAT;
@@ -367,9 +374,16 @@ const QS = defineQueries({
              AND ${notPendingPredicate("nodes")}`,
     params: ["scope", "repo", "session"],
   },
-  sl_anchors_stale: {
-    name: "sl_anchors_stale",
-    sql: `SELECT count(*) AS n FROM nodes
+  /**
+   * Устаревшие и потерянные — РАЗНЫМИ числами (memory-hkzsxm466mhd). Один
+   * счётчик на оба состояния считался вместе, а подписывался «stale», и
+   * человек искал устаревшую привязку там, где код исчез: у `lost` лечение
+   * другое — вернуть файл или снять якорь. Один запрос на оба: строка
+   * статуса платит за каждый поход в базу.
+   */
+  sl_anchors_bad: {
+    name: "sl_anchors_bad",
+    sql: `SELECT sum(status = 'stale') AS stale, sum(status = 'lost') AS lost FROM nodes
            WHERE scope = ?1 AND kind = 'anchor' AND status IN ('stale','lost') AND deleted_at IS NULL
              AND ${repoPredicate("nodes", 2)}`,
     params: ["scope", "repo"],
@@ -1000,13 +1014,15 @@ async function ownPart(
       stats = prev;
       statsHit = "hit";
     } else {
+      const bad = h.driver.one<{ stale: number | null; lost: number | null }>(QS.sl_anchors_bad, [h.scope, repo]);
       stats = {
         key: statsKey,
         seq,
         at: now,
         queue: await queueStats(h, repo, now),
         memory: h.driver.one<{ n: number }>(QS.sl_memory, [h.scope, repo, sessionKey])?.n ?? 0,
-        anchors_stale: h.driver.one<{ n: number }>(QS.sl_anchors_stale, [h.scope, repo])?.n ?? 0,
+        anchors_stale: bad?.stale ?? 0,
+        anchors_lost: bad?.lost ?? 0,
         jobs_dead: h.driver.one<{ n: number }>(QS.sl_jobs_dead, [])?.n ?? 0,
       };
       cache.stats = stats;
@@ -1062,7 +1078,15 @@ async function ownPart(
 
     // Дешёвые признаки деградации (И2): только то, что уже посчитано.
     if (code.l1_files > 0 && code.symbols === 0 && jobs.leased === 0) degraded.push("no grammars");
-    if (stats.anchors_stale > 0) degraded.push(`${stats.anchors_stale} stale anchor${stats.anchors_stale === 1 ? "" : "s"}`);
+    // Каждое состояние своим словом: «stale» зовёт исправить привязку,
+    // «lost» — вернуть файл или снять якорь (memory-hkzsxm466mhd).
+    const badAnchors: string[] = [];
+    if (stats.anchors_lost > 0) badAnchors.push(`${stats.anchors_lost} lost`);
+    if (stats.anchors_stale > 0) badAnchors.push(`${stats.anchors_stale} stale`);
+    if (badAnchors.length > 0) {
+      const total = stats.anchors_lost + stats.anchors_stale;
+      degraded.push(`${badAnchors.join(", ")} anchor${total === 1 ? "" : "s"}`);
+    }
     if (stats.jobs_dead > 0) degraded.push(`${stats.jobs_dead} failed job${stats.jobs_dead === 1 ? "" : "s"}`);
 
     writeCache(deps.cacheDir, cachePath, cache, now);

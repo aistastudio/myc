@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   JITTER_MAX,
+  UNFIT_RETRIES,
   expectAheadOfRival,
   expectCostAtMost,
   expectMsWithinBudget,
@@ -172,6 +173,68 @@ describe("measure — чередование и условия", () => {
     expect(m.machine.cpus).toBeGreaterThan(0);
     expect(m.jitter).toBeGreaterThan(0);
     expect(m.verdict).toBe("ok");
+  });
+
+  /**
+   * Занятость машины подделать нельзя, поэтому эталон подменяется: он и есть
+   * мера условий. Первая попытка шумит (каждый пятый его вызов на порядок
+   * длиннее), дальше машина «успокаивается» — ровно та минута, из-за которой
+   * 2026-09-25 отношение уехало с ×1.31 до ×1.62 при дрожании ×12.45.
+   */
+  const jerkyReference = (calmAfter: number): (() => void) => {
+    let calls = 0;
+    return () => {
+      calls++;
+      const busyMs = calls <= calmAfter && calls % 5 === 0 ? 3 : 0.05;
+      const t0 = performance.now();
+      while (performance.now() - t0 < busyMs) {
+        /* занятость процессора — её и меряет эталон */
+      }
+    };
+  };
+
+  test("негодные условия — замер повторяется целиком, наружу идёт спокойная попытка", () => {
+    // Одна попытка = прогрев (1) + замеры (10) вызовов эталона.
+    const m = measure("проба", () => {}, {
+      warmup: 1,
+      iters: 10,
+      trials: 1,
+      reference: jerkyReference(11),
+    });
+    expect(m.attempts).toBe(2);
+    // Наружу идёт спокойная попытка: дрожание — её, а не первой. Про `quiet`
+    // здесь утверждать нечего: его вторая половина — хвост САМОЙ операции, а
+    // она тут пустая, и её p99/p50 — зернистость таймера, не машина.
+    expect(m.jitter).toBeLessThanOrEqual(JITTER_MAX);
+  });
+
+  test("машина так и не успокоилась — попыток не больше предела, и это сказано вслух", () => {
+    const m = measure("проба", () => {}, {
+      warmup: 1,
+      iters: 10,
+      trials: 1,
+      reference: jerkyReference(Number.MAX_SAFE_INTEGER),
+    });
+    expect(m.attempts).toBe(UNFIT_RETRIES + 1);
+    expect(m.quiet).toBe(false);
+  });
+
+  test("условия годны — повтора нет, даже когда шумит сама операция", () => {
+    // Эталон ровный: машина свободна. Хвост почти бесплатной операции при
+    // этом огромен от зернистости таймера — и перемеривать её незачем.
+    const m = measure("проба", () => {}, {
+      warmup: 1,
+      iters: 10,
+      trials: 1,
+      reference: () => {
+        const t0 = performance.now();
+        while (performance.now() - t0 < 0.05) {
+          /* ровная занятость */
+        }
+      },
+    });
+    expect(m.attempts).toBe(1);
+    expect(m.jitter).toBeLessThanOrEqual(JITTER_MAX);
   });
 
   test("число прогонов задаётся явно и умножает число замеров", () => {

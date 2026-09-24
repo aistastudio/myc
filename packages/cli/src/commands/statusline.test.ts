@@ -15,7 +15,7 @@ import { Registry } from "../registry.ts";
 import { createCodeCommand } from "./code.ts";
 import { createDepCommand } from "./dep.ts";
 import { createRememberCommand } from "./remember.ts";
-import { createStatuslineCommand, queueDbOf, renderLine, statuslineCachePath, type StatuslineData } from "./statusline.ts";
+import { CACHE_FORMAT, createStatuslineCommand, queueDbOf, renderLine, statuslineCachePath, type StatuslineData } from "./statusline.ts";
 import { CLASSIFIER_VERSION } from "../statusline-session.ts";
 import { enqueue, mintHolder, openQueue, queueDbPath } from "../run-queue.ts";
 import { createClaimCommand, createCommentCommand, createCreateCommand, createTaskCommand } from "./tasks.ts";
@@ -596,7 +596,7 @@ describe("кеш прошлой логики не переиспользуетс
       [t()]: { offset: size, ino: statSync(t()).ino, pending: {}, counts },
     });
     plant({
-      v: 2,
+      v: CACHE_FORMAT,
       build: "build-X",
       session: { v: 1, classifier: CLASSIFIER_VERSION - 1, build: "build-X", transcript: t(), files: cursor({ total: 3, useful: 3, empty: 0, refusal: 0, error: 0 }) },
     });
@@ -630,6 +630,45 @@ describe("кеш прошлой логики не переиспользуетс
   });
 });
 
+describe("якоря в строке (memory-hkzsxm466mhd)", () => {
+  /** Якорь в нужном состоянии прямо в базе — так его оставляет обход. */
+  const badAnchor = (id: string, state: "stale" | "lost", path: string): void => {
+    const db = new Database(join(ws, ".myc", "myc.db"));
+    try {
+      db.prepare(
+        `INSERT INTO nodes (id, kind, layer, scope, title, body, content_hash, status, created_at, updated_at)
+         VALUES (?1, 'anchor', 1, '', ?2, '', ?3, ?4, 1, 1)`,
+      ).run(id, `${path}:1-3`, `h-${id}`, state);
+      db.prepare(
+        `INSERT INTO anchors (node_id, repo_id, repo_root, path, lang, symbol, span_start, span_end,
+                              file_hash, span_hash, crux, crux_norm, state, drift, bound_at, checked_at)
+         VALUES (?1,'','',?2,'ts','',1,3,'h','h','c','c',?3,1.0,1,1)`,
+      ).run(id, path, state);
+    } finally {
+      db.close();
+    }
+  };
+
+  test("потерянный и устаревший названы по отдельности, а не оба «stale»", async () => {
+    badAnchor("a-lost", "lost", "src/gone.ts");
+    badAnchor("a-stale1", "stale", "src/moved.ts");
+    badAnchor("a-stale2", "stale", "src/shifted.ts");
+
+    const d = await line();
+    // Лечение у состояний разное: устаревшую привязку правят, потерянный
+    // файл возвращают или якорь снимают. Одно слово на оба состояния
+    // отправляло человека искать не то (найдено живьём в cherry).
+    expect(d.degraded).toContain("1 lost, 2 stale anchors");
+    expect(d.line).toContain("1 lost, 2 stale anchors");
+  });
+
+  test("одно состояние — одно слово и единственное число", async () => {
+    badAnchor("a-lost", "lost", "src/gone.ts");
+    const d = await line();
+    expect(d.degraded).toContain("1 lost anchor");
+  });
+});
+
 describe("документ кеша: формат и сборка — отпечаток всего документа", () => {
   test("другой формат или другая сборка — выброшены и счётчики базы, а не только сессия", async () => {
     const stats = {
@@ -639,6 +678,7 @@ describe("документ кеша: формат и сборка — отпеч
       queue: { ready: 999, in_progress: 0, blocked: 0, blocked_by_ancestor: 0 },
       memory: 999,
       anchors_stale: 0,
+      anchors_lost: 0,
       jobs_dead: 0,
     };
     const reg = new Registry();
@@ -660,10 +700,10 @@ describe("документ кеша: формат и сборка — отпеч
 
     // Сначала убеждаемся, что подложенные счётчики ВООБЩЕ читаются, когда
     // отпечаток совпал: иначе тест ниже доказывал бы не то.
-    writeFileSync(statuslineCachePath(cache, t), JSON.stringify({ v: 2, build: "build-X", stats }));
+    writeFileSync(statuslineCachePath(cache, t), JSON.stringify({ v: CACHE_FORMAT, build: "build-X", stats }));
     expect((await renderData()).queue?.ready).toBe(999);
 
-    for (const doc of [{ v: 1, stats }, { v: 2, build: "build-OLD", stats }]) {
+    for (const doc of [{ v: CACHE_FORMAT - 1, stats }, { v: CACHE_FORMAT, build: "build-OLD", stats }]) {
       writeFileSync(statuslineCachePath(cache, t), JSON.stringify(doc));
       const d = await renderData();
       expect(d.queue?.ready).toBe(0);

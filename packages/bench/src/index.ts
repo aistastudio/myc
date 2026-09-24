@@ -56,6 +56,15 @@
  * ради которой бюджет и заводился, ловится пунктом 2 в том же прогоне, а
  * пункт 3 добирается на свободной откалиброванной машине.
  *
+ * НЕГОДНЫЙ ЗАМЕР ПЕРЕМЕРИВАЕТСЯ. Пункт 2 назван независимым от загрузки, и
+ * это верно, пока помеха растягивает обе половины одинаково. При дрожании
+ * эталона ×12 (наблюдено 2026-09-25) это уже неправда: половины разной
+ * длительности, и отношение уехало с измеренных ×1.31 до ×1.62. Поэтому
+ * замер, снятый на занятой машине, повторяется целиком (UNFIT_RETRIES), а
+ * наружу идёт наименее шумная попытка; их число несёт `Measured.attempts`, и
+ * его печатает `report`. Хвост самой операции поводом к повтору не служит —
+ * он свойство операции, а не машины.
+ *
  * КУДА ИДЁТ РЕЗУЛЬТАТ. Каждый замер печатает одну строку с числами И
  * условиями и, если задан MYC_BENCH_LOG, дописывает JSON-строку в этот файл
  * (.github/workflows/nightly-bench.yml собирает его в артефакт).
@@ -173,6 +182,23 @@ export function machine(): Machine {
 export const JITTER_MAX = 2.5;
 
 /**
+ * Сколько раз замер повторяется ЦЕЛИКОМ, пока условия негодны. Медиана по
+ * `trials` спасает от одиночного соседа по процессору, но не от минуты, когда
+ * машина растягивает всё подряд: 2026-09-25 в общем прогоне дрожание эталона
+ * дошло до ×12.45 при пороге 2.5, и относительное утверждение — то самое,
+ * которое «от загрузки не зависит», — уехало с измеренных ×1.31 до ×1.62.
+ * Чередование защищает, пока помеха бьёт обе половины одинаково; на операциях
+ * в сотни микросекунд при таком дрожании это перестаёт быть правдой, потому
+ * что половины разной длительности.
+ *
+ * Поэтому негодный замер не судится, а ПЕРЕМЕРИВАЕТСЯ, и наружу идёт
+ * наименее шумная попытка. Цена — ещё один такой же замер (в этих тестах
+ * десятки-сотни миллисекунд); молчать о повторе нельзя, поэтому их число
+ * печатает `report` и несёт `Measured.attempts`.
+ */
+export const UNFIT_RETRIES = 2;
+
+/**
  * Во сколько раз хвост САМОГО замера может превышать его медиану, прежде чем
  * абсолютный вердикт станет недостоверным.
  *
@@ -280,6 +306,8 @@ export interface Measured {
   readonly jitter: number;
   /** годны ли условия для абсолютного утверждения */
   readonly quiet: boolean;
+  /** сколько раз замер делался целиком: >1 — условия были негодны (UNFIT_RETRIES) */
+  readonly attempts: number;
   readonly budgetMs: number | null;
   readonly verdict: Verdict;
   readonly machine: Machine;
@@ -294,6 +322,12 @@ export interface Measured {
 export interface MeasureOptions {
   readonly warmup: number;
   readonly iters: number;
+  /**
+   * Эталон вместо встроенного процессорного цикла. Нужен ровно для того,
+   * чтобы ТЕСТ оснастки мог воспроизвести негодные условия: подделать
+   * занятость машины иначе нельзя, а поведение при ней — часть методики.
+   */
+  readonly reference?: () => void;
   /** абсолютный бюджет в мс; без него абсолютного утверждения нет вовсе */
   readonly budgetMs?: number;
   /** заведомо деградировавший вариант той же операции — см. пункт 2 методики */
@@ -336,9 +370,63 @@ export function medianOfTrials(runs: readonly Stats[]): Stats {
   };
 }
 
+/** Итог одной ПОПЫТКИ замера: из неё считаются условия и все утверждения. */
+interface Attempt {
+  readonly stats: Stats;
+  readonly ref: Stats;
+  readonly jitter: number;
+  readonly quiet: boolean;
+  readonly rivalStats: Stats | null;
+}
+
+function finishAttempt(runs: Stats[], refRuns: Stats[], rivalRuns: Stats[] | null): Attempt {
+  const stats = medianOfTrials(runs);
+  const ref = medianOfTrials(refRuns);
+  // Дрожание — ХУДШЕЕ по прогонам, а не медианное: если машина была занята
+  // хоть в одном из них, условия замера негодны, и молчать об этом нельзя.
+  const jitter = Math.max(...refRuns.map((r) => (r.p50 > 0 ? r.p99 / r.p50 : 1)));
+  // Вторая половина «годных условий» — хвост САМОГО замера (см. TAIL_MAX).
+  const quiet = jitter <= JITTER_MAX && (stats.p50 > 0 ? stats.p99 / stats.p50 : 1) <= TAIL_MAX;
+  return { stats, ref, jitter, quiet, rivalStats: rivalRuns === null ? null : medianOfTrials(rivalRuns) };
+}
+
+/**
+ * Замер, повторённый пока условия негодны (см. UNFIT_RETRIES). Наружу идёт
+ * НАИМЕНЕЕ ШУМНАЯ попытка: если машина так и не успокоилась, судить всё
+ * равно придётся, но по лучшему из того, что удалось снять.
+ */
+function pickBest(attempts: readonly Attempt[]): Attempt {
+  let best = attempts[0]!;
+  for (const a of attempts) if (a.jitter < best.jitter) best = a;
+  return best;
+}
+
+/**
+ * Повторять или нет, решает ТОЛЬКО дрожание эталона — занятость машины.
+ * Хвост самой операции (TAIL_MAX, вторая половина `quiet`) — её собственное
+ * свойство: у почти бесплатной операции p99/p50 велик от зернистости
+ * таймера, и перемеривать её бессмысленно, сколько ни повторяй.
+ */
+function machineBusy(a: Attempt): boolean {
+  return a.jitter > JITTER_MAX;
+}
+
+function bestOfAttempts(run: () => Attempt): { best: Attempt; attempts: number } {
+  const all: Attempt[] = [run()];
+  while (machineBusy(all[all.length - 1]!) && all.length <= UNFIT_RETRIES) all.push(run());
+  return { best: pickBest(all), attempts: all.length };
+}
+
+async function bestOfAttemptsAsync(run: () => Promise<Attempt>): Promise<{ best: Attempt; attempts: number }> {
+  const all: Attempt[] = [await run()];
+  while (machineBusy(all[all.length - 1]!) && all.length <= UNFIT_RETRIES) all.push(await run());
+  return { best: pickBest(all), attempts: all.length };
+}
+
 export function measure(label: string, op: () => void, opts: MeasureOptions): Measured {
   const { warmup, iters, budgetMs = null, rival = null, rivalLabel = null, trials = 3 } = opts;
 
+  const attempt = (): Attempt => {
   const runs: Stats[] = [];
   const rivalRuns: Stats[] = [];
   const refRuns: Stats[] = [];
@@ -359,7 +447,8 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
       if (dt < probe) probe = dt;
     }
     const units = Math.max(64, Math.round((probe * 1e6) / unitCostNs()));
-    spin(units); // прогрев эталона на подобранном размере
+    const reference = opts.reference ?? ((): void => spin(units));
+    reference(); // прогрев эталона на подобранном размере
 
     const samples: number[] = [];
     const refs: number[] = [];
@@ -374,21 +463,18 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
         rivals.push(performance.now() - t1);
       }
       const t2 = performance.now();
-      spin(units);
+      reference();
       refs.push(performance.now() - t2);
     }
     runs.push(summarize(samples));
     refRuns.push(summarize(refs));
     if (rival) rivalRuns.push(summarize(rivals));
   }
+    return finishAttempt(runs, refRuns, rival ? rivalRuns : null);
+  };
 
-  const stats = medianOfTrials(runs);
-  const ref = medianOfTrials(refRuns);
-  // Дрожание — ХУДШЕЕ по прогонам, а не медианное: если машина была занята
-  // хоть в одном из них, условия замера негодны, и молчать об этом нельзя.
-  const jitter = Math.max(...refRuns.map((r) => (r.p50 > 0 ? r.p99 / r.p50 : 1)));
-  // Вторая половина «годных условий» — хвост САМОГО замера (см. TAIL_MAX).
-  const quiet = jitter <= JITTER_MAX && (stats.p50 > 0 ? stats.p99 / stats.p50 : 1) <= TAIL_MAX;
+  const { best, attempts } = bestOfAttempts(attempt);
+  const { stats, ref, jitter, quiet, rivalStats } = best;
   const strict = isStrict();
   const verdict: Verdict =
     budgetMs === null
@@ -400,7 +486,6 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
           : quiet || strict
             ? "over"
             : "unreliable";
-  const rivalStats = rival ? medianOfTrials(rivalRuns) : null;
 
   return {
     label,
@@ -408,6 +493,7 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
     ref,
     jitter,
     quiet,
+    attempts,
     budgetMs,
     verdict,
     machine: machine(),
@@ -427,6 +513,8 @@ export function measure(label: string, op: () => void, opts: MeasureOptions): Me
 export interface MeasureAsyncOptions {
   readonly warmup: number;
   readonly iters: number;
+  /** См. {@link MeasureOptions.reference}. */
+  readonly reference?: () => void;
   readonly budgetMs?: number;
   readonly rival?: () => Promise<number | void>;
   readonly rivalLabel?: string;
@@ -446,6 +534,7 @@ export async function measureAsync(
     return typeof v === "number" ? v : performance.now() - t0;
   };
 
+  const attempt = async (): Promise<Attempt> => {
   const runs: Stats[] = [];
   const rivalRuns: Stats[] = [];
   const refRuns: Stats[] = [];
@@ -461,7 +550,8 @@ export async function measureAsync(
       if (dt < probe) probe = dt;
     }
     const units = Math.max(64, Math.round((probe * 1e6) / unitCostNs()));
-    spin(units);
+    const reference = opts.reference ?? ((): void => spin(units));
+    reference();
 
     const samples: number[] = [];
     const refs: number[] = [];
@@ -470,26 +560,26 @@ export async function measureAsync(
       samples.push(await timed(op));
       if (rival) rivals.push(await timed(rival));
       const t2 = performance.now();
-      spin(units);
+      reference();
       refs.push(performance.now() - t2);
     }
     runs.push(summarize(samples));
     refRuns.push(summarize(refs));
     if (rival) rivalRuns.push(summarize(rivals));
   }
-  const stats = medianOfTrials(runs);
-  const ref = medianOfTrials(refRuns);
-  const jitter = Math.max(...refRuns.map((r) => (r.p50 > 0 ? r.p99 / r.p50 : 1)));
-  // Вторая половина «годных условий» — хвост САМОГО замера (см. TAIL_MAX).
-  const quiet = jitter <= JITTER_MAX && (stats.p50 > 0 ? stats.p99 / stats.p50 : 1) <= TAIL_MAX;
+    return finishAttempt(runs, refRuns, rival ? rivalRuns : null);
+  };
+
+  const { best, attempts } = await bestOfAttemptsAsync(attempt);
+  const { stats, ref, jitter, quiet, rivalStats } = best;
   const strict = isStrict();
-  const rivalStats = rival ? medianOfTrials(rivalRuns) : null;
   return {
     label,
     stats,
     ref,
     jitter,
     quiet,
+    attempts,
     budgetMs,
     verdict:
       budgetMs === null
@@ -540,7 +630,8 @@ export function report(m: Measured, extra?: string): void {
   }
   parts.push(
     `· conditions: ${m.machine.cpus} cores, load1 ${m.machine.load1}, reference jitter ×${m.jitter.toFixed(2)}` +
-      ` (threshold ${JITTER_MAX})${m.strict ? ", strict mode" : ""}`,
+      ` (threshold ${JITTER_MAX})${m.attempts > 1 ? `, re-measured ${m.attempts}x (unfit conditions)` : ""}` +
+      `${m.quiet ? "" : ", CONDITIONS UNFIT"}${m.strict ? ", strict mode" : ""}`,
   );
   if (extra) parts.push(`· ${extra}`);
   console.log(parts.join(" "));

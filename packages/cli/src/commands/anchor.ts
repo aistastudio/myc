@@ -1980,6 +1980,8 @@ export interface CheckData {
   moved: number;
   /** Сколько якорей взято из журнала грязных файлов (хук post-edit). */
   from_dirty: number;
+  /** Сколько потерянных вернулись в обход: их файл снова на месте. */
+  lost_back: number;
   /** На каком уровне лестницы остановилась проверка — цена в одной строке. */
   by_level: Record<string, number>;
   /** Отложено дебаунсом §7.5: файл правится прямо сейчас. */
@@ -2362,6 +2364,34 @@ export const SQL_SWEEP_DIRTY = `SELECT a.* FROM json_each(?3) AS j
  ORDER BY a.checked_at ASC, a.node_id ASC
  LIMIT ?4`;
 
+/**
+ * ПОТЕРЯННЫЕ ЯКОРЯ И ВЕРНУВШИЙСЯ ФАЙЛ (memory-m349085n0w1d). Общий обход
+ * (`SQL_SWEEP_BATCH`) потерянных не берёт, и это верно по цене: гонять по
+ * ним лестницу со ступенью 3 — десятки миллисекунд на якорь за файл,
+ * которого нет, — налог на каждый прогон. Но «нет» не навсегда: файл живёт
+ * в ветке, приезжает мержем, появляется при переключении worktree, и НИ ОДИН
+ * хук этого не метит — журнал грязных наполняет только правка. Найдено
+ * живьём: в cherry якорь стоял `lost` восемь дней, хотя файл вернулся мержем
+ * через четыре часа после проверки, и человек видел вечное предупреждение,
+ * которое не снимается ничем, кроме ручного `anchor rm`.
+ *
+ * Поэтому уровень 0 лестницы — «существует ли файл» — платится и за
+ * потерянных: один `stat` на якорь, не больше `LOST_PROBE_LIMIT` за прогон,
+ * в порядке `checked_at ASC`. Вернувшийся идёт в батч и проходит лестницу
+ * целиком; у оставшегося без файла сдвигается `checked_at` — взгляд был, и
+ * без этой отметки окно щупа не вращалось бы и якорь за его пределами не
+ * проверился бы никогда.
+ */
+export const SQL_SWEEP_LOST = `SELECT * FROM anchors AS a
+ WHERE a.state = 'lost'
+   AND (?1 = '' OR a.repo_id = ?1 OR (a.repo_id = '' AND a.path >= (?1 || '/') AND a.path < (?1 || '0')))
+   AND (?2 = '' OR ${sqlWsPath("a")} LIKE ?2)
+ ORDER BY a.checked_at ASC, a.node_id ASC
+ LIMIT ?3`;
+
+/** Сколько потерянных якорей щупается за прогон: `stat` на якорь, ~микросекунды. */
+export const LOST_PROBE_LIMIT = 200;
+
 /** Остальная половина: порядок §7.5, `checked_at ASC` среди `state <> 'lost'`. */
 export const SQL_SWEEP_BATCH = `SELECT * FROM anchors AS a
  WHERE a.state <> 'lost'
@@ -2369,6 +2399,16 @@ export const SQL_SWEEP_BATCH = `SELECT * FROM anchors AS a
    AND (?2 = '' OR ${sqlWsPath("a")} LIKE ?2)
  ORDER BY a.checked_at ASC, a.node_id ASC
  LIMIT ?3`;
+
+/**
+ * Файл строки якоря на диске. Корень строки — её СОБСТВЕННЫЙ: записанный, а у
+ * старой строки без него — выведенный из её ключа. Корень вызова тут не
+ * годится: из alpha строка корня `alpha/x.ts` дала бы `alpha/alpha/x.ts`.
+ */
+function absOfAnchorRow(row: AnchorRow, wsDir: string): string {
+  const root = row.repo_root.length > 0 ? row.repo_root : row.repo_id.length > 0 ? join(wsDir, row.repo_id) : wsDir;
+  return join(root, row.path);
+}
 
 export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<CheckData> {
   const t0 = performance.now();
@@ -2414,6 +2454,29 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
       taken.add(r.node_id);
     }
   }
+  // Потерянные: вернулся файл — якорь идёт в батч; нет — записан взгляд
+  // (см. SQL_SWEEP_LOST). Щуп идёт ПЕРЕД общим батчем: вернувшийся файл —
+  // это новость, а общий батч перебирает то, что и так под присмотром.
+  let lostBack = 0;
+  if (batch.length < limit) {
+    const stillGone: string[] = [];
+    for (const r of db.query(SQL_SWEEP_LOST).all(repoId, like, LOST_PROBE_LIMIT) as AnchorRow[]) {
+      if (taken.has(r.node_id)) continue;
+      if (existsSync(absOfAnchorRow(r, opts.wsDir))) {
+        if (batch.length >= limit) continue;
+        batch.push(r);
+        taken.add(r.node_id);
+        lostBack++;
+      } else {
+        stillGone.push(r.node_id);
+      }
+    }
+    if (!dryRun && stillGone.length > 0) {
+      db.query(
+        `UPDATE anchors SET checked_at = ? WHERE node_id IN (${stillGone.map(() => "?").join(",")})`,
+      ).run(now, ...stillGone);
+    }
+  }
   if (batch.length < limit) {
     for (const r of db.query(SQL_SWEEP_BATCH).all(repoId, like, limit) as AnchorRow[]) {
       if (taken.has(r.node_id)) continue;
@@ -2430,6 +2493,7 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
     lost: 0,
     moved: 0,
     from_dirty: batch.filter((r) => dirty.has(wsPathOfKey(r.repo_id, r.path))).length,
+    lost_back: lostBack,
     by_level: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0 },
     skipped_debounce: 0,
     bound: 0,
@@ -2449,12 +2513,7 @@ export async function sweepAnchors(h: StoreHandle, opts: SweepOptions): Promise<
       data.budget_hit = true;
       break;
     }
-    // Корень строки — её собственный: записанный, а у старой строки без
-    // него — выведенный из её ключа. Корень ВЫЗОВА тут не годится: из alpha
-    // строка корня `alpha/x.ts` дала бы `alpha/alpha/x.ts`.
-    const root =
-      row.repo_root.length > 0 ? row.repo_root : row.repo_id.length > 0 ? join(opts.wsDir, row.repo_id) : opts.wsDir;
-    const abs = join(root, row.path);
+    const abs = absOfAnchorRow(row, opts.wsDir);
     // Дебаунс: файл, изменённый только что, честнее не трогать вовсе, чем
     // объявить `stale` по недописанному тексту. Один stat — та же цена, что
     // уровень 1 лестницы, и платится он только фоном (debounceMs > 0).
