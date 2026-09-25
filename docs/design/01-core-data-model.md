@@ -1178,6 +1178,23 @@ END;
 
 ### 8.2 PostgreSQL — полный DDL (только то, что отличается по форме)
 
+> **Рукописный DDL живёт в `db/schema.postgres.sql`** (M4, 2026-09-26) — он, а
+> не набросок ниже, и есть источник истины: набросок писался до миграций 2–13 и
+> до решения об арендаторе. В файле: `tenant_id` ведущей колонкой каждого ключа
+> (memory-khj49brcr0q7), RLS по арендатору с fail-closed (сессия без
+> `myc.tenant` не видит и не пишет ничего), `scope` как идентичность проекта,
+> `tsvector` вместо FTS5, `halfvec(384)` + HNSW вместо vec0, триггеры блокеров
+> на PL/pgSQL и `anchors.git_ref` непустым — на сервер едет только якорь на
+> закоммиченное (memory-6fv6xbbfcb9g). Проверяется на живой базе:
+> `packages/store-postgres/src/schema.pg.test.ts` (`MYC_PG_URL`, образ
+> `pgvector/pgvector:pg17`); без базы тест говорит об этом и пропускается.
+>
+> Две вещи, пойманные этой проверкой и стоящие того, чтобы их знать: RLS **не
+> действует на суперпользователя** (ни ENABLE, ни FORCE), поэтому сервер обязан
+> ходить под обычной ролью `myc_app`; и `current_setting('myc.tenant', true)`
+> после `RESET` отдаёт **пустую строку**, а не NULL, — без `nullif` такая
+> сессия становится арендатором `''` и читает чужое.
+
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;      -- pgvector >= 0.7
 CREATE EXTENSION IF NOT EXISTS pg_trgm;     -- триграммы для absorb-фазы A на сервере
