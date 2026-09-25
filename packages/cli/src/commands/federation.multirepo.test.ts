@@ -24,7 +24,7 @@ import { createRememberCommand, realRememberDeps } from "./remember.ts";
 import { createSearchCommand } from "./search.ts";
 import { discoverRepoWorkspaces, realRetrieveExtras, type RetrieveDeps } from "./retrieve.ts";
 import { realStoreDeps } from "./store.ts";
-import { expectMsWithinBudget, isStrict, JITTER_MAX, probeJitter } from "@myc/bench";
+import { expectMsWithinBudget } from "@myc/bench";
 
 let root: string;
 let home: string;
@@ -92,49 +92,49 @@ interface Federation {
 }
 
 /**
- * ДЕДЛАЙН ФЕДЕРАЦИИ — АБСОЛЮТ ВНУТРИ ПРОДУКТА. `recall` опрашивает соседей,
- * пока не истекли DEFAULT_DEADLINE_MS (18 мс) стенного времени, и остальных
- * пропускает с причиной «deadline … exhausted». Шва, чтобы снять дедлайн в
- * CLI-тесте, нет (`federationDeadlineMs` в retrieve.ts ничем не выставляется;
- * unit-тесты федерации для этого подставляют часы), поэтому утверждение «все
- * соседи опрошены» здесь молча содержало «и уложились в 18 мс на этой машине».
- * 2026-09-11, полный прогон под yes × 14 (load1 до 102): `gamma` пропущен —
- * «deadline 18 ms exhausted at source #3 (spent 18.5 ms)», — тест упал, хотя
- * продукт сделал ровно то, что должен.
+ * ДЕДЛАЙН ФЕДЕРАЦИИ — РАБОТА ПРОДУКТА, А НЕ ОШИБКА СТЕНДА. `recall` опрашивает
+ * соседей, пока не истекли DEFAULT_DEADLINE_MS (18 мс) стенного времени, и
+ * остальных пропускает с причиной «deadline … exhausted». Шва, чтобы снять
+ * дедлайн в CLI-тесте, нет (`federationDeadlineMs` в retrieve.ts ничем не
+ * выставляется), поэтому утверждение «все соседи опрошены» молча содержало «и
+ * уложились в 18 мс на ЭТОЙ машине».
  *
- * Правило, как у абсолютов @myc/bench: пропуск по дедлайну допустим, только
- * если он НАЗВАН и машина измеренно занята (проба дрожания эталона); тогда
- * утверждения о пропущенных не проверяются — громко, с перечнем. На свободной
- * машине (в том числе на раннере CI: калибровка тут ни при чём, четыре
- * крошечных воркспейса укладываются в 18 мс и на 4 ядрах x86) и в строгом
- * режиме пропуск по дедлайну — провал: так ловится «дедлайн укоротили».
- * Обнаружение, порядок, потолок и имена проверяются всегда.
+ * Прежде пропуск допускался по пробе дрожания эталона: занята машина — ладно,
+ * свободна — регрессия. Метрика для этого утверждения не та, и это стоило
+ * красного CI: run 34858728748, `gamma` пропущена на 19 мс при дрожании ×1.11
+ * (memory-d77vr3zfs48s). Дрожание меряет занятость ПРОЦЕССОРА, а 18 мс здесь
+ * тратятся на открытие четырёх баз — то есть на диск раннера, к которому проба
+ * слепа.
+ *
+ * Поэтому здесь проверяется то, что от скорости не зависит, и проверяется
+ * всегда: опрошенные — НЕПУСТОЙ ПРЕФИКС порядка (свой воркспейс первым:
+ * дедлайн копится по ходу, значит пропуски могут быть только хвостом), у
+ * каждого пропущенного причина — дедлайн, названный поимённо. Так ловится и
+ * «федерация молча никого не опрашивает», и «порядок сломан», и «пропуск без
+ * причины», а «раннер оказался медленным» — нет. Сам дедлайн закрыт
+ * детерминированно на подставных часах в federation.test.ts (deadlineMs 10 и 0).
  */
-function excuse(what: string, detail: string): void {
-  if (!isStrict()) {
-    const p = probeJitter();
-    if (p.jitter > JITTER_MAX) {
-      console.log(`[bench] ${what}: ${detail} — допущено: машина занята, дрожание эталона ×${p.jitter.toFixed(2)} > ${JITTER_MAX}`);
-      return;
-    }
-    throw new Error(
-      `${what}: ${detail} на свободной машине (дрожание эталона ×${p.jitter.toFixed(2)} <= ${JITTER_MAX}) — это регрессия, а не загрузка`,
-    );
+const LATE = /^deadline \d+ ms exhausted at source #\d+/;
+
+function checkFederation(fed: Federation, all: readonly string[]): string[] {
+  expect([...fed.queried, ...fed.skipped.map((x) => x.id)]).toEqual([...all]);
+  expect(fed.total).toBe(all.length);
+  // Префикс: опрошены первые N по порядку, пропущены ровно остальные.
+  expect(fed.queried).toEqual(all.slice(0, fed.queried.length));
+  expect(fed.queried.length).toBeGreaterThan(0);
+  // Причина у каждого пропуска названа и бывает ровно двух видов.
+  for (const x of fed.skipped) expect(x.why).toMatch(/^(deadline \d+ ms exhausted|over the cap of \d+)/);
+  const late = fed.skipped.filter((x) => LATE.test(x.why)).map((x) => x.id);
+  if (late.length > 0) {
+    console.log(`[федерация] пропущены по дедлайну: ${fed.skipped.filter((x) => LATE.test(x.why)).map((x) => `${x.id} (${x.why})`).join(", ")}`);
   }
-  throw new Error(`${what}: ${detail} в строгом режиме`);
+  return late;
 }
 
-/** Источники, пропущенные по дедлайну (и только они), — допущенные `excuse`. */
-function excusedLate(fed: Federation, what: string): string[] {
-  const late = fed.skipped.filter((s) => /^deadline \d+ ms exhausted at source #\d+/.test(s.why));
-  if (late.length > 0) excuse(what, `по дедлайну пропущены ${late.map((s) => `${s.id} (${s.why})`).join(", ")}`);
-  return late.map((s) => s.id);
-}
-
-/** То же для человеческого вывода: причина обязана быть названа в тексте. */
-function excuseLateText(human: string, what: string): void {
-  expect(human).toContain("deadline");
-  excuse(what, "в подвале опрошено меньше, причина — дедлайн");
+/** Пропущенные по дедлайну там, где полный состав источников проверен рядом. */
+function lateIds(fed: Federation): string[] {
+  for (const x of fed.skipped) expect(x.why).toMatch(/^(deadline \d+ ms exhausted|over the cap of \d+)/);
+  return fed.skipped.filter((x) => LATE.test(x.why)).map((x) => x.id);
 }
 
 beforeEach(async () => {
@@ -170,16 +170,17 @@ describe("R3: recall из корня видит репозиторные вор�
     // Каждая строка помечена источником — без исключений.
     for (const r of rows) expect(r.source.length).toBeGreaterThan(0);
     const fed = env.meta["federation"] as Federation;
-    expect([...fed.queried, ...fed.skipped.map((s) => s.id)]).toEqual(["project", "collector"]);
-    if (!excusedLate(fed, "факт соседа").includes("collector")) {
+    if (!checkFederation(fed, ["project", "collector"]).includes("collector")) {
       const fromCollector = rows.find((r) => r.source === "collector");
       expect(fromCollector).toBeDefined();
       expect(fromCollector!.tier).toBe("repo");
       expect(fromCollector!.title).toContain("коллектор батчит события");
     }
 
+    // Текст говорит то же: либо факт соседа виден, либо в подвале названа
+    // причина, по которой его не спросили.
     const human = text((await mycAt(root, "recall", "батчит события", "--repo", "all")).stdout);
-    if (!human.includes("@collector")) excuseLateText(human, "факт соседа, текст");
+    if (!human.includes("@collector")) expect(human).toContain("deadline");
   });
 
   test("три соседа — три источника, у каждой строки свой", async () => {
@@ -208,14 +209,10 @@ describe("R3: recall из корня видит репозиторные вор�
       );
     }
     const fed = env.meta["federation"] as Federation;
-    // Обнаружение и порядок — на любой машине: все четыре учтены, свой первым.
-    const all = ["project", "alpha", "beta", "gamma"];
-    expect([...fed.queried, ...fed.skipped.map((s) => s.id)]).toEqual(all);
-    expect(fed.total).toBe(4);
-    // Опрошены все, кроме пропущенных по дедлайну — а такой пропуск допустим
-    // только на занятой или неоткалиброванной машине (см. `excusedLate`).
-    const late = excusedLate(fed, "три соседа");
-    expect(fed.queried).toEqual(all.filter((id) => !late.includes(id)));
+    // Обнаружение, порядок и причины — на любой машине (см. checkFederation);
+    // сколько именно успели опросить за 18 мс, решает диск раннера.
+    checkFederation(fed, ["project", "alpha", "beta", "gamma"]);
+    // Каждый ОПРОШЕННЫЙ источник дал строки: иначе «опрошен» ничего не значит.
     for (const id of fed.queried) expect(sources.has(id)).toBe(true);
   });
 
@@ -268,7 +265,7 @@ describe("R3: пропущенный источник назван в выдач
     expect(fed.cap).toBe(3);
     // Потолок — на любой машине: r03..r05 пропущены ИМЕННО потолком. До
     // потолка — опрошены все, кроме пропущенных по дедлайну на занятой машине.
-    const late = excusedLate(fed, "потолок 3");
+    const late = lateIds(fed);
     expect(fed.queried).toEqual(["project", "r01", "r02"].filter((id) => !late.includes(id)));
     expect(fed.skipped.map((s) => s.id)).toEqual([...late, "r03", "r04", "r05"]);
     for (const s of fed.skipped.filter((x) => !late.includes(x.id))) expect(s.why).toContain("cap of 3");
@@ -287,7 +284,8 @@ describe("R3: пропущенный источник назван в выдач
     // текста, а «меньше трёх» допустимо только по той же причине и при тех же
     // условиях, что выше.
     const shown = Number(/(\d+) of 6 sources/.exec(human)?.[1] ?? -1);
-    if (shown !== 3) excuseLateText(human, "потолок 3, текст подвала");
+    // Меньше трёх — значит кого-то не успели опросить, и подвал обязан сказать почему.
+    if (shown !== 3) expect(human).toContain("deadline");
     expect(shown).toBeGreaterThanOrEqual(1);
     expect(human).toContain("r03, r04, r05");
     expect(human).toContain("cap of 3");
@@ -306,7 +304,7 @@ describe("R3: пропущенный источник назван в выдач
         .stdout,
     );
     expect(human).toContain("project   vector=");
-    if (!human.includes("r01       vector=")) excuseLateText(human, "--why, r01");
+    if (!human.includes("r01       vector=")) expect(human).toContain("deadline");
     expect(human).toMatch(/r02\s+skipped · over the cap of 2/);
   });
 
@@ -320,9 +318,9 @@ describe("R3: пропущенный источник назван в выдач
     // эмбеддера, и --strict даёт 6 уже из-за него. Доказывает СОСТАВ WARN:
     // без потолка про источники не сказано ничего, с потолком — сказано.
     const full = await jsonAt(root, "recall", "дренаж оплога", "--repo", "all");
-    // Пропуск по дедлайну тоже честно попадает в WARN — он допустим только на
-    // занятой машине (`excusedLate`); любой другой пропуск без потолка — провал.
-    excusedLate(full.meta["federation"] as Federation, "WARN без потолка");
+    // Пропуск по дедлайну тоже честно попадает в WARN; любой другой пропуск
+    // без потолка — провал (проверяется строкой ниже и составом причин).
+    lateIds(full.meta["federation"] as Federation);
     expect(full.warn.some((w) => w.msg.includes("not queried") && !w.msg.includes("deadline"))).toBe(false);
 
     const capped = await jsonAt(root, "recall", "дренаж оплога", "--sources", "1", "--repo", "all");
@@ -392,7 +390,7 @@ describe("R3: ленивость на настоящей ФС", () => {
       existsSync(join(root, name, ".myc", "myc.db-wal"));
     // Потолок 2 = свой воркспейс + r01. r02 и r03 не открывались вовсе — на
     // любой машине; r01 открыт, если не пропущен по дедлайну на занятой.
-    const late = excusedLate(env.meta["federation"] as Federation, "ленивость, потолок 2");
+    const late = lateIds(env.meta["federation"] as Federation);
     expect(walOf("r01")).toBe(!late.includes("r01"));
     expect(walOf("r02")).toBe(false);
     expect(walOf("r03")).toBe(false);

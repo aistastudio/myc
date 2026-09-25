@@ -31,6 +31,23 @@ import { expectAheadOfRival, expectWithinBudget, measureAsync, report } from "@m
 import { queueDbPath } from "../run-queue.ts";
 import { QUEUE_HELPER_REL } from "./queue-hook.ts";
 
+/**
+ * Потолок СУММЫ тяжёлого пути — страховка от катастрофы, а не продуктовый
+ * бюджет: сумма почти целиком принадлежит платформе. Замер 2026-09-25 на этом
+ * ноутбуке: тяжёлый путь p50 19.7 мс, из них 19.2 — старт bun с ПУСТЫМ
+ * помощником. Прежние 30 мс p99 держались на волоске (p50 22–24) и падали от
+ * загрузки машины при «годных условиях»: полный прогон 0.3.11 дал p99 46.3 при
+ * дрожании ×1.28, хотя хук с 0.3.10 не менялся (memory-d77vr3zfs48s).
+ */
+const HEAVY_CEILING_MS = 60;
+/**
+ * Потолок ДОБАВКИ myc поверх старта рантайма — то, что принадлежит нам и не
+ * зависит от платформы. Измерено 0.5 мс (19.7 − 19.2); 5 мс — десятикратный
+ * запас, но регрессию вида «помощник открыл базу и прочитал правила» (десятки
+ * миллисекунд) он ловит.
+ */
+const HEAVY_OWN_BUDGET_MS = 5;
+
 const BUN = process.execPath;
 const MAIN = join(import.meta.dir, "..", "main.ts");
 const SHELLS = ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"].filter((s) => existsSync(s));
@@ -323,15 +340,32 @@ describe("(d) цена: лёгкая команда не запускает JS",
       // на macOS (bun 15 мс) и ×2.52 на раннере CI (bun 5 мс) при одном и том
       // же коде — отношение мерило платформу, а не хук. Абсолют, как везде,
       // выключается на неоткалиброванном железе (MYC_BENCH_ABSOLUTE=0).
+      // ЗАМЕР ДОБАВКИ, А НЕ СУММЫ (memory-d77vr3zfs48s). Тяжёлый путь — это
+      // старт рантайма ПЛЮС работа помощника, и старт принадлежит платформе:
+      // bun поднимается ~15 мс на этом ноутбуке и ~5 мс на раннере CI. Пока
+      // утверждение было про сумму (p99 30 мс при p50 22–24), его решала
+      // машина: полный прогон 0.3.11 дал p99 46.3 при дрожании эталона ×1.28,
+      // то есть «условия годны» — и тест назвал регрессией то, чего не было
+      // (хук с 0.3.10 не менялся). Соперник — ТОТ ЖЕ хук с пустым помощником:
+      // разница медиан, измеренная чередуясь, и есть цена myc.
+      const stubHelper = join(root, "empty-helper.mjs");
+      writeFileSync(stubHelper, "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));\n");
+      const runtimeOnly = hookCommand.replace(`\${CLAUDE_PROJECT_DIR:-.}/${QUEUE_HELPER_REL}`, stubHelper);
+      expect(runtimeOnly).not.toBe(hookCommand);
       const h = await measureAsync(`queue hook, heavy command (${HOST_SHELL})`, () => once(hookCommand, heavy), {
         warmup: 3,
         iters: 100,
-        budgetMs: 30,
+        budgetMs: HEAVY_CEILING_MS,
+        rival: () => once(runtimeOnly, heavy),
+        rivalLabel: "the same hook with an empty helper: runtime start only",
       });
       report(h);
+      const own = h.stats.p50 - (h.rival?.p50 ?? 0);
+      console.log(`[bench] queue hook, myc's own share: ${own.toFixed(1)}ms (heavy p50 ${h.stats.p50.toFixed(1)} − runtime ${h.rival?.p50?.toFixed(1)})`);
       expectAheadOfRival(m, 2);
       expectWithinBudget(m);
       expectWithinBudget(h);
+      expect(own).toBeLessThanOrEqual(HEAVY_OWN_BUDGET_MS);
     },
     120_000,
   );
