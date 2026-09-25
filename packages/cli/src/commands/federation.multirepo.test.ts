@@ -115,6 +115,16 @@ interface Federation {
  * детерминированно на подставных часах в federation.test.ts (deadlineMs 10 и 0).
  */
 const LATE = /^deadline \d+ ms exhausted at source #\d+/;
+/**
+ * Причины пропуска, которые продукт выдаёт ПО ЗАМЫСЛУ: дедлайн, потолок и
+ * сломанный сосед. Третья — не дефект теста и не дефект федерации: чужой
+ * воркспейс не имеет права ронять чтение своего, но обязан быть назван
+ * (federation.ts, И2). Именно она пришла с раннера CI (run 36105125467):
+ * «failed to open: database disk image is malformed» на свежесозданной базе
+ * соседа — вопрос к SQLite и к runner'у, заведён отдельно (memory-5enn2vd1t6mx),
+ * и тест обязан его ПОКАЗАТЬ, а не упасть на нём и не проглотить.
+ */
+const SKIP_WHY = /^(deadline \d+ ms exhausted|over the cap of \d+|failed to open: )/;
 
 function checkFederation(fed: Federation, all: readonly string[]): string[] {
   expect([...fed.queried, ...fed.skipped.map((x) => x.id)]).toEqual([...all]);
@@ -123,7 +133,8 @@ function checkFederation(fed: Federation, all: readonly string[]): string[] {
   expect(fed.queried).toEqual(all.slice(0, fed.queried.length));
   expect(fed.queried.length).toBeGreaterThan(0);
   // Причина у каждого пропуска названа и бывает ровно двух видов.
-  for (const x of fed.skipped) expect(x.why).toMatch(/^(deadline \d+ ms exhausted|over the cap of \d+)/);
+  for (const x of fed.skipped) expect(x.why).toMatch(SKIP_WHY);
+  reportBroken(fed);
   const late = fed.skipped.filter((x) => LATE.test(x.why)).map((x) => x.id);
   if (late.length > 0) {
     console.log(`[федерация] пропущены по дедлайну: ${fed.skipped.filter((x) => LATE.test(x.why)).map((x) => `${x.id} (${x.why})`).join(", ")}`);
@@ -133,8 +144,17 @@ function checkFederation(fed: Federation, all: readonly string[]): string[] {
 
 /** Пропущенные по дедлайну там, где полный состав источников проверен рядом. */
 function lateIds(fed: Federation): string[] {
-  for (const x of fed.skipped) expect(x.why).toMatch(/^(deadline \d+ ms exhausted|over the cap of \d+)/);
+  for (const x of fed.skipped) expect(x.why).toMatch(SKIP_WHY);
+  reportBroken(fed);
   return fed.skipped.filter((x) => LATE.test(x.why)).map((x) => x.id);
+}
+
+/** Сломанный сосед — редкое и важное событие: в логе прогона оно обязано быть видно. */
+function reportBroken(fed: Federation): void {
+  const broken = fed.skipped.filter((x) => x.why.startsWith("failed to open: "));
+  if (broken.length > 0) {
+    console.log(`[федерация] сосед не открылся: ${broken.map((x) => `${x.id} — ${x.why}`).join(", ")} (memory-5enn2vd1t6mx)`);
+  }
 }
 
 beforeEach(async () => {
