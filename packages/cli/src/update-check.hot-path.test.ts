@@ -211,8 +211,17 @@ describe("И1: горячий путь под перекрытой сетью", 
       const changed = [...differingPaths(envelope(control), envelope(trapped))]
         .filter((p) => !noise.has(p))
         .sort();
+      // РАСХОЖДЕНИЕ ОБЯЗАНО НАЗВАТЬ ЗНАЧЕНИЯ. Один раз этот тест упал в полном
+      // прогоне на `data.chars` и не воспроизвёлся ни в покое, ни под нагрузкой
+      // 17 (memory-kf4mv4yzpx8j): по одному имени пути сказать, что именно
+      // разошлось — размер дайджеста, число или строка подвала, — нельзя, и
+      // разбирать редкий случай было не по чему.
+      const shown = changed.map((path) => {
+        const f = (r: Run): unknown => flatten(envelope(r)).get(path);
+        return `${path}: control=${JSON.stringify(f(control))} trapped=${JSON.stringify(f(trapped))} control2=${JSON.stringify(f(control2))}`;
+      });
       // Ноль путей, разошедшихся сверх собственного шума команды.
-      expect([cmd, changed]).toEqual([cmd, []]);
+      expect([cmd, shown]).toEqual([cmd, []]);
     });
   }
 

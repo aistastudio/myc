@@ -56,7 +56,22 @@ export interface PostgresDriver extends AsyncDbDriver {
 
 export interface PostgresOpenOptions {
   readonly url: string;
+  /**
+   * Потолок соединений пула. Умолчание 10 — верхняя граница стыка S17
+   * (задача memory-bjy6fq9kxj47: «один пул на 2–10 соединений»).
+   *
+   * Потолок нужен не серверу, а БАЗЕ: Postgres держит по процессу на
+   * соединение, `max_connections` у управляемых баз обычно 25–100, и один
+   * процесс, открывающий столько, сколько ему захотелось, отбирает их у
+   * соседей и у самого администратора. Пул здесь ОДИН на процесс: арендатор
+   * задаётся `SET LOCAL` внутри транзакции, поэтому разделять соединения по
+   * арендаторам не нужно и нечем.
+   */
+  readonly max?: number;
 }
+
+/** Умолчание и потолок размера пула — см. {@link PostgresOpenOptions.max}. */
+export const POOL_MAX_DEFAULT = 10;
 
 /** Строка ответа Postgres: драйвер Bun отдаёт обычные объекты. */
 type Row = Record<string, unknown>;
@@ -114,7 +129,11 @@ function driverOn(sql: SQL): AsyncDbDriver {
 
 export function openPostgres(options: PostgresOpenOptions | string): PostgresDriver {
   const url = typeof options === "string" ? options : options.url;
-  const sql = new SQL(url);
+  const max = typeof options === "string" ? POOL_MAX_DEFAULT : (options.max ?? POOL_MAX_DEFAULT);
+  if (!Number.isInteger(max) || max < 1) {
+    throw new Error(`postgres: pool size must be a positive integer, got ${String(max)}`);
+  }
+  const sql = new SQL({ url, max });
   const base = driverOn(sql);
   return {
     ...base,
