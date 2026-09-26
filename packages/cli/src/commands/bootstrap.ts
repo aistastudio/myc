@@ -829,13 +829,16 @@ export const BOOTSTRAP_LIST_SQL = `SELECT id, title, coalesce(body,'') AS body, 
              AND ${liveStatusPredicate("nodes")}
              AND ${notPendingPredicate("nodes")}`;
 
-const QL = {
+/** @internal сторож допущений перевода диалекта (dialect-registries.test.ts) */
+export const bootstrapQueries = {
   bootstrap_list: {
     name: "bootstrap_list",
     sql: BOOTSTRAP_LIST_SQL,
     params: ["scope"],
   },
 } as const satisfies Record<string, QueryDef>;
+
+const QL = bootstrapQueries;
 
 interface ManualRow {
   readonly id: string;

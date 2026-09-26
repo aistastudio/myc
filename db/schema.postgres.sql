@@ -66,9 +66,9 @@ CREATE OR REPLACE FUNCTION myc_tenant() RETURNS TEXT
 -- ============================ 8.1.1 Метаданные ==============================
 
 CREATE TABLE myc_meta (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  key       TEXT NOT NULL,
-  value     TEXT NOT NULL,
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  key       TEXT COLLATE "C" NOT NULL,
+  value     TEXT COLLATE "C" NOT NULL,
   PRIMARY KEY (tenant_id, key)
 );
 
@@ -81,8 +81,27 @@ CREATE TABLE myc_meta (
  * админки — означала бы, что изоляцию обходит ровно та поверхность, которая
  * про неё и рассказывает.
  */
+-- ═══ СРАВНЕНИЕ ТЕКСТА: COLLATE "C" НА ТЕХНИЧЕСКИХ СТОЛБЦАХ ════════════════
+--
+-- SQLite сравнивает текст ПОБАЙТНО (collation BINARY), Postgres — по коллации
+-- базы (обычно en_US.utf8), где пунктуация и регистр значат другое. Разница не
+-- теоретическая: диапазон по префиксу `content_hash >= 'h-9' AND < 'h-9;'`
+-- отбирает в SQLite и Postgres РАЗНЫЕ строки, и `ORDER BY id` тоже способен
+-- разойтись. Поймано паритетом (packages/cli/src/parity.pg.test.ts): случай
+-- content_group вернул две строки на SQLite и одну на Postgres.
+--
+-- Поэтому у каждого технического столбца — идентификаторы, слаги, хеши,
+-- состояния, имена полей — объявлено COLLATE "C": то же побайтное сравнение,
+-- что у эталона, и пригодные для префиксных диапазонов индексы.
+--
+-- ЧЕЛОВЕЧЕСКИЙ ТЕКСТ (title, body, excerpt, reason) оставлен в коллации базы
+-- СОЗНАТЕЛЬНО: по нему ни один запрос реестров не упорядочивает и не берёт
+-- диапазонов (проверено по всем реестрам), а естественный порядок слов лучше
+-- байтного, если однажды понадобится. Появится сортировка по заголовку —
+-- решение придётся пересмотреть, и паритет об этом скажет первым.
+
 CREATE TABLE tenants (
-  id         TEXT PRIMARY KEY,
+  id         TEXT COLLATE "C" PRIMARY KEY,
   title      TEXT NOT NULL DEFAULT '',
   created_at BIGINT NOT NULL
 );
@@ -102,10 +121,10 @@ CREATE TABLE tenants (
  * сервера вместо токена, чтобы «кто ходил» отвечалось без утечки секрета.
  */
 CREATE TABLE api_tokens (
-  id           TEXT PRIMARY KEY,
-  tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  subject      TEXT NOT NULL,
-  token_hash   TEXT NOT NULL,
+  id           TEXT COLLATE "C" PRIMARY KEY,
+  tenant_id    TEXT COLLATE "C" NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  subject      TEXT COLLATE "C" NOT NULL,
+  token_hash   TEXT COLLATE "C" NOT NULL,
   created_at   BIGINT NOT NULL,
   expires_at   BIGINT,
   revoked_at   BIGINT,
@@ -118,24 +137,24 @@ CREATE INDEX ix_api_tokens_tenant ON api_tokens(tenant_id, subject);
 -- базы, а не арендатор, и версия у неё одна на всех.
 CREATE TABLE schema_migrations (
   version    BIGINT PRIMARY KEY,
-  name       TEXT   NOT NULL,
-  checksum   TEXT   NOT NULL,
+  name       TEXT COLLATE "C"   NOT NULL,
+  checksum   TEXT COLLATE "C"   NOT NULL,
   applied_at BIGINT NOT NULL,
-  by_version TEXT   NOT NULL
+  by_version TEXT COLLATE "C"   NOT NULL
 );
 
 CREATE TABLE schema_migrations_compat (
   version       BIGINT PRIMARY KEY,
-  name          TEXT   NOT NULL,
-  checksum      TEXT   NOT NULL,
+  name          TEXT COLLATE "C"   NOT NULL,
+  checksum      TEXT COLLATE "C"   NOT NULL,
   applied_at    BIGINT NOT NULL,
   readable_from BIGINT NOT NULL
 );
 
 CREATE TABLE myc_health (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  component TEXT NOT NULL,
-  state     TEXT NOT NULL CHECK (state IN ('ok','degraded','down')),
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  component TEXT COLLATE "C" NOT NULL,
+  state     TEXT COLLATE "C" NOT NULL CHECK (state IN ('ok','degraded','down')),
   reason    TEXT NOT NULL DEFAULT '',
   since     BIGINT NOT NULL,
   detail    JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -145,36 +164,36 @@ CREATE TABLE myc_health (
 -- ============================ 8.1.2 Узлы ====================================
 
 CREATE TABLE nodes (
-  tenant_id     TEXT   NOT NULL DEFAULT myc_tenant(),
-  id            TEXT   NOT NULL,
-  kind          TEXT   NOT NULL,
+  tenant_id     TEXT COLLATE "C"   NOT NULL DEFAULT myc_tenant(),
+  id            TEXT COLLATE "C"   NOT NULL,
+  kind          TEXT COLLATE "C"   NOT NULL,
   layer         SMALLINT NOT NULL DEFAULT 1,
-  scope         TEXT   NOT NULL DEFAULT '',
+  scope         TEXT COLLATE "C"   NOT NULL DEFAULT '',
   title         TEXT   NOT NULL DEFAULT '',
   body          TEXT,
   -- Числом, а не BOOLEAN: текст запроса общий с SQLite, где сравнение идёт
   -- с 0/1 (`body_cold = 0`). Один диалект не вправе менять условие другого.
   body_cold     SMALLINT NOT NULL DEFAULT 0,
   excerpt       TEXT   NOT NULL DEFAULT '',
-  status        TEXT   NOT NULL DEFAULT 'active',
+  status        TEXT COLLATE "C"   NOT NULL DEFAULT 'active',
   priority      SMALLINT NOT NULL DEFAULT 2,
   confidence    DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   salience      DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   seen_count    BIGINT NOT NULL DEFAULT 1,
   open_blockers BIGINT NOT NULL DEFAULT 0,
   anc_blockers  BIGINT NOT NULL DEFAULT 0,
-  head_id       TEXT,
-  content_hash  TEXT   NOT NULL,
-  ext_dup       TEXT   NOT NULL DEFAULT '',
-  acl           TEXT   NOT NULL DEFAULT 'team',
-  owner_id      TEXT   NOT NULL DEFAULT '',
-  team_id       TEXT   NOT NULL DEFAULT '',
-  agent_id      TEXT   NOT NULL DEFAULT '',
-  assignee      TEXT   NOT NULL DEFAULT '',
-  lease_holder  TEXT   NOT NULL DEFAULT '',
+  head_id       TEXT COLLATE "C",
+  content_hash  TEXT COLLATE "C"   NOT NULL,
+  ext_dup       TEXT COLLATE "C"   NOT NULL DEFAULT '',
+  acl           TEXT COLLATE "C"   NOT NULL DEFAULT 'team',
+  owner_id      TEXT COLLATE "C"   NOT NULL DEFAULT '',
+  team_id       TEXT COLLATE "C"   NOT NULL DEFAULT '',
+  agent_id      TEXT COLLATE "C"   NOT NULL DEFAULT '',
+  assignee      TEXT COLLATE "C"   NOT NULL DEFAULT '',
+  lease_holder  TEXT COLLATE "C"   NOT NULL DEFAULT '',
   lease_epoch   BIGINT NOT NULL DEFAULT 0,
   lease_expires BIGINT NOT NULL DEFAULT 0,
-  actor         TEXT   NOT NULL DEFAULT '',
+  actor         TEXT COLLATE "C"   NOT NULL DEFAULT '',
   created_at    BIGINT NOT NULL,
   updated_at    BIGINT NOT NULL,
   accessed_at   BIGINT NOT NULL DEFAULT 0,
@@ -183,13 +202,13 @@ CREATE TABLE nodes (
   compacted_at  BIGINT,
   deleted_at    BIGINT,
   hlc           BIGINT NOT NULL DEFAULT 0,
-  site_id       TEXT   NOT NULL DEFAULT '',
+  site_id       TEXT COLLATE "C"   NOT NULL DEFAULT '',
   attrs         JSONB  NOT NULL DEFAULT '{}'::jsonb,
   -- Те же имена, что у generated-колонок SQLite: индексы и запросы общие.
-  g_thread_root TEXT GENERATED ALWAYS AS (attrs->>'thread_root') STORED,
-  g_session_id  TEXT GENERATED ALWAYS AS (attrs->>'session_id')  STORED,
-  g_scen_key    TEXT GENERATED ALWAYS AS (attrs->>'scenario_key') STORED,
-  g_etype       TEXT GENERATED ALWAYS AS (attrs->>'etype')       STORED,
+  g_thread_root TEXT COLLATE "C" GENERATED ALWAYS AS (attrs->>'thread_root') STORED,
+  g_session_id  TEXT COLLATE "C" GENERATED ALWAYS AS (attrs->>'session_id')  STORED,
+  g_scen_key    TEXT COLLATE "C" GENERATED ALWAYS AS (attrs->>'scenario_key') STORED,
+  g_etype       TEXT COLLATE "C" GENERATED ALWAYS AS (attrs->>'etype')       STORED,
   -- Полнотекст живёт в строке (в SQLite — отдельная таблица FTS5, §8.3).
   tsv tsvector GENERATED ALWAYS AS (
         setweight(to_tsvector('simple', coalesce(title,'')), 'A') ||
@@ -246,16 +265,16 @@ CREATE INDEX ix_nodes_vec   ON nodes USING hnsw (embedding halfvec_cosine_ops)
 -- ============================ 8.1.3 Рёбра ===================================
 
 CREATE TABLE edges (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  src        TEXT NOT NULL,
-  type       TEXT NOT NULL,
-  dst        TEXT NOT NULL,
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  src        TEXT COLLATE "C" NOT NULL,
+  type       TEXT COLLATE "C" NOT NULL,
+  dst        TEXT COLLATE "C" NOT NULL,
   weight     DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-  add_tag    TEXT NOT NULL,
-  actor      TEXT NOT NULL DEFAULT '',
+  add_tag    TEXT COLLATE "C" NOT NULL,
+  actor      TEXT COLLATE "C" NOT NULL DEFAULT '',
   created_at BIGINT NOT NULL,
   hlc        BIGINT NOT NULL DEFAULT 0,
-  site_id    TEXT NOT NULL DEFAULT '',
+  site_id    TEXT COLLATE "C" NOT NULL DEFAULT '',
   deleted_at BIGINT,
   attrs      JSONB NOT NULL DEFAULT '{}'::jsonb,
   PRIMARY KEY (tenant_id, src, type, dst),
@@ -267,20 +286,20 @@ CREATE INDEX ix_edges_dst  ON edges(tenant_id, dst, type) WHERE deleted_at IS NU
 CREATE INDEX ix_edges_type ON edges(tenant_id, type, src) WHERE deleted_at IS NULL;
 
 CREATE TABLE edge_tombstones (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  src     TEXT NOT NULL,
-  type    TEXT NOT NULL,
-  dst     TEXT NOT NULL,
-  tag     TEXT NOT NULL,
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  src     TEXT COLLATE "C" NOT NULL,
+  type    TEXT COLLATE "C" NOT NULL,
+  dst     TEXT COLLATE "C" NOT NULL,
+  tag     TEXT COLLATE "C" NOT NULL,
   hlc     BIGINT NOT NULL,
-  site_id TEXT NOT NULL,
+  site_id TEXT COLLATE "C" NOT NULL,
   PRIMARY KEY (tenant_id, src, type, dst, tag)
 );
 
 CREATE TABLE parent_closure (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  ancestor   TEXT NOT NULL,
-  descendant TEXT NOT NULL,
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  ancestor   TEXT COLLATE "C" NOT NULL,
+  descendant TEXT COLLATE "C" NOT NULL,
   depth      BIGINT NOT NULL,
   PRIMARY KEY (tenant_id, ancestor, descendant)
 );
@@ -289,21 +308,21 @@ CREATE INDEX ix_pc_desc ON parent_closure(tenant_id, descendant, depth);
 -- ============================ 8.1.4 Якоря ===================================
 
 CREATE TABLE anchors (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  node_id    TEXT NOT NULL,
-  repo_id    TEXT NOT NULL,
-  repo_root  TEXT NOT NULL DEFAULT '',
-  path       TEXT NOT NULL,
-  lang       TEXT NOT NULL DEFAULT '',
-  symbol     TEXT NOT NULL DEFAULT '',
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  node_id    TEXT COLLATE "C" NOT NULL,
+  repo_id    TEXT COLLATE "C" NOT NULL,
+  repo_root  TEXT COLLATE "C" NOT NULL DEFAULT '',
+  path       TEXT COLLATE "C" NOT NULL,
+  lang       TEXT COLLATE "C" NOT NULL DEFAULT '',
+  symbol     TEXT COLLATE "C" NOT NULL DEFAULT '',
   span_start BIGINT NOT NULL,
   span_end   BIGINT NOT NULL,
-  file_hash  TEXT NOT NULL,
-  span_hash  TEXT NOT NULL,
-  crux       TEXT NOT NULL,
-  crux_norm  TEXT NOT NULL,
+  file_hash  TEXT COLLATE "C" NOT NULL,
+  span_hash  TEXT COLLATE "C" NOT NULL,
+  crux       TEXT COLLATE "C" NOT NULL,
+  crux_norm  TEXT COLLATE "C" NOT NULL,
   fp         BYTEA,
-  state      TEXT NOT NULL DEFAULT 'fresh',
+  state      TEXT COLLATE "C" NOT NULL DEFAULT 'fresh',
   drift      DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   mtime_ms   BIGINT NOT NULL DEFAULT 0,
   size_bytes BIGINT NOT NULL DEFAULT 0,
@@ -312,7 +331,7 @@ CREATE TABLE anchors (
   -- Идентичность в истории репозитория. На сервере она ОБЯЗАТЕЛЬНА (решение
   -- memory-6fv6xbbfcb9g): якорь на файл рабочего дерева у соседа с другой
   -- веткой мёртв по построению, и хранить его здесь незачем.
-  git_ref    TEXT NOT NULL,
+  git_ref    TEXT COLLATE "C" NOT NULL,
   PRIMARY KEY (tenant_id, node_id),
   FOREIGN KEY (tenant_id, node_id) REFERENCES nodes(tenant_id, id) ON DELETE CASCADE,
   CHECK (state IN ('fresh','drifted','stale','lost')),
@@ -326,19 +345,19 @@ CREATE INDEX ix_anchors_check  ON anchors(tenant_id, state, checked_at);
 -- ============================ 8.1.5 Очередь работ ===========================
 
 CREATE TABLE jobs (
-  tenant_id     TEXT NOT NULL DEFAULT myc_tenant(),
+  tenant_id     TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
   id            BIGINT GENERATED ALWAYS AS IDENTITY,
-  kind          TEXT NOT NULL,
-  entity_id     TEXT,
-  scope         TEXT NOT NULL DEFAULT '',
+  kind          TEXT COLLATE "C" NOT NULL,
+  entity_id     TEXT COLLATE "C",
+  scope         TEXT COLLATE "C" NOT NULL DEFAULT '',
   priority      BIGINT NOT NULL DEFAULT 5,
   run_after     BIGINT NOT NULL,
   attempts      BIGINT NOT NULL DEFAULT 0,
   max_attempts  BIGINT NOT NULL DEFAULT 5,
-  lease_holder  TEXT NOT NULL DEFAULT '',
+  lease_holder  TEXT COLLATE "C" NOT NULL DEFAULT '',
   lease_expires BIGINT NOT NULL DEFAULT 0,
   payload       JSONB NOT NULL DEFAULT '{}'::jsonb,
-  last_error    TEXT,
+  last_error    TEXT COLLATE "C",
   created_at    BIGINT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -348,11 +367,11 @@ CREATE UNIQUE INDEX ux_jobs_dedup ON jobs(tenant_id, kind, entity_id) WHERE enti
 -- ============================ 8.1.6 Права ===================================
 
 CREATE TABLE acl_grants (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  node_id    TEXT NOT NULL,
-  principal  TEXT NOT NULL,
-  level      TEXT NOT NULL DEFAULT 'read',
-  granted_by TEXT NOT NULL DEFAULT '',
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  node_id    TEXT COLLATE "C" NOT NULL,
+  principal  TEXT COLLATE "C" NOT NULL,
+  level      TEXT COLLATE "C" NOT NULL DEFAULT 'read',
+  granted_by TEXT COLLATE "C" NOT NULL DEFAULT '',
   granted_at BIGINT NOT NULL,
   PRIMARY KEY (tenant_id, node_id, principal),
   FOREIGN KEY (tenant_id, node_id) REFERENCES nodes(tenant_id, id) ON DELETE CASCADE
@@ -362,19 +381,19 @@ CREATE INDEX ix_acl_principal ON acl_grants(tenant_id, principal, node_id);
 -- ============================ 8.1.7 Оплог и часы ============================
 
 CREATE TABLE oplog (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
   seq       BIGINT GENERATED ALWAYS AS IDENTITY,
-  op_id     TEXT NOT NULL,
-  site_id   TEXT NOT NULL,
+  op_id     TEXT COLLATE "C" NOT NULL,
+  site_id   TEXT COLLATE "C" NOT NULL,
   hlc       BIGINT NOT NULL,
   ts_ms     BIGINT NOT NULL,
-  actor     TEXT NOT NULL DEFAULT '',
-  op        TEXT NOT NULL,
-  entity    TEXT NOT NULL,
-  entity_id TEXT NOT NULL,
-  field     TEXT,
-  value     TEXT,
-  scope     TEXT NOT NULL DEFAULT '',
+  actor     TEXT COLLATE "C" NOT NULL DEFAULT '',
+  op        TEXT COLLATE "C" NOT NULL,
+  entity    TEXT COLLATE "C" NOT NULL,
+  entity_id TEXT COLLATE "C" NOT NULL,
+  field     TEXT COLLATE "C",
+  value     TEXT COLLATE "C",
+  scope     TEXT COLLATE "C" NOT NULL DEFAULT '',
   origin    SMALLINT NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, seq)
 );
@@ -385,50 +404,50 @@ CREATE INDEX ix_oplog_site   ON oplog(tenant_id, site_id, hlc);
 CREATE INDEX ix_oplog_scope  ON oplog(tenant_id, scope, seq);
 
 CREATE TABLE oplog_pending (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  op_id     TEXT NOT NULL,
-  needs     TEXT NOT NULL,
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  op_id     TEXT COLLATE "C" NOT NULL,
+  needs     TEXT COLLATE "C" NOT NULL,
   origin    SMALLINT NOT NULL DEFAULT 0,
-  op        TEXT NOT NULL,
+  op        TEXT COLLATE "C" NOT NULL,
   parked_at BIGINT NOT NULL,
   PRIMARY KEY (tenant_id, op_id)
 );
 CREATE INDEX ix_oplog_pending_needs ON oplog_pending(tenant_id, needs);
 
 CREATE TABLE field_clock (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  entity_id TEXT NOT NULL,
-  field     TEXT NOT NULL,
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  entity_id TEXT COLLATE "C" NOT NULL,
+  field     TEXT COLLATE "C" NOT NULL,
   hlc       BIGINT NOT NULL,
-  site_id   TEXT NOT NULL,
+  site_id   TEXT COLLATE "C" NOT NULL,
   PRIMARY KEY (tenant_id, entity_id, field)
 );
 
 CREATE TABLE counters (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  entity_id TEXT NOT NULL,
-  field     TEXT NOT NULL,
-  site_id   TEXT NOT NULL,
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  entity_id TEXT COLLATE "C" NOT NULL,
+  field     TEXT COLLATE "C" NOT NULL,
+  site_id   TEXT COLLATE "C" NOT NULL,
   value     BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (tenant_id, entity_id, field, site_id)
 );
 
 CREATE TABLE sync_state (
-  tenant_id     TEXT NOT NULL DEFAULT myc_tenant(),
-  peer_site_id  TEXT NOT NULL,
+  tenant_id     TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  peer_site_id  TEXT COLLATE "C" NOT NULL,
   last_hlc_seen BIGINT NOT NULL DEFAULT 0,
   last_seq_sent BIGINT NOT NULL DEFAULT 0,
   last_sync_at  BIGINT NOT NULL DEFAULT 0,
-  endpoint      TEXT NOT NULL DEFAULT '',
+  endpoint      TEXT COLLATE "C" NOT NULL DEFAULT '',
   PRIMARY KEY (tenant_id, peer_site_id)
 );
 
 -- ============================ 8.1.8 Холодные тела ===========================
 
 CREATE TABLE bodies_cold (
-  tenant_id   TEXT NOT NULL DEFAULT myc_tenant(),
-  node_id     TEXT NOT NULL,
-  algo        TEXT NOT NULL DEFAULT 'zstd',
+  tenant_id   TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  node_id     TEXT COLLATE "C" NOT NULL,
+  algo        TEXT COLLATE "C" NOT NULL DEFAULT 'zstd',
   level       SMALLINT NOT NULL DEFAULT 6,
   raw_len     BIGINT NOT NULL,
   blob        BYTEA NOT NULL,
@@ -439,35 +458,35 @@ CREATE TABLE bodies_cold (
 CREATE INDEX ix_cold_age ON bodies_cold(tenant_id, archived_at);
 
 CREATE TABLE digest_cache (
-  tenant_id TEXT NOT NULL DEFAULT myc_tenant(),
-  scope     TEXT NOT NULL,
-  profile   TEXT NOT NULL,
-  variant   TEXT NOT NULL DEFAULT '',
+  tenant_id TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  scope     TEXT COLLATE "C" NOT NULL,
+  profile   TEXT COLLATE "C" NOT NULL,
+  variant   TEXT COLLATE "C" NOT NULL DEFAULT '',
   seq       BIGINT NOT NULL,
-  payload   TEXT NOT NULL,
+  payload   TEXT COLLATE "C" NOT NULL,
   PRIMARY KEY (tenant_id, scope, profile, variant)
 );
 
 -- ============================ 8.1.9 Код-интеллект ===========================
 
 CREATE TABLE code_files (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  repo_id    TEXT NOT NULL,
-  path       TEXT NOT NULL,
-  lang       TEXT NOT NULL,
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  repo_id    TEXT COLLATE "C" NOT NULL,
+  path       TEXT COLLATE "C" NOT NULL,
+  lang       TEXT COLLATE "C" NOT NULL,
   mtime_ms   BIGINT NOT NULL,
   size_bytes BIGINT NOT NULL,
-  file_hash  TEXT NOT NULL,
+  file_hash  TEXT COLLATE "C" NOT NULL,
   indexed_at BIGINT NOT NULL,
   PRIMARY KEY (tenant_id, repo_id, path)
 );
 
 CREATE TABLE code_defs (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  repo_id    TEXT NOT NULL,
-  path       TEXT NOT NULL,
-  name       TEXT NOT NULL,
-  kind       TEXT NOT NULL,
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  repo_id    TEXT COLLATE "C" NOT NULL,
+  path       TEXT COLLATE "C" NOT NULL,
+  name       TEXT COLLATE "C" NOT NULL,
+  kind       TEXT COLLATE "C" NOT NULL,
   span_start BIGINT NOT NULL,
   span_end   BIGINT NOT NULL,
   exported   SMALLINT NOT NULL DEFAULT 0,
@@ -475,9 +494,9 @@ CREATE TABLE code_defs (
 );
 
 CREATE TABLE code_refs (
-  tenant_id   TEXT NOT NULL DEFAULT myc_tenant(),
-  repo_id     TEXT NOT NULL,
-  name        TEXT NOT NULL,
+  tenant_id   TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  repo_id     TEXT COLLATE "C" NOT NULL,
+  name        TEXT COLLATE "C" NOT NULL,
   n_files     BIGINT NOT NULL,
   n_hits      BIGINT NOT NULL,
   computed_at BIGINT NOT NULL,
@@ -485,29 +504,29 @@ CREATE TABLE code_refs (
 );
 
 CREATE TABLE code_ref_sites (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
-  repo_id    TEXT NOT NULL,
-  path       TEXT NOT NULL,
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
+  repo_id    TEXT COLLATE "C" NOT NULL,
+  path       TEXT COLLATE "C" NOT NULL,
   line       BIGINT NOT NULL,
-  name       TEXT NOT NULL,
-  kind       TEXT NOT NULL,
-  from_name  TEXT NOT NULL,
+  name       TEXT COLLATE "C" NOT NULL,
+  kind       TEXT COLLATE "C" NOT NULL,
+  from_name  TEXT COLLATE "C" NOT NULL,
   from_start BIGINT NOT NULL,
   PRIMARY KEY (tenant_id, repo_id, path, line, name, kind, from_start)
 );
 CREATE INDEX ix_code_ref_sites_name ON code_ref_sites(tenant_id, repo_id, name);
 
 CREATE TABLE code_units (
-  tenant_id  TEXT NOT NULL DEFAULT myc_tenant(),
+  tenant_id  TEXT COLLATE "C" NOT NULL DEFAULT myc_tenant(),
   id         BIGINT GENERATED ALWAYS AS IDENTITY,
-  repo_id    TEXT NOT NULL,
-  path       TEXT NOT NULL,
-  unit       TEXT NOT NULL,
-  name       TEXT NOT NULL,
-  kind       TEXT NOT NULL,
+  repo_id    TEXT COLLATE "C" NOT NULL,
+  path       TEXT COLLATE "C" NOT NULL,
+  unit       TEXT COLLATE "C" NOT NULL,
+  name       TEXT COLLATE "C" NOT NULL,
+  kind       TEXT COLLATE "C" NOT NULL,
   span_start BIGINT NOT NULL,
   span_end   BIGINT NOT NULL,
-  file_hash  TEXT NOT NULL,
+  file_hash  TEXT COLLATE "C" NOT NULL,
   -- Корпус поиска по коду: в SQLite это FTS5 code_fts, здесь — колонка.
   tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', coalesce(unit,''))) STORED,
   PRIMARY KEY (tenant_id, id)
@@ -705,7 +724,8 @@ SELECT
   (extract(epoch FROM now()) * 1000)::BIGINT,
   coalesce(nullif(current_setting('myc.by_version', true), ''), 'psql')
 FROM (
-  SELECT table_name || '.' || column_name || ':' || data_type AS sig
+  SELECT table_name || '.' || column_name || ':' || data_type
+         || ':' || coalesce(collation_name, '-') AS sig
   FROM information_schema.columns
   WHERE table_schema = 'public'
 ) s

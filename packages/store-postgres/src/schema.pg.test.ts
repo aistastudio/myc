@@ -194,7 +194,8 @@ describe("схема Postgres на живой базе", () => {
     const fingerprint = async (): Promise<string> => {
       const [r] = (await admin!.unsafe(
         `SELECT md5(string_agg(sig, E'\n' ORDER BY sig)) AS h FROM (
-           SELECT table_name || '.' || column_name || ':' || data_type AS sig
+           SELECT table_name || '.' || column_name || ':' || data_type
+                  || ':' || coalesce(collation_name, '-') AS sig
            FROM information_schema.columns WHERE table_schema = 'public') s`,
       )) as Array<{ h: string }>;
       return r!.h;

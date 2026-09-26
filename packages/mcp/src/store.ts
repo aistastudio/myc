@@ -204,7 +204,8 @@ export type OpenMcpStoreResult =
   | { readonly ok: true; readonly handle: McpStoreHandle }
   | { readonly ok: false; readonly failure: McpStoreFailure };
 
-const QL = {
+/** @internal сторож допущений перевода диалекта (cli/src/dialect-registries.test.ts) */
+export const mcpQueries = {
   oplog_last_hlc: {
     name: "oplog_last_hlc",
     sql: "SELECT CAST(hlc AS TEXT) AS hlc FROM oplog ORDER BY seq DESC LIMIT 1",
@@ -218,6 +219,8 @@ const QL = {
     params: ["lower", "upper"],
   },
 } as const satisfies Record<string, QueryDef>;
+
+const QL = mcpQueries;
 
 /**
  * Накат векторного набора с терпимостью к ОДНОВРЕМЕННОМУ первому открытию —

@@ -4,6 +4,7 @@ import {
   defineQueries,
   placeholderNumbers,
   resolveQueryText,
+  toPgDialect,
   toPgPlaceholders,
   validateQueryDef,
   type QueryDef,
@@ -184,5 +185,51 @@ describe("StatementCache", () => {
     cache.set("a", "1b");
     expect(cache.get("a")).toBe("1b");
     expect(cache.evictions).toBe(0);
+  });
+});
+
+describe("toPgDialect: механический перевод диалекта", () => {
+  test("подсказка индекса снимается — в Postgres её нет", () => {
+    expect(toPgDialect("SELECT id FROM nodes INDEXED BY ix_nodes_ready WHERE scope = ?1")).toBe(
+      "SELECT id FROM nodes WHERE scope = $1",
+    );
+    // Псевдоним после подсказки остаётся на месте: снимается ровно она.
+    expect(toPgDialect("FROM nodes AS n INDEXED BY ix_a WHERE n.id = ?1")).toBe(
+      "FROM nodes AS n WHERE n.id = $1",
+    );
+  });
+
+  test("один ключ JSON переводится в ->>", () => {
+    expect(toPgDialect("SELECT json_extract(attrs,'$.repo') FROM nodes")).toBe(
+      "SELECT attrs->>'repo' FROM nodes",
+    );
+    // С таблицей-владельцем и пробелами — то же самое.
+    expect(toPgDialect("WHERE json_extract( n.attrs , '$.type' ) = ?1")).toBe("WHERE n.attrs->>'type' = $1");
+  });
+
+  test("путь сложнее одного ключа НЕ переводится: это решение автора запроса", () => {
+    // Массивы и вложенность в Postgres пишутся иначе (#>>'{a,b}'), и угадывать
+    // за автора нельзя: молча неверный перевод хуже явного отказа базы.
+    const nested = "SELECT json_extract(attrs,'$.a.b') FROM nodes";
+    expect(toPgDialect(nested)).toBe(nested);
+    const arr = "SELECT json_extract(attrs,'$.tags[0]') FROM nodes";
+    expect(toPgDialect(arr)).toBe(arr);
+  });
+
+  test("перевод идёт поверх нумерации мест и не ломает её", () => {
+    expect(toPgDialect("SELECT ?2 FROM nodes INDEXED BY ix_a WHERE json_extract(attrs,'$.k') = ?1")).toBe(
+      "SELECT $2 FROM nodes WHERE attrs->>'k' = $1",
+    );
+  });
+
+  test("оверрайд pg сильнее перевода", () => {
+    const def: QueryDef = {
+      name: "q",
+      sql: "SELECT json_extract(attrs,'$.k') FROM nodes",
+      params: [],
+      pg: "SELECT attrs#>>'{k}' FROM nodes",
+    };
+    expect(resolveQueryText(def, "pg")).toBe("SELECT attrs#>>'{k}' FROM nodes");
+    expect(resolveQueryText(def, "sqlite")).toBe(def.sql);
   });
 });

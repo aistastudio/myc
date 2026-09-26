@@ -16,6 +16,6 @@ export { McpServer, serveStdio, MCP_PROTOCOL_VERSION } from "./server.ts";
 export { createMcpCommand, mcpProjectDir, mcpWorkspace } from "./command.ts";
 /** @internal паритет с findWorkspaceDb CLI — commands/mcp-workspace.parity.test.ts в @myc/cli */
 export { findMcpWorkspace } from "./workspace.ts";
-export { openMcpStore, resolveNode } from "./store.ts";
+export { openMcpStore, resolveNode, mcpQueries } from "./store.ts";
 /** @internal используется только store.parity.test.ts в @myc/cli (myc-qie.12) */
 export { openDriver as internalOpenDriver, type McpDriver } from "./store.ts";
