@@ -22,6 +22,7 @@
  */
 
 import {
+  type AsyncDbDriver as CoreAsyncDbDriver,
   resolveQueryText,
   validateQueryDef,
   type QueryDef,
@@ -34,11 +35,7 @@ import { SQL } from "bun";
  * обещание. Имена и порядок параметров совпадают намеренно: код, который
  * умеет один, читается как код, который умеет другой.
  */
-export interface AsyncDbDriver {
-  readonly dialect: "pg";
-  one<T>(query: QueryDef, params: readonly unknown[]): Promise<T | undefined>;
-  all<T>(query: QueryDef, params: readonly unknown[]): Promise<T[]>;
-  run(query: QueryDef, params: readonly unknown[]): Promise<{ changes: number }>;
+export interface AsyncDbDriver extends CoreAsyncDbDriver {
   /** Сырой текст — для DDL и административных запросов, не из реестра. */
   raw<T>(sql: string, params?: readonly unknown[]): Promise<T[]>;
 }

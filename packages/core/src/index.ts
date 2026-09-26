@@ -56,6 +56,9 @@ export type Layer = 0 | 1 | 2 | 3;
 // чтобы параллельные агенты не дрались за этот файл.
 export * from "./id.ts";
 export * from "./sql.ts";
+export * from "./queries.ts";
+export * from "./effect.ts";
+export * from "./apply.ts";
 export * from "./oplog.ts";
 export * from "./graph.ts";
 export * from "./secrets.ts";
