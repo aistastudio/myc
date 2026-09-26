@@ -5,8 +5,12 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "lib": ["esnext"],
-    "types": ["bun-types"],
+    "lib": [
+      "esnext"
+    ],
+    "types": [
+      "bun-types"
+    ],
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,6 +18,7 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "declaration": false,
-    "noEmit": true
+    "noEmit": true,
+    "allowArbitraryExtensions": true
   }
 }

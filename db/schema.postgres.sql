@@ -72,6 +72,48 @@ CREATE TABLE myc_meta (
   PRIMARY KEY (tenant_id, key)
 );
 
+/**
+ * РЕЕСТР АРЕНДАТОРОВ — СЕРВЕРНЫЙ, без RLS и без колонки tenant_id: это не
+ * данные арендатора, а список тех, кто есть. Он нужен админке: аккуратно
+ * посчитать арендаторов, не обходя изоляцию, можно только зная их имена
+ * заранее — дальше каждый счёт делается ПОД ЕГО арендатором, то есть через ту
+ * же политику, что и боевой запрос. Альтернатива — роль с BYPASSRLS у
+ * админки — означала бы, что изоляцию обходит ровно та поверхность, которая
+ * про неё и рассказывает.
+ */
+CREATE TABLE tenants (
+  id         TEXT PRIMARY KEY,
+  title      TEXT NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL
+);
+
+/**
+ * ТОКЕНЫ ДОСТУПА — тоже серверные и тоже вне RLS, и по той же причине, что
+ * реестр арендаторов: токен не принадлежит арендатору, он его НАЗНАЧАЕТ.
+ * Проверка идёт до того, как известен арендатор, — политике здесь не на что
+ * опереться.
+ *
+ * ХРАНИТСЯ ХЕШ, А НЕ ТОКЕН. Утёкшая копия базы не должна давать доступ:
+ * `token_hash` — sha256 секрета, самого секрета нет нигде после выдачи. Это
+ * не пароль человека, а 256 бит случайности, поэтому медленная функция (bcrypt
+ * и родня) ничего не добавит — подбирать тут нечего.
+ *
+ * `subject` — кто это: имя разработчика или агента. Оно попадает в журнал
+ * сервера вместо токена, чтобы «кто ходил» отвечалось без утечки секрета.
+ */
+CREATE TABLE api_tokens (
+  id           TEXT PRIMARY KEY,
+  tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  subject      TEXT NOT NULL,
+  token_hash   TEXT NOT NULL,
+  created_at   BIGINT NOT NULL,
+  expires_at   BIGINT,
+  revoked_at   BIGINT,
+  last_used_at BIGINT
+);
+CREATE UNIQUE INDEX ux_api_tokens_hash ON api_tokens(token_hash);
+CREATE INDEX ix_api_tokens_tenant ON api_tokens(tenant_id, subject);
+
 -- Учёт миграций — СЕРВЕРНЫЙ, без арендатора: схему накатывает администратор
 -- базы, а не арендатор, и версия у неё одна на всех.
 CREATE TABLE schema_migrations (
@@ -620,5 +662,51 @@ BEGIN
   END LOOP;
 END $$;
 GRANT USAGE ON SCHEMA public TO myc_app;
+-- Реестр арендаторов: сервер читает его для админки и ЗАВОДИТ арендаторов сам
+-- (`myc serve --add-tenant`), потому что он же и есть инструмент развёртывания
+-- — иначе в контейнер пришлось бы класть psql ради одной строки. Граница
+-- доступа проходит не здесь, а по паролю этой роли: кто им владеет, тот и
+-- администратор сервера (он и так может выдать токен любому арендатору).
+-- Отдельная административная роль — следующий шаг, когда появится кто-то,
+-- кому нужен доступ к данным, но не к управлению.
+GRANT SELECT, INSERT ON tenants TO myc_app;
+-- Версию схемы приложение обязано видеть: по ней оно решает, своя ли это база
+-- (та же проверка, что у CLI при открытии). Писать в журналы учёта нельзя.
+GRANT SELECT ON schema_migrations, schema_migrations_compat TO myc_app;
+-- Токены сервер читает на каждом запросе, помечает временем последнего
+-- использования и заводит по команде администратора (`myc serve --add-token`).
+GRANT SELECT, INSERT, UPDATE ON api_tokens TO myc_app;
 -- Последовательности идентичности (jobs.id, oplog.seq, code_units.id).
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO myc_app;
+
+-- ═══ БАЗОВАЯ СТРОКА УЧЁТА ═════════════════════════════════════════════════
+--
+-- Этот файл — не «пустая база»: он даёт РОВНО то состояние, которое SQLite
+-- получает после миграции 013. Без записи об этом база не знает своей версии:
+-- `myc serve --apply-schema` возвращает schema: null, админка показывает то же
+-- самое, а будущая миграция 014 не отличит накатанную базу от нетронутой и
+-- накатится поверх. Номер здесь общий с рядом SQLite намеренно — миграции
+-- дальше пишутся для обоих диалектов, и разъехавшаяся нумерация означала бы
+-- два несравнимых ряда (сторож: packages/server/src/parity.pg.test.ts).
+--
+-- checksum — отпечаток ПОЛУЧИВШЕЙСЯ схемы, а не текста файла: файл не умеет
+-- сосчитать сам себя, а каталог считается и сейчас, и потом — тем же
+-- запросом. Поэтому расхождение означает то, что и должно означать: базу
+-- правили мимо миграций.
+--
+-- by_version — кто накатил. Бинарь myc ставит `myc.by_version` перед накатом
+-- (packages/cli/src/commands/serve.ts); накат руками через psql честно
+-- называется psql, а не выдумывает себе версию.
+INSERT INTO schema_migrations (version, name, checksum, applied_at, by_version)
+SELECT
+  13,
+  'postgres-baseline',
+  md5(string_agg(sig, E'\n' ORDER BY sig)),
+  (extract(epoch FROM now()) * 1000)::BIGINT,
+  coalesce(nullif(current_setting('myc.by_version', true), ''), 'psql')
+FROM (
+  SELECT table_name || '.' || column_name || ':' || data_type AS sig
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+) s
+ON CONFLICT (version) DO NOTHING;

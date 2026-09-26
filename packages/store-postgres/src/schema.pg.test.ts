@@ -176,4 +176,38 @@ describe("схема Postgres на живой базе", () => {
       ),
     ).rejects.toThrow();
   });
+
+  test("база знает свою версию: базовая строка учёта и отпечаток схемы", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const rows = (await admin!.unsafe(
+      "SELECT version, name, checksum, by_version FROM schema_migrations ORDER BY version",
+    )) as Array<{ version: string | number; name: string; checksum: string; by_version: string }>;
+    expect(rows.length).toBe(1);
+    expect(Number(rows[0]!.version)).toBe(13);
+    expect(rows[0]!.name).toBe("postgres-baseline");
+    // DDL здесь применён напрямую, без бинаря — и он это признаёт, а не
+    // приписывает накат несуществующей версии myc.
+    expect(rows[0]!.by_version).toBe("psql");
+
+    // Отпечаток — от ПОЛУЧИВШЕЙСЯ схемы, а не от текста файла: тот же запрос
+    // считается и сейчас, и через год, поэтому правку базы руками видно.
+    const fingerprint = async (): Promise<string> => {
+      const [r] = (await admin!.unsafe(
+        `SELECT md5(string_agg(sig, E'\n' ORDER BY sig)) AS h FROM (
+           SELECT table_name || '.' || column_name || ':' || data_type AS sig
+           FROM information_schema.columns WHERE table_schema = 'public') s`,
+      )) as Array<{ h: string }>;
+      return r!.h;
+    };
+    expect(await fingerprint()).toBe(rows[0]!.checksum);
+
+    // И он не константа: колонка мимо миграций меняет его.
+    await admin!.unsafe("ALTER TABLE nodes ADD COLUMN zzz_manual TEXT");
+    try {
+      expect(await fingerprint()).not.toBe(rows[0]!.checksum);
+    } finally {
+      await admin!.unsafe("ALTER TABLE nodes DROP COLUMN zzz_manual");
+    }
+    expect(await fingerprint()).toBe(rows[0]!.checksum);
+  });
 });

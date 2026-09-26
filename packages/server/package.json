@@ -4,13 +4,18 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./auth": "./src/auth.ts"
   },
   "dependencies": {
-    "@myc/core": "workspace:*"
+    "@myc/core": "workspace:*",
+    "@myc/store-postgres": "workspace:*"
   },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@myc/store-sqlite": "workspace:*"
   }
 }

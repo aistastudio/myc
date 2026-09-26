@@ -23,6 +23,16 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
+import { adminOverview, adminTenants, renderAdminPage } from "./admin.ts";
+import {
+  authenticate,
+  clearCookie,
+  isSecureRequest,
+  sessionCookie,
+  tokenOf,
+  type Principal,
+} from "./auth.ts";
 
 export const SERVER_VERSION = "0.0.0";
 
@@ -34,6 +44,13 @@ export type ServerConfig = {
   readonly dir?: string;
   /** Явный путь к базе — выигрывает у dir. */
   readonly db?: string;
+  /**
+   * Сервер команды (M4): строка подключения к Postgres. Задана — поднимается
+   * админка `/v1/admin` и её JSON (см. admin.ts). Не задана — сервер остаётся
+   * локальным health-срезом над SQLite, а маршруты админки честно отвечают
+   * 404 с причиной, а не пустой страницей.
+   */
+  readonly pg?: string;
 };
 
 export interface MycHttpServer {
@@ -278,26 +295,107 @@ function dbPathOf(config: ServerConfig): string {
  * старту: `/v1/health` отвечает всегда, состояние БД — у двух других
  * эндпоинтов (разделение liveness/readiness/quality, §8.4).
  */
+/** Страница входа: одно поле, один POST. Ни скриптов, ни внешних запросов. */
+function loginPage(error: string | null): string {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>myc — server sign-in</title>
+<style>body{font:14px/1.5 ui-monospace,Menlo,monospace;margin:6rem auto;max-width:26rem}
+ input{width:100%;padding:.5rem;font:inherit} button{margin-top:.5rem;padding:.5rem 1rem;font:inherit}
+ .err{color:#b00;margin:.5rem 0}</style></head><body>
+<h1>myc — server</h1>
+${error === null ? "" : `<p class="err">${error}</p>`}
+<form method="post" action="/v1/auth/session">
+ <label>access token<input type="password" name="token" autofocus autocomplete="off"></label>
+ <button type="submit">sign in</button>
+</form>
+<p>Ask whoever runs this server for a token: <code>myc serve --pg &lt;url&gt; --add-token &lt;tenant&gt;:&lt;name&gt;</code></p>
+</body></html>`;
+}
+
+const noPg = (): Response =>
+  json(
+    {
+      ok: false,
+      error: { code: "precond.no_pg", msg: "this route needs a Postgres server: start with --pg <url>" },
+    },
+    404,
+  );
+
 export function startHttpServer(config: ServerConfig): MycHttpServer {
   const dbPath = dbPathOf(config);
   const startedAt = Date.now();
 
   const openDb = (): ReadDb => openReadOnly(dbPath);
+  // Одно соединение на весь процесс: у драйвера свой пул, а открывать его на
+  // каждый запрос значило бы платить рукопожатием за каждую страницу.
+  const pg: PostgresDriver | undefined = config.pg === undefined ? undefined : openPostgres(config.pg);
 
   const fetch = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
-    if (req.method !== "GET") {
-      return json({ ok: false, error: { code: "usage.method", msg: "GET only" } }, 405);
-    }
 
     // liveness: процесс жив, базу не трогаем — 200 всегда
-    if (url.pathname === "/v1/health") {
+    if (url.pathname === "/v1/health" && req.method === "GET") {
       return json({
         ok: true,
         ver: SERVER_VERSION,
         uptime_s: Math.round((Date.now() - startedAt) / 1000),
         pid: process.pid,
       });
+    }
+
+    // ВХОД БРАУЗЕРА. Единственный POST на сервере: страница админки — обычная
+    // вкладка, и держать токен в адресной строке (журналы прокси, история,
+    // «поделись ссылкой») нельзя. Форма отдаёт его один раз, дальше работает
+    // кука: HttpOnly, SameSite=Strict, Secure за https.
+    if (url.pathname === "/v1/auth/session") {
+      if (pg === undefined) return noPg();
+      if (req.method === "POST") {
+        const form = await req.formData().catch(() => null);
+        const token = typeof form?.get("token") === "string" ? String(form.get("token")) : null;
+        const auth = await authenticate(pg, token);
+        if (!auth.ok) {
+          return new Response(loginPage("that token was not accepted"), {
+            status: 401,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+        return new Response(null, {
+          status: 303,
+          headers: {
+            location: "/v1/admin",
+            "set-cookie": sessionCookie(token!, isSecureRequest(req)),
+          },
+        });
+      }
+      if (req.method === "DELETE" || req.method === "GET") {
+        // Выход: кука снимается, токен при этом жив — отзывает его владелец.
+        return new Response(null, { status: 303, headers: { location: "/v1/admin", "set-cookie": clearCookie() } });
+      }
+    }
+
+    if (req.method !== "GET") {
+      return json({ ok: false, error: { code: "usage.method", msg: "GET only" } }, 405);
+    }
+
+    // ДОСТУП. Закрыто всё, кроме пробы живости выше: сервер стоит в сети, и
+    // health базы с составом деградаций — тоже сведения о системе. Без
+    // Postgres токенов нет вовсе, и тогда сервер остаётся локальным срезом:
+    // он слушает 127.0.0.1 по умолчанию, и закрывать его нечем и не от кого.
+    let who: Principal | undefined;
+    if (pg !== undefined) {
+      const auth = await authenticate(pg, tokenOf(req));
+      if (!auth.ok) {
+        // Браузеру — страница входа, машине — 401 с кодом.
+        const wantsHtml = (req.headers.get("accept") ?? "").includes("text/html");
+        if (wantsHtml) {
+          return new Response(loginPage(auth.code === "denied.no_token" ? null : "that token was not accepted"), {
+            status: 401,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+        return json({ ok: false, error: { code: auth.code, msg: auth.msg } }, 401);
+      }
+      who = auth.principal;
     }
 
     // readiness: соединение, версия схемы, латентность — 503 при недоступной БД
@@ -364,6 +462,29 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
       }
     }
 
+    // Админка сервера (M4): состояние сервера и арендаторы. Только чтение.
+    if (url.pathname.startsWith("/v1/admin")) {
+      if (pg === undefined) return noPg();
+      try {
+        if (url.pathname === "/v1/admin/overview") {
+          const o = await adminOverview(pg);
+          return json({ ok: true, ...o, degraded: o.warn.map((w) => w.code) });
+        }
+        if (url.pathname === "/v1/admin/tenants") {
+          return json({ ok: true, tenants: await adminTenants(pg) });
+        }
+        if (url.pathname === "/v1/admin" || url.pathname === "/v1/admin/") {
+          const [o, tenants] = await Promise.all([adminOverview(pg), adminTenants(pg)]);
+          return new Response(renderAdminPage(o, tenants, who), {
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return json({ ok: false, error: { code: "db.query", msg } }, 503);
+      }
+    }
+
     return json(
       { ok: false, error: { code: "notfound.route", msg: `no route ${url.pathname}` } },
       404,
@@ -385,6 +506,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
     host,
     dbPath,
     stop(): void {
+      void pg?.close();
       server.stop(true);
     },
   };

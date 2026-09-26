@@ -466,8 +466,8 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 3897 pass / 0 fail / 16 skip
-(`bun test`, 2026-09-16).
+is treated as absent. The full suite: 3942 pass / 0 fail / 16 skip
+(`bun test`, 2026-09-26).
 
 ## What myc does
 

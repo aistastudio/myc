@@ -1,0 +1,56 @@
+# Сервер команды одной командой: `docker compose -f deploy/compose.yml up -d`.
+#
+# Это ОБРАЗЕЦ развёртывания, а не готовый прод: пароль здесь в открытую, TLS
+# нет, база лежит в томе рядом. Для настоящей установки меняют три вещи —
+# пароль (секрет оркестратора), обратный прокси с сертификатом перед портом
+# 8080 и резервное копирование тома.
+#
+# Первый запуск на пустой базе. Схему накатывает СУПЕРПОЛЬЗОВАТЕЛЬ — она
+# создаёт таблицы, триггеры и политики RLS, и прав myc_app для этого нет и не
+# должно быть; дальше сервер живёт ролью myc_app (её вход заводит
+# deploy/initdb/10-app-role.sql при инициализации кластера):
+#   docker compose -f deploy/compose.yml run --rm \
+#     -e MYC_PG_URL=postgres://postgres:change-me@db:5432/myc server serve --apply-schema
+#   docker compose -f deploy/compose.yml run --rm server serve --add-tenant acme
+#   docker compose -f deploy/compose.yml run --rm server serve --add-token acme:anna
+# Секрет печатается один раз: в базе лежит только его sha256.
+
+services:
+  db:
+    # pgvector поверх Postgres 17: halfvec и HNSW нужны схеме (db/schema.postgres.sql).
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: myc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: change-me
+    volumes:
+      - myc-pg:/var/lib/postgresql/data
+      # Только при инициализации ПУСТОГО тома: заводит роль myc_app со входом.
+      # На существующем томе каталог игнорируется — роль уже есть.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d myc"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/server.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Сервер ходит в базу ролью myc_app, а не суперпользователем: RLS
+      # суперпользователя не касается вовсе, и изоляция арендаторов под ним
+      # просто не работает (db/schema.postgres.sql, раздел RLS).
+      MYC_PG_URL: postgres://myc_app:change-me@db:5432/myc
+      MYC_SERVE_PORT: "8080"
+    ports:
+      # Наружу — только через прокси; здесь порт открыт для локальной пробы.
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+volumes:
+  myc-pg:

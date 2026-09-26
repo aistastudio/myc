@@ -116,6 +116,10 @@ export const ASK_SUBCOMMANDS: ReadonlyMap<string, string> = new Map([
   ["statusline", "--then executes a shell command"],
   ["wire", "rewrites the agent's own hooks and permissions"],
   ["unwire", "rewrites the agent's own hooks and permissions"],
+  // Сервер команды: открывает порт наружу, заводит арендаторов и ВЫДАЁТ
+  // токены доступа. Это работа человека у пульта, и вопрос здесь — не
+  // формальность: в нём видно, какой токен и кому собираются выдать.
+  ["serve", "opens a port, registers tenants and mints access tokens"],
 ]);
 
 /** `Bash(myc <команда>:*)` на каждую команду реестра, кроме ASK_SUBCOMMANDS, по алфавиту. */

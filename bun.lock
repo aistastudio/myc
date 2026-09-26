@@ -27,13 +27,15 @@
     },
     "packages/cli": {
       "name": "@myc/cli",
-      "version": "0.3.3",
+      "version": "0.3.14",
       "dependencies": {
         "@myc/code-intel": "workspace:*",
         "@myc/core": "workspace:*",
         "@myc/embed": "workspace:*",
         "@myc/mcp": "workspace:*",
         "@myc/retrieval": "workspace:*",
+        "@myc/server": "workspace:*",
+        "@myc/store-postgres": "workspace:*",
         "@myc/store-sqlite": "workspace:*",
         "@myc/swarm": "workspace:*",
         "@myc/web": "workspace:*",
@@ -101,6 +103,10 @@
       "version": "0.0.0",
       "dependencies": {
         "@myc/core": "workspace:*",
+        "@myc/store-postgres": "workspace:*",
+      },
+      "devDependencies": {
+        "@myc/store-sqlite": "workspace:*",
       },
     },
     "packages/store-postgres": {

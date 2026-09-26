@@ -14,7 +14,9 @@
     "@myc/retrieval": "workspace:*",
     "@myc/store-sqlite": "workspace:*",
     "@myc/swarm": "workspace:*",
-    "@myc/web": "workspace:*"
+    "@myc/web": "workspace:*",
+    "@myc/server": "workspace:*",
+    "@myc/store-postgres": "workspace:*"
   },
   "scripts": {
     "test": "bun test",

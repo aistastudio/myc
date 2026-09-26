@@ -421,6 +421,9 @@ export const Q = defineQueries({
     sql: `SELECT kind, scope, title, body, content_hash,
                  (deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL) AS indexed
             FROM nodes WHERE id = ?1`,
+    pg: `SELECT kind, scope, title, body, content_hash,
+                 (deleted_at IS NULL AND attrs->>'external_ref' IS NULL) AS indexed
+            FROM nodes WHERE id = $1`,
     params: ["id"],
   },
   /**
@@ -440,6 +443,13 @@ export const Q = defineQueries({
            WHERE n.scope = ?1 AND n.kind = ?2
              AND n.content_hash >= ?3 AND n.content_hash < ?4
              AND n.deleted_at IS NULL AND json_extract(n.attrs,'$.external_ref') IS NULL`,
+    pg: `SELECT n.id AS id, n.content_hash AS content_hash,
+                 CAST(fc.hlc AS TEXT) AS born_hlc, fc.site_id AS born_site
+            FROM nodes n
+            LEFT JOIN field_clock fc ON fc.entity_id = n.id AND fc.field = 'kind'
+           WHERE n.scope = $1 AND n.kind = $2
+             AND n.content_hash >= $3 AND n.content_hash < $4
+             AND n.deleted_at IS NULL AND n.attrs->>'external_ref' IS NULL`,
     params: ["scope", "kind", "lo", "hi"],
   },
   /** Все пониженные дубликаты с их каноническим узлом — для doctor и web. */
@@ -454,6 +464,15 @@ export const Q = defineQueries({
            WHERE instr(l.content_hash, ':') > 0
              AND l.deleted_at IS NULL AND json_extract(l.attrs,'$.external_ref') IS NULL
            ORDER BY l.scope, l.kind, l.id`,
+    pg: `SELECT l.id AS id, w.id AS "of", l.scope AS scope, l.kind AS kind
+            FROM nodes l
+            JOIN nodes w
+              ON w.scope = l.scope AND w.kind = l.kind
+             AND w.content_hash = substr(l.content_hash, 1, position(':' in l.content_hash) - 1)
+             AND w.deleted_at IS NULL AND w.attrs->>'external_ref' IS NULL
+           WHERE position(':' in l.content_hash) > 0
+             AND l.deleted_at IS NULL AND l.attrs->>'external_ref' IS NULL
+           ORDER BY l.scope, l.kind, l.id`,
     params: [],
   },
   content_duplicates_count: {
@@ -461,6 +480,9 @@ export const Q = defineQueries({
     sql: `SELECT count(*) AS n FROM nodes
            WHERE instr(content_hash, ':') > 0
              AND deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL`,
+    pg: `SELECT count(*) AS n FROM nodes
+           WHERE position(':' in content_hash) > 0
+             AND deleted_at IS NULL AND attrs->>'external_ref' IS NULL`,
     params: [],
   },
 
@@ -480,6 +502,9 @@ export const Q = defineQueries({
     sql: `SELECT kind, scope, json_extract(attrs,'$.external_ref') AS ref, ext_dup,
                  (deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NOT NULL) AS indexed
             FROM nodes WHERE id = ?1`,
+    pg: `SELECT kind, scope, attrs->>'external_ref' AS ref, ext_dup,
+                 (deleted_at IS NULL AND attrs->>'external_ref' IS NOT NULL) AS indexed
+            FROM nodes WHERE id = $1`,
     params: ["id"],
   },
   /**
@@ -499,6 +524,14 @@ export const Q = defineQueries({
              AND json_extract(n.attrs,'$.external_ref') = ?3
              AND n.deleted_at IS NULL
              AND json_extract(n.attrs,'$.external_ref') IS NOT NULL`,
+    pg: `SELECT n.id AS id, n.ext_dup AS ext_dup,
+                 CAST(fc.hlc AS TEXT) AS born_hlc, fc.site_id AS born_site
+            FROM nodes n
+            LEFT JOIN field_clock fc ON fc.entity_id = n.id AND fc.field = 'kind'
+           WHERE n.scope = $1 AND n.kind = $2
+             AND n.attrs->>'external_ref' = $3
+             AND n.deleted_at IS NULL
+             AND n.attrs->>'external_ref' IS NOT NULL`,
     params: ["scope", "kind", "ref"],
   },
   /** Все понижённые ввезённые узлы с их держателем — для doctor и web. */
@@ -514,6 +547,16 @@ export const Q = defineQueries({
            WHERE l.ext_dup <> '' AND l.deleted_at IS NULL
              AND json_extract(l.attrs,'$.external_ref') IS NOT NULL
            ORDER BY l.scope, l.kind, l.id`,
+    pg: `SELECT l.id AS id, w.id AS "of", l.scope AS scope, l.kind AS kind,
+                 l.attrs->>'external_ref' AS ref
+            FROM nodes l
+            JOIN nodes w
+              ON w.scope = l.scope AND w.kind = l.kind
+             AND w.attrs->>'external_ref' = l.attrs->>'external_ref'
+             AND w.ext_dup = '' AND w.deleted_at IS NULL
+           WHERE l.ext_dup <> '' AND l.deleted_at IS NULL
+             AND l.attrs->>'external_ref' IS NOT NULL
+           ORDER BY l.scope, l.kind, l.id`,
     params: [],
   },
   external_duplicates_count: {
@@ -521,6 +564,9 @@ export const Q = defineQueries({
     sql: `SELECT count(*) AS n FROM nodes
            WHERE ext_dup <> '' AND deleted_at IS NULL
              AND json_extract(attrs,'$.external_ref') IS NOT NULL`,
+    pg: `SELECT count(*) AS n FROM nodes
+           WHERE ext_dup <> '' AND deleted_at IS NULL
+             AND attrs->>'external_ref' IS NOT NULL`,
     params: [],
   },
   // myc_health — то, что читают web и /v1/health (И2). Смена состояния

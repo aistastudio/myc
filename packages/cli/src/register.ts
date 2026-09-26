@@ -90,6 +90,9 @@ export function registerAll(registry: Registry): void {
   // `version` стоит рядом с wire/init — это команды человека, а не агента,
   // и проверка обновлений живёт только здесь (единственная сеть во всём CLI).
   lazy("version", () => import("./commands/version.ts").then((m) => m.createVersionCommand()));
+  // `serve` — сервер команды (M4): тоже команда человека, и рядом с version по
+  // той же причине — сеть у неё своя и явная, агент её не зовёт.
+  lazy("serve", () => import("./commands/serve.ts").then((m) => m.createServeCommand()));
   // wire и mcp строятся ОТ реестра (им нужен его состав), поэтому загрузчик
   // замыкает тот самый registry, в который регистрируется.
   lazy("wire", () => import("./commands/wire.ts").then((m) => m.createWireCommand(registry)));
