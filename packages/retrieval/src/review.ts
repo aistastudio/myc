@@ -169,7 +169,10 @@ export function isAwaitingReview(
  * имеет, то есть почти всю базу.
  */
 export function notPendingPredicate(alias: string): string {
-  return `(json_extract(${alias}.attrs, '$.${REVIEW_STATE_KEY}') IS NOT '${PENDING_REVIEW}')`;
+  // `IS DISTINCT FROM`, а не `IS NOT`: обе формы null-safe и в SQLite значат
+  // одно (с 3.39; наш пол 3.50.4), но `IS NOT <значение>` — синтаксис только
+  // SQLite. Общий текст избавляет от оверрайда на каждый запрос prime.
+  return `(json_extract(${alias}.attrs, '$.${REVIEW_STATE_KEY}') IS DISTINCT FROM '${PENDING_REVIEW}')`;
 }
 
 /** Тот же предикат готовым хвостом WHERE. */

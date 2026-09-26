@@ -199,12 +199,21 @@ describe("toPgDialect: механический перевод диалекта"
     );
   });
 
-  test("один ключ JSON переводится в ->>", () => {
+  test("один ключ JSON переводится в ->> и берётся в скобки", () => {
     expect(toPgDialect("SELECT json_extract(attrs,'$.repo') FROM nodes")).toBe(
-      "SELECT attrs->>'repo' FROM nodes",
+      "SELECT (attrs->>'repo') FROM nodes",
     );
     // С таблицей-владельцем и пробелами — то же самое.
-    expect(toPgDialect("WHERE json_extract( n.attrs , '$.type' ) = ?1")).toBe("WHERE n.attrs->>'type' = $1");
+    expect(toPgDialect("WHERE json_extract( n.attrs , '$.type' ) = ?1")).toBe("WHERE (n.attrs->>'type') = $1");
+  });
+
+  test("скобки не украшение: без них склейка ломает запрос", () => {
+    // У `->>` и `||` в Postgres один приоритет и левая ассоциативность:
+    // 'episode:' || attrs->>'k' — это ('episode:' || attrs)->>'k', то есть
+    // конкатенация jsonb, и запрос падает на разборе JSON. Поймано паритетом.
+    expect(toPgDialect("WHERE 'episode:' || json_extract(a.attrs,'$.episode_id') = ?1")).toBe(
+      "WHERE 'episode:' || (a.attrs->>'episode_id') = $1",
+    );
   });
 
   test("путь сложнее одного ключа НЕ переводится: это решение автора запроса", () => {
@@ -218,7 +227,7 @@ describe("toPgDialect: механический перевод диалекта"
 
   test("перевод идёт поверх нумерации мест и не ломает её", () => {
     expect(toPgDialect("SELECT ?2 FROM nodes INDEXED BY ix_a WHERE json_extract(attrs,'$.k') = ?1")).toBe(
-      "SELECT $2 FROM nodes WHERE attrs->>'k' = $1",
+      "SELECT $2 FROM nodes WHERE (attrs->>'k') = $1",
     );
   });
 

@@ -16,6 +16,8 @@ import {
   repoClause,
   repoPredicate,
   repoReasonText,
+  toPgDialect,
+  type Dialect,
 } from "@myc/core";
 import { freshnessClock, freshnessClockSql } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
@@ -80,20 +82,43 @@ const ANCHOR_SUBQ = `COALESCE((SELECT CASE
  * Три `WHEN ?8 - часы < …` вычисляли бы выражение трижды: на стенде, где все
  * 4000 готовых задач ввезены, это +70 % к скорингу.
  */
-function freshnessTermSql(): string {
-  return `CASE min(7, max(0, CAST((?8 - ${freshnessClockSql("n")}) / 86400000 AS INTEGER)))
+function freshnessTermSql(dialect: Dialect): string {
+  const clock = freshnessClockSql("n", dialect);
+  // Возраст в целых сутках. У SQLite это `CAST(… AS INTEGER)` — отсечение
+  // дробной части; в Postgres тот же CAST ОКРУГЛЯЕТ (2.6 → 3), поэтому там
+  // `trunc`: иначе задача на полтора дня попадала бы в другую ступень
+  // свежести. Двухаргументные min/max в Postgres называются least/greatest.
+  const days =
+    dialect === "pg"
+      ? `least(7, greatest(0, trunc((?8 - ${clock}) / 86400000.0)))`
+      : `min(7, max(0, CAST((?8 - ${clock}) / 86400000 AS INTEGER)))`;
+  return `CASE ${days}
                          WHEN 0 THEN 1.0 WHEN 1 THEN 0.7 WHEN 2 THEN 0.7 WHEN 7 THEN 0.15 ELSE 0.4 END`;
 }
 
-function scoredTopSql(anchorTerm: string, withRepo: boolean): string {
+/**
+ * Текст скоринга для ОБОИХ диалектов из одного генератора.
+ *
+ * Механическое (плейсхолдеры, `INDEXED BY`, `json_extract` одного ключа)
+ * доделывает `toPgDialect` — здесь только то, что механически не переводится:
+ *
+ *  - `round(x, 2)`: в Postgres round с точностью есть ТОЛЬКО у numeric, а
+ *    произведение веса на CASE — double precision, поэтому явное приведение;
+ *  - `min(a,b)` → `least(a,b)`: в Postgres min — агрегат, а не скаляр;
+ *  - свежесть и отсечение дробной части — см. freshnessTermSql.
+ */
+function scoredTopSql(anchorTerm: string, withRepo: boolean, dialect: Dialect = "sqlite"): string {
+  const round2 = (expr: string): string =>
+    dialect === "pg" ? `round((${expr})::numeric, 2)` : `round(${expr}, 2)`;
+  const least = (x: string, y: string): string => (dialect === "pg" ? `least(${x}, ${y})` : `min(${x}, ${y})`);
   return `SELECT n.id, n.priority, n.status, n.assignee, n.title,
             n.updated_at, n.created_at, n.attrs,
-       round(?2 * CASE n.priority WHEN 0 THEN 1.0 WHEN 1 THEN 0.6667 WHEN 2 THEN 0.3333 ELSE 0.0 END, 2)
-     + round(?3 * min(COALESCE(${UNBLOCKS_SUBQ}, 0), 3) / 3.0, 2)
-     + round(?4 * ${freshnessTermSql()}, 2)
-     + round(?5 * ${anchorTerm}, 2)
-     + round(?6 * CASE COALESCE(json_extract(n.attrs,'$.type'),'task')
-                       WHEN 'bug' THEN 1.0 WHEN 'task' THEN 0.5 ELSE 0.25 END, 2)
+       ${round2("?2 * CASE n.priority WHEN 0 THEN 1.0 WHEN 1 THEN 0.6667 WHEN 2 THEN 0.3333 ELSE 0.0 END")}
+     + ${round2(`?3 * ${least(`COALESCE(${UNBLOCKS_SUBQ}, 0)`, "3")} / 3.0`)}
+     + ${round2(`?4 * ${freshnessTermSql(dialect)}`)}
+     + ${round2(`?5 * ${anchorTerm}`)}
+     + ${round2(`?6 * CASE COALESCE(json_extract(n.attrs,'$.type'),'task')
+                       WHEN 'bug' THEN 1.0 WHEN 'task' THEN 0.5 ELSE 0.25 END`)}
        AS score,
        count(*) OVER () AS total_ready
     FROM nodes AS n INDEXED BY ${withRepo ? "ix_nodes_ready_repo" : "ix_nodes_ready"}
@@ -115,21 +140,25 @@ export const readyQueries = defineQueries({
   ready_top_noanchors: {
     name: "ready_top_noanchors",
     sql: scoredTopSql("0.5", false),
+    pg: toPgDialect(scoredTopSql("0.5", false, "pg")),
     params: [...TOP_PARAMS],
   },
   ready_top_anchors: {
     name: "ready_top_anchors",
     sql: scoredTopSql(ANCHOR_SUBQ, false),
+    pg: toPgDialect(scoredTopSql(ANCHOR_SUBQ, false, "pg")),
     params: [...TOP_PARAMS],
   },
   ready_top_noanchors_repo: {
     name: "ready_top_noanchors_repo",
     sql: scoredTopSql("0.5", true),
+    pg: toPgDialect(scoredTopSql("0.5", true, "pg")),
     params: [...TOP_PARAMS_REPO],
   },
   ready_top_anchors_repo: {
     name: "ready_top_anchors_repo",
     sql: scoredTopSql(ANCHOR_SUBQ, true),
+    pg: toPgDialect(scoredTopSql(ANCHOR_SUBQ, true, "pg")),
     params: [...TOP_PARAMS_REPO],
   },
   ready_touches_exist: {

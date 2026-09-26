@@ -44,6 +44,8 @@ const URL_ENV = process.env.MYC_PG_URL;
 const DDL = readFileSync(join(import.meta.dir, "..", "..", "..", "db", "schema.postgres.sql"), "utf8");
 const TENANT = "parity";
 const SCOPE = "cherry";
+/** «Сейчас» посева и параметр ?8 скоринга: десять суток в миллисекундах. */
+const NOW_MS = 864_000_000;
 
 /**
  * Посев, исполнимый ОБЕИМИ базами дословно: явные списки колонок (generated
@@ -94,6 +96,54 @@ const SEED: readonly string[] = [
    VALUES ('${SCOPE}-0008','task',1,'${SCOPE}','свой двойник','open',2,'h-9','{}',96,96,960,'siteA')`,
   `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
    VALUES ('${SCOPE}-0009','task',1,'${SCOPE}','свой двойник','open',2,'h-9:${SCOPE}-0009','{}',97,97,970,'siteA')`,
+  // --- ступени свежести (S21) ----------------------------------------------
+  // Возраст задаётся ОТНОСИТЕЛЬНО ?8 (NOW_MS). 2.6 суток — точка, где выбор
+  // между отсечением и округлением ВИДЕН: отсечение даёт ступень 2 (0.7),
+  // округление — 3 (ELSE 0.4). Полтора дня для этого не годятся: ступени 1 и 2
+  // дают одно и то же, и ошибка прошла бы незамеченной.
+  `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0010','task',1,'${SCOPE}','свежая','open',1,'h-10','{"repo":"myc"}',1,${NOW_MS - 34_560_000},1000,'siteA')`,
+  `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0011','task',1,'${SCOPE}','два с половиной дня','open',1,'h-11','{"repo":"myc"}',1,${NOW_MS - 224_640_000},1100,'siteA')`,
+  `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0012','task',1,'${SCOPE}','почти неделя','open',3,'h-12','{"repo":"myc"}',1,${NOW_MS - 596_160_000},1200,'siteA')`,
+  // Ввезённая задача: часы свежести берутся у ИСТОЧНИКА, а не у updated_at
+  // (иначе день ввоза делал бы её свежей). Здесь проверяется ветка
+  // external_updated_at вместе с least/min и приведением типа из JSON.
+  `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0013','task',1,'${SCOPE}','ввезённая','open',2,'h-13','{"repo":"myc","external_ref":"bd-77","external_updated_at":${NOW_MS - 276_480_000}}',1,${NOW_MS - 8_640_000},1300,'siteA')`,
+  // --- поверхность prime (память L2/L3) -------------------------------------
+  // salience у всех РАЗНАЯ намеренно: порядок дайджеста — (layer DESC,
+  // salience DESC) без довеска по id, и на равных значениях два планировщика
+  // вправе разойтись законно. Сравнивать в этом месте означало бы проверять
+  // не паритет, а совпадение планов.
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0020','note',3,'${SCOPE}','проектное знание','суть 20','active',2,'h-20','{"reach":"project","repo":"myc"}',9.0,100,100,2000,'siteA')`,
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0021','note',2,'${SCOPE}','знание этой сессии','суть 21','active',2,'h-21','{"reach":"session","session_id":"sess-1"}',8.0,101,101,2100,'siteA')`,
+  // Чужая сессия: она и есть число «скрыто» в подвале (И2).
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0022','note',2,'${SCOPE}','знание чужой сессии','суть 22','active',2,'h-22','{"reach":"session","session_id":"sess-9"}',7.0,102,102,2200,'siteA')`,
+  // Эпизод: виден только сессии 'episode:ep-1'.
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0023','note',2,'${SCOPE}','знание эпизода','суть 23','active',2,'h-23','{"episode_id":"ep-1"}',6.0,103,103,2300,'siteA')`,
+  // Охват не задан вовсе — видно всем и считается в «без охвата».
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0024','note',2,'${SCOPE}','знание без охвата','суть 24','active',2,'h-24','{"repo":"other"}',5.0,104,104,2400,'siteA')`,
+  // Кандидат на подтверждение: из дайджеста исключён, но НАЗВАН числом.
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0025','note',2,'${SCOPE}','кандидат','суть 25','active',2,'h-25','{"reach":"project","state":"pending_review"}',4.0,105,105,2500,'siteA')`,
+  // Знание, чей код потерян целиком (§7.3): тоже вон из дайджеста и тоже числом.
+  `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, status, priority, content_hash, attrs, salience, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0026','note',2,'${SCOPE}','знание с потерянным кодом','суть 26','active',2,'h-26','{"reach":"project"}',3.0,106,106,2600,'siteA')`,
+  `INSERT INTO nodes (id, kind, layer, scope, title, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-a2','anchor',1,'${SCOPE}','src/gone.ts','lost',2,'h-a2','{}',107,107,2700,'siteA')`,
+  // git_ref непустой: на сервере якорь без идентичности в истории запрещён
+  // (решение memory-6fv6xbbfcb9g, CHECK в db/schema.postgres.sql).
+  `INSERT INTO anchors (node_id, repo_id, path, file_hash, span_hash, crux, crux_norm, span_start, span_end, state, bound_at, git_ref)
+   VALUES ('${SCOPE}-a2','repo-1','src/gone.ts','fh','sh','суть якоря','сутьякоря',1,10,'lost',107,'deadbeef')`,
+  `INSERT INTO edges (src, type, dst, add_tag, created_at, hlc, site_id)
+   VALUES ('${SCOPE}-0026','touches','${SCOPE}-a2','tag-4',108,2800,'siteA')`,
   // Отложенная операция: pending_count и pending_any иначе тоже пусты.
   // `op` — целая операция в JSON (в SQLite это стережёт CHECK json_valid).
   `INSERT INTO oplog_pending (op_id, needs, origin, op, parked_at)
@@ -146,11 +196,10 @@ const CASES: readonly Case[] = [
  * руками для двадцати с лишним запросов — верный способ проверить не тот
  * запрос; здесь же неизвестное имя параметра роняет стенд с внятной причиной.
  */
-const NOW = 1_000_000;
 const NAMED: Readonly<Record<string, unknown>> = {
   scope: SCOPE,
   repo: "myc",
-  now: NOW,
+  now: NOW_MS,
   lim: 5,
   id: `${SCOPE}-0004`,
   session: "sess-1",
@@ -197,7 +246,47 @@ const READY_CASES: readonly Case[] = [
   { q: R.ready_anchor_states, params: [], unordered: true },
   { q: R.ready_top_blocker, params: [] },
   { q: primeQueries.prime_node_count, params: named(primeQueries.prime_node_count) },
+  // Скоринг S21 целиком: веса, ступени свежести, якоря, охват репозитория.
+  // Порядок здесь ЧАСТЬ ответа (ORDER BY score DESC, priority, id), поэтому
+  // сравнивается как есть.
+  { q: R.ready_top_noanchors, params: named(R.ready_top_noanchors) },
+  { q: R.ready_top_anchors, params: named(R.ready_top_anchors) },
+  { q: R.ready_top_noanchors_repo, params: named(R.ready_top_noanchors_repo) },
+  { q: R.ready_top_anchors_repo, params: named(R.ready_top_anchors_repo) },
 ];
+
+const P = primeQueries;
+
+/**
+ * Реестр prime. Здесь у дайджеста ДРУГОЙ текст под Postgres (двухшаговый скан
+ * по rowid — лекарство от болезни SQLite, которой в Postgres нет), а у
+ * остальных — тот же, потому что предикаты охвата, кандидатов и потерянного
+ * кода переписаны так, чтобы их понимали обе базы.
+ */
+const PRIME_CASES: readonly Case[] = [
+  { q: P.prime_digest_scan, params: named(P.prime_digest_scan) },
+  { q: P.prime_digest_scan_repo, params: named(P.prime_digest_scan_repo) },
+  { q: P.prime_reach_counts, params: named(P.prime_reach_counts) },
+  { q: P.prime_reach_counts, params: named(P.prime_reach_counts, { session: "" }), label: "без сессии" },
+  { q: P.prime_reach_counts, params: named(P.prime_reach_counts, { session: "episode:ep-1" }), label: "эпизод" },
+  { q: P.prime_pending_count, params: named(P.prime_pending_count) },
+  { q: P.prime_lost_count, params: named(P.prime_lost_count) },
+  { q: P.prime_repo_counts, params: named(P.prime_repo_counts) },
+  { q: P.prime_inprogress, params: named(P.prime_inprogress) },
+  { q: P.prime_inprogress_count, params: named(P.prime_inprogress_count) },
+];
+
+/**
+ * Число в тексте приводится к каноническому виду. SQLite считает score в
+ * double и даёт 0.5700000000000001, Postgres — точный numeric и даёт 0.57;
+ * round(x,2) там же возвращает «1.00» вместо «1». Это РАЗНОЕ ПРЕДСТАВЛЕНИЕ
+ * одного числа, и сравнивать его текстом значило бы ловить формат. Разница
+ * грубее 1e-9 переживает канонизацию и тест её увидит.
+ */
+function canonNumber(text: string): string {
+  if (!/^-?\d+\.\d+$/.test(text)) return text;
+  return String(Number(Number(text).toFixed(9)));
+}
 
 /** Типы обёрток стираются, данные — нет (см. докстроку файла). */
 function normalize(rows: readonly unknown[]): unknown[] {
@@ -211,7 +300,7 @@ function normalize(rows: readonly unknown[]): unknown[] {
             ? v ? "1" : "0"
             : v instanceof Uint8Array
               ? `bytes:${v.length}`
-              : String(v);
+              : canonNumber(String(v));
     }
     return out;
   });
@@ -253,7 +342,7 @@ describe("паритет диалектов на одном посеве", () =>
   const sorted = (rows: unknown[]): unknown[] =>
     [...rows].sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
 
-  for (const c of [...CASES, ...READY_CASES]) {
+  for (const c of [...CASES, ...READY_CASES, ...PRIME_CASES]) {
     const title = c.label === undefined ? c.q.name : `${c.q.name} (${c.label})`;
     test(`${title}: SQLite и Postgres отвечают одинаково`, async () => {
       if (skip !== null) return void console.log(`[skip] ${skip}`);
@@ -274,6 +363,12 @@ describe("паритет диалектов на одном посеве", () =>
       // проверяет только то, что обе базы согласны молчать; такой посев ловится
       // здесь, а не через год, когда запрос поменяют и никто не заметит.
       expect(fromLite.length).toBeGreaterThan(0);
+      // PARITY_CENSUS=1 печатает, ЧТО именно вернул случай: посев легко
+      // сделать так, что запрос отвечает одной пустой строкой на обеих базах,
+      // и тогда «паритет» проверяет только согласие молчать.
+      if (process.env["PARITY_CENSUS"] === "1") {
+        console.log(`[census] ${title} → ${JSON.stringify(fromLite).slice(0, 160)}`);
+      }
     });
   }
 });

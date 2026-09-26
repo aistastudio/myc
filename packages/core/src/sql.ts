@@ -120,8 +120,12 @@ export function placeholderNumbers(sql: string, marker: "?" | "$"): number[] {
  *    подходит), им закреплён план горячих путей. В Postgres такого нет вовсе:
  *    план выбирает планировщик. Подсказка снимается, результат от этого не
  *    меняется — меняется только план, и об этом здесь сказано вслух.
- *  - `json_extract(x,'$.k')` → `x->>'k'`: ровно та же операция, один ключ
- *    верхнего уровня, текстом в обоих диалектах. Пути сложнее одного ключа
+ *  - `json_extract(x,'$.k')` → `(x->>'k')`: ровно та же операция, один ключ
+ *    верхнего уровня, текстом в обоих диалектах. СКОБКИ ОБЯЗАТЕЛЬНЫ: в
+ *    Postgres у `->>` и `||` один приоритет и левая ассоциативность, поэтому
+ *    `'episode:' || attrs->>'k'` разбирается как `('episode:' || attrs)->>'k'`
+ *    — конкатенация jsonb вместо текста, и запрос падает на разборе JSON.
+ *    Поймано паритетом на реестре prime. Пути сложнее одного ключа
  *    (массивы, вложенность) НЕ переводятся: их надо писать оверрайдом
  *    осознанно, и сторож в tests ловит их появление в реестрах.
  *
@@ -133,7 +137,7 @@ const INDEX_HINT = /\s+INDEXED\s+BY\s+[A-Za-z_][A-Za-z0-9_]*/gi;
 const JSON_ONE_KEY = /json_extract\s*\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'\s*\)/gi;
 
 export function toPgDialect(sql: string): string {
-  return toPgPlaceholders(sql).replace(INDEX_HINT, "").replace(JSON_ONE_KEY, "$1->>'$2'");
+  return toPgPlaceholders(sql).replace(INDEX_HINT, "").replace(JSON_ONE_KEY, "($1->>'$2')");
 }
 
 export function resolveQueryText(def: QueryDef, dialect: Dialect): string {

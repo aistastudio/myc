@@ -220,13 +220,18 @@ export function reachPredicate(alias: string, param: number): string {
   const reach = `json_extract(${alias}.attrs,'$.${REACH_KEY}')`;
   const session = `json_extract(${alias}.attrs,'$.${SESSION_KEY}')`;
   const episode = `json_extract(${alias}.attrs,'$.${EPISODE_KEY}')`;
+  // ВЕТВИ ЦЕЛЫЕ, СРАВНЕНИЕ ЯВНОЕ. SQLite считает логическое выражение числом
+  // и пускает число в WHERE; Postgres требует boolean и не смешивает типы
+  // ветвей CASE. Целые ветви плюс `= 1` понимают обе базы одинаково — это
+  // дешевле, чем второй текст предиката, который разойдётся с первым.
+  const flag = (cond: string): string => `(CASE WHEN ${cond} THEN 1 ELSE 0 END)`;
   return `(CASE coalesce(${reach}, '')
              WHEN 'project' THEN 1
-             WHEN 'session' THEN (?${param} <> '' AND coalesce(${session}, '') = ?${param})
+             WHEN 'session' THEN ${flag(`?${param} <> '' AND coalesce(${session}, '') = ?${param}`)}
              ELSE (CASE WHEN coalesce(${episode}, '') <> ''
-                        THEN (?${param} <> '' AND 'episode:' || ${episode} = ?${param})
+                        THEN ${flag(`?${param} <> '' AND 'episode:' || ${episode} = ?${param}`)}
                         ELSE 1 END)
-           END)`;
+           END = 1)`;
 }
 
 /** Тот же предикат готовой строкой WHERE-хвоста. */

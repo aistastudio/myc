@@ -39,7 +39,7 @@
 //     ленивый колбэк, который НЕ вызывается, если триггер не сработал, — в этом
 //     вся экономия.
 
-import { defineQueries, historyClause, type DbDriver, type Layer } from "@myc/core";
+import { defineQueries, historyClause, type DbDriver, type Dialect, type Layer } from "@myc/core";
 import type { FtsCaller } from "./fts.ts";
 import {
   readOplogSeq,
@@ -857,19 +857,33 @@ export function sourceCreatedAt(node: {
  * Вызывающий обязан вычислять выражение ОДИН раз на строку (у ready — через
  * `CASE <возраст в сутках> WHEN …`, где база CASE считается однажды).
  */
-export function freshnessClockSql(alias: string): string {
+export function freshnessClockSql(alias: string, dialect: Dialect = "sqlite"): string {
   const a = `${alias}.attrs`;
   const w = `${alias}.updated_at`;
-  const isNum = (key: string): string => `json_type(${a},'$.${key}') IN ('integer','real')`;
-  const val = (key: string): string => `json_extract(${a},'$.${key}')`;
+  const pg = dialect === "pg";
+  // Диалект знает САМ генератор, а не копия рядом: выражение уходит и в
+  // скоринг очереди, и в гибридный поиск, и второй текст, живущий отдельно,
+  // разошёлся бы с первым при первой же правке формулы.
+  //
+  // Чем отличается Postgres. `json_type` там нет — есть `jsonb_typeof`, и он
+  // не различает целое и вещественное: оба 'number', что здесь и требуется.
+  // `->>` отдаёт ТЕКСТ, поэтому время приводится к bigint явно — иначе
+  // сравнение с `updated_at` было бы сравнением строк. `instr` заменяет
+  // `position`, а двухаргументный `min` — `least` (в Postgres `min` только
+  // агрегат).
+  const isNum = (key: string): string =>
+    pg ? `jsonb_typeof(${a}->'${key}') = 'number'` : `json_type(${a},'$.${key}') IN ('integer','real')`;
+  const val = (key: string): string => (pg ? `(${a}->>'${key}')::bigint` : `json_extract(${a},'$.${key}')`);
+  const noExternal = pg ? `position('"external_' in ${a}::text) = 0` : `instr(${a}, '"external_') = 0`;
+  const least = (x: string, y: string): string => (pg ? `least(${x}, ${y})` : `min(${x}, ${y})`);
   const U = FRESHNESS_ATTRS.sourceUpdated;
   const C = FRESHNESS_ATTRS.sourceCreated;
   const S = FRESHNESS_ATTRS.synced;
   return `(CASE
-      WHEN instr(${a}, '"external_') = 0 THEN ${w}
+      WHEN ${noExternal} THEN ${w}
       WHEN ${isNum(S)} AND ${w} > ${val(S)} + ${IMPORT_WRITE_SLACK_MS} THEN ${w}
-      WHEN ${isNum(U)} THEN min(${val(U)}, ${w})
-      WHEN ${isNum(C)} THEN min(${val(C)}, ${w})
+      WHEN ${isNum(U)} THEN ${least(val(U), w)}
+      WHEN ${isNum(C)} THEN ${least(val(C), w)}
       ELSE ${w}
     END)`;
 }
@@ -911,18 +925,24 @@ export function anchorStatesSql(alias: string): string {
  * prime_digest_scan (packages/cli/src/commands/prime.ts).
  */
 export function anchorsAllLostSql(alias: string): string {
-  return `(SELECT min(an.state = 'lost')
+  // `min(CASE … THEN 1 ELSE 0 END)`, а не `min(an.state = 'lost')`: логическое
+  // выражение SQLite отдаёт числом и агрегирует, а Postgres агрегировать
+  // boolean не умеет вовсе (там bool_and). Целое понимают обе базы — и это
+  // один текст на два диалекта вместо двух расходящихся.
+  return `(SELECT min(CASE WHEN an.state = 'lost' THEN 1 ELSE 0 END)
               FROM edges t JOIN anchors an ON an.node_id = t.dst
              WHERE t.src = ${alias}.id AND t.type = 'touches' AND t.deleted_at IS NULL)`;
 }
 
 /**
  * Предикат «знание НЕ из тех, чей код потерян целиком»: без якорей или с хоть
- * одним живым. `IS NOT 1`, а не `= 0`: у узла без якорей выражение — NULL, и
- * `= 0` отсекло бы почти всю базу.
+ * одним живым. Сравнение null-safe, а не `= 0`: у узла без якорей выражение —
+ * NULL, и `= 0` отсекло бы почти всю базу. Написано `IS DISTINCT FROM`, а не
+ * `IS NOT`: SQLite понимает обе формы (с 3.39, наш пол 3.50.4), Postgres —
+ * только первую, и общий текст экономит целый оверрайд.
  */
 export function anchorsAlivePredicate(alias: string): string {
-  return `(${anchorsAllLostSql(alias)} IS NOT 1)`;
+  return `(${anchorsAllLostSql(alias)} IS DISTINCT FROM 1)`;
 }
 
 /**

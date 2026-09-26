@@ -72,6 +72,7 @@ import {
   reachFromColumns,
   reachPredicate,
   repoClause,
+  toPgDialect,
   repoColumns,
   repoFromColumns,
   repoPredicate,
@@ -159,6 +160,31 @@ type Role = (typeof ROLES)[number];
  * мерить и объяснять план надо ТОТ ЖЕ текст, который исполняет команда, иначе
  * замер относится к своей копии SQL, а не к горячему пути.
  */
+/**
+ * Дайджест на Postgres — ОДИН запрос вместо двухшагового скана.
+ *
+ * Двухшаговость выше (rowid во внутреннем запросе, терм якорей снаружи) — это
+ * лечение конкретной болезни SQLite: там терм якорей внутри WHERE считался бы
+ * на каждой строке сортируемых групп слоя. В Postgres нет ни `rowid`, ни этой
+ * болезни: планировщик сам решает, когда считать подзапрос, а `LIMIT -1`
+ * там и вовсе синтаксическая ошибка. Копировать форму ради сходства значило бы
+ * переносить чужое лекарство вместе с диагнозом.
+ *
+ * Смысл сохранён дословно: те же условия, тот же порядок (layer DESC,
+ * salience DESC) и тот же LIMIT — паритет сверяет строки (parity.pg.test.ts).
+ */
+function digestScanPgSql(withRepo: boolean): string {
+  return `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
+                 ${reachColumns("n")}${withRepo ? `, ${repoColumns("n")}` : ""}
+            FROM nodes n
+           WHERE n.scope = ?1 AND n.layer >= 2${historyClause("follow", "n")}
+             AND n.deleted_at IS NULL${reachClause("n", 3)}${withRepo ? repoClause("n", 4) : ""}${notPendingClause("n")}
+             AND ${liveStatusPredicate("n")}
+             AND ${anchorsAlivePredicate("n")}
+           ORDER BY n.layer DESC, n.salience DESC
+           LIMIT ?2`;
+}
+
 export const primeQueries = defineQueries({
   prime_node_count: {
     name: "prime_node_count",
@@ -223,6 +249,7 @@ export const primeQueries = defineQueries({
   // ORDER BY (тот и есть оракул порядка).
   prime_digest_scan: {
     name: "prime_digest_scan",
+    pg: toPgDialect(digestScanPgSql(false)),
     sql: `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
                  ${reachColumns("n")}
             FROM (SELECT nodes.rowid AS rid
@@ -238,6 +265,7 @@ export const primeQueries = defineQueries({
   },
   prime_digest_scan_repo: {
     name: "prime_digest_scan_repo",
+    pg: toPgDialect(digestScanPgSql(true)),
     sql: `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
                  ${reachColumns("n")}, ${repoColumns("n")}
             FROM (SELECT nodes.rowid AS rid
