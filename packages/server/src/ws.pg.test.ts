@@ -199,16 +199,95 @@ describe("данные воркспейса по HTTP", () => {
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("denied.no_token");
   });
 
-  test("запись отвечает причиной, а не «GET only»", async () => {
-    if (skip !== null) return void console.log(`[skip] ${skip}`);
-    const res = await fetch(`${srv!.url}/v1/ws/cherry/nodes`, {
+  const post = async (path: string, token: string, body: unknown): Promise<{ status: number; body: any }> => {
+    const res = await fetch(`${srv!.url}${path}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${acme}`, "content-type": "application/json" },
-      body: JSON.stringify({ kind: "task", title: "новая" }),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  test("создание узла: он появляется в СВОЁМ воркспейсе и больше нигде", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const made = await post("/v1/ws/cherry/nodes", acme, {
+      kind: "task",
+      title: "через сервер",
+      priority: 1,
+      attrs: { repo: "myc" },
+    });
+    expect(made.status).toBe(200);
+    expect(made.body.ok).toBe(true);
+    expect(made.body.data.title).toBe("через сервер");
+    expect(made.body.data.scope).toBe("cherry");
+    expect(made.body.meta.applied).toBeGreaterThan(0);
+    const id = made.body.data.id as string;
+    // Идентификатор несёт слаг воркспейса — как у всех узлов myc.
+    expect(id.startsWith("cherry-")).toBe(true);
+
+    // Виден в своём воркспейсе...
+    const own = await get(`/v1/ws/cherry/nodes/${id}`, acme);
+    expect(own.status).toBe(200);
+    expect(own.body.data.attrs).toEqual({ repo: "myc" });
+    // ...и не виден ни в соседнем, ни у соседа по серверу.
+    expect((await get(`/v1/ws/portal/nodes/${id}`, acme)).status).toBe(404);
+    expect((await get(`/v1/ws/cherry/nodes/${id}`, globex)).status).toBe(404);
+  });
+
+  test("запись прошла ОПЛОГОМ, а не прямой вставкой", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const made = await post("/v1/ws/cherry/nodes", acme, { kind: "note", title: "с оплогом" });
+    expect([made.status, made.body.error ?? null]).toEqual([200, null]);
+    const id = made.body.data.id as string;
+    // Узел, записанный мимо оплога, не доедет ни до одной реплики. Проверяем
+    // именно это: строки операций и часы полей на месте.
+    const rows = await pg!.withTenant("acme", async (tx) =>
+      tx.raw<{ field: string }>("SELECT field FROM oplog WHERE entity_id = $1 ORDER BY field", [id]),
+    );
+    expect(rows.map((r) => r.field)).toEqual(["kind", "priority", "scope", "seen_count", "title"]);
+    const clocks = await pg!.withTenant("acme", async (tx) =>
+      tx.raw<{ n: string }>("SELECT count(*) AS n FROM field_clock WHERE entity_id = $1", [id]),
+    );
+    expect(Number(clocks[0]!.n)).toBeGreaterThan(0);
+  });
+
+  test("две записи подряд доезжают обе: op_id берутся от хвоста оплога", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    // Это регрессия класса myc-4dy, и она была здесь живой: операции
+    // минтились ДО транзакции, второй запрос выдавал те же op_id, весь пакет
+    // журналировался как повтор — ответ 200, в базе ничего.
+    const a = await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "подряд один" });
+    const b = await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "подряд два" });
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(a.body.data.id).not.toBe(b.body.data.id);
+    for (const r of [a, b]) {
+      expect([r.body.data.title, r.body.meta.applied > 0]).toEqual([r.body.data.title, true]);
+      const back = await get(`/v1/ws/cherry/nodes/${r.body.data.id}`, acme);
+      expect([r.body.data.title, back.status]).toEqual([r.body.data.title, 200]);
+      expect(back.body.data.title).toBe(r.body.data.title);
+    }
+  });
+
+  test("негодный вход отвергается ДО базы и говорит, что не так", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    for (const [body, code] of [
+      [{ kind: "task", title: "   " }, "usage.title"],
+      [{ kind: "выдумка", title: "есть" }, "usage.kind"],
+      [{ kind: "task", title: "есть", priority: 9 }, "usage.priority"],
+    ] as const) {
+      const res = await post("/v1/ws/cherry/nodes", acme, body);
+      expect([code, res.status]).toEqual([code, 400]);
+      expect(res.body.error.code).toBe(code);
+    }
+  });
+
+  test("неподдержанный метод называет себя, а не «GET only»", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const res = await fetch(`${srv!.url}/v1/ws/cherry/nodes/cherry-1`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${acme}` },
     });
     expect(res.status).toBe(405);
-    const body = (await res.json()) as { error: { code: string; msg: string } };
-    expect(body.error.code).toBe("unimpl.write");
-    expect(body.error.msg).toContain("read-only");
+    expect(((await res.json()) as { error: { msg: string } }).error.msg).toContain("DELETE");
   });
 });

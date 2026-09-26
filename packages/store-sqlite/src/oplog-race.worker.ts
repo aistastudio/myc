@@ -72,21 +72,25 @@ const store = new GraphStore(driver, {
   newId: () => generateId(),
 });
 
-if (args.mutant === "swallow") {
-  // Код до myc-4dy: seq и часы живут только в памяти процесса, второй
-  // одинаковый op_id тихо отбрасывается как «уже применённый», ничья по
-  // (hlc, site_id) неотличима от обычного проигрыша LWW.
+/**
+ * Мутант воспроизводит НАБЛЮДАЕМОЕ поведение кода до myc-4dy, а не его
+ * внутренности: seq и часы живут только в памяти процесса, а занятый op_id и
+ * ничья по (hlc, site_id) отчитываются как успех — запись при этом не
+ * происходит. Именно так потеря и выглядела снаружи: воркер доволен, строк в
+ * оплоге меньше.
+ *
+ * Прежде симуляция подменяла приватные методы движка (`syncTail`, `journal­Local`,
+ * `projectSet`). После переезда применителя в ядро подмена перестала на
+ * что-либо влиять, и мутант «чинился» сам собой — тест проверял бы пустоту.
+ * Поэтому: глушим состояние, которое поднимает хвост, и глотаем столкновение
+ * в самом воркере.
+ */
+const swallow = args.mutant === "swallow";
+if (swallow) {
   const raw = store as unknown as Record<string, unknown>;
-  raw["syncTail"] = () => {};
-  const journal = raw["journal"] as (...a: unknown[]) => boolean;
-  raw["journalLocal"] = function (this: unknown, ...a: unknown[]): void {
-    journal.apply(this, [...a, 1]);
-  };
-  const projectSet = raw["projectSet"] as (...a: unknown[]) => string;
-  raw["projectSet"] = function (this: unknown, ...a: unknown[]): string {
-    const out = projectSet.apply(this, a);
-    return out === "collided" ? "stale" : out;
-  };
+  const ops = raw["ops"] as { advanceSeq: (n: number) => void; clock: { recv: (h: unknown) => void } };
+  ops.advanceSeq = (): void => {};
+  ops.clock.recv = (): void => {};
 }
 
 if (args.go !== undefined) {
@@ -113,9 +117,16 @@ for (let k = 0; k < args.ops; k++) {
     done++;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("clock_collision") || message.includes("is already taken") || message.includes("already in the oplog")) {
-      collisions++;
+    const tie =
+      message.includes("clock_collision") ||
+      message.includes("is already taken") ||
+      message.includes("already in the oplog");
+    if (tie && swallow) {
+      // Прежний код здесь молчал и считал запись состоявшейся.
+      done++;
+      continue;
     }
+    if (tie) collisions++;
     errors.push(`${args.worker}#${k}: ${message}`);
   }
   if (args.pauseMs > 0) Bun.sleepSync(args.pauseMs);

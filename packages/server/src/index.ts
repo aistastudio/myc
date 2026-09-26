@@ -25,7 +25,16 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 import { adminOverview, adminTenants, renderAdminPage } from "./admin.ts";
-import { boundedInt, parseWsPath, wsList, wsQueries, WS_LIMIT_DEFAULT, WS_LIMIT_MAX } from "./ws.ts";
+import {
+  boundedInt,
+  parseWsPath,
+  renderNode,
+  wsList,
+  wsQueries,
+  WS_LIMIT_DEFAULT,
+  WS_LIMIT_MAX,
+} from "./ws.ts";
+import { createNode, validateCreate } from "./write.ts";
 import {
   authenticate,
   clearCookie,
@@ -396,18 +405,11 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
       }
     }
 
-    if (req.method !== "GET") {
-      // Запись через сервер ещё не сделана, и это ОТДЕЛЬНОЕ решение: у
-      // Postgres нет асинхронного двойника GraphStore, а правила слияния
-      // (оплог, HLC, часы полей) живут в синхронном движке. Пока сервер
-      // отвечает причиной, а не «GET only»: второе выглядит как опечатка в
-      // запросе, первое — как состояние системы.
-      const code = parseWsPath(url.pathname) === null ? "usage.method" : "unimpl.write";
-      const msg =
-        code === "unimpl.write"
-          ? "writing through the server is not implemented yet: the workspace API is read-only"
-          : "GET only";
-      return json({ ok: false, error: { code, msg } }, 405);
+    // ЗАПИСЬ ИДЁТ ТОЛЬКО В ДАННЫЕ ВОРКСПЕЙСА и только после проверки токена
+    // (она ниже). Всё остальное на сервере — чтение: отвечать «405 GET only»
+    // честнее, чем делать вид, что метод поддержан и просто не сработал.
+    if (req.method !== "GET" && parseWsPath(url.pathname) === null) {
+      return json({ ok: false, error: { code: "usage.method", msg: "GET only" } }, 405);
     }
 
     // ДОСТУП. Закрыто всё, кроме пробы живости выше: сервер стоит в сети, и
@@ -535,6 +537,37 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
       const took = (): number => Math.round((performance.now() - t0) * 100) / 100;
 
       try {
+        if ((rest === "/nodes" || rest === "/nodes/") && req.method === "POST") {
+          // Создание узла: сервер минтит операции и отдаёт их ТОМУ ЖЕ
+          // применителю, что и CLI (packages/server/src/write.ts).
+          const body = await req.json().catch(() => null);
+          const parsed = validateCreate(body);
+          if (!parsed.ok) {
+            return json({ ok: false, cmd: "node", ws, error: parsed.error }, 400);
+          }
+          const created = await createNode(pg, tenant, ws, parsed.data, who!.subject);
+          const [node] = await pg.withTenant(tenant, async (tx) => [
+            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, created.id]),
+          ]);
+          return envelope("node", ws, node === undefined ? { id: created.id } : renderNode(node), {
+            took_ms: took(),
+            applied: created.applied,
+            collided: created.collided,
+          });
+        }
+
+        if (req.method !== "GET") {
+          return json(
+            {
+              ok: false,
+              cmd: "ws",
+              ws,
+              error: { code: "usage.method", msg: `${req.method} is not supported on ${url.pathname}` },
+            },
+            405,
+          );
+        }
+
         if (rest === "/nodes" || rest === "/nodes/") {
           const q = url.searchParams;
           const limit = boundedInt(q.get("limit"), WS_LIMIT_DEFAULT, WS_LIMIT_MAX);
@@ -568,7 +601,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
               404,
             );
           }
-          return envelope("node", ws, { ...node, edges }, { took_ms: took() });
+          return envelope("node", ws, { ...renderNode(node), edges }, { took_ms: took() });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

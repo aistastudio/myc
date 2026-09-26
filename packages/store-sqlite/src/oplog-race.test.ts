@@ -157,6 +157,24 @@ async function audit(fx: Fixture, expectedOps: number) {
   return { rows, distinct, lastSeq, owns, edges, expectedOps };
 }
 
+/**
+ * Процесс, НЕ ПОДНИМАЮЩИЙ часы и seq от хвоста оплога: ни в конструкторе
+ * (S38), ни в транзакции. Это единственный способ получить пару (hlc,
+ * site_id) или op_id, уже занятые в базе, — то есть воспроизвести myc-4dy.
+ *
+ * Прежде симуляция подменяла приватный `syncTail`. С переездом применителя в
+ * ядро (packages/core/src/apply.ts) движок зовёт его не через себя, и подмена
+ * метода перестала что-либо значить — тест продолжал бы «проходить», ничего
+ * не проверяя. Поэтому глушится САМО СОСТОЯНИЕ, которое хвост поднимает:
+ * счётчик операций и часы. Какой бы код их ни поднимал, здесь он бессилен.
+ */
+function blindToTail(store: GraphStore): void {
+  const raw = store as unknown as Record<string, unknown>;
+  const ops = raw["ops"] as { advanceSeq: (n: number) => void; clock: { recv: (h: unknown) => void } };
+  ops.advanceSeq = (): void => {};
+  ops.clock.recv = (): void => {};
+}
+
 describe("myc-4dy: процессы одного site_id пишут одновременно", () => {
   test(
     `${PROCESSES} процессов × ${OPS_PER_PROCESS} операций одним залпом: ноль проглоченных, ноль потерянных`,
@@ -334,13 +352,15 @@ describe("myc-4dy: ничья (hlc, site_id) при разных значени�
     // titleHlc. Seq уведён вперёд, чтобы столкнулись именно часы, а не op_id.
     const { store: frozen } = await openStore(dbPath);
     const raw = frozen as unknown as Record<string, unknown>;
-    raw["syncTail"] = () => {};
     const ops = raw["ops"] as unknown as { clock: HlcClock; advanceSeq(n: number): void };
     ops.clock = new HlcClock({
       now: () => titleHlc.ts,
       initial: { ts: titleHlc.ts, ctr: titleHlc.ctr - 1 },
     });
     ops.advanceSeq(10_000);
+    // Глушим ПОСЛЕ настройки: blindToTail замораживает то состояние, которое
+    // задано выше, а не то, что было при открытии.
+    blindToTail(frozen);
 
     let caught: unknown;
     try {
@@ -361,7 +381,7 @@ describe("myc-4dy: ничья (hlc, site_id) при разных значени�
     const node = first.store.createNode({ kind: "note", scope: "s", title: "a" });
     // Второй процесс стартует с тем же seq и не смотрит на хвост (мутант).
     const second = await openStore(dbPath);
-    (second.store as unknown as Record<string, unknown>)["syncTail"] = () => {};
+    blindToTail(second.store);
     first.store.updateNode(node.id, { title: "b" });
 
     let caught: unknown;

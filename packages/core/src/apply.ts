@@ -1209,3 +1209,41 @@ export function* applyOps(
     settled,
   };
 }
+
+/**
+ * ЛОКАЛЬНАЯ ЗАПИСЬ: минт операций и их применение в ОДНОЙ транзакции.
+ *
+ * `mint` вызывается ЗДЕСЬ, а не у вызывающего, и это не стиль, а условие
+ * правильности (myc-4dy): op_id и часы выдаются от последнего, что видно в
+ * оплоге, а увидеть его можно только под блокировкой записи — после
+ * `syncTail`. Сминтив операции раньше, два процесса одного сайта (или два
+ * запроса к серверу подряд) получают ОДИНАКОВЫЕ op_id, и второй пакет
+ * журналируется как повтор: ни строки, ни ошибки. Поймано ws.pg.test.ts —
+ * второй узел, созданный через HTTP, не записался вовсе.
+ *
+ * Столкновение здесь — исключение, а не «stale»: у локальной записи не бывает
+ * законной ничьей, она означает двух писателей под одним site_id.
+ */
+export function* applyLocalOps(
+  ctx: ApplyCtx,
+  mint: () => readonly Op[],
+  entityId: string,
+  scope: string,
+  onCollision: (op: Op) => Error,
+): Eff<boolean> {
+  yield* syncTail(ctx);
+  const ops = mint();
+  const tally = newTally();
+  for (const op of ops) {
+    yield* journalLocal(ctx, op, "node", entityId, scope);
+    if (op.op === "set") {
+      const touch = identityTouch(ctx, op.field, entityId, tally);
+      if ((yield* projectSet(op, touch)) === "collided") throw onCollision(op);
+    } else if (op.op === "inc") {
+      yield* projectInc(op);
+    }
+  }
+  const settled = yield* settleIdentity(ctx, tally, true);
+  yield* persistSeq(ctx);
+  return settled;
+}

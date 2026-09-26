@@ -1392,22 +1392,13 @@ export class GraphStore {
     scope: string,
   ): void {
     this.driver.tx("immediate", (tx) => {
-      this.syncTail(tx);
-      const ops = mint(tx);
-      const tally = newTally();
-      for (const op of ops) {
-        this.journalLocal(tx, op, "node", entityId, scope);
-        if (op.op === "set") {
-          const touch = this.identityTouch(tx, op.field, entityId, tally);
-          if (runSync(projectSet(op, touch), tx) === "collided") {
-            throw collisionError(op, entityId);
-          }
-        } else if (op.op === "inc") {
-          runSync(projectInc(op), tx);
-        }
-      }
-      this.settleIdentity(tx, tally, true);
-      this.persistSeq(tx);
+      const settled = runSync(
+        A.applyLocalOps(this.applyCtx(), () => mint(tx), entityId, scope, (op) =>
+          collisionError(op, entityId),
+        ),
+        tx,
+      );
+      if (settled) this.recordDuplicatesHealth(tx);
     });
   }
 

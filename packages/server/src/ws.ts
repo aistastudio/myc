@@ -120,6 +120,24 @@ export interface WsListEntry {
   readonly updated_at: number;
 }
 
+/**
+ * Строка узла для HTTP. `attrs` в ответ уходит ОБЪЕКТОМ, а не строкой: драйвер
+ * Postgres приводит jsonb к тексту ради паритета с SQLite (там колонка TEXT),
+ * но это подробность хранения, и в конверте она означала бы, что клиент обязан
+ * разбирать JSON внутри JSON. CLI отдаёт объект — сервер отдаёт то же самое.
+ */
+export function renderNode(row: Record<string, unknown>): Record<string, unknown> {
+  const raw = row["attrs"];
+  if (typeof raw !== "string") return row;
+  try {
+    return { ...row, attrs: JSON.parse(raw) as unknown };
+  } catch {
+    // Неразбираемое значение лучше отдать как есть, чем уронить ответ: это
+    // повод чинить данные, а не прятать их от того, кто их увидит.
+    return row;
+  }
+}
+
 /** Воркспейсы арендатора: считаются ПОД ним, то есть через ту же RLS. */
 export async function wsList(pg: PostgresDriver, tenant: string): Promise<WsListEntry[]> {
   const rows = await pg.withTenant(tenant, async (tx) => tx.all<Record<string, unknown>>(wsQueries.ws_list, []));
