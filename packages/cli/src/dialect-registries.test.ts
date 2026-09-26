@@ -20,6 +20,7 @@ import { describe, expect, test } from "bun:test";
 import type { QueryDef } from "@myc/core";
 import { Q } from "@myc/store-sqlite";
 import { mcpQueries } from "@myc/mcp";
+import { wsQueries } from "@myc/server/ws";
 import { bootstrapQueries } from "./commands/bootstrap.ts";
 import { primeQueries } from "./commands/prime.ts";
 import { readyQueries } from "./commands/ready.ts";
@@ -30,6 +31,7 @@ const REGISTRIES: ReadonlyArray<readonly [string, Readonly<Record<string, QueryD
   ["prime", primeQueries],
   ["bootstrap", bootstrapQueries],
   ["mcp", mcpQueries],
+  ["ws", wsQueries],
 ];
 
 /** Куски внутри одинарных кавычек — то, что переводчику трогать нельзя. */

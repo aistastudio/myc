@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 import { adminOverview, adminTenants, renderAdminPage } from "./admin.ts";
+import { boundedInt, parseWsPath, wsList, wsQueries, WS_LIMIT_DEFAULT, WS_LIMIT_MAX } from "./ws.ts";
 import {
   authenticate,
   clearCookie,
@@ -278,6 +279,28 @@ export function buildIndexHealth(db: ReadDb): IndexHealth {
 // сервер
 // ---------------------------------------------------------------------------
 
+/**
+ * Конверт данных — ТОТ ЖЕ, что у CLI (§2.3): ok, cmd, ws, ts, data, meta, warn.
+ * Один формат на два входа стоит того: агент, научившийся читать вывод
+ * `myc --json`, читает и ответ сервера без второго парсера.
+ */
+function envelope(
+  cmd: string,
+  ws: string,
+  data: unknown,
+  meta: Readonly<Record<string, unknown>> = {},
+): Response {
+  return json({
+    ok: true,
+    cmd,
+    ws,
+    ts: new Date().toISOString(),
+    data,
+    meta: { degraded: [], ...meta },
+    warn: [],
+  });
+}
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -374,7 +397,17 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
     }
 
     if (req.method !== "GET") {
-      return json({ ok: false, error: { code: "usage.method", msg: "GET only" } }, 405);
+      // Запись через сервер ещё не сделана, и это ОТДЕЛЬНОЕ решение: у
+      // Postgres нет асинхронного двойника GraphStore, а правила слияния
+      // (оплог, HLC, часы полей) живут в синхронном движке. Пока сервер
+      // отвечает причиной, а не «GET only»: второе выглядит как опечатка в
+      // запросе, первое — как состояние системы.
+      const code = parseWsPath(url.pathname) === null ? "usage.method" : "unimpl.write";
+      const msg =
+        code === "unimpl.write"
+          ? "writing through the server is not implemented yet: the workspace API is read-only"
+          : "GET only";
+      return json({ ok: false, error: { code, msg } }, 405);
     }
 
     // ДОСТУП. Закрыто всё, кроме пробы живости выше: сервер стоит в сети, и
@@ -483,6 +516,69 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         const msg = e instanceof Error ? e.message : String(e);
         return json({ ok: false, error: { code: "db.query", msg } }, 503);
       }
+    }
+
+    // ---- данные воркспейса: /v1/ws и /v1/ws/:ws/… (§8.1) --------------------
+    if (url.pathname === "/v1/ws") {
+      if (pg === undefined) return noPg();
+      const t0 = performance.now();
+      const list = await wsList(pg, who!.tenant);
+      return envelope("ws", "", list, { took_ms: Math.round((performance.now() - t0) * 100) / 100, count: list.length });
+    }
+
+    const wsPath = parseWsPath(url.pathname);
+    if (wsPath !== null) {
+      if (pg === undefined) return noPg();
+      const { ws, rest } = wsPath;
+      const tenant = who!.tenant;
+      const t0 = performance.now();
+      const took = (): number => Math.round((performance.now() - t0) * 100) / 100;
+
+      try {
+        if (rest === "/nodes" || rest === "/nodes/") {
+          const q = url.searchParams;
+          const limit = boundedInt(q.get("limit"), WS_LIMIT_DEFAULT, WS_LIMIT_MAX);
+          const offset = boundedInt(q.get("offset"), 0, Number.MAX_SAFE_INTEGER);
+          const filters = [ws, q.get("kind") ?? "", q.get("status") ?? "", boundedInt(q.get("since"), 0, Number.MAX_SAFE_INTEGER)];
+          const [rows, counted] = await pg.withTenant(tenant, async (tx) => [
+            await tx.all<Record<string, unknown>>(wsQueries.ws_nodes_list, [...filters, limit, offset]),
+            await tx.one<{ n: string | number }>(wsQueries.ws_nodes_count, filters),
+          ]);
+          return envelope("nodes", ws, rows, {
+            took_ms: took(),
+            count: rows.length,
+            total: Number(counted?.n ?? 0),
+            limit,
+            offset,
+          });
+        }
+
+        const one = /^\/nodes\/([^/]+)$/.exec(rest);
+        if (one !== null) {
+          const id = decodeURIComponent(one[1]!);
+          const [node, edges] = await pg.withTenant(tenant, async (tx) => [
+            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id]),
+            await tx.all<Record<string, unknown>>(wsQueries.ws_node_edges, [ws, id]),
+          ]);
+          // Чужой воркспейс отвечает ТЕМ ЖЕ, что несуществующий узел: иначе
+          // по разнице ответов перебирают, что есть у соседа.
+          if (node === undefined) {
+            return json(
+              { ok: false, cmd: "node", ws, error: { code: "notfound.node", msg: `no node ${id} in workspace ${ws}` } },
+              404,
+            );
+          }
+          return envelope("node", ws, { ...node, edges }, { took_ms: took() });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return json({ ok: false, cmd: "ws", ws, error: { code: "db.query", msg } }, 503);
+      }
+
+      return json(
+        { ok: false, cmd: "ws", ws, error: { code: "notfound.route", msg: `no route ${url.pathname}` } },
+        404,
+      );
     }
 
     return json(

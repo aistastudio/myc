@@ -230,6 +230,10 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
           deps.write(
             `myc serve · ${pgUrl === undefined ? "sqlite (local health slice)" : "postgres (team server)"}\n` +
               `${server.url}${pgUrl === undefined ? "" : `  admin: ${server.url}/v1/admin`}\n` +
+              // Куда идти агенту, а не человеку: данные лежат под /v1/ws/:ws/…
+              // и пока только на чтение — об этом честнее сказать сразу, чем
+              // дать узнать это кодом 405 в бою.
+              `${pgUrl === undefined ? "" : `workspace data (read-only): ${server.url}/v1/ws\n`}` +
               `${pgUrl === undefined ? "no tokens: without --pg the server has no tenants and binds 127.0.0.1" : "every route but /v1/health needs a token: --add-token <tenant>:<name>"}\n` +
               "Ctrl-C to stop\n",
           );
