@@ -14,7 +14,7 @@
  * закрыты паритетом на живой базе (packages/cli/src/parity.pg.test.ts).
  */
 
-import { defineQueries, type QueryDef } from "./sql.ts";
+import { defineQueries, toPgDialectJsonb, type QueryDef } from "./sql.ts";
 import { NODE_FIELDS } from "./graph.ts";
 
 export const NODE_COLUMNS = [
@@ -61,6 +61,9 @@ export const EDGE_SELECT =
 export const NODE_INSERT_COLUMNS: readonly string[] = NODE_COLUMNS.filter(
   (c) => c !== "open_blockers" && c !== "anc_blockers",
 );
+
+const NODE_INSERT_SQL = `INSERT INTO nodes (${NODE_INSERT_COLUMNS.join(", ")})
+          VALUES (${NODE_INSERT_COLUMNS.map((_, i) => `?${i + 1}`).join(", ")})`;
 
 export const Q = defineQueries({
   meta_get: {
@@ -244,9 +247,15 @@ export const Q = defineQueries({
   },
   counter_set: {
     name: "counter_set",
+    // Поэлементный максимум G-counter'а. Двухаргументный `max` — это SQLite;
+    // в Postgres скалярный максимум зовут `greatest`, а `max` там только
+    // агрегат (§8.3 таблицы расхождений).
     sql: `INSERT INTO counters (entity_id, field, site_id, value) VALUES (?1, ?2, ?3, ?4)
           ON CONFLICT(entity_id, field, site_id) DO UPDATE
             SET value = max(counters.value, excluded.value)`,
+    pg: `INSERT INTO counters (entity_id, field, site_id, value) VALUES ($1, $2, $3, $4)
+          ON CONFLICT(tenant_id, entity_id, field, site_id) DO UPDATE
+            SET value = greatest(counters.value, excluded.value)`,
     params: ["entity_id", "field", "site_id", "value"],
   },
   counter_sum: {
@@ -263,8 +272,9 @@ export const Q = defineQueries({
   // ---- узлы --------------------------------------------------------------
   node_insert: {
     name: "node_insert",
-    sql: `INSERT INTO nodes (${NODE_INSERT_COLUMNS.join(", ")})
-          VALUES (${NODE_INSERT_COLUMNS.map((_, i) => `?${i + 1}`).join(", ")})`,
+    sql: NODE_INSERT_SQL,
+    // attrs — колонка jsonb в Postgres; см. toPgDialectJsonb.
+    pg: toPgDialectJsonb(NODE_INSERT_SQL, NODE_INSERT_COLUMNS.indexOf("attrs") + 1),
     params: [...NODE_INSERT_COLUMNS],
   },
   node_get: {
@@ -460,6 +470,14 @@ export const Q = defineQueries({
                 since = CASE WHEN myc_health.state = excluded.state
                              THEN myc_health.since ELSE excluded.since END,
                 state = excluded.state`,
+    // jsonb-колонка: параметр приводится явно (toPgDialectJsonb).
+    pg: toPgDialectJsonb(`INSERT INTO myc_health (component, state, reason, since, detail)
+          VALUES (?1, ?2, ?3, ?4, ?5)
+          ON CONFLICT(component) DO UPDATE
+            SET reason = excluded.reason, detail = excluded.detail,
+                since = CASE WHEN myc_health.state = excluded.state
+                             THEN myc_health.since ELSE excluded.since END,
+                state = excluded.state`, 5),
     params: ["component", "state", "reason", "since", "detail"],
   },
   node_set_attr: {
@@ -468,6 +486,14 @@ export const Q = defineQueries({
              SET attrs = json_set(attrs, ?2, json(?3)),
                  updated_at = ?4, hlc = ?5, site_id = ?6
            WHERE id = ?1`,
+    // Путь приходит в форме SQLite (`$.key`), и переписывать его у вызывающего
+    // значило бы завести диалект в вызывающем коде. Postgres берёт путь
+    // массивом, поэтому ключ извлекается здесь же — все пути реестра состоят
+    // ровно из одного ключа (сторож — dialect-registries.test.ts).
+    pg: `UPDATE nodes
+            SET attrs = jsonb_set(coalesce(attrs, '{}'::jsonb), ARRAY[replace($2, '$.', '')], $3::text::jsonb, true),
+                updated_at = $4, hlc = $5, site_id = $6
+          WHERE id = $1`,
     params: ["id", "path", "value", "updated_at", "hlc", "site_id"],
   },
   node_list_by_kind: {
@@ -500,6 +526,9 @@ export const Q = defineQueries({
     name: "edge_insert",
     sql: `INSERT INTO edges (src, type, dst, weight, add_tag, actor, created_at, hlc, site_id, deleted_at, attrs)
           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+    // jsonb-колонка: параметр приводится явно (toPgDialectJsonb).
+    pg: toPgDialectJsonb(`INSERT INTO edges (src, type, dst, weight, add_tag, actor, created_at, hlc, site_id, deleted_at, attrs)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`, 11),
     params: [
       "src",
       "type",
@@ -543,6 +572,9 @@ export const Q = defineQueries({
     name: "edge_set_local",
     sql: `UPDATE edges SET actor = ?4, attrs = ?5
            WHERE src = ?1 AND type = ?2 AND dst = ?3`,
+    // jsonb-колонка: параметр приводится явно (toPgDialectJsonb).
+    pg: toPgDialectJsonb(`UPDATE edges SET actor = ?4, attrs = ?5
+           WHERE src = ?1 AND type = ?2 AND dst = ?3`, 5),
     params: ["src", "type", "dst", "actor", "attrs"],
   },
   /**

@@ -129,15 +129,47 @@ export function placeholderNumbers(sql: string, marker: "?" | "$"): number[] {
  *    (массивы, вложенность) НЕ переводятся: их надо писать оверрайдом
  *    осознанно, и сторож в tests ловит их появление в реестрах.
  *
- * Оба образца пишутся по всему тексту, а не по «коду вне строк». Это
- * допущение, и оно проверяется: ни один запрос реестров не содержит этих слов
- * внутри строкового литерала (сторож — packages/core/src/sql.test.ts).
+ *  - `ON CONFLICT(<ключ>)` → `ON CONFLICT(tenant_id, <ключ>)`: в схеме
+ *    Postgres арендатор — ВЕДУЩАЯ колонка каждого уникального ключа (решение
+ *    memory-khj49brcr0q7), и цель конфликта, названная по-SQLite'овски, там
+ *    просто не соответствует ни одному индексу — Postgres отвечает «no unique
+ *    or exclusion constraint matching». Реестр пишет только таблицы
+ *    арендатора; серверные (tenants, api_tokens, учёт миграций) через него не
+ *    проходят, и правило к ним не применяется.
+ *
+ * Образцы пишутся по всему тексту, а не по «коду вне строк». Это допущение, и
+ * оно проверяется: ни один запрос реестров не содержит этих слов внутри
+ * строкового литерала (сторож — packages/cli/src/dialect-registries.test.ts).
  */
 const INDEX_HINT = /\s+INDEXED\s+BY\s+[A-Za-z_][A-Za-z0-9_]*/gi;
+const CONFLICT_TARGET = /ON\s+CONFLICT\s*\(\s*(?!tenant_id\b)/gi;
 const JSON_ONE_KEY = /json_extract\s*\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'\s*\)/gi;
 
 export function toPgDialect(sql: string): string {
-  return toPgPlaceholders(sql).replace(INDEX_HINT, "").replace(JSON_ONE_KEY, "($1->>'$2')");
+  return toPgPlaceholders(sql)
+    .replace(INDEX_HINT, "")
+    .replace(JSON_ONE_KEY, "($1->>'$2')")
+    .replace(CONFLICT_TARGET, "ON CONFLICT(tenant_id, ");
+}
+
+/**
+ * Тот же перевод, но с явным приведением перечисленных мест к jsonb.
+ *
+ * Драйвер Bun отправляет JS-СТРОКУ в колонку `jsonb` как JSON-строку, то есть
+ * скаляр: `attrs` становится `"{}"` вместо `{}`, и следующий `jsonb_set`
+ * отвечает «cannot set path in scalar». Двойное приведение `$N::text::jsonb`
+ * заставляет драйвер послать параметр текстом, а базу — разобрать его как
+ * JSON. SQLite это не касается: там те же колонки — TEXT.
+ *
+ * Поймано apply.pg.test.ts: применитель писал узел, у которого attrs оказался
+ * строкой, и падал на первой же правке поля внутри attrs.
+ */
+export function toPgDialectJsonb(sql: string, ...jsonbParams: readonly number[]): string {
+  let out = toPgDialect(sql);
+  for (const n of jsonbParams) {
+    out = out.replace(new RegExp(`\\$${n}\\b(?!::)`, "g"), `$$${n}::text::jsonb`);
+  }
+  return out;
 }
 
 export function resolveQueryText(def: QueryDef, dialect: Dialect): string {

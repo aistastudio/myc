@@ -112,11 +112,15 @@ function driverOn(sql: SQL): AsyncDbDriver {
       return ((await sql.unsafe(text(query), [...params])) as Row[]).map(renderRow) as T[];
     },
     async run(query: QueryDef, params: readonly unknown[]): Promise<{ changes: number }> {
-      const rows = (await sql.unsafe(text(query), [...params])) as Row[];
-      // Драйвер Bun не отдаёт число затронутых строк отдельным полем, а
-      // RETURNING есть не у каждого запроса: считаем то, что вернулось, и не
-      // выдаём догадку за факт — вызывающему нужен признак «было/не было».
-      return { changes: rows.length };
+      const rows = (await sql.unsafe(text(query), [...params])) as Row[] & { count?: number };
+      // ЧИСЛО ЗАТРОНУТЫХ СТРОК — ИЗ `count`, А НЕ ИЗ ДЛИНЫ ОТВЕТА. У INSERT
+      // без RETURNING ответ пуст всегда, и `rows.length` означал бы «ничего не
+      // записалось» при каждой записи. На этом признаке держится применитель:
+      // `journal` отличает новую операцию от повтора ровно по нему, и с нулём
+      // весь пакет тихо считался дубликатом — ни строки в базе, ни ошибки
+      // (поймано apply.pg.test.ts). Bun отдаёт `count` (и `affectedRows`) на
+      // результате команды; длина остаётся запасным вариантом для SELECT.
+      return { changes: rows.count ?? rows.length };
     },
     async raw<T>(sqlText: string, params: readonly unknown[] = []): Promise<T[]> {
       return ((await sql.unsafe(sqlText, [...params])) as Row[]).map(renderRow) as T[];
