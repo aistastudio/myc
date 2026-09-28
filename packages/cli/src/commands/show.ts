@@ -38,6 +38,7 @@ import {
   sourceCreatedAt,
 } from "@myc/retrieval";
 import { ExitCode } from "../exit.ts";
+import { remoteRun } from "../remote.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import {
   estimateMin,
@@ -769,6 +770,7 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
   return {
     name: "show",
     summary: "show a node (batch via commas, --field for projection)",
+    remote: true,
     flags: [
       { name: "field", value: "string", description: "comma-separated fields for batch projection" },
       { name: "depth", value: "number", description: "0 (default) | 1 — one-line summaries of neighbours" },
@@ -806,6 +808,31 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
       }
       const withSource = ctx.flags["source"] === true;
       const chainAsked = ctx.flags["chain"] === true;
+
+      // Сервер команды: карточка узла и его рёбра. Проекции, исходники и
+      // цепочка версий требуют локального кода и истории — с сервером они
+      // отвечают отказом, а не тихо усечённой карточкой.
+      const remote = await remoteRun(ctx, async (client) => {
+        const asked = [
+          withSource ? "--source" : "",
+          chainAsked ? "--chain" : "",
+          fields !== undefined ? "--field" : "",
+          depth === 1 ? "--depth 1" : "",
+        ].filter((x) => x !== "");
+        if (asked.length > 0) {
+          return failure(
+            "precond.no_remote",
+            `the server does not answer ${asked.join(", ")} yet`,
+            ExitCode.PRECOND,
+          );
+        }
+        if (idArg.includes(",")) {
+          return failure("precond.no_remote", "batch show is not supported on a server yet", ExitCode.PRECOND);
+        }
+        const answer = await client.getNode(idArg.trim());
+        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+      });
+      if (remote !== undefined) return remote;
 
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;

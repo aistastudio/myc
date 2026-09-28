@@ -15,6 +15,7 @@ import { REPO_KEY, commentInput, readRepo, repoReasonText } from "@myc/core";
 import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
 import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat, type ClassifyResult } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
+import { remoteRun } from "../remote.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import {
@@ -213,6 +214,7 @@ function buildCreateCommand(
     name,
     summary,
     flags,
+    remote: true,
     help:
       "Create a node. Title is the positional argument; body via -b or stdin (-b -). " +
       "CLI kinds map onto core kinds: bug/epic are tasks with attrs.type, memory/decision are notes.",
@@ -273,6 +275,28 @@ function buildCreateCommand(
           return failure("usage.invalid", `invalid anchor '${aRaw}'; format: file[:a-b]`, ExitCode.USAGE);
         }
       }
+
+      // Сервер команды: узел заводит он же, теми же правилами. Якорь и
+      // оценка сюда пока не едут — якорь привязан к рабочему дереву, которого
+      // у сервера нет, и молча его потерять нельзя.
+      const remote = await remoteRun(ctx, async (client) => {
+        if (anchor !== undefined) {
+          return failure(
+            "precond.no_remote",
+            "--anchor is local: the server has no working tree to bind it to",
+            ExitCode.PRECOND,
+          );
+        }
+        const answer = await client.createNode({
+          kind: spec.kind,
+          title,
+          ...(body === undefined ? {} : { body }),
+          ...(priority === undefined ? {} : { priority }),
+          ...(spec.type === undefined ? {} : { attrs: { type: spec.type } }),
+        });
+        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+      });
+      if (remote !== undefined) return remote;
 
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
@@ -682,6 +706,7 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
   return {
     name: "update",
     summary: "update fields of a node",
+    remote: true,
     flags: [
       { name: "title", value: "string", description: "new title" },
       { name: "body", short: "b", value: "string", description: "new body; '-' reads stdin" },
@@ -744,6 +769,41 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
         }
         estimateMin = Math.round(dur / 60_000);
       }
+
+      // Сервер команды: правит он, теми же правилами. Всё, чему нужен
+      // локальный контекст (якорь, перевешивание на эпик, теги), отвечает
+      // отказом — тихо не применить часть просьбы нельзя.
+      const remote = await remoteRun(ctx, async (client) => {
+        const local = [
+          anchorTarget !== undefined ? "--anchor" : "",
+          flagStr(ctx, "parent") !== undefined ? "--parent" : "",
+          ctx.flags["no-parent"] === true ? "--no-parent" : "",
+          flagStr(ctx, "tag") !== undefined ? "--tag" : "",
+          flagStr(ctx, "acl") !== undefined ? "--acl" : "",
+          estimateMin !== undefined ? "--estimate" : "",
+        ].filter((x) => x !== "");
+        if (local.length > 0) {
+          return failure(
+            "precond.no_remote",
+            `the server does not accept ${local.join(", ")} yet`,
+            ExitCode.PRECOND,
+          );
+        }
+        const bodyRaw = flagStr(ctx, "body");
+        const patch: Record<string, unknown> = {};
+        const title = flagStr(ctx, "title");
+        if (title !== undefined) patch["title"] = title;
+        if (bodyRaw === "-") patch["body"] = await new Response(Bun.stdin.stream()).text();
+        else if (bodyRaw !== undefined) patch["body"] = bodyRaw;
+        const status = flagStr(ctx, "status");
+        if (status !== undefined) patch["status"] = status;
+        if (priority !== undefined) patch["priority"] = priority;
+        const assign = flagStr(ctx, "assign");
+        if (assign !== undefined) patch["assignee"] = assign;
+        const answer = await client.patchNode(idInput, patch);
+        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+      });
+      if (remote !== undefined) return remote;
 
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;
@@ -1108,6 +1168,7 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
   return {
     name: "claim",
     summary: "atomically take a task (CAS lease, §9.4)",
+    remote: true,
     flags: [
       { name: "lease", value: "string", description: "lease TTL, e.g. 30m (default), 2h" },
       { name: "steal", description: "take over an expired lease (WARNs about the previous owner)" },
@@ -1129,6 +1190,20 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
         }
         ttl = dur;
       }
+
+      // Сервер команды: захват решает тот же CAS, только в общей базе.
+      const remote = await remoteRun(ctx, async (client) => {
+        if (ctx.flags["steal"] === true) {
+          return failure(
+            "precond.no_remote",
+            "--steal is not supported on a server yet: it needs the previous holder, and the server does not report it",
+            ExitCode.PRECOND,
+          );
+        }
+        const answer = await client.claim(idInput, ttl === undefined ? undefined : Math.round(ttl / 60_000));
+        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+      });
+      if (remote !== undefined) return remote;
 
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;

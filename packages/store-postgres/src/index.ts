@@ -128,8 +128,30 @@ function driverOn(sql: SQL): AsyncDbDriver {
   };
 }
 
+/**
+ * Имя приложения в соединении. Его видно в `pg_stat_activity`, и это
+ * единственный способ ответить администратору «кто держит эти десять
+ * соединений» — без него в списке одна безымянная роль. Заданное в самой
+ * строке подключения имя уважается: у развёртывания могут быть свои правила.
+ */
+export const APP_NAME = "myc";
+
+function labelled(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.searchParams.get("application_name") === null) {
+      u.searchParams.set("application_name", APP_NAME);
+    }
+    return u.toString();
+  } catch {
+    // Непарсимую строку отдаём как есть: разбирать её — дело драйвера, и
+    // падать здесь ради метки было бы обменом нужного на приятное.
+    return url;
+  }
+}
+
 export function openPostgres(options: PostgresOpenOptions | string): PostgresDriver {
-  const url = typeof options === "string" ? options : options.url;
+  const url = labelled(typeof options === "string" ? options : options.url);
   const max = typeof options === "string" ? POOL_MAX_DEFAULT : (options.max ?? POOL_MAX_DEFAULT);
   if (!Number.isInteger(max) || max < 1) {
     throw new Error(`postgres: pool size must be a positive integer, got ${String(max)}`);

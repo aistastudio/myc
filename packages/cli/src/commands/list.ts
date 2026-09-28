@@ -5,6 +5,7 @@
 
 import type { NodeKind, NodeRecord } from "@myc/core";
 import { ExitCode } from "../exit.ts";
+import { remoteRun } from "../remote.ts";
 import type { Command, CommandFailure } from "../registry.ts";
 import {
   flagNum,
@@ -141,6 +142,7 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
   return {
     name: "list",
     summary: "list nodes with filters",
+    remote: true,
     flags: [
       { name: "kind", value: "string", description: "comma-separated kinds (task,bug,epic,memory,…)" },
       { name: "status", value: "string", description: "comma-separated statuses" },
@@ -209,6 +211,39 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
         until = parseBound(untilRaw, false);
         if (until === undefined) return failure("usage.invalid", `invalid --until '${untilRaw}'`, ExitCode.USAGE);
       }
+
+      // Сервер команды: список отдаёт он, и фильтры у него свои — те, что
+      // умеет эндпоинт. Неподдержанное НЕ игнорируется: отфильтровать молча
+      // меньше, чем просили, значит соврать про состав выдачи.
+      const remote = await remoteRun(ctx, async (client) => {
+        const unsupported = ["tag", "assignee", "acl", "until", "sort", "fields"].filter(
+          (f) => flagStr(ctx, f) !== undefined,
+        );
+        if (unsupported.length > 0) {
+          return failure(
+            "precond.no_remote",
+            `the server does not filter by ${unsupported.join(", ")} yet`,
+            ExitCode.PRECOND,
+          );
+        }
+        const answer = await client.listNodes({
+          kind: kindNames?.length === 1 ? KIND_FILTER[kindNames[0]!]!.kind : undefined,
+          status: flagStr(ctx, "status"),
+          since,
+          limit: typeof ctx.flags["n"] === "number" ? ctx.flags["n"] : undefined,
+          offset: typeof ctx.flags["offset"] === "number" ? ctx.flags["offset"] : undefined,
+        });
+        const rows = answer.data as unknown[];
+        if (ctx.flags["count"] === true) {
+          return { ok: true, data: { count: answer.meta["total"] ?? rows.length }, meta: { remote: client.ws } };
+        }
+        return {
+          ok: true,
+          data: rows,
+          meta: { ...answer.meta, remote: client.ws, took_ms: Math.round((performance.now() - t0) * 100) / 100 },
+        };
+      });
+      if (remote !== undefined) return remote;
 
       const opened = await deps.openStore(ctx);
       if (!opened.ok) return opened.failure;

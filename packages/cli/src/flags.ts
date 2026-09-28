@@ -41,6 +41,16 @@ export const GLOBAL_FLAGS: readonly FlagSpec[] = [
     description: "run as if started in <path>",
   },
   {
+    name: "server",
+    value: "string",
+    description: "work with the team server instead of the local database (token in MYC_TOKEN)",
+  },
+  {
+    name: "ws",
+    value: "string",
+    description: "workspace on the server, when it is not part of the --server address",
+  },
+  {
     name: "quiet",
     short: "q",
     description: "human mode: suppress data output; WARN lines still print",
