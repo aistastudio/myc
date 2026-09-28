@@ -125,6 +125,21 @@ CREATE TABLE api_tokens (
   tenant_id    TEXT COLLATE "C" NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   subject      TEXT COLLATE "C" NOT NULL,
   token_hash   TEXT COLLATE "C" NOT NULL,
+  -- РОЛЬ И ПРАВА (§8.2). Роль — кто это по отношению к команде, права —
+  -- сужение внутри роли. Хранятся ОБА: роль отвечает на вопрос «кем выдан
+  -- токен» в списке и в журнале, права — на вопрос «что он может сейчас».
+  -- Проверяется всегда по правам: роль без проверки была бы украшением.
+  role         TEXT COLLATE "C" NOT NULL DEFAULT 'member'
+                 CHECK (role IN ('owner','maintainer','member','agent','viewer')),
+  -- Права через запятую: read, write, claim, admin. Строкой, а не массивом:
+  -- список короткий и закрытый, а массив в SQLite всё равно был бы строкой —
+  -- и два диалекта разошлись бы формой хранения.
+  scopes       TEXT COLLATE "C" NOT NULL DEFAULT 'read,write,claim',
+  -- Воркспейс токена. ПУСТО — все воркспейсы арендатора; иначе только этот.
+  -- Ограничение здесь, а не в роли: у одной роли бывают токены на разные
+  -- проекты, и смешивать два вопроса в одном поле значит не ответить ни на
+  -- один.
+  ws           TEXT COLLATE "C" NOT NULL DEFAULT '',
   created_at   BIGINT NOT NULL,
   expires_at   BIGINT,
   revoked_at   BIGINT,

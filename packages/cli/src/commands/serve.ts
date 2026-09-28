@@ -21,7 +21,7 @@ import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 // Схема едет ВНУТРИ бинаря: контейнеру иначе пришлось бы возить psql и копию
 // файла, а «быстрый деплой» — это когда разворачивают одну вещь, а не три.
 import POSTGRES_DDL from "../../../../db/schema.postgres.sql" with { type: "text" };
-import { addToken, listTokens, revokeToken } from "@myc/server/auth";
+import { addToken, isRole, listTokens, parseScopes, revokeToken, ROLES, SCOPES } from "@myc/server/auth";
 import { startHttpServer } from "@myc/server";
 import { CLI_VERSION } from "../index.ts";
 import { ExitCode } from "../exit.ts";
@@ -51,6 +51,10 @@ export interface TokenAdded {
   readonly subject: string;
   /** Секрет. Печатается один раз — в базе его нет. */
   readonly token: string;
+  readonly role: string;
+  readonly scopes: string;
+  /** Пусто — все воркспейсы арендатора. */
+  readonly ws: string;
 }
 
 function waitForSignal(): Promise<string> {
@@ -201,8 +205,33 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
               `register it first: myc serve --pg <url> --add-tenant ${tenant}`,
             );
           }
-          const minted = await addToken(pg!, tenant, subject);
-          const data: TokenAdded = { id: minted.id, tenant, subject, token: minted.token };
+          const roleRaw = str(ctx, "role") ?? "member";
+          if (!isRole(roleRaw)) {
+            return failure("usage.invalid", `unknown role '${roleRaw}': ${ROLES.join("|")}`, ExitCode.USAGE);
+          }
+          const scopesRaw = str(ctx, "scopes");
+          const scopes = scopesRaw === undefined ? undefined : parseScopes(scopesRaw);
+          if (scopes !== undefined && scopes.length === 0) {
+            return failure(
+              "usage.invalid",
+              `--scopes '${scopesRaw}' has nothing known in it: ${SCOPES.join(",")}`,
+              ExitCode.USAGE,
+            );
+          }
+          const minted = await addToken(pg!, tenant, subject, {
+            role: roleRaw,
+            ...(scopes === undefined ? {} : { scopes }),
+            ...(str(ctx, "token-ws") === undefined ? {} : { ws: str(ctx, "token-ws")! }),
+          });
+          const data: TokenAdded = {
+            id: minted.id,
+            tenant,
+            subject,
+            token: minted.token,
+            role: minted.role,
+            scopes: minted.scopes.join(","),
+            ws: minted.ws,
+          };
           return { ok: true, data };
         }
 
@@ -257,7 +286,8 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
       if (typeof d["token"] === "string") {
         const t = raw as TokenAdded;
         return (
-          `token ${t.id} for ${t.subject} @ ${t.tenant}\n` +
+          `token ${t.id} for ${t.subject} @ ${t.tenant} · ${t.role} [${t.scopes}]` +
+          `${t.ws === "" ? "" : ` ws=${t.ws}`}\n` +
           `${t.token}\n` +
           "This is the only time the secret is shown: the server keeps its sha256, not the token.\n"
         );
@@ -267,6 +297,9 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
           id: string;
           tenant: string;
           subject: string;
+          role: string;
+          scopes: string;
+          ws: string;
           last_used_at: number | null;
           revoked_at: number | null;
         }>;
@@ -275,7 +308,8 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
           list
             .map(
               (t) =>
-                `${t.id}  ${t.tenant}/${t.subject}  ` +
+                `${t.id}  ${t.tenant}/${t.subject}  ${t.role} [${t.scopes}]` +
+                `${t.ws === "" ? "" : ` ws=${t.ws}`}  ` +
                 `${t.revoked_at !== null ? "revoked" : t.last_used_at === null ? "never used" : `last used ${new Date(t.last_used_at).toISOString().slice(0, 16).replace("T", " ")}`}`,
             )
             .join("\n") + "\n"

@@ -53,6 +53,8 @@ import {
   sessionCookie,
   tokenOf,
   type Principal,
+  can,
+  seesWorkspace,
 } from "./auth.ts";
 
 export const SERVER_VERSION = "0.0.0";
@@ -511,6 +513,17 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
     // Админка сервера (M4): состояние сервера и арендаторы. Только чтение.
     if (url.pathname.startsWith("/v1/admin")) {
       if (pg === undefined) return noPg();
+      // Админка показывает арендаторов и состояние сервера — это сведения о
+      // системе, и смотреть их вправе не всякий, кому выдали токен.
+      if (!can(who, "admin")) {
+        return json(
+          {
+            ok: false,
+            error: { code: "denied.scope", msg: "this token has no 'admin' scope" },
+          },
+          403,
+        );
+      }
       try {
         if (url.pathname === "/v1/admin/overview") {
           const o = await adminOverview(pg);
@@ -544,11 +557,34 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
       if (pg === undefined) return noPg();
       const { ws, rest } = wsPath;
       const tenant = who!.tenant;
+      // Токен, привязанный к одному проекту, о чужих не узнаёт даже
+      // отказом: ответ тот же, что у несуществующего воркспейса.
+      if (!seesWorkspace(who, ws)) {
+        return json(
+          { ok: false, cmd: "ws", ws, error: { code: "notfound.ws", msg: `no workspace ${ws}` } },
+          404,
+        );
+      }
       const t0 = performance.now();
       const took = (): number => Math.round((performance.now() - t0) * 100) / 100;
 
       try {
+        const needs = (scope: "write" | "claim"): Response | undefined =>
+          can(who, scope)
+            ? undefined
+            : json(
+                {
+                  ok: false,
+                  cmd: "ws",
+                  ws,
+                  error: { code: "denied.scope", msg: `this token has no '${scope}' scope` },
+                },
+                403,
+              );
+
         if ((rest === "/nodes" || rest === "/nodes/") && req.method === "POST") {
+          const denied = needs("write");
+          if (denied !== undefined) return denied;
           // Создание узла: сервер минтит операции и отдаёт их ТОМУ ЖЕ
           // применителю, что и CLI (packages/server/src/write.ts).
           const body = await req.json().catch(() => null);
@@ -592,6 +628,8 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         }
 
         if (rest === "/ready/claim" && req.method === "POST") {
+          const denied = needs("claim");
+          if (denied !== undefined) return denied;
           const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
           const id = typeof body?.["id"] === "string" ? body["id"] : "";
           if (id === "") {
@@ -614,6 +652,8 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         }
 
         if (rest === "/edges" && (req.method === "POST" || req.method === "DELETE")) {
+          const denied = needs("write");
+          if (denied !== undefined) return denied;
           const body = await req.json().catch(() => null);
           const parsed = validateEdge(body);
           if (!parsed.ok) {
@@ -634,6 +674,8 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
 
         const onePath = /^\/nodes\/([^/]+)$/.exec(rest);
         if (onePath !== null && req.method === "PATCH") {
+          const denied = needs("write");
+          if (denied !== undefined) return denied;
           const body = await req.json().catch(() => null);
           const parsed = validateUpdate(body);
           if (!parsed.ok) {

@@ -60,7 +60,9 @@ beforeAll(async () => {
     await tx.raw(node("cherry-1", "cherry", "open"));
     await tx.raw(node("cherry-2", "cherry", "open"));
   });
-  token = (await addToken(app, "acme", "dev-admin")).token;
+  // Админка требует права admin (§8.2) — здесь это и проверяется попутно:
+  // тест смотрит ЧИСЛА админки, а доступ к ней стережёт auth.pg.test.ts.
+  token = (await addToken(app, "acme", "dev-admin", { role: "owner" })).token;
 });
 
 afterAll(async () => {

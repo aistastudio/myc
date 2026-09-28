@@ -31,10 +31,60 @@ import type { PostgresDriver } from "@myc/store-postgres";
 /** Префикс делает токен узнаваемым в вставленном тексте — и в сканерах утечек. */
 export const TOKEN_PREFIX = "myc_";
 
+/**
+ * РОЛИ (§8.2). Роль отвечает на вопрос «кем выдан токен» — она видна в списке
+ * и в журнале; на вопрос «что он может сейчас» отвечают ПРАВА. Проверяется
+ * всегда по правам: роль, которую никто не проверяет, — украшение.
+ */
+export const ROLES = ["owner", "maintainer", "member", "agent", "viewer"] as const;
+export type Role = (typeof ROLES)[number];
+
+/** Права: чтение, запись, взятие задач и администрирование сервера. */
+export const SCOPES = ["read", "write", "claim", "admin"] as const;
+export type Scope = (typeof SCOPES)[number];
+
+/** Умолчание прав у роли — то, что она значит, если не сузили явно. */
+export const ROLE_SCOPES: Readonly<Record<Role, readonly Scope[]>> = Object.freeze({
+  owner: ["read", "write", "claim", "admin"],
+  maintainer: ["read", "write", "claim", "admin"],
+  member: ["read", "write", "claim"],
+  agent: ["read", "write", "claim"],
+  viewer: ["read"],
+});
+
+export function isRole(value: string): value is Role {
+  return (ROLES as readonly string[]).includes(value);
+}
+
+export function parseScopes(raw: string): Scope[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is Scope => (SCOPES as readonly string[]).includes(s));
+}
+
 export interface Principal {
   readonly token_id: string;
   readonly tenant: string;
   readonly subject: string;
+  readonly role: Role;
+  readonly scopes: readonly Scope[];
+  /** Пусто — все воркспейсы арендатора; иначе только этот. */
+  readonly ws: string;
+}
+
+/** Есть ли у пришедшего это право. Единственное место, где это решается. */
+export function can(who: Principal | undefined, scope: Scope): boolean {
+  return who === undefined || who.scopes.includes(scope);
+}
+
+/**
+ * Виден ли воркспейс этому токену. Токен, привязанный к одному проекту, о
+ * чужих не должен даже узнавать — поэтому ответ наверху превращается в тот
+ * же `notfound`, что у несуществующего воркспейса, а не в «нельзя».
+ */
+export function seesWorkspace(who: Principal | undefined, ws: string): boolean {
+  return who === undefined || who.ws === "" || who.ws === ws;
 }
 
 export type AuthResult =
@@ -87,6 +137,9 @@ interface TokenRow {
   readonly token_hash: string;
   readonly expires_at: number | null;
   readonly revoked_at: number | null;
+  readonly role: string;
+  readonly scopes: string;
+  readonly ws: string;
 }
 
 export async function authenticate(
@@ -99,7 +152,7 @@ export async function authenticate(
   }
   const hash = tokenHash(token);
   const rows = await pg.raw<TokenRow>(
-    `SELECT id, tenant_id, subject, token_hash, expires_at, revoked_at
+    `SELECT id, tenant_id, subject, token_hash, expires_at, revoked_at, role, scopes, ws
        FROM api_tokens WHERE token_hash = $1`,
     [hash],
   );
@@ -119,7 +172,21 @@ export async function authenticate(
     .raw("UPDATE api_tokens SET last_used_at = $1 WHERE id = $2", [now, row.id])
     .catch(() => undefined);
 
-  return { ok: true, principal: { token_id: row.id, tenant: row.tenant_id, subject: row.subject } };
+  const role: Role = isRole(row.role) ? row.role : "viewer";
+  // Права из строки; пустая строка — права роли. Неизвестное слово в правах
+  // молча отбрасывается разбором: право, которого нет, дать нельзя.
+  const scopes = row.scopes.trim() === "" ? ROLE_SCOPES[role] : parseScopes(row.scopes);
+  return {
+    ok: true,
+    principal: {
+      token_id: row.id,
+      tenant: row.tenant_id,
+      subject: row.subject,
+      role,
+      scopes,
+      ws: row.ws ?? "",
+    },
+  };
 }
 
 export interface NewToken {
@@ -127,6 +194,9 @@ export interface NewToken {
   readonly token: string;
   readonly tenant: string;
   readonly subject: string;
+  readonly role: Role;
+  readonly scopes: readonly Scope[];
+  readonly ws: string;
 }
 
 /**
@@ -137,7 +207,13 @@ export async function addToken(
   pg: PostgresDriver,
   tenant: string,
   subject: string,
-  opts: { readonly expiresAt?: number; readonly now?: number } = {},
+  opts: {
+    readonly expiresAt?: number;
+    readonly now?: number;
+    readonly role?: Role;
+    readonly scopes?: readonly Scope[];
+    readonly ws?: string;
+  } = {},
 ): Promise<NewToken> {
   if (tenant.length === 0 || subject.length === 0) {
     throw new Error("token: tenant and subject must not be empty");
@@ -145,12 +221,15 @@ export async function addToken(
   const now = opts.now ?? Date.now();
   const token = mintToken();
   const id = `tok_${randomBytes(6).toString("hex")}`;
+  const role: Role = opts.role ?? "member";
+  const scopes = opts.scopes ?? ROLE_SCOPES[role];
+  const ws = opts.ws ?? "";
   await pg.raw(
-    `INSERT INTO api_tokens (id, tenant_id, subject, token_hash, created_at, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [id, tenant, subject, tokenHash(token), now, opts.expiresAt ?? null],
+    `INSERT INTO api_tokens (id, tenant_id, subject, token_hash, created_at, expires_at, role, scopes, ws)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [id, tenant, subject, tokenHash(token), now, opts.expiresAt ?? null, role, scopes.join(","), ws],
   );
-  return { id, token, tenant, subject };
+  return { id, token, tenant, subject, role, scopes, ws };
 }
 
 export async function revokeToken(pg: PostgresDriver, id: string, now = Date.now()): Promise<boolean> {
@@ -165,6 +244,11 @@ export interface TokenInfo {
   readonly id: string;
   readonly tenant: string;
   readonly subject: string;
+  /** Что выдали: роль, права и воркспейс. Без них список не отвечает на
+   * вопрос «кому что позволено», а он и есть причина в него смотреть. */
+  readonly role: string;
+  readonly scopes: string;
+  readonly ws: string;
   readonly created_at: number;
   readonly expires_at: number | null;
   readonly revoked_at: number | null;
@@ -180,14 +264,20 @@ export async function listTokens(pg: PostgresDriver): Promise<TokenInfo[]> {
     expires_at: number | null;
     revoked_at: number | null;
     last_used_at: number | null;
+    role: string;
+    scopes: string;
+    ws: string;
   }>(
-    `SELECT id, tenant_id, subject, created_at, expires_at, revoked_at, last_used_at
+    `SELECT id, tenant_id, subject, created_at, expires_at, revoked_at, last_used_at, role, scopes, ws
        FROM api_tokens ORDER BY tenant_id, subject, created_at`,
   );
   return rows.map((r) => ({
     id: r.id,
     tenant: r.tenant_id,
     subject: r.subject,
+    role: r.role,
+    scopes: r.scopes,
+    ws: r.ws ?? "",
     created_at: Number(r.created_at),
     expires_at: r.expires_at === null ? null : Number(r.expires_at),
     revoked_at: r.revoked_at === null ? null : Number(r.revoked_at),

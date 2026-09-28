@@ -64,7 +64,9 @@ beforeAll(async () => {
        VALUES ('cherry-1','task','cherry','globex task','h1','open',1,1)`,
     );
   });
-  good = (await addToken(pg, "acme", "dev-anna")).token;
+  // Роль owner: этот токен в тестах ходит и в админку — она теперь требует
+  // права admin (§8.2). Проверки самих прав — ниже, отдельными тестами.
+  good = (await addToken(pg, "acme", "dev-anna", { role: "owner" })).token;
   srv = startHttpServer({ port: 0, db: join(import.meta.dir, "no-such.db"), pg: appUrl });
 });
 
@@ -118,7 +120,7 @@ describe("доступ к серверу", () => {
 
   test("токен назначает арендатора: видно только его данные", async () => {
     if (skip !== null) return void console.log(`[skip] ${skip}`);
-    const other = await addToken(pg!, "globex", "dev-boris");
+    const other = await addToken(pg!, "globex", "dev-boris", { role: "owner" });
     const read = async (token: string): Promise<Array<{ id: string; nodes: number }>> => {
       const res = await fetch(`${srv!.url}/v1/admin/tenants`, {
         headers: { authorization: `Bearer ${token}` },
@@ -172,6 +174,68 @@ describe("доступ к серверу", () => {
     expect(res.headers.get("set-cookie")).toBeNull();
     const html = await res.text();
     expect(html).toContain("not accepted");
+  });
+
+  test("право write: читающий токен не пишет, но читает", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const viewer = (await addToken(pg!, "acme", "гость", { role: "viewer" })).token;
+    const read = await fetch(`${srv!.url}/v1/ws/cherry/nodes`, {
+      headers: { authorization: `Bearer ${viewer}` },
+    });
+    expect(read.status).toBe(200);
+
+    const write = await fetch(`${srv!.url}/v1/ws/cherry/nodes`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "task", title: "нельзя" }),
+    });
+    expect(write.status).toBe(403);
+    expect(((await write.json()) as { error: { code: string } }).error.code).toBe("denied.scope");
+  });
+
+  test("право admin: обычный токен не видит админку", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const member = (await addToken(pg!, "acme", "участник")).token;
+    const res = await fetch(`${srv!.url}/v1/admin/tenants`, {
+      headers: { authorization: `Bearer ${member}` },
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("denied.scope");
+
+    const owner = (await addToken(pg!, "acme", "хозяин", { role: "owner" })).token;
+    const ok = await fetch(`${srv!.url}/v1/admin/tenants`, {
+      headers: { authorization: `Bearer ${owner}` },
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  test("токен одного воркспейса о чужих не узнаёт даже отказом", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const bound = (await addToken(pg!, "acme", "узкий", { ws: "cherry" })).token;
+    const own = await fetch(`${srv!.url}/v1/ws/cherry/nodes`, {
+      headers: { authorization: `Bearer ${bound}` },
+    });
+    expect(own.status).toBe(200);
+    // Чужой воркспейс отвечает как несуществующий: иначе по разнице ответов
+    // перебирают, какие проекты есть у команды.
+    const foreign = await fetch(`${srv!.url}/v1/ws/portal/nodes`, {
+      headers: { authorization: `Bearer ${bound}` },
+    });
+    expect(foreign.status).toBe(404);
+    expect(((await foreign.json()) as { error: { code: string } }).error.code).toBe("notfound.ws");
+  });
+
+  test("права можно сузить внутри роли", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    // Агент, которому позволено писать, но не брать задачи.
+    const narrow = (await addToken(pg!, "acme", "агент", { role: "agent", scopes: ["read", "write"] })).token;
+    const claim = await fetch(`${srv!.url}/v1/ws/cherry/ready/claim`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${narrow}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: "cherry-1" }),
+    });
+    expect(claim.status).toBe(403);
+    expect(((await claim.json()) as { error: { code: string } }).error.code).toBe("denied.scope");
   });
 
   test("список токенов показывает владельцев и отзыв, но не секреты", async () => {
