@@ -15,7 +15,11 @@
 
 import {
   DEFAULT_READY_WEIGHTS,
+  digestScan,
+  primeQueries,
   readyQueries,
+  runAsync,
+  type DigestPayload,
   type ReadyWeights,
 } from "@myc/core";
 import type { PostgresDriver } from "@myc/store-postgres";
@@ -100,5 +104,55 @@ export async function readyQueue(
     // ВСЕГО, а не сколько поместилось в выдачу. Пустая выдача — ноль.
     const total = rows.length > 0 ? num(rows[0]!["total_ready"]) : 0;
     return { items, total };
+  });
+}
+
+/**
+ * ДАЙДЖЕСТ ПАМЯТИ (§8.1, `prime`). Считается тем же сканом, что у CLI
+ * (`digestScan` в ядре), и здесь нет ни одного правила отбора — только
+ * запуск и счётчики рядом.
+ *
+ * СБОРКУ СЕКЦИЙ СЕРВЕР НЕ ДЕЛАЕТ. Бюджет, порядок и человеческий вид — дело
+ * поверхности: у CLI своя ширина терминала, у другого клиента будет своя.
+ * Сервер отдаёт данные, из которых контекст собирается.
+ */
+export interface PrimeAnswer {
+  readonly digest: DigestPayload;
+  readonly in_progress: readonly ReadyRow[];
+  readonly ready: readonly ReadyRow[];
+  readonly total_ready: number;
+  readonly nodes: number;
+}
+
+export async function primeDigest(
+  pg: PostgresDriver,
+  tenant: string,
+  ws: string,
+  session: string,
+  repo: string,
+  readyLimit: number,
+): Promise<PrimeAnswer> {
+  const queue = await readyQueue(pg, tenant, ws, readyLimit, repo);
+  return pg.withTenant(tenant, async (tx) => {
+    const digest = await runAsync(digestScan(ws, "project", undefined, session, repo), tx);
+    const nodes = await tx.one<{ n: number | string }>(primeQueries.prime_node_count, [ws]);
+    const running = await tx.all<Record<string, unknown>>(primeQueries.prime_inprogress, [ws, 10]);
+    return {
+      digest,
+      in_progress: running.map((r) => ({
+        id: String(r["id"]),
+        priority: num(r["priority"]),
+        status: "in_progress",
+        assignee: String(r["assignee"] ?? ""),
+        title: String(r["title"] ?? ""),
+        updated_at: num(r["lease_expires"]),
+        created_at: 0,
+        score: 0,
+        unblocks: 0,
+      })),
+      ready: queue.items,
+      total_ready: queue.total,
+      nodes: num(nodes?.n),
+    };
   });
 }

@@ -474,6 +474,40 @@ describe("данные воркспейса по HTTP", () => {
     expect(tooLong.body.error.code).toBe("usage.lease");
   });
 
+  test("дайджест сервера: проектное знание в CORE, чужое сессионное — нет", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    await pg!.withTenant("acme", async (tx) => {
+      await tx.raw(
+        `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, content_hash, status, priority, attrs, salience, created_at, updated_at)
+         VALUES ('cherry-core','note',3,'cherry','правило','суть правила','h-core','active',2,'{"reach":"project"}',9.0,1,1)`,
+      );
+      await tx.raw(
+        `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, content_hash, status, priority, attrs, salience, created_at, updated_at)
+         VALUES ('cherry-mine','note',3,'cherry','моё','суть моего','h-mine','active',2,'{"reach":"session","session_id":"sess-1"}',8.0,1,1)`,
+      );
+      await tx.raw(
+        `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, content_hash, status, priority, attrs, salience, created_at, updated_at)
+         VALUES ('cherry-alien','note',3,'cherry','чужое','суть чужого','h-alien','active',2,'{"reach":"session","session_id":"sess-9"}',7.0,1,1)`,
+      );
+    });
+
+    const mine = await get("/v1/ws/cherry/prime?session=sess-1", acme);
+    expect(mine.status).toBe(200);
+    const core = mine.body.data.digest.core.map((i: { id: string }) => i.id);
+    expect(core).toContain("cherry-core");
+    expect(core).toContain("cherry-mine");
+    // Чужое сессионное в контекст не попадает — и названо числом (И2).
+    expect(core).not.toContain("cherry-alien");
+    expect(mine.body.data.digest.reach.hidden).toBeGreaterThan(0);
+
+    // Без сессии видно только проектное, а скрытого становится больше.
+    const anon = await get("/v1/ws/cherry/prime", acme);
+    const anonCore = anon.body.data.digest.core.map((i: { id: string }) => i.id);
+    expect(anonCore).toContain("cherry-core");
+    expect(anonCore).not.toContain("cherry-mine");
+    expect(anon.body.data.digest.reach.hidden).toBeGreaterThan(mine.body.data.digest.reach.hidden);
+  });
+
   test("негодный вход отвергается ДО базы и говорит, что не так", async () => {
     if (skip !== null) return void console.log(`[skip] ${skip}`);
     for (const [body, code] of [

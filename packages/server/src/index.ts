@@ -34,7 +34,7 @@ import {
   WS_LIMIT_DEFAULT,
   WS_LIMIT_MAX,
 } from "./ws.ts";
-import { readyQueue, READY_LIMIT_DEFAULT, READY_LIMIT_MAX } from "./ready.ts";
+import { primeDigest, readyQueue, READY_LIMIT_DEFAULT, READY_LIMIT_MAX } from "./ready.ts";
 import {
   addEdge,
   claimTask,
@@ -565,6 +565,19 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
             applied: created.applied,
             collided: created.collided,
           });
+        }
+
+        if ((rest === "/prime" || rest === "/prime/") && req.method === "GET") {
+          const q = url.searchParams;
+          const answer = await primeDigest(
+            pg,
+            tenant,
+            ws,
+            q.get("session") ?? "",
+            q.get("repo") ?? "",
+            boundedInt(q.get("n"), READY_LIMIT_DEFAULT, READY_LIMIT_MAX),
+          );
+          return envelope("prime", ws, answer, { took_ms: took() });
         }
 
         if ((rest === "/ready" || rest === "/ready/") && req.method === "GET") {

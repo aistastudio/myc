@@ -29,6 +29,7 @@ import { Registry } from "./registry.ts";
 import { createClaimCommand, createTaskCommand, createUpdateCommand } from "./commands/tasks.ts";
 import { createListCommand } from "./commands/list.ts";
 import { createReadyCommand } from "./commands/ready.ts";
+import { createPrimeCommand } from "./commands/prime.ts";
 import { createShowCommand } from "./commands/show.ts";
 
 
@@ -47,6 +48,7 @@ function registry(): Registry {
   r.register(createTaskCommand());
   r.register(createListCommand());
   r.register(createReadyCommand());
+  r.register(createPrimeCommand());
   r.register(createShowCommand());
   r.register(createClaimCommand());
   r.register(createUpdateCommand());
@@ -174,6 +176,21 @@ describe("CLI через сервер команды", () => {
     expect((await call(["claim", top])).code).toBe(ExitCode.OK);
     const after = await call(["ready", "-n", "20"]);
     expect((after.env.data.items as Array<{ id: string }>).map((i) => i.id)).not.toContain(top);
+  });
+
+  test("контекст собирается из общей памяти: знание, очередь и число узлов", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const primed = await call(["prime"]);
+    expect([primed.code, primed.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    expect(primed.env.meta.remote).toBe(WS);
+    // Числа про общую базу, а не про пустую локальную.
+    expect(primed.env.data.nodes).toBeGreaterThan(0);
+    expect(Array.isArray(primed.env.data.ready)).toBe(true);
+    expect(primed.env.data.total_ready).toBeGreaterThanOrEqual(primed.env.data.ready.length);
+    // Секции знания приходят всегда — пустыми, если знания нет: клиент не
+    // должен гадать, отсутствует ли поле или отсутствует память.
+    expect(Array.isArray(primed.env.data.core)).toBe(true);
+    expect(Array.isArray(primed.env.data.decisions)).toBe(true);
   });
 
   test("очередь сервера отказывает в том, чего не умеет, а не отдаёт половину", async () => {
