@@ -34,6 +34,7 @@ import {
   WS_LIMIT_DEFAULT,
   WS_LIMIT_MAX,
 } from "./ws.ts";
+import { readyQueue, READY_LIMIT_DEFAULT, READY_LIMIT_MAX } from "./ready.ts";
 import {
   addEdge,
   claimTask,
@@ -563,6 +564,17 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
             took_ms: took(),
             applied: created.applied,
             collided: created.collided,
+          });
+        }
+
+        if ((rest === "/ready" || rest === "/ready/") && req.method === "GET") {
+          const q = url.searchParams;
+          const limit = boundedInt(q.get("n"), READY_LIMIT_DEFAULT, READY_LIMIT_MAX);
+          const queue = await readyQueue(pg, tenant, ws, limit, q.get("repo") ?? "");
+          return envelope("ready", ws, queue.items, {
+            took_ms: took(),
+            count: queue.items.length,
+            total: queue.total,
           });
         }
 

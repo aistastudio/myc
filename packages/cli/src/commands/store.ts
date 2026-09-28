@@ -309,22 +309,10 @@ export function openDriver(
 // workspace.toml — минимальный разбор (slug + [ready] веса, решение S21)
 // ---------------------------------------------------------------------------
 
-export interface ReadyWeights {
-  priority: number;
-  unblocks: number;
-  freshness: number;
-  anchors: number;
-  type: number;
-}
-
-/** Ратифицированные веса сортировки ready (S21); переопределяются в workspace.toml. */
-export const DEFAULT_READY_WEIGHTS: ReadyWeights = {
-  priority: 0.4,
-  unblocks: 0.27,
-  freshness: 0.14,
-  anchors: 0.1,
-  type: 0.09,
-};
+// Веса очереди живут в ядре вместе с её реестром: ту же формулу S21 считает
+// сервер (packages/core/src/ready-queries.ts).
+export { DEFAULT_READY_WEIGHTS, type ReadyWeights } from "@myc/core";
+import { DEFAULT_READY_WEIGHTS, type ReadyWeights } from "@myc/core";
 
 export interface WorkspaceConfig {
   slug: string;

@@ -28,6 +28,7 @@ import { run } from "./index.ts";
 import { Registry } from "./registry.ts";
 import { createClaimCommand, createTaskCommand, createUpdateCommand } from "./commands/tasks.ts";
 import { createListCommand } from "./commands/list.ts";
+import { createReadyCommand } from "./commands/ready.ts";
 import { createShowCommand } from "./commands/show.ts";
 
 
@@ -45,6 +46,7 @@ function registry(): Registry {
   const r = new Registry();
   r.register(createTaskCommand());
   r.register(createListCommand());
+  r.register(createReadyCommand());
   r.register(createShowCommand());
   r.register(createClaimCommand());
   r.register(createUpdateCommand());
@@ -149,6 +151,37 @@ describe("CLI через сервер команды", () => {
       tx.raw<{ n: string }>("SELECT count(*) AS n FROM nodes WHERE id = $1", [id]),
     );
     expect(Number(straight[0]!.n)).toBe(1);
+  });
+
+  test("очередь считает сервер — тем же порядком, что и CLI локально", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    // Три задачи разного приоритета: порядок очереди — это и есть ответ на
+    // вопрос «что брать следующим», и он обязан быть один.
+    const low = (await call(["task", "мелочь", "--priority", "P3"])).env.data.id as string;
+    const top = (await call(["task", "горит", "--priority", "P0"])).env.data.id as string;
+    const mid = (await call(["task", "обычная", "--priority", "P2"])).env.data.id as string;
+
+    const queue = await call(["ready", "-n", "20"]);
+    expect([queue.code, queue.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    const ids = (queue.env.data.items as Array<{ id: string; score: number }>).map((i) => i.id);
+    expect(ids.indexOf(top)).toBeLessThan(ids.indexOf(mid));
+    expect(ids.indexOf(mid)).toBeLessThan(ids.indexOf(low));
+    // Число готовых — не длина выдачи (И2).
+    expect(queue.env.data.total).toBeGreaterThanOrEqual(ids.length);
+    expect(queue.env.meta.remote).toBe(WS);
+
+    // Взятая задача из очереди уходит: её статус больше не open.
+    expect((await call(["claim", top])).code).toBe(ExitCode.OK);
+    const after = await call(["ready", "-n", "20"]);
+    expect((after.env.data.items as Array<{ id: string }>).map((i) => i.id)).not.toContain(top);
+  });
+
+  test("очередь сервера отказывает в том, чего не умеет, а не отдаёт половину", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const why = await call(["ready", "--why"]);
+    expect(why.code).toBe(ExitCode.PRECOND);
+    expect(why.env.error.code).toBe("precond.no_remote");
+    expect(why.env.error.hint).toContain("claim");
   });
 
   test("вторая попытка взять уже взятую задачу — отказ с кодом, а не тишина", async () => {

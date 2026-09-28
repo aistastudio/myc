@@ -271,6 +271,18 @@ export class RemoteClient {
     return this.call("DELETE", `/v1/ws/${encodeURIComponent(this.target.ws)}/edges`, edge);
   }
 
+  async ready(query: Readonly<Record<string, string | number | undefined>>): Promise<{
+    data: unknown;
+    meta: Record<string, unknown>;
+  }> {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined && v !== "") params.set(k, String(v));
+    }
+    const qs = params.toString();
+    return this.call("GET", `/v1/ws/${encodeURIComponent(this.target.ws)}/ready${qs === "" ? "" : `?${qs}`}`);
+  }
+
   async claim(id: string, leaseMinutes?: number): Promise<{ data: unknown; meta: Record<string, unknown> }> {
     return this.call("POST", `/v1/ws/${encodeURIComponent(this.target.ws)}/ready/claim`, {
       id,

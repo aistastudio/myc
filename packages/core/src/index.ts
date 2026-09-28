@@ -59,6 +59,8 @@ export * from "./sql.ts";
 export * from "./queries.ts";
 export * from "./effect.ts";
 export * from "./apply.ts";
+export * from "./freshness.ts";
+export * from "./ready-queries.ts";
 export * from "./closure.ts";
 export * from "./cycle.ts";
 export * from "./oplog.ts";
