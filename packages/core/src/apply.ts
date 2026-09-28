@@ -16,6 +16,9 @@
  * зелёным — иначе он не шаг.
  */
 
+import { applyParentInsert, applyParentMove, applyParentRemove, ancestorsOf } from "./closure.ts";
+import { checkEdgeAcyclic } from "./cycle.ts";
+import { EDGE_SEMANTICS, type EdgeKind } from "./index.ts";
 import {
   assertNodeField,
   assertNodeKind,
@@ -42,6 +45,23 @@ import {
 import { all, one, run, type Eff } from "./effect.ts";
 import { NODE_INSERT_COLUMNS, NODE_SET_QUERIES, Q } from "./queries.ts";
 import type { QueryDef } from "./sql.ts";
+
+/**
+ * ЧИСЛО ИЗ СТРОКИ ТАБЛИЦЫ, А НЕ ИЗ ДРАЙВЕРА.
+ *
+ * bun:sqlite отдаёт целую колонку числом, Postgres — BIGINT СТРОКОЙ (иначе
+ * потерялись бы биты у больших значений, и у `hlc` это обязательно). Поэтому
+ * `row.depth === 1` истинно на одной базе и ложно на другой — молча: ветка
+ * просто не выбирается. Поймано ws.pg.test.ts на `parent` — замыкание
+ * говорило «родителя нет» там, где он был.
+ *
+ * Здесь приводится ТОЛЬКО то, что применитель сравнивает как число. Часы
+ * (`hlc`) через это не проходят: они читаются `readHlc` из строки и остаются
+ * точными.
+ */
+function num(value: unknown): number {
+  return typeof value === "number" ? value : Number(value);
+}
 
 /** Часы из колонки: в базе они лежат упакованным целым. */
 export function readHlc(text: string | number | bigint): Hlc {
@@ -753,7 +773,7 @@ export function* settleExternal(
   for (const [id, before] of tally.external) {
     const row = yield* one<ExternalRow>(Q.node_external_row, [id]);
     if (row === undefined) continue;
-    const indexed = row.indexed === 1;
+    const indexed = num(row.indexed) === 1;
     // Вне домена индекса разрешитель ни с кем не спорит и обязан быть
     // одинаков на всех репликах — значит пустой.
     if (!indexed && row.ext_dup !== "") (yield* run(Q.node_set_ext_dup, [id, ""]));
@@ -798,7 +818,7 @@ export function* touchExternal(
     scope: row.scope,
     kind: row.kind,
     ref: row.ref ?? "",
-    indexed: row.indexed === 1,
+    indexed: num(row.indexed) === 1,
     demoted: row.ext_dup !== "",
   });
   if (row.ext_dup !== id) (yield* run(Q.node_set_ext_dup, [id, id]));
@@ -847,7 +867,7 @@ export function* settleContent(
     const row = yield* one<ContentRow>(Q.node_content_row, [id]);
     if (row === undefined) continue;
     const canon = contentHash(row.kind, row.title, row.body);
-    const indexed = row.indexed === 1;
+    const indexed = num(row.indexed) === 1;
     // Вне домена индекса хеш канонический и ни с кем не сталкивается;
     // в домене — пока уникальный пониженный, решает перебалансировка.
     yield* run(Q.node_refresh_derived, [
@@ -892,7 +912,7 @@ export function* touchContent(
     scope: row.scope,
     kind: row.kind,
     canon,
-    indexed: row.indexed === 1,
+    indexed: num(row.indexed) === 1,
     demoted: canon !== row.content_hash,
   });
   yield* run(Q.node_set_content_hash, [id, demotedContentHash(canon, id)]);
@@ -1003,7 +1023,7 @@ tally: ApplyTally): Eff<void> {
     for (const row of rows) {
       yield* run(Q.pending_delete, [row.op_id]);
       const op = JSON.parse(row.op) as Op;
-      const origin: 0 | 1 = row.origin === 1 ? 1 : 0;
+      const origin: 0 | 1 = num(row.origin) === 1 ? 1 : 0;
       ctx.ops.clock.recv(op.hlc);
       const needs = yield* applyOne(ctx, op, origin, none, tally);
       if (needs !== undefined) {
@@ -1246,4 +1266,206 @@ export function* applyLocalOps(
   const settled = yield* settleIdentity(ctx, tally, true);
   yield* persistSeq(ctx);
   return settled;
+}
+
+// ---------------------------------------------------------------------------
+// Локальная запись ребра
+// ---------------------------------------------------------------------------
+
+/**
+ * `parent` особенный: у него есть материализованное замыкание, и «уже потомок»
+ * там стоит один спуск, а не обход. Остальные ацикличные типы (blocks)
+ * проверяются обходом — cycle.ts.
+ */
+function* checkEdgeRules(src: string, type: EdgeKind, dst: string): Eff<void> {
+  const semantics = EDGE_SEMANTICS[type];
+  if (semantics.acyclic && type !== "parent") {
+    yield* checkEdgeAcyclic(src, type, dst, semantics.maxDepth);
+  }
+}
+
+/**
+ * Поддержка дерева при добавлении ребра `parent(child → parent)`. У ребёнка
+ * может УЖЕ быть родитель: тогда старое ребро гасится операцией (add-wins
+ * OR-Set требует назвать все живые теги), и только потом поддерево
+ * перевешивается — иначе `checkParentInsert` спотыкается о старую связь как о
+ * ложный цикл.
+ */
+export function* applyParentEdgeAdd(ctx: ApplyCtx, child: string, parent: string): Eff<void> {
+  const current = (yield* ancestorsOf(child)).find((a) => num(a.depth) === 1)?.ancestor;
+  if (current === parent) return;
+  if (current === undefined) {
+    yield* applyParentInsert(child, parent);
+    return;
+  }
+  const oldEdge = yield* one<EdgeClockRow>(Q.edge_clock_get, [child, "parent", current]);
+  const oldTags = oldEdge?.deleted_at === null ? yield* liveEdgeTags(child, "parent", current) : [];
+  if (oldTags.length > 0) {
+    const scope = (yield* one<NodeHeadRow>(Q.node_head, [child]))?.scope ?? "";
+    const delOp = ctx.ops.edgeDel(child, "parent", current, oldTags);
+    yield* journalLocal(ctx, delOp, "edge", edgeEntityId(child, "parent", current), scope);
+    yield* projectEdgeDel(ctx, delOp);
+  }
+  yield* applyParentMove(child, parent);
+}
+
+/**
+ * Симметрично для удаления. `parent` не прямой родитель `child` в замыкании —
+ * либо ребро не было материализовано, либо это тумбстоун старого тега поверх
+ * ребра, которое add-wins уже пережил; в обоих случаях замыкание не трогаем,
+ * чтобы не снести чужой живой parent.
+ */
+export function* applyParentEdgeRemove(child: string, parent: string): Eff<void> {
+  const current = (yield* ancestorsOf(child)).find((a) => num(a.depth) === 1)?.ancestor;
+  if (current !== parent) return;
+  yield* applyParentRemove(child, parent);
+}
+
+/**
+ * ДОБАВИТЬ РЕБРО ЛОКАЛЬНО: правила целиком, без транзакции (её открывает
+ * вызывающий — у SQLite это `BEGIN IMMEDIATE`, у сервера `withTenant`).
+ *
+ * Порядок не переставляется: сначала часы поднимаются от хвоста, потом
+ * проверяются правила типа ребра, и только потом минтится операция. Сминтить
+ * раньше — это myc-4dy; проверить позже — значит записать в оплог то, что
+ * будет отвергнуто.
+ */
+export function* applyLocalEdgeAdd(
+  ctx: ApplyCtx,
+  src: string,
+  type: EdgeKind,
+  dst: string,
+  scope: string,
+  opts: { readonly weight?: number; readonly attrs?: string },
+  onCollision: (op: Op) => Error,
+): Eff<void> {
+  yield* syncTail(ctx);
+  yield* checkEdgeRules(src, type, dst);
+  const op = ctx.ops.edgeAdd(src, type, dst, opts.weight);
+  yield* journalLocal(ctx, op, "edge", edgeEntityId(src, type, dst), scope);
+  const outcome = yield* projectEdgeAdd(ctx, op, { actor: ctx.actor, attrs: opts.attrs ?? "{}" });
+  if (outcome === "collided") throw onCollision(op);
+  if (type === "parent") yield* applyParentEdgeAdd(ctx, src, dst);
+  yield* persistSeq(ctx);
+}
+
+/**
+ * УДАЛИТЬ РЕБРО ЛОКАЛЬНО. В операцию попадают ВСЕ живые на этот момент теги:
+ * добавление, которого этот сайт не видел, удаление переживает (add-wins).
+ * `false` — удалять было нечего.
+ */
+export function* applyLocalEdgeDel(
+  ctx: ApplyCtx,
+  src: string,
+  type: EdgeKind,
+  dst: string,
+  scope: string,
+): Eff<boolean> {
+  yield* syncTail(ctx);
+  const tags = yield* liveEdgeTags(src, type, dst);
+  if (tags.length === 0) return false;
+  const op = ctx.ops.edgeDel(src, type, dst, tags);
+  yield* journalLocal(ctx, op, "edge", edgeEntityId(src, type, dst), scope);
+  yield* projectEdgeDel(ctx, op);
+  if (type === "parent") yield* applyParentEdgeRemove(src, dst);
+  yield* persistSeq(ctx);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Аренда задачи (§9.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lease задачи: TTL аренды и каденция продления (§9.4). Держатель обязан
+ * продлевать аренду heartbeat'ом каждые 300 с; просроченная аренда в любом
+ * случае не блокирует других — условие `lease_expires < now` в CAS открывает
+ * задачу заново, отдельного сборщика не нужно.
+ */
+export const LEASE_TTL_MS = 900_000;
+export const LEASE_RENEW_MS = 300_000;
+
+export type ClaimAction = "claim" | "renew" | "release" | "close";
+
+export interface ClaimReceipt {
+  readonly id: string;
+  readonly holder: string;
+  readonly epoch: number;
+  readonly expiresAt: number;
+}
+
+interface ClaimedRow {
+  readonly scope: string;
+  readonly lease_epoch: number | string;
+  readonly lease_expires: number | string;
+}
+
+/**
+ * Операция аренды в оплоге. Повтор op_id здесь — не «уже применено», а
+ * коллизия: два процесса под одним site_id выдали один номер, и молча
+ * пропустить значило бы потерять захват (myc-4dy).
+ */
+export function* journalClaim(
+  ctx: ApplyCtx,
+  meta: SetOp,
+  entityId: string,
+  scope: string,
+  action: ClaimAction,
+  holder: string,
+  epoch: number,
+  expires: number,
+): Eff<void> {
+  const inserted = yield* run(Q.oplog_insert, [
+    meta.op_id,
+    meta.site_id,
+    packHlc(meta.hlc),
+    meta.hlc.ts,
+    ctx.actor,
+    "claim",
+    "node",
+    entityId,
+    "lease",
+    JSON.stringify({ action, holder, epoch, expires }),
+    scope,
+    1,
+  ]);
+  if (inserted.changes !== 1) {
+    throw new GraphError(
+      "graph.clock_collision",
+      `operation ${meta.op_id} is already in the oplog — a repeated journal claim is not allowed`,
+    );
+  }
+}
+
+/**
+ * ЗАХВАТИТЬ ЗАДАЧУ. Взаимное исключение — не LWW: офлайновый агент с более
+ * поздними часами не должен «украсть» чужую работу. Роль LWW здесь играет
+ * CAS-предикат в ОДНОМ операторе плюс монотонная эпоха аренды; окна между
+ * чтением и записью нет вовсе.
+ *
+ * `undefined` — задачу уже забрали или она не открыта: вызывающий берёт
+ * следующую из очереди, а не ждёт.
+ */
+export function* claimNode(
+  ctx: ApplyCtx,
+  id: string,
+  holder: string,
+  ttlMs: number,
+): Eff<ClaimReceipt | undefined> {
+  yield* syncTail(ctx);
+  const meta = ctx.ops.set(id, "lease", { action: "claim", holder });
+  const expiresAt = meta.hlc.ts + ttlMs;
+  const claimed = yield* one<ClaimedRow>(Q.claim_node, [
+    id,
+    holder,
+    expiresAt,
+    meta.hlc.ts,
+    packHlc(meta.hlc),
+    ctx.siteId,
+  ]);
+  if (claimed === undefined) return undefined;
+  const epoch = num(claimed.lease_epoch);
+  yield* journalClaim(ctx, meta, id, claimed.scope, "claim", holder, epoch, expiresAt);
+  yield* persistSeq(ctx);
+  return { id, holder, epoch, expiresAt: num(claimed.lease_expires) };
 }

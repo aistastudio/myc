@@ -34,7 +34,17 @@ import {
   WS_LIMIT_DEFAULT,
   WS_LIMIT_MAX,
 } from "./ws.ts";
-import { createNode, validateCreate } from "./write.ts";
+import {
+  addEdge,
+  claimTask,
+  CLAIM_TTL_MS,
+  createNode,
+  removeEdge,
+  updateNode,
+  validateCreate,
+  validateEdge,
+  validateUpdate,
+} from "./write.ts";
 import {
   authenticate,
   clearCookie,
@@ -556,6 +566,71 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
           });
         }
 
+        if (rest === "/ready/claim" && req.method === "POST") {
+          const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+          const id = typeof body?.["id"] === "string" ? body["id"] : "";
+          if (id === "") {
+            return json(
+              { ok: false, cmd: "claim", ws, error: { code: "usage.id", msg: "'id' is required" } },
+              400,
+            );
+          }
+          const minutes = body?.["lease_minutes"];
+          const ttl = minutes === undefined ? CLAIM_TTL_MS : Number(minutes) * 60_000;
+          // Держатель — владелец токена, а не поле запроса: иначе задачу можно
+          // взять от чужого имени, и «кто держит» перестанет что-либо значить.
+          const done = await claimTask(pg, tenant, ws, id, who!.subject, ttl);
+          if (!done.ok) {
+            const status =
+              done.error.code === "notfound.node" ? 404 : done.error.code === "usage.lease" ? 400 : 409;
+            return json({ ok: false, cmd: "claim", ws, error: done.error }, status);
+          }
+          return envelope("claim", ws, done.data, { took_ms: took() });
+        }
+
+        if (rest === "/edges" && (req.method === "POST" || req.method === "DELETE")) {
+          const body = await req.json().catch(() => null);
+          const parsed = validateEdge(body);
+          if (!parsed.ok) {
+            return json({ ok: false, cmd: "edge", ws, error: parsed.error }, 400);
+          }
+          const done =
+            req.method === "POST"
+              ? await addEdge(pg, tenant, ws, parsed.data, who!.subject)
+              : await removeEdge(pg, tenant, ws, parsed.data, who!.subject);
+          if (!done.ok) {
+            return json(
+              { ok: false, cmd: "edge", ws, error: done.error },
+              done.error.code.startsWith("notfound.") ? 404 : 409,
+            );
+          }
+          return envelope("edge", ws, done.data, { took_ms: took() });
+        }
+
+        const onePath = /^\/nodes\/([^/]+)$/.exec(rest);
+        if (onePath !== null && req.method === "PATCH") {
+          const body = await req.json().catch(() => null);
+          const parsed = validateUpdate(body);
+          if (!parsed.ok) {
+            return json({ ok: false, cmd: "node", ws, error: parsed.error }, 400);
+          }
+          const id = decodeURIComponent(onePath[1]!);
+          const done = await updateNode(pg, tenant, ws, id, parsed.data, who!.subject);
+          if (!done.ok) {
+            return json(
+              { ok: false, cmd: "node", ws, error: done.error },
+              done.error.code === "notfound.node" ? 404 : 400,
+            );
+          }
+          const [node] = await pg.withTenant(tenant, async (tx) => [
+            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id]),
+          ]);
+          return envelope("node", ws, node === undefined ? { id } : renderNode(node), {
+            took_ms: took(),
+            changed: done.data.changed,
+          });
+        }
+
         if (req.method !== "GET") {
           return json(
             {
@@ -586,9 +661,8 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
           });
         }
 
-        const one = /^\/nodes\/([^/]+)$/.exec(rest);
-        if (one !== null) {
-          const id = decodeURIComponent(one[1]!);
+        if (onePath !== null) {
+          const id = decodeURIComponent(onePath[1]!);
           const [node, edges] = await pg.withTenant(tenant, async (tx) => [
             await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id]),
             await tx.all<Record<string, unknown>>(wsQueries.ws_node_edges, [ws, id]),

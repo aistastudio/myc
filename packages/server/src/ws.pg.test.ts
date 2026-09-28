@@ -244,7 +244,7 @@ describe("данные воркспейса по HTTP", () => {
     const rows = await pg!.withTenant("acme", async (tx) =>
       tx.raw<{ field: string }>("SELECT field FROM oplog WHERE entity_id = $1 ORDER BY field", [id]),
     );
-    expect(rows.map((r) => r.field)).toEqual(["kind", "priority", "scope", "seen_count", "title"]);
+    expect(rows.map((r) => r.field)).toEqual(["kind", "priority", "scope", "seen_count", "status", "title"]);
     const clocks = await pg!.withTenant("acme", async (tx) =>
       tx.raw<{ n: string }>("SELECT count(*) AS n FROM field_clock WHERE entity_id = $1", [id]),
     );
@@ -266,6 +266,212 @@ describe("данные воркспейса по HTTP", () => {
       expect([r.body.data.title, back.status]).toEqual([r.body.data.title, 200]);
       expect(back.body.data.title).toBe(r.body.data.title);
     }
+  });
+
+  const patch = async (path: string, token: string, body: unknown): Promise<{ status: number; body: any }> => {
+    const res = await fetch(`${srv!.url}${path}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  test("правка узла: меняется названное, остальное на месте", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const made = await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "до правки" });
+    const id = made.body.data.id as string;
+
+    const done = await patch(`/v1/ws/cherry/nodes/${id}`, acme, {
+      title: "после правки",
+      priority: 0,
+      attrs: { repo: "myc" },
+    });
+    expect(done.status).toBe(200);
+    expect(done.body.data.title).toBe("после правки");
+    expect(done.body.data.priority).toBe(0);
+    expect(done.body.data.attrs).toEqual({ repo: "myc" });
+    expect(done.body.meta.changed.sort()).toEqual(["attrs.repo", "priority", "title"]);
+    // Вид узла правкой не меняется и не теряется.
+    expect(done.body.data.kind).toBe("task");
+  });
+
+  test("правка идёт оплогом: у изменённого поля новые часы", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const made = await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "часы" });
+    const id = made.body.data.id as string;
+    const before = await pg!.withTenant("acme", async (tx) =>
+      tx.raw<{ hlc: string }>("SELECT hlc FROM field_clock WHERE entity_id = $1 AND field = 'title'", [id]),
+    );
+    await patch(`/v1/ws/cherry/nodes/${id}`, acme, { title: "часы сдвинулись" });
+    const after = await pg!.withTenant("acme", async (tx) =>
+      tx.raw<{ hlc: string }>("SELECT hlc FROM field_clock WHERE entity_id = $1 AND field = 'title'", [id]),
+    );
+    expect(BigInt(after[0]!.hlc) > BigInt(before[0]!.hlc)).toBe(true);
+    const ops = await pg!.withTenant("acme", async (tx) =>
+      tx.raw<{ n: string }>("SELECT count(*) AS n FROM oplog WHERE entity_id = $1 AND field = 'title'", [id]),
+    );
+    expect(Number(ops[0]!.n)).toBe(2);
+  });
+
+  test("правка чужого воркспейса неотличима от несуществующего узла", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const foreign = await patch("/v1/ws/cherry/nodes/portal-2", acme, { title: "нельзя" });
+    const invented = await patch("/v1/ws/cherry/nodes/нет-такого", acme, { title: "нельзя" });
+    expect([foreign.status, invented.status]).toEqual([404, 404]);
+    expect(foreign.body.error.code).toBe(invented.body.error.code);
+    // И у соседа по серверу — тоже: id тот же, арендатор другой.
+    expect((await patch("/v1/ws/cherry/nodes/cherry-2", globex, { title: "нельзя" })).status).toBe(404);
+  });
+
+  test("правка неизменяемого и пустая правка отвергаются по-разному", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    for (const [body, code] of [
+      [{ kind: "note" }, "usage.field"],
+      [{ scope: "portal" }, "usage.field"],
+      [{}, "usage.empty"],
+      [{ priority: 7 }, "usage.priority"],
+      [{ title: "  " }, "usage.title"],
+    ] as const) {
+      const res = await patch("/v1/ws/cherry/nodes/cherry-1", acme, body);
+      expect([JSON.stringify(body), res.status]).toEqual([JSON.stringify(body), 400]);
+      expect(res.body.error.code).toBe(code);
+    }
+  });
+
+  const send = async (
+    method: "POST" | "DELETE",
+    path: string,
+    token: string,
+    body: unknown,
+  ): Promise<{ status: number; body: any }> => {
+    const res = await fetch(`${srv!.url}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  test("ребро: добавляется, видно у узла, удаляется", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const a = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "ребро А" })).body.data
+      .id as string;
+    const b = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "ребро Б" })).body.data
+      .id as string;
+
+    const made = await send("POST", "/v1/ws/cherry/edges", acme, { from: a, type: "blocks", to: b });
+    expect(made.status).toBe(200);
+    const node = await get(`/v1/ws/cherry/nodes/${a}`, acme);
+    expect(node.body.data.edges.map((e: { type: string; dst: string }) => `${e.type}→${e.dst}`)).toEqual([
+      `blocks→${b}`,
+    ]);
+
+    const gone = await send("DELETE", "/v1/ws/cherry/edges", acme, { from: a, type: "blocks", to: b });
+    expect(gone.status).toBe(200);
+    expect(gone.body.data.removed).toBe(true);
+    const after = await get(`/v1/ws/cherry/nodes/${a}`, acme);
+    expect(after.body.data.edges).toEqual([]);
+  });
+
+  test("цикл blocks отвергается с причиной, а не «ошибкой базы»", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const a = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "цикл А" })).body.data
+      .id as string;
+    const b = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "цикл Б" })).body.data
+      .id as string;
+    expect((await send("POST", "/v1/ws/cherry/edges", acme, { from: a, type: "blocks", to: b })).status).toBe(200);
+
+    const loop = await send("POST", "/v1/ws/cherry/edges", acme, { from: b, type: "blocks", to: a });
+    expect(loop.status).toBe(409);
+    expect(loop.body.error.code).toBe("precond.cycle");
+    // В сообщении — ПУТЬ, а не факт кольца: иначе непонятно, какое звено лишнее.
+    expect(loop.body.error.msg).toContain(a);
+    expect(loop.body.error.msg).toContain(b);
+  });
+
+  test("parent через сервер ведёт замыкание, а не только строку ребра", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    // Эпик в myc — это `attrs.type`, а не вид узла: вид остаётся task.
+    const parent = (
+      await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "эпик", attrs: { type: "epic" } })
+    ).body.data.id as string;
+    const child = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "в эпике" })).body.data
+      .id as string;
+    const put = await send("POST", "/v1/ws/cherry/edges", acme, { from: child, type: "parent", to: parent });
+    expect([put.status, put.body.error ?? null]).toEqual([200, null]);
+    // Замыкание — то, чем живут наследование и запрос «чей это потомок».
+    const closure = await pg!.withTenant("acme", async (tx) =>
+      tx.raw<{ ancestor: string; depth: string }>(
+        "SELECT ancestor, depth FROM parent_closure WHERE descendant = $1 ORDER BY depth",
+        [child],
+      ),
+    );
+    expect(closure.map((r) => [r.ancestor, Number(r.depth)])).toEqual([[parent, 1]]);
+  });
+
+  test("ребро за границу воркспейса не заводится", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const own = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "свой" })).body.data
+      .id as string;
+    const foreign = await send("POST", "/v1/ws/cherry/edges", acme, {
+      from: own,
+      type: "relates",
+      to: "portal-1",
+    });
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error.code).toBe("notfound.node");
+  });
+
+  test("негодное ребро отвергается до базы", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    for (const [body, code] of [
+      [{ from: "cherry-1", type: "blocks" }, "usage.endpoints"],
+      [{ from: "cherry-1", type: "blocks", to: "cherry-1" }, "usage.endpoints"],
+      [{ from: "cherry-1", type: "выдумка", to: "cherry-2" }, "usage.type"],
+    ] as const) {
+      const res = await send("POST", "/v1/ws/cherry/edges", acme, body);
+      expect([JSON.stringify(body), res.status]).toEqual([JSON.stringify(body), 400]);
+      expect(res.body.error.code).toBe(code);
+    }
+  });
+
+  test("взятие задачи: первый получает аренду, второй — отказ с причиной", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const id = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "кто успел" })).body.data
+      .id as string;
+
+    const first = await post(`/v1/ws/cherry/ready/claim`, acme, { id, lease_minutes: 5 });
+    expect([first.status, first.body.error ?? null]).toEqual([200, null]);
+    expect(first.body.data.holder).toBe("dev-anna");
+    expect(first.body.data.expiresAt).toBeGreaterThan(Date.now());
+
+    // Второй приходит к уже взятой задаче — и узнаёт об этом кодом, а не пустотой.
+    const second = await post(`/v1/ws/cherry/ready/claim`, acme, { id });
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe("conflict.claimed");
+
+    // Держатель виден в самом узле.
+    const node = await get(`/v1/ws/cherry/nodes/${id}`, acme);
+    expect(node.body.data.status).toBe("in_progress");
+  });
+
+  test("держателем становится владелец токена, а не то, что прислали", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const id = (await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "чужое имя" })).body.data
+      .id as string;
+    const taken = await post(`/v1/ws/cherry/ready/claim`, acme, { id, holder: "не-я" });
+    expect(taken.status).toBe(200);
+    expect(taken.body.data.holder).toBe("dev-anna");
+  });
+
+  test("взятие чужой задачи и негодная аренда отвечают по-разному", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    expect((await post("/v1/ws/cherry/ready/claim", acme, { id: "portal-1" })).status).toBe(404);
+    expect((await post("/v1/ws/cherry/ready/claim", acme, {})).status).toBe(400);
+    const tooLong = await post("/v1/ws/cherry/ready/claim", acme, { id: "cherry-1", lease_minutes: 10_000 });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error.code).toBe("usage.lease");
   });
 
   test("негодный вход отвергается ДО базы и говорит, что не так", async () => {

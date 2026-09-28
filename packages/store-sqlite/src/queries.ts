@@ -19,6 +19,7 @@ import {
   projectSet,
   readHlc,
   edgeEntityId,
+  LEASE_TTL_MS,
   newTally,
   parseEdgeEntityId,
   runSync,
@@ -84,14 +85,9 @@ import { checkEdgeAcyclic } from "./cycle.ts";
 // ---------------------------------------------------------------------------
 
 
-/**
- * Lease задачи: TTL аренды и каденция продления (§9.4). Держатель обязан
- * продлевать аренду heartbeat'ом каждые 300 с; просроченная аренда в любом
- * случае не блокирует других — условие `lease_expires < now` в CAS открывает
- * задачу заново, отдельного сборщика не нужно.
- */
-export const LEASE_TTL_MS = 900_000;
-export const LEASE_RENEW_MS = 300_000;
+// Сроки аренды переехали в ядро вместе с её правилом (packages/core/src/
+// apply.ts): задачи берут и агенты через CLI, и люди через сервер.
+export { LEASE_TTL_MS, LEASE_RENEW_MS } from "@myc/core";
 
 
 
@@ -901,17 +897,11 @@ export class GraphStore {
     const scope = this.getNode(src, true)?.scope ?? "";
     const entityId = edgeEntityId(src, edgeType, dst);
 
-    return this.driver.tx("immediate", (tx) => {
-      this.syncTail(tx);
-      const tags = this.liveEdgeTags(tx, src, edgeType, dst);
-      if (tags.length === 0) return false;
-      const op = this.ops.edgeDel(src, edgeType, dst, tags);
-      this.journalLocal(tx, op, "edge", entityId, scope);
-      this.projectEdgeDel(tx, op);
-      if (edgeType === "parent") this.applyParentEdgeRemove(tx, src, dst);
-      this.persistSeq(tx);
-      return true;
-    });
+    // Правила — в ядре (A.applyLocalEdgeDel): все живые теги в операцию
+    // (add-wins), гашение проекции и поддержка замыкания у `parent`.
+    return this.driver.tx("immediate", (tx) =>
+      runSync(A.applyLocalEdgeDel(this.applyCtx(), src, edgeType, dst, scope), tx),
+    );
   }
 
   /**
@@ -1105,38 +1095,12 @@ export class GraphStore {
    * `undefined` — задачу забрали (или она не открыта): брать следующую из ready.
    */
   claimNode(id: string, holder?: string, ttlMs: number = LEASE_TTL_MS): ClaimReceipt | undefined {
+    // Правило (CAS, эпоха, строка оплога) — в ядре: задачи берут и агенты
+    // через CLI, и люди через сервер, и «кто успел» обязано решаться одинаково.
     const who = holder ?? this.actor;
-    return this.driver.tx("immediate", (tx) => {
-      this.syncTail(tx);
-      const meta = this.ops.set(id, "lease", { action: "claim", holder: who });
-      const expiresAt = meta.hlc.ts + ttlMs;
-      const claimed = tx.one<ClaimedRow>(Q.claim_node, [
-        id,
-        who,
-        expiresAt,
-        meta.hlc.ts,
-        packHlc(meta.hlc),
-        this.siteId,
-      ]);
-      if (claimed === undefined) return undefined; // changes()==0
-      this.journalClaim(
-        tx,
-        meta,
-        id,
-        claimed.scope,
-        "claim",
-        who,
-        claimed.lease_epoch,
-        expiresAt,
-      );
-      this.persistSeq(tx);
-      return {
-        id,
-        holder: who,
-        epoch: claimed.lease_epoch,
-        expiresAt: claimed.lease_expires,
-      };
-    });
+    return this.driver.tx("immediate", (tx) =>
+      runSync(A.claimNode(this.applyCtx(), id, who, ttlMs), tx),
+    );
   }
 
   /**

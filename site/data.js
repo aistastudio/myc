@@ -1640,16 +1640,16 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4020,
+    "pass": 4032,
     "fail": 0,
     "skip": 16,
     "files": 267,
-    "assertions": 37603,
-    "seconds": 400.7,
-    "sources": "943d82a6785b8198",
+    "assertions": 37656,
+    "seconds": 412.7,
+    "sources": "9c08aff855d3160a",
     "date": "2026-09-26",
     "myc": "0.3.14"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-26T22:40:53.012Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-09-28T17:07:35.128Z", assertions: 77 };
 window.MYC_DATA.release = "0.3.14";
