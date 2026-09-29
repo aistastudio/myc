@@ -58,6 +58,7 @@ export function registerAll(registry: Registry): void {
   lazy("viz", () => import("./commands/viz.ts").then((m) => m.createVizCommand()));
   lazy("export", () => import("./commands/export.ts").then((m) => m.createExportCommand()));
   lazy("import", () => import("./commands/import.ts").then((m) => m.createImportCommand()));
+  lazy("sync", () => import("./commands/sync.ts").then((m) => m.createSyncCommand()));
   lazy("import-beads", () =>
     import("./commands/import-beads.ts").then((m) => m.createImportBeadsCommand()));
   lazy("merge-driver", () =>

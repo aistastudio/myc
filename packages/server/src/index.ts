@@ -36,6 +36,7 @@ import {
   WS_LIMIT_MAX,
 } from "./ws.ts";
 import { primeDigest, readyQueue, READY_LIMIT_DEFAULT, READY_LIMIT_MAX } from "./ready.ts";
+import { syncExchange, validateSync } from "./sync.ts";
 import {
   addEdge,
   claimTask,
@@ -54,6 +55,7 @@ import {
   sessionCookie,
   tokenOf,
   type Principal,
+  type Scope,
   can,
   seesWorkspace,
 } from "./auth.ts";
@@ -575,7 +577,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
       const took = (): number => Math.round((performance.now() - t0) * 100) / 100;
 
       try {
-        const needs = (scope: "write" | "claim"): Response | undefined =>
+        const needs = (scope: Scope): Response | undefined =>
           can(who, scope)
             ? undefined
             : json(
@@ -587,6 +589,24 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
                 },
                 403,
               );
+
+        if ((rest === "/sync" || rest === "/sync/") && req.method === "POST") {
+          // Обмен требует СВОЕГО права: реплика полная, и предикат видимости
+          // её не фильтрует (auth.ts, SCOPES). Отдать её читателю значило бы
+          // отдать и чужое приватное.
+          const denied = needs("sync");
+          if (denied !== undefined) return denied;
+          const parsed = validateSync(await req.json().catch(() => null));
+          if (!parsed.ok) {
+            return json({ ok: false, cmd: "sync", ws, error: parsed.error }, 400);
+          }
+          const answer = await syncExchange(pg, tenant, ws, parsed.data, who!.subject);
+          return envelope("sync", ws, answer, {
+            took_ms: took(),
+            pushed: parsed.data.ops.length,
+            pulled: answer.ops.length,
+          });
+        }
 
         if ((rest === "/nodes" || rest === "/nodes/") && req.method === "POST") {
           const denied = needs("write");

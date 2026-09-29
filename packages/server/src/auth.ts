@@ -39,14 +39,27 @@ export const TOKEN_PREFIX = "myc_";
 export const ROLES = ["owner", "maintainer", "member", "agent", "viewer"] as const;
 export type Role = (typeof ROLES)[number];
 
-/** Права: чтение, запись, взятие задач и администрирование сервера. */
-export const SCOPES = ["read", "write", "claim", "admin"] as const;
+/**
+ * Права: чтение, запись, взятие задач, обмен репликами и администрирование.
+ *
+ * `sync` СТОИТ ОТДЕЛЬНО ОТ `read`, и это следствие устройства реплики, а не
+ * осторожность. Обмен везёт ОПЕРАЦИИ, а не выдачу: предикат видимости (§8.2.2)
+ * фильтрует ответы запросов, оплог же не фильтруется ничем — реплика по
+ * определению полная, иначе она не сходится (чужие операции нужны, чтобы
+ * слияние вообще имело смысл). Значит право забрать реплику — это право
+ * видеть в воркспейсе ВСЁ, включая чужое приватное, и выдавать его вместе с
+ * `read` значило бы отдать приватные заметки любому читателю.
+ *
+ * Поэтому умолчание есть только у owner и maintainer. Частичная репликация с
+ * учётом ACL — отдельная задача, а не флажок здесь.
+ */
+export const SCOPES = ["read", "write", "claim", "sync", "admin"] as const;
 export type Scope = (typeof SCOPES)[number];
 
 /** Умолчание прав у роли — то, что она значит, если не сузили явно. */
 export const ROLE_SCOPES: Readonly<Record<Role, readonly Scope[]>> = Object.freeze({
-  owner: ["read", "write", "claim", "admin"],
-  maintainer: ["read", "write", "claim", "admin"],
+  owner: ["read", "write", "claim", "sync", "admin"],
+  maintainer: ["read", "write", "claim", "sync", "admin"],
   member: ["read", "write", "claim"],
   agent: ["read", "write", "claim"],
   viewer: ["read"],

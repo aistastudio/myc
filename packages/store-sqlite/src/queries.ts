@@ -221,22 +221,13 @@ interface ClaimCloseRow {
 }
 
 
-export interface OplogRow {
-  readonly seq: number;
-  readonly op_id: string;
-  readonly site_id: string;
-  /** CAST(hlc AS TEXT): точное 64-битное значение, см. readHlc. */
-  readonly hlc: string;
-  readonly ts_ms: number;
-  readonly actor: string;
-  readonly op: string;
-  readonly entity: string;
-  readonly entity_id: string;
-  readonly field: string | null;
-  readonly value: string | null;
-  readonly scope: string;
-  readonly origin: number;
-}
+/**
+ * Строка оплога и её разбор живут в ядре (packages/core/src/sync.ts): их
+ * читает не только этот движок, но и обмен с сервером, работающий над
+ * Postgres. Здесь — реэкспорт, чтобы вызывающие не переучивались.
+ */
+export type { OplogRow } from "@myc/core";
+import type { OplogRow } from "@myc/core";
 
 /**
  * Результат успешного CAS-захвата (§9.4). `epoch` монотонно растёт при каждом
@@ -612,6 +603,37 @@ export class GraphStore {
 
   oplogCount(): number {
     return this.driver.one<{ n: number }>(Q.oplog_count, [])?.n ?? 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Обмен с пиром (§9.5) — мост к протоколу из ядра. Правила отбора и порядок
+  // живут там (packages/core/src/sync.ts) и одинаковы у обеих сторон; здесь
+  // только исполнение генератора на своём драйвере.
+  // -------------------------------------------------------------------------
+
+  /** Наши высокие воды по воркспейсу — то, что уходит пиру в `have`. */
+  syncWatermarks(scope: string): A.Watermarks {
+    return runSync(A.localWatermarks(scope), this.driver);
+  }
+
+  /** Операции, которых нет у пира, — не больше потолка пакета. */
+  syncCollect(
+    scope: string,
+    have: A.Watermarks,
+    maxOps = A.SYNC_MAX_OPS,
+    maxBytes = A.SYNC_MAX_BYTES,
+  ): A.Batch {
+    return runSync(A.collectForPeer(scope, have, maxOps, maxBytes), this.driver);
+  }
+
+  syncPeer(peer: string): A.PeerState | undefined {
+    return runSync(A.readPeer(peer), this.driver);
+  }
+
+  syncRecordPeer(peer: string, seen: A.Watermarks, now: number, endpoint = ""): void {
+    this.driver.tx("immediate", (tx) => {
+      runSync(A.recordPeer(peer, seen, 0, now, endpoint), tx);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1452,48 +1474,4 @@ export class GraphStore {
 
 }
 
-/** Строка оплога обратно в операцию — вход merge() и sync. */
-export function rowToOp(row: OplogRow): Op {
-  const hlc = readHlc(row.hlc);
-  const seq = Number(row.op_id.slice(row.site_id.length + 1));
-  const value = row.value === null ? null : (JSON.parse(row.value) as JsonValue);
-  const entityId =
-    row.entity === "edge"
-      ? (() => {
-          const e = parseEdgeEntityId(row.entity_id);
-          return [e.src, e.type, e.dst].join(MEMORY_EDGE_SEPARATOR);
-        })()
-      : row.entity_id;
-  const base = {
-    op_id: row.op_id,
-    seq: Number.isFinite(seq) ? seq : 0,
-    hlc,
-    site_id: row.site_id,
-    entity_id: entityId,
-    field: row.field ?? "",
-  };
-
-  switch (row.op) {
-    case "set":
-      return { ...base, op: "set", value } as SetOp;
-    case "inc":
-      return { ...base, op: "inc", value: Number(value) } as IncOp;
-    case "edge_add":
-      return {
-        ...base,
-        op: "edge_add",
-        value: value as { tag: string; weight?: number },
-      } as EdgeAddOp;
-    case "edge_del":
-      return {
-        ...base,
-        op: "edge_del",
-        value: value as { tags: string[] },
-      } as EdgeDelOp;
-    default:
-      throw new GraphError(
-        "graph.unknown_field",
-        `operation '${row.op}' does not project into an Op: claim and purge are separate tasks`,
-      );
-  }
-}
+export { rowToOp } from "@myc/core";

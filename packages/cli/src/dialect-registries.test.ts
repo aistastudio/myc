@@ -21,6 +21,7 @@ import type { QueryDef } from "@myc/core";
 import { Q } from "@myc/store-sqlite";
 import { mcpQueries } from "@myc/mcp";
 import { wsQueries } from "@myc/server/ws";
+import { syncQueries } from "@myc/core";
 import { bootstrapQueries } from "./commands/bootstrap.ts";
 import { primeQueries } from "./commands/prime.ts";
 import { readyQueries } from "./commands/ready.ts";
@@ -32,6 +33,7 @@ const REGISTRIES: ReadonlyArray<readonly [string, Readonly<Record<string, QueryD
   ["bootstrap", bootstrapQueries],
   ["mcp", mcpQueries],
   ["ws", wsQueries],
+  ["sync", syncQueries],
 ];
 
 /** Куски внутри одинарных кавычек — то, что переводчику трогать нельзя. */

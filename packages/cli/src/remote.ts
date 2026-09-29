@@ -295,6 +295,15 @@ export class RemoteClient {
     return this.call("GET", `/v1/ws/${encodeURIComponent(this.target.ws)}/prime${qs === "" ? "" : `?${qs}`}`);
   }
 
+  /** Один круг обмена (§9.5). Повторяется вызывающим, пока `more`. */
+  async sync(body: {
+    readonly site_id: string;
+    readonly have: Readonly<Record<string, string>>;
+    readonly ops: readonly unknown[];
+  }): Promise<{ data: unknown; meta: Record<string, unknown> }> {
+    return this.call("POST", `/v1/ws/${encodeURIComponent(this.target.ws)}/sync`, body);
+  }
+
   async claim(id: string, leaseMinutes?: number): Promise<{ data: unknown; meta: Record<string, unknown> }> {
     return this.call("POST", `/v1/ws/${encodeURIComponent(this.target.ws)}/ready/claim`, {
       id,

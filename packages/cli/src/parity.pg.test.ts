@@ -36,7 +36,7 @@ import { Database } from "bun:sqlite";
 import { SQL } from "bun";
 import { Q, migrate, migrations, openSqlite, type SqliteDriver } from "@myc/store-sqlite";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
-import { resolveQueryText, type QueryDef } from "@myc/core";
+import { opsForPeerQuery, resolveQueryText, syncQueries, type QueryDef } from "@myc/core";
 import { wsQueries } from "@myc/server/ws";
 import { primeQueries } from "./commands/prime.ts";
 import { readyQueries } from "./commands/ready.ts";
@@ -213,6 +213,10 @@ const NAMED: Readonly<Record<string, unknown>> = {
   agent: "",
   since: 0,
   offset: 0,
+  // Обмен: воды пира и потолок пакета. Сайт назван тот, что сеет посев.
+  peer_site_id: "siteA",
+  site_0: "siteA",
+  hlc_0: 0,
   w_pri: 0.4,
   w_unb: 0.2,
   w_fresh: 0.2,
@@ -272,6 +276,18 @@ const W = wsQueries;
  * исполняется ТОЛЬКО на Postgres — тем важнее сверить его с эталоном: смысл
  * «узел воркспейса» обязан совпадать с тем, что на этот вопрос отвечает CLI.
  */
+/**
+ * ОБМЕН (§9.5). Порядок здесь — предмет проверки, а не оформление: в выборке
+ * есть `CAST(hlc AS TEXT) AS hlc`, и голое `ORDER BY hlc` разрешается в
+ * ПСЕВДОНИМ, то есть в сортировку строк. Обе базы обязаны отдать пакет в
+ * одном и том же порядке часов, иначе докачка не сходится.
+ */
+const SYNC_CASES: readonly Case[] = [
+  { q: syncQueries.sync_watermarks, params: named(syncQueries.sync_watermarks), unordered: true },
+  { q: opsForPeerQuery(0), params: named(opsForPeerQuery(0)), label: "пир не видел ничего" },
+  { q: opsForPeerQuery(1), params: named(opsForPeerQuery(1)), label: "пир знает один сайт" },
+];
+
 const WS_CASES: readonly Case[] = [
   { q: W.ws_nodes_list, params: named(W.ws_nodes_list) },
   { q: W.ws_nodes_list, params: named(W.ws_nodes_list, { kind: "note" }), label: "kind=note" },
@@ -373,7 +389,7 @@ describe("паритет диалектов на одном посеве", () =>
   const sorted = (rows: unknown[]): unknown[] =>
     [...rows].sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
 
-  for (const c of [...CASES, ...READY_CASES, ...PRIME_CASES, ...WS_CASES]) {
+  for (const c of [...CASES, ...READY_CASES, ...PRIME_CASES, ...WS_CASES, ...SYNC_CASES]) {
     const title = c.label === undefined ? c.q.name : `${c.q.name} (${c.label})`;
     test(`${title}: SQLite и Postgres отвечают одинаково`, async () => {
       if (skip !== null) return void console.log(`[skip] ${skip}`);

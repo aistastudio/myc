@@ -115,7 +115,8 @@ export const Q = defineQueries({
     name: "oplog_for_entity",
     sql: `SELECT seq, op_id, site_id, CAST(hlc AS TEXT) AS hlc, ts_ms, actor,
                  op, entity, entity_id, field, value, scope, origin
-            FROM oplog WHERE entity_id = ?1 ORDER BY hlc, site_id`,
+            FROM oplog WHERE entity_id = ?1
+           ORDER BY oplog.hlc, oplog.site_id`,
     params: ["entity_id"],
   },
   oplog_count: {

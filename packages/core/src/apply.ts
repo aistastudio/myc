@@ -381,7 +381,12 @@ export function* projectEdgeDel(ctx: ApplyCtx, op: EdgeDelOp): Eff<void> {
  * (NOT NULL + CHECK), и подставлять «какой-нибудь» kind недопустимо: узел с
  * выдуманным видом выглядел бы здоровым.
  */
-export function* materializeNode(ctx: ApplyCtx, id: string, kind: string | undefined): Eff<boolean> {
+export function* materializeNode(
+  ctx: ApplyCtx,
+  id: string,
+  kind: string | undefined,
+  scope = "",
+): Eff<boolean> {
   if (kind === undefined) return false;
   assertNodeKind(kind);
   const ts = ctx.now();
@@ -389,7 +394,14 @@ export function* materializeNode(ctx: ApplyCtx, id: string, kind: string | undef
     id,
     kind,
     layer: 1,
-    scope: "",
+    // SCOPE БЕРЁТСЯ ИЗ ПАКЕТА, А НЕ СТАВИТСЯ ПУСТЫМ. Он приезжает своей
+    // `set`-операцией, и рождать строку без него значит на короткое время
+    // (до применения этой операции) иметь узел «ничьего» воркспейса — а в
+    // оплог за это время успевают лечь ПЕРВЫЕ операции узла, и лечь со
+    // scope ''. Обмен фильтрует оплог по воркспейсу, и такие операции в
+    // пакет не попадают: узел приезжает пиру без `kind`, то есть не
+    // приезжает вовсе (packages/cli/src/sync.pg.test.ts).
+    scope,
     title: "",
     body: null,
     body_cold: 0,
@@ -1081,12 +1093,16 @@ export function* park(
  * которого операцию применить нельзя, либо undefined — операция учтена
  * в `tally` (applied / duplicate / stale / collided).
  */
+const EMPTY_HINT: ReadonlyMap<string, string> = new Map();
+
 export function* applyOne(
   ctx: ApplyCtx,
   op: Op,
   origin: 0 | 1,
   kindHint: ReadonlyMap<string, string>,
   tally: ApplyTally,
+  /** Воркспейс, который пакет назначает узлу: его `set scope`, если он в пакете. */
+  scopeHint: ReadonlyMap<string, string> = EMPTY_HINT,
 ): Eff<string | undefined> {
   if (op.op === "edge_add" || op.op === "edge_del") {
     const { src, type, dst } = splitMemoryEdgeKey(op.entity_id);
@@ -1122,7 +1138,7 @@ export function* applyOne(
       op.field === "kind" && typeof op.value === "string"
         ? op.value
         : kindHint.get(op.entity_id);
-    if (yield* materializeNode(ctx, op.entity_id, kind)) {
+    if (yield* materializeNode(ctx, op.entity_id, kind, scopeHint.get(op.entity_id) ?? "")) {
       // Родился в этой транзакции: прежних групп — ни контентной, ни по
       // внешней ссылке — у него нет.
       tally.content.set(op.entity_id, null);
@@ -1194,9 +1210,13 @@ export function* applyOps(
   for (const op of sorted) ctx.ops.clock.recv(op.hlc);
 
   const kindInBatch = new Map<string, string>();
+  const scopeInBatch = new Map<string, string>();
   for (const op of sorted) {
     if (op.op === "set" && op.field === "kind" && typeof op.value === "string") {
       kindInBatch.set(op.entity_id, op.value);
+    }
+    if (op.op === "set" && op.field === "scope" && typeof op.value === "string") {
+      scopeInBatch.set(op.entity_id, op.value);
     }
   }
 
@@ -1211,7 +1231,7 @@ export function* applyOps(
     yield* run(Q.pending_phantoms_delete, []);
   }
   for (const op of sorted) {
-    const needs = yield* applyOne(ctx, op, origin, kindInBatch, tally);
+    const needs = yield* applyOne(ctx, op, origin, kindInBatch, tally, scopeInBatch);
     if (needs !== undefined) yield* park(ctx, op, origin, needs, tally);
   }
   if (tally.pendingKnown) yield* drainPending(ctx, tally);
