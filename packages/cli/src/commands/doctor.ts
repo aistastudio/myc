@@ -58,6 +58,15 @@ import {
   type ClosureRow,
   type SqliteLibraryState,
 } from "@myc/store-sqlite";
+import {
+  HlcClock,
+  OpFactory,
+  edgeEntityId,
+  readEdgeAdds,
+  reprojectEdge,
+  runSync,
+  type ApplyCtx,
+} from "@myc/core";
 import { ExitCode } from "../exit.ts";
 import type {
   Command,
@@ -453,6 +462,81 @@ function treeCheck(driver: CliDriver): Check {
   };
 }
 
+/**
+ * ЧТО БЫ ИЗМЕНИЛ РЕМОНТ РЁБЕР, если бы его запустили (memory-qgcgrw6abe49).
+ *
+ * Пересборка строки ребра из множества OR-Set (`reprojectEdges`) чинит
+ * реплики, разошедшиеся при прежней проекции: новые операции чинят только
+ * свой ключ, а ключ, которого больше никто не тронет, остался бы
+ * разошедшимся навсегда (memory-86eqge02q8rd). Ремонт есть, но узнать, нужен
+ * ли он, было нечем.
+ *
+ * Сравнение гоняет НАСТОЯЩУЮ пересборку в транзакции, из которой мы выходим
+ * броском, — как у `parent_closure`. Своя копия правил проекции была бы
+ * вторым определением истины и разошлась бы с ремонтом молча.
+ */
+function edgesDrift(driver: CliDriver): string[] {
+  const ctx: ApplyCtx = {
+    // `actor` попадает только в НЕреплицируемую колонку, а её сравнение не
+    // видит (Q.edges_state); остальное пересборке от контекста не нужно.
+    actor: "doctor",
+    siteId: "",
+    ops: new OpFactory("doctor", { clock: new HlcClock() }),
+    now: () => Date.now(),
+  };
+  try {
+    driver.tx("immediate", (tx) => {
+      const snapshot = (): Map<string, string> =>
+        new Map(
+          tx
+            .all<{ src: string; type: string; dst: string }>(Q.edges_state, [])
+            .map((e) => [`${e.src} ${e.type} ${e.dst}`, JSON.stringify(e)]),
+        );
+      const before = snapshot();
+      const keys = tx.all<{ src: string; type: string; dst: string }>(Q.edges_state, []);
+      for (const e of keys) {
+        const adds = runSync(readEdgeAdds(edgeEntityId(e.src, e.type, e.dst)), tx);
+        runSync(reprojectEdge(ctx, e.src, e.type, e.dst, adds), tx);
+      }
+      const after = snapshot();
+      const rows: string[] = [];
+      for (const [k, v] of before) if (after.get(k) !== v) rows.push(k);
+      throw new RollbackProbe(rows);
+    });
+    return [];
+  } catch (e) {
+    if (e instanceof RollbackProbe) return [...e.rows];
+    throw e;
+  }
+}
+
+/**
+ * ДУБЛИКАТЫ, РАЗРЕШЁННЫЕ СЛИЯНИЕМ (memory-qgcgrw6abe49). Две машины вправе
+ * завести один и тот же узел — по содержимому (memory-0fs4rfa6xmha) или по
+ * ссылке на чужой трекер (memory-gemeb3d8wj41). Слияние их не отвергает:
+ * один остаётся держателем, второй понижается, и пакет применяется целиком.
+ * Это НЕ порча, поэтому и не отказ; но и молчать нельзя — понижённый узел
+ * живёт своей жизнью, и человек должен знать, что у записи есть двойник.
+ */
+function duplicatesCheck(driver: CliDriver): Check {
+  const content = driver.all<{ id: string; of: string }>(Q.content_duplicates, []);
+  const external = driver.all<{ id: string; of: string; ref: string }>(Q.external_duplicates, []);
+  if (content.length === 0 && external.length === 0) {
+    return { name: "duplicates", verdict: "ok", detail: "no node has a twin" };
+  }
+  return {
+    name: "duplicates",
+    verdict: "drift",
+    detail:
+      `${content.length} by content, ${external.length} by external ref — ` +
+      "resolved by the merge, not damage; merge or retire the twin yourself",
+    items: [
+      ...content.map((r) => `${r.id}: content twin of ${r.of}`),
+      ...external.map((r) => `${r.id}: same external ref ${r.ref} as ${r.of}`),
+    ].slice(0, 20),
+  };
+}
+
 function counterCheck(name: string, rows: readonly DriftRow[]): Check {
   if (rows.length === 0) return { name, verdict: "ok", detail: "matches the recount" };
   return {
@@ -488,6 +572,34 @@ function checkRecount(driver: CliDriver): RecountSection {
   } catch (e) {
     checks.push({
       name: "parent_closure",
+      verdict: "unknown",
+      detail: `not checked: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+  try {
+    const rows = edgesDrift(driver);
+    checks.push(
+      rows.length === 0
+        ? { name: "edges", verdict: "ok", detail: "every edge row matches its OR-Set" }
+        : {
+            name: "edges",
+            verdict: "drift",
+            detail: `rows that differ: ${rows.length} — repaired by \`myc import\``,
+            items: rows.slice(0, 20),
+          },
+    );
+  } catch (e) {
+    checks.push({
+      name: "edges",
+      verdict: "unknown",
+      detail: `not checked: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+  try {
+    checks.push(duplicatesCheck(driver));
+  } catch (e) {
+    checks.push({
+      name: "duplicates",
       verdict: "unknown",
       detail: `not checked: ${e instanceof Error ? e.message : String(e)}`,
     });
@@ -1530,9 +1642,13 @@ export function createDoctorCommand(registry: Registry, overrides: { readonly en
       "The database is opened WITHOUT running migrations, on purpose: a database written by a " +
       "newer myc refuses to open on the normal path with `precond.schema`, and that failure is " +
       "exactly what sends people here.\n\n" +
-      "--recount only compares. `parent_closure` is compared by running the real rebuild inside " +
+      "--recount only compares. `parent_closure` and the edge rows are compared by running the real " +
+      "rebuild and the real reprojection inside " +
       "a transaction that is always rolled back, so the file is left byte-for-byte unchanged " +
-      "and the check cannot drift from the repair it mirrors.\n\n" +
+      "and the check cannot drift from the repair it mirrors. Edge rows diverging from their " +
+      "OR-Set are repaired by `myc import`; twins (same content or same external ref), merge " +
+      "cycles and a node with two live parents are reported and never repaired — the merge " +
+      "resolved what it could and a human decides the rest.\n\n" +
       "--hooks answers two questions. Did it fire: the counter is written only by a caller that " +
       "declared itself through MYC_HOOK, so 'session-start fired N times' means sessions, not " +
       "hand-typed `myc prime` calls. Is it the current hook: every file myc generates in full is " +

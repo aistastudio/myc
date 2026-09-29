@@ -161,7 +161,14 @@ describe("myc doctor: здоровый воркспейс", () => {
     expect(env.data?.sections).toEqual(["schema", "recount", "hooks", "background"]);
     expect(env.data?.ok).toBe(true);
     const names = (env.data?.recount?.checks ?? []).map((c) => c.name);
-    expect(names).toEqual(["open_blockers", "anc_blockers", "parent_closure", "tree"]);
+    expect(names).toEqual([
+      "open_blockers",
+      "anc_blockers",
+      "parent_closure",
+      "edges",
+      "duplicates",
+      "tree",
+    ]);
   });
 
   test("флаг сужает вывод до одного раздела", async () => {
@@ -225,6 +232,55 @@ describe("myc doctor --recount: испорченное состояние", () =
     const rowsAfter = after.query("SELECT count(*) AS n FROM parent_closure").get() as { n: number };
     after.close();
     expect(rowsAfter.n).toBe(rowsBefore.n);
+  });
+
+  test("разошедшаяся строка ребра НАЗЫВАЕТСЯ, и doctor НЕ чинит базу", async () => {
+    // memory-qgcgrw6abe49: ремонт reprojectEdges существует, а узнать, нужен
+    // ли он, было нечем. Ключ, которого больше никто не тронет, остаётся
+    // разошедшимся навсегда — новые операции чинят только свой.
+    const { driver, store } = open();
+    const a = store.createNode({ kind: "task", scope: "s", title: "A" });
+    const b = store.createNode({ kind: "task", scope: "s", title: "B" });
+    store.addEdge(a.id, "relates", b.id);
+    // Строку рушим напрямую: живое ребро помечено удалённым, хотя ни одного
+    // тумбстоуна на его тег нет — пересборка из OR-Set его воскресит.
+    driver.database.run("UPDATE edges SET deleted_at = 99 WHERE src = ?1", [a.id]);
+    const before = driver.database
+      .query("SELECT deleted_at FROM edges WHERE src = ?1")
+      .get(a.id) as { deleted_at: number | null };
+    driver.close();
+
+    const res = await doctor("--recount");
+    expect(res.code).toBe(ExitCode.PRECOND);
+    expect(text(res)).toContain(`${a.id} relates ${b.id}`);
+    expect(text(res)).toContain("myc import");
+
+    // Сверка гоняет НАСТОЯЩУЮ пересборку — доказательство отката в том, что
+    // строка осталась ровно такой, какой была.
+    const after = new Database(dbPath);
+    const row = after.query("SELECT deleted_at FROM edges WHERE src = ?1").get(a.id) as {
+      deleted_at: number | null;
+    };
+    after.close();
+    expect(row.deleted_at).toBe(before.deleted_at);
+  });
+
+  test("двойник по содержимому НАЗЫВАЕТСЯ, и это не объявляется порчей", async () => {
+    const { driver, store } = open();
+    const a = store.createNode({ kind: "note", scope: "s", title: "одно и то же" });
+    // Двойник, каким его оставляет слияние: понижённый content_hash вида
+    // <канон>:<id>. Это законный исход, а не повреждение.
+    driver.database.run(
+      `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, content_hash, status,
+                          priority, acl, team_id, created_at, updated_at)
+       VALUES ('twin','note',1,'s','одно и то же','', ?1, 'active', 2, 'team','', 1, 1)`,
+      [`${(driver.database.query("SELECT content_hash AS h FROM nodes WHERE id = ?1").get(a.id) as { h: string }).h}:twin`],
+    );
+    driver.close();
+
+    const res = await doctor("--recount");
+    expect(text(res)).toContain("content twin of");
+    expect(text(res)).toContain("not damage");
   });
 
   test("цикл из мержа и второй живой родитель НАЗЫВАЮТСЯ, но не чинятся", async () => {
