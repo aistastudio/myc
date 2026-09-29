@@ -261,13 +261,25 @@ function grammarOf(lang: string): string {
  * Обе роняют бинарь и обе обязаны его ронять: это ровно те два способа, какими
  * пул был сломан до сих пор.
  */
-export type PoolMutation = "none" | "entry-from-source" | "resolve-in-worker";
+export type PoolMutation =
+  | "none"
+  | "entry-from-source"
+  | "resolve-in-worker"
+  /**
+   * Пул падает СИНХРОННО, прямо в конструкторе. Так `new Worker` ведёт себя,
+   * когда вход не резолвится, и именно так падение и выглядело под нагрузкой
+   * полного прогона (memory-zkr9jhphe712): команда умирала ДО разбора, и
+   * индекс оставался пустым — вместо отказа с полным индексом.
+   */
+  | "throw-on-construct";
 
 export const POOL_MUTATION_ENV = "MYC_PARSE_POOL_MUTATION";
 
 function poolMutation(): PoolMutation {
   const v = process.env[POOL_MUTATION_ENV];
-  return v === "entry-from-source" || v === "resolve-in-worker" ? v : "none";
+  return v === "entry-from-source" || v === "resolve-in-worker" || v === "throw-on-construct"
+    ? v
+    : "none";
 }
 
 /** Окружение воркера: пути, которые главный поток УЖЕ нашёл. */
@@ -369,6 +381,7 @@ class ParsePool {
   crash: string | null = null;
 
   constructor(size: number, entry: string, dirs: TreeSitterDirs, mutation: PoolMutation) {
+    if (mutation === "throw-on-construct") throw new Error("parse worker: construction failed");
     const env = workerEnv(dirs, mutation);
     for (let i = 0; i < size; i++) {
       const w = new Worker(entry, { env } as WorkerOptions);
@@ -819,15 +832,29 @@ export async function drainCodeIndex(
         // Воркер и каталоги wasm ищутся ЗДЕСЬ, в главном потоке, и уезжают в
         // воркер готовыми. Не нашлись — пула просто нет: разбор в своём потоке
         // медленнее, но он есть, а восемь падающих воркеров — это ноль.
-        const entry = parseWorkerEntry();
-        const dirs = entry === null ? null : safeTreeSitterDirs();
-        if (entry !== null && dirs !== null) {
-          pool = new ParsePool(
-            Math.max(2, Math.min(8, (navigator.hardwareConcurrency ?? 2) - 2)),
-            entry,
-            dirs,
-            poolMutation(),
-          );
+        // ПОДЪЁМ ПУЛА НЕ ИМЕЕТ ПРАВА УНЕСТИ КОМАНДУ. `new Worker` бросает
+        // СИНХРОННО, когда вход не резолвится, и тогда исключение уходило
+        // мимо всей этой машинерии: команда падала ДО разбора, и индекс
+        // оставался ПУСТЫМ — то есть худший из возможных исходов, ровно
+        // тот, от которого поставлен сторож ниже. Асинхронное падение
+        // (onerror) обрабатывалось, синхронное — нет, и какое из двух
+        // случится, решала нагрузка (memory-zkr9jhphe712).
+        try {
+          const entry = parseWorkerEntry();
+          const dirs = entry === null ? null : safeTreeSitterDirs();
+          if (entry !== null && dirs !== null) {
+            pool = new ParsePool(
+              Math.max(2, Math.min(8, (navigator.hardwareConcurrency ?? 2) - 2)),
+              entry,
+              dirs,
+              poolMutation(),
+            );
+          }
+        } catch (e) {
+          // Разбор уходит в свой поток, а команда всё равно откажет в конце:
+          // «готово» про неисправную сборку не говорится.
+          pool = null;
+          poolCrash = `parse worker pool failed to start: ${e instanceof Error ? e.message : String(e)}`;
         }
       }
 
