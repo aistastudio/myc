@@ -559,4 +559,81 @@ describe("дерево без L1-файлов: перечисления полн
     const bad = surfaces.flatMap((s) => incompleteLists(s.text).map((l) => `${s.name} ⟶ ${l}`));
     expect(bad).toEqual([]);
   });
+
+  /**
+   * memory-zrs7fk4vrz0g: подсказка, ведущая к действию, которое ответ не
+   * изменит, — та же ложь, только в повелительном наклонении. Проверяется
+   * ДЕЙСТВИЕМ: советуем — исполняем — ответ обязан измениться.
+   */
+  test("пустой корпус: советуется grep, а не бесполезная переиндексация", async () => {
+    const reg = registryWith(probeEnv(() => null, binNoGraft));
+    await withPath(binNoGraft, async () => {
+      const search = await myc(reg, repo, "code", "search", "total");
+      const text = textOf(search);
+      // Причина названа: корпус строится только из L1, а их здесь нет.
+      expect(text).toContain("none of them is");
+      // И совет ведёт туда, где ответ ЕСТЬ.
+      expect(text).toContain("myc code grep total");
+      expect(text).not.toContain("hint: myc code index");
+
+      // Исполняем совет: он обязан ответить там, где search отказал.
+      const grep = await envelope(reg, repo, "code", "grep", "total");
+      expect(grep["ok"]).toBe(true);
+
+      // И проверяем, что прежний совет был ложным: переиндексация ничего не
+      // меняет — search отказывает тем же самым.
+      expect((await myc(reg, repo, "code", "index")).code).toBe(ExitCode.OK);
+      expect(textOf(await myc(reg, repo, "code", "search", "total"))).toContain("none of them is");
+    });
+  });
+});
+
+/**
+ * memory-zrs7fk4vrz0g, случай 2: `myc code symbol CLI_VERSION` на СВЕЖЕМ
+ * индексе советовал «индекс мог отстать: myc code index». Константа символом
+ * индекса не является и после переиндексации им не станет — совет вёл в
+ * никуда. Проверяется тем же способом: исполняем совет, ответ обязан
+ * измениться.
+ */
+describe("подсказка к «символа нет» проверена действием", () => {
+  let repo: string;
+
+  beforeAll(async () => {
+    repo = join(root, "const-not-symbol");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, "a.ts"), "export const CLI_VERSION = \"1.2.3\";\nexport function run() {}\n");
+    const reg = registryWith(probeEnv(() => null, binNoGraft));
+    await withPath(binNoGraft, async () => {
+      await myc(reg, repo, "init");
+      expect((await myc(reg, repo, "code", "index")).code).toBe(ExitCode.OK);
+    });
+  });
+
+  test("константа: советуется grep, и он отвечает; переиндексация — нет", async () => {
+    const reg = registryWith(probeEnv(() => null, binNoGraft));
+    await withPath(binNoGraft, async () => {
+      const miss = textOf(await myc(reg, repo, "code", "symbol", "CLI_VERSION"));
+      expect(miss).toContain("is not a definition");
+      expect(miss).toContain("myc code grep CLI_VERSION");
+      expect(miss).not.toContain("the index may be behind");
+
+      // Совет исполним и меняет ответ.
+      const grep = await envelope(reg, repo, "code", "grep", "CLI_VERSION");
+      expect(grep["ok"]).toBe(true);
+
+      // А прежний совет — нет: индекс свежий, повтор ничего не меняет.
+      expect((await myc(reg, repo, "code", "index")).code).toBe(ExitCode.OK);
+      expect(textOf(await myc(reg, repo, "code", "symbol", "CLI_VERSION"))).toContain(
+        "is not a definition",
+      );
+    });
+  });
+
+  test("имени нет в коде вовсе: вот тогда индекс и правда мог отстать", async () => {
+    const reg = registryWith(probeEnv(() => null, binNoGraft));
+    await withPath(binNoGraft, async () => {
+      const miss = textOf(await myc(reg, repo, "code", "symbol", "НетТакогоИмени"));
+      expect(miss).toContain("the index may be behind");
+    });
+  });
 });

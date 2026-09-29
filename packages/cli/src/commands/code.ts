@@ -504,6 +504,41 @@ export async function noIndexFailure(
   );
 }
 
+/**
+ * Подсказка к «символа нет», ПРОВЕРЕННАЯ действием (memory-zrs7fk4vrz0g).
+ *
+ * Класс дефекта: подсказка ведёт к действию, которое не изменит ответ.
+ * `myc code symbol CLI_VERSION` на свежем индексе советовал `myc code index`,
+ * хотя константа символом индекса не станет никогда. Поэтому здесь не
+ * догадка, а вопрос к самому индексу: если имя в коде ВСТРЕЧАЕТСЯ, значит
+ * ответ даёт grep, а не переиндексация.
+ */
+async function symbolMissHint(
+  h: StoreHandle,
+  t: CodeTarget,
+  name: string,
+  l1Files: number,
+): Promise<string> {
+  if (l1Files === 0) return `the repo has no ${L1_LANGS_LABEL} files — no symbols`;
+  try {
+    const { grepCode } = await import("@myc/code-intel/grep");
+    const found = grepCode(h.driver.database, t.view, t.fileRoot, name, {
+      ...(t.fallbackRoot !== undefined ? { fallbackRoot: t.fallbackRoot } : {}),
+      limit: 1,
+    });
+    if (found.groups.length > 0) {
+      return (
+        `the name is in the code but is not a definition — a constant, a variable or a string ` +
+        `is not a symbol of the index: myc code grep ${name}`
+      );
+    }
+  } catch {
+    // Grep не смог — подсказка возвращается к прежней, менее точной, но
+    // молчать об индексе тоже нельзя.
+  }
+  return "the index may be behind: myc code index";
+}
+
 // ---------------------------------------------------------------------------
 // myc code index — вход
 // ---------------------------------------------------------------------------
@@ -1277,14 +1312,21 @@ function buildCodeSymbol(deps: StoreDeps): Command {
         const src = sourceData(t, null);
         if (src !== undefined) data.source = src;
         if (defs.length === 0) {
+          // ПОДСКАЗКА ПРОВЕРЯЕТСЯ, А НЕ УГАДЫВАЕТСЯ (memory-zrs7fk4vrz0g).
+          // «Индекс мог отстать: myc code index» на свежем индексе — совет,
+          // который ничего не меняет: `export const CLI_VERSION` символом
+          // индекса не является и после переиндексации им не станет. Прежде
+          // чем советовать, спрашиваем: встречается ли имя в коде вообще.
+          // Встречается — значит оно есть, но не определение, и настоящий
+          // ответ даёт `myc code grep`. Не встречается — вот тогда индекс и
+          // правда мог отстать.
+          const hint = await symbolMissHint(h, t, name.trim(), scope.l1Files);
           return failure(
             "notfound.symbol",
             `symbol ${name.trim()} is not in the index: scanned ${count(scope.files, "file")} ` +
               `(${scope.l1Files} with definitions, ${count(scope.defs, "symbol")}), languages ${data.searched.langs.join(", ")}`,
             ExitCode.NOTFOUND,
-            scope.l1Files === 0
-              ? `the repo has no ${L1_LANGS_LABEL} files — no symbols`
-              : "the index may be behind: myc code index",
+            hint,
           );
         }
         return { ok: true, data, meta: { took_ms: data.took_ms } };
@@ -1643,12 +1685,26 @@ function buildCodeSearch(deps: StoreDeps): Command {
           ...(symbols !== undefined && symbols > 0 ? { unitsPerFile: Math.floor(symbols) } : {}),
         });
         if (res.searched.units === 0) {
+          // ПРИЧИНА НАЗЫВАЕТСЯ, И СОВЕТ РАБОТАЕТ (memory-zrs7fk4vrz0g).
+          // Корпус поиска строится только из L1-языков; в дереве без них
+          // индекс УЖЕ построен (реестр файлов на месте), и повторный
+          // `myc code index` ничего не изменит — он и так закончился с
+          // предупреждением code_index.no_l1. Настоящий ответ даёт grep.
+          // Реестр файлов — тот же счёт, что печатает `code index`.
+          const { indexScope } = await import("@myc/code-intel/read");
+          const scope = indexScope(h.driver.database, t.view);
+          const files = scope.l1Files === 0 ? scope.files : 0;
           return failure(
             "precond.no_index",
-            `the code search corpus is empty: code_units has zero units for repo ` +
-              `${repoId.length > 0 ? repoId : "(workspace root)"}`,
+            files > 0
+              ? `the code search corpus is empty: the repo has ${count(files, "file")} in the registry ` +
+                `but none of them is ${L1_LANGS_LABEL} — the corpus is built from those only`
+              : `the code search corpus is empty: code_units has zero units for repo ` +
+                `${repoId.length > 0 ? repoId : "(workspace root)"}`,
             ExitCode.PRECOND,
-            "myc code index",
+            files > 0
+              ? `myc code grep ${query}   # indexing again changes nothing: there is nothing to parse`
+              : "myc code index",
           );
         }
         const data: SearchData = {
