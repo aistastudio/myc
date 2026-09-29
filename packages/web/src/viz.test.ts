@@ -6,11 +6,14 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Attribution, ensureSwarmSchema, Roster, type Caveat } from "@myc/swarm";
 import { assetBytes, assetPaths, getAsset } from "./assets.ts";
 import { openReadOnly, VizDbError } from "./db.ts";
 import { buildGraph } from "./graph.ts";
 import { buildHealth } from "./health.ts";
+import { freshnessClock } from "@myc/core";
 import { buildReady, anchorNorm, freshnessNorm, scoreRow, typeNorm } from "./ready.ts";
 import { buildRouting } from "./routing.ts";
 import { buildTimeline } from "./timeline.ts";
@@ -178,6 +181,38 @@ describe("очередь ready", () => {
     expect(row.score).toBe(0.95);
   });
 
+  /**
+   * memory-kfx2csnm6sbp: веб считал свежесть по СЫРОМУ updated_at, а CLI — по
+   * общим часам (freshnessClock). У ввезённой задачи updated_at — момент
+   * ввоза, поэтому браузер показывал свежим весь импорт разом, а терминал те
+   * же задачи ставил иначе. Один вопрос, две поверхности, разные ответы.
+   */
+  test("ввезённая задача: свежесть считается часами ядра, а не датой ввоза", () => {
+    const now = 1_700_000_000_000;
+    const imported = {
+      id: "t-imported",
+      priority: 0,
+      status: "open",
+      assignee: "",
+      title: "ввезена сегодня, правилась год назад",
+      // Момент ВВОЗА — секунду назад.
+      updated_at: now - 1000,
+      attrs: JSON.stringify({ type: "bug", external_updated_at: now - 400 * 86_400_000 }),
+    };
+    const row = scoreRow(imported, 3, undefined, DEFAULT_READY_WEIGHTS, now);
+    const fresh = row.terms.find((t) => t.key === "freshness")!;
+    // По сырому updated_at это была бы единица — «только что».
+    expect(fresh.norm).toBeLessThan(1);
+    expect(fresh.norm).toBe(freshnessNorm(now - freshnessClock({ updated_at: imported.updated_at, attrs: { external_updated_at: now - 400 * 86_400_000 } })));
+
+    // И согласие с CLI: та же строка, те же общие часы — то же слагаемое.
+    const cliAge = now - freshnessClock({
+      updated_at: imported.updated_at,
+      attrs: { external_updated_at: now - 400 * 86_400_000 },
+    });
+    expect(fresh.value).toBe(Math.round(DEFAULT_READY_WEIGHTS.freshness * freshnessNorm(cliAge) * 100) / 100);
+  });
+
   test("нормировки слагаемых", () => {
     expect(freshnessNorm(0)).toBe(1.0);
     expect(freshnessNorm(2 * 86_400_000)).toBe(0.7);
@@ -257,7 +292,13 @@ describe("здоровье", () => {
     expect(h.nodes.by_kind.length).toBeGreaterThan(1);
     expect(h.edges.total).toBeGreaterThan(0);
     expect(h.workspace.journal_mode).toBe("wal");
+    // Умолчание осторожное: не сказано — считаем, что писать нельзя.
     expect(h.workspace.read_only).toBe(true);
+    // А сказано — обязано совпасть с правдой: панель health повторяет режим
+    // СЕРВЕРА, и литерал здесь означал бы «read-only» над работающими
+    // формами (memory-61pxegz22qq0).
+    expect(buildHealth(ro, { slug: "myc", dbPath: w.dbPath, readOnly: false }).workspace.read_only)
+      .toBe(false);
     expect(h.oplog.count).toBe(20);
     expect(h.oplog.actors.length).toBe(2);
     // Версия схемы читается из schema_migrations, а не из myc_meta (там её
@@ -695,6 +736,49 @@ describe("ассеты", () => {
    * Проверяется исходный CSS, а не браузер: браузера в прогоне нет, а
    * пропущенное объявление видно и здесь.
    */
+  /**
+   * memory-y22re2s4z991: `display: grid` перебивает атрибут `hidden`, и
+   * форма создания задачи была открыта всегда. Класс ошибки общий, поэтому и
+   * проверка общая: блок, который клиент прячет атрибутом, обязан иметь в
+   * CSS пару `[hidden] { display: none }` — иначе своё `display` его и
+   * покажет.
+   *
+   * Читается ИСХОДНИК клиента, а не бандл: в бандле имена переменных другие,
+   * и «создали с классом C, потом спрятали» по нему не прочитать.
+   */
+  test("что прячут атрибутом hidden — то CSS и прячет", () => {
+    const css = getAsset("/app.css")!.body;
+    const src = readFileSync(join(import.meta.dir, "client", "app.ts"), "utf8");
+
+    // Классы, которые клиент прячет: `const x = el("div", "cls"); x.hidden = true`.
+    const hiddenInCode = new Set<string>();
+    // Присваивание обязано стоять РЯДОМ с созданием: имя переменной само по
+    // себе ничего не значит — `row` в этом файле встречается в десятке
+    // областей видимости, и поиск по всему тексту дал бы чужое совпадение.
+    for (const m of src.matchAll(
+      /(?:const|let)\s+(\w+)\s*=\s*el\(\s*"[a-z]+"\s*,\s*"([a-z0-9 -]+)"[^]{0,200}?\n\s*(\w+)\.hidden\s*=\s*true/g,
+    )) {
+      const [, name, classes, assigned] = m;
+      if (name !== assigned) continue;
+      for (const c of classes!.split(/\s+/)) if (c.length > 0) hiddenInCode.add(c);
+    }
+    expect(hiddenInCode.size).toBeGreaterThan(0);
+
+    const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+    const missing = [...hiddenInCode].filter((cls) => {
+      const shown = blocks.some(
+        ([, sel, body]) =>
+          new RegExp(`\\.${cls}(?![a-z0-9-])(?!\\[hidden\\])`).test(sel!) &&
+          /display:\s*(grid|flex|block|inline-block)/.test(body!),
+      );
+      if (!shown) return false;
+      return !blocks.some(([, sel, body]) =>
+        new RegExp(`\\.${cls}(?![a-z0-9-])\\[hidden\\]`).test(sel!) && /display:\s*none/.test(body!),
+      );
+    });
+    expect(missing).toEqual([]);
+  });
+
   test("каждый растущий грид прижимает содержимое к началу", () => {
     const css = getAsset("/app.css")!.body;
     // Блок = селектор + тело; ищем те, где грид сочетается с ростом по флексу.

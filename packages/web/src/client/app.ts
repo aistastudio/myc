@@ -2702,7 +2702,11 @@ async function loadHealth(): Promise<void> {
   kv(ws, "shm", fmtBytes(h.workspace.shm_bytes));
   kv(ws, "journal", h.workspace.journal_mode);
   kv(ws, "site_id", h.workspace.site_id || "—");
-  kv(ws, "mode", "read-only");
+  // Режим — ФАКТ, а не украшение шапки: бейдж стоял здесь всегда, и в
+  // пишущем viz человек читал «read-only» над формами, которые работают
+  // (memory-61pxegz22qq0). Источник тот же, что у самих форм — writeEnabled
+  // из boot.read_only.
+  kv(ws, "mode", h.workspace.read_only ? "read-only" : "read-write");
   const meter = el("div", "meter");
   const fill = el("i");
   const walPct = Math.min(100, (h.workspace.wal_bytes / (32 * 1024 * 1024)) * 100);

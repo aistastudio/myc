@@ -193,7 +193,12 @@ export interface HealthPayload {
     readonly schema_version: number | null;
     readonly site_id: string;
     readonly myc_version: string;
-    readonly read_only: true;
+    /**
+     * Принимает ли ЭТА сборка запись. Стояло литеральным `true`, и панель
+     * health сообщала «read-only» даже в пишущем viz — то есть поверхность
+     * отрицала собственную возможность (memory-61pxegz22qq0).
+     */
+    readonly read_only: boolean;
   };
   readonly nodes: { readonly total: number; readonly by_kind: readonly CountRow[] };
   readonly edges: { readonly total: number; readonly by_type: readonly CountRow[] };

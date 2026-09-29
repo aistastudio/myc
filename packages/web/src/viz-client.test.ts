@@ -650,6 +650,27 @@ function installDom(hash: string, graphNodes = 0, opts: { readOnly?: boolean } =
     if (/^\/api\/bootstrap\/blocks\/[^/]+\/history$/.exec(path) !== null) {
       return { ok: true, status: 200, json: async () => ({ rows: [] }) };
     }
+    if (path === "/api/health") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          workspace: {
+            slug: "t", db_path: "/tmp/t.db", db_bytes: 1, wal_bytes: 0, shm_bytes: 0,
+            journal_mode: "wal", schema_version: 1, site_id: "s", myc_version: "0",
+            // Режим — тот же, что у самого сервера: панель обязана его
+            // повторять, а не печатать литерал.
+            read_only: readOnly,
+          },
+          nodes: { total: 0, by_kind: [] },
+          edges: { total: 0, by_type: [] },
+          embed: { model: "", dim: 0, rows: 0, pending: 0, failed: 0, state: "ok", detail: "", since: 0 },
+          index: { fts_rows: 0, vec_rows: 0, anchors: 0, stale_anchors: 0 },
+          degraded: [],
+          took_ms: 1,
+        }),
+      };
+    }
     const body =
       path === "/api/boot"
         ? { slug: "t", nodes: dom.graphNodes, edges: 0, read_only: readOnly, schema_ready: true }
@@ -913,6 +934,32 @@ function dragEvent(card: unknown, col: unknown): { target: unknown; preventDefau
     preventDefault: () => undefined,
   };
 }
+
+/**
+ * memory-61pxegz22qq0: бейдж режима в панели health стоял литералом
+ * «read-only» независимо от того, разрешена ли запись. В пишущем viz человек
+ * читал «read-only» над формами, которые работают, — то есть поверхность
+ * отрицала собственную возможность (тот же класс, что сторожит
+ * code-intel.honesty).
+ */
+describe("панель health: режим — факт, а не украшение", () => {
+  const modeOf = (dom: Awaited<ReturnType<typeof boot>>): string | undefined => {
+    // `kv(host, "mode", value)` кладёт две ячейки подряд; берём соседнюю с
+    // подписью.
+    const i = dom.created.findIndex((e) => e.textContent === "mode");
+    return i < 0 ? undefined : dom.created[i + 1]?.textContent;
+  };
+
+  test("запись разрешена — read-write", async () => {
+    const dom = await boot("#health", 0, { readOnly: false });
+    expect(modeOf(dom)).toBe("read-write");
+  });
+
+  test("запись запрещена — read-only", async () => {
+    const dom = await boot("#health", 0, { readOnly: true });
+    expect(modeOf(dom)).toBe("read-only");
+  });
+});
 
 describe("доска: куда перетащить — вычисляется, не выбирается (S54)", () => {
   test("перетаскивание в blocked отклоняется на клиенте, без обращения к серверу", async () => {

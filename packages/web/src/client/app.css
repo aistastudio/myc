@@ -546,6 +546,10 @@ textarea.props-input.props-body { resize: vertical; min-height: 54px; font: inhe
   border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px;
   background: var(--bg-sunken);
 }
+/* `display: grid` перебивает атрибут hidden, и форма создания задачи была
+   открыта всегда (memory-y22re2s4z991). Тот же приём, что у .panel[hidden]
+   и .empty[hidden] выше: правило рядом с тем, которое его и потребовало. */
+.task-new-form[hidden] { display: none; }
 
 /* Доска задач (W4): колонки читаются, только open/closed/cancelled/reopen
    принимают перетаскивание — blocked и in_progress его отклоняют (S54). */

@@ -13,6 +13,7 @@
  * тест ready.test.ts, который сверяет числа с эталоном S21.
  */
 
+import { freshnessClock } from "@myc/core";
 import type { ReadyPayload, ReadyRow, ReadyTerm, ReadyWeights } from "./types.ts";
 import type { ReadOnlyDb } from "./db.ts";
 
@@ -116,7 +117,14 @@ export function scoreRow(
     // битый attrs не должен выбрасывать задачу из очереди — считаем как task
   }
   const type = typeof attrs["type"] === "string" ? (attrs["type"] as string) : "task";
-  const age = Math.max(0, now - row.updated_at);
+  // ЧАСЫ СВЕЖЕСТИ — ОБЩИЕ С CLI (freshnessClock в ядре), а не сырой
+  // updated_at. У ввезённой задачи updated_at — это МОМЕНТ ВВОЗА: по нему
+  // веб показывал свежим весь импорт разом, тогда как `myc ready` считал по
+  // времени источника и ставил те же задачи иначе. Две реализации одной
+  // формулы у двух поверхностей — это и есть расхождение, которое видит
+  // человек: очередь в браузере и очередь в терминале отвечают по-разному
+  // на один и тот же вопрос (memory-kfx2csnm6sbp).
+  const age = Math.max(0, now - freshnessClock({ updated_at: row.updated_at, attrs }));
   const anchor = anchorNorm(states);
 
   const nPri = PRIORITY_NORM[row.priority] ?? 0;

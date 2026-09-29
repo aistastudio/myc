@@ -365,4 +365,40 @@ describe("хуки: список самоотмечающихся событий
     expect([...found].sort()).toEqual([...SELF_REPORTING_HOOKS].sort());
     expect(found.size).toBeGreaterThan(0);
   });
+
+  /**
+   * ВТОРАЯ ДВЕРЬ К ИМЕНИ КОМАНДЫ (memory-gbp45ytdv6e6). Сторож выше разбирает
+   * строковые литералы, а `HOOK_SPECS[].command` доезжает до пользователя
+   * ПОДСТАНОВКОЙ: `myc wire` печатает «команды `myc ${spec.command}` нет в
+   * этой сборке». Литерал "close-session" сам по себе под признак совета не
+   * подходит, поэтому опечатка в спеке жила бы молча — и единственным её
+   * следствием был бы хук, который никогда не ставится.
+   *
+   * Поэтому имя сверяется с реестром напрямую. Отсутствие разрешено, но
+   * только НАЗВАННОЕ: поле `planned` с номером задачи. И наоборот: команда
+   * появилась, а пометка осталась — тоже находка, иначе она переживёт свою
+   * причину и начнёт врать.
+   */
+  test("команда каждой спеки хука есть в реестре — или названа задачей", async () => {
+    const registry = new Registry();
+    registerAll(registry);
+    await registry.materializeAll();
+    const known = new Set(registry.top.map((c) => c.name));
+
+    const missing = HOOK_SPECS.filter((s) => !known.has(s.command) && s.planned === undefined).map(
+      (s) => `${s.event} → myc ${s.command}`,
+    );
+    expect(missing).toEqual([]);
+
+    const stale = HOOK_SPECS.filter((s) => known.has(s.command) && s.planned !== undefined).map(
+      (s) => `${s.event} → myc ${s.command} (planned: ${s.planned!})`,
+    );
+    // Команда есть — пометка обязана уйти вместе с задачей.
+    expect(stale).toEqual([]);
+
+    // Сторож обязан доказать, что смотрел: спек больше нуля и хоть одна из
+    // них ссылается на существующую команду.
+    expect(HOOK_SPECS.length).toBeGreaterThan(0);
+    expect(HOOK_SPECS.some((s) => known.has(s.command))).toBe(true);
+  });
 });

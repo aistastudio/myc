@@ -392,7 +392,7 @@ export function startVizServer(opts: VizServerOptions): VizServer {
           );
         }
         case "/api/health":
-          return json(buildHealth(db, { slug: workspace.slug, dbPath: opts.dbPath }));
+          return json(buildHealth(db, { slug: workspace.slug, dbPath: opts.dbPath, readOnly: !writable }));
         case "/api/routing":
           return json(buildRouting(db));
         case "/api/decisions":

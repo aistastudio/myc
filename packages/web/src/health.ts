@@ -40,6 +40,12 @@ function numMeta(db: ReadOnlyDb, key: string): number | null {
 export interface HealthOptions {
   readonly slug: string;
   readonly dbPath: string;
+  /**
+   * Принимает ли сервер запись. Здесь стояло `true` намертво, и панель
+   * говорила «read-only» над работающими формами (memory-61pxegz22qq0).
+   * Умолчание `true` осторожное: не сказано — считаем, что писать нельзя.
+   */
+  readonly readOnly?: boolean;
 }
 
 export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload {
@@ -281,7 +287,7 @@ export function buildHealth(db: ReadOnlyDb, opts: HealthOptions): HealthPayload 
       schema_version: schemaVersion,
       site_id: db.meta("site_id") ?? "",
       myc_version: db.meta("myc_version") ?? "",
-      read_only: true,
+      read_only: opts.readOnly !== false,
     },
     nodes: { total: nodesTotal, by_kind: byKind },
     edges: { total: edgesTotal, by_type: byType },
