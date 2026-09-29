@@ -618,45 +618,14 @@ BEGIN
 END $$;
 CREATE TRIGGER trg_st_reopen AFTER UPDATE OF status ON nodes FOR EACH ROW EXECUTE FUNCTION myc_st_reopen();
 
--- Наследование блокеров вниз по parent (миграция 10) и транзитивное замыкание
--- (parent_closure) — те же правила, что в SQLite; здесь они выражены через
--- рекурсивный CTE в одном месте, а не набором триггеров на каждую операцию.
-CREATE FUNCTION myc_pc_ins() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.type = 'parent' AND NEW.deleted_at IS NULL THEN
-    INSERT INTO parent_closure (tenant_id, ancestor, descendant, depth)
-    SELECT NEW.tenant_id, NEW.dst, NEW.src, 1
-    ON CONFLICT DO NOTHING;
-    INSERT INTO parent_closure (tenant_id, ancestor, descendant, depth)
-    SELECT NEW.tenant_id, pc.ancestor, NEW.src, pc.depth + 1
-      FROM parent_closure pc
-     WHERE pc.tenant_id = NEW.tenant_id AND pc.descendant = NEW.dst
-    ON CONFLICT DO NOTHING;
-  END IF;
-  RETURN NULL;
-END $$;
-CREATE TRIGGER trg_anc_pc_ins AFTER INSERT ON edges FOR EACH ROW EXECUTE FUNCTION myc_pc_ins();
-
-CREATE FUNCTION myc_pc_del() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.type = 'parent' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
-    DELETE FROM parent_closure
-     WHERE tenant_id = NEW.tenant_id AND descendant = NEW.src;
-    INSERT INTO parent_closure (tenant_id, ancestor, descendant, depth)
-    WITH RECURSIVE up(ancestor, depth) AS (
-      SELECT e.dst, 1 FROM edges e
-       WHERE e.tenant_id = NEW.tenant_id AND e.src = NEW.src
-         AND e.type = 'parent' AND e.deleted_at IS NULL
-      UNION ALL
-      SELECT e.dst, up.depth + 1 FROM edges e JOIN up ON e.src = up.ancestor
-       WHERE e.tenant_id = NEW.tenant_id AND e.type = 'parent' AND e.deleted_at IS NULL
-    )
-    SELECT NEW.tenant_id, ancestor, NEW.src, min(depth) FROM up GROUP BY ancestor
-    ON CONFLICT DO NOTHING;
-  END IF;
-  RETURN NULL;
-END $$;
-CREATE TRIGGER trg_anc_pc_del AFTER UPDATE OF deleted_at ON edges FOR EACH ROW EXECUTE FUNCTION myc_pc_del();
+-- ЗАМЫКАНИЕ `parent_closure` ЗДЕСЬ НЕ ВЕДЁТСЯ, И ЭТО РЕШЕНИЕ (memory-pw6mekaa15g4).
+-- Прежде его вели триггеры myc_pc_ins/myc_pc_del — вторая реализация правила,
+-- которое в SQLite вёл код. Две реализации разошлись ровно так, как расходятся
+-- всегда: один и тот же пакет операций оставлял РАЗНОЕ дерево на двух базах
+-- (паритет применителя, 2026-09-28), и триггеры вдобавок вешали только самого
+-- ребёнка — поддерево уже привешенного узла оставалось без новых предков.
+-- Теперь замыкание ведёт применитель (packages/core/src/apply.ts,
+-- applyParentEdgeMerged) на обоих диалектах, и правило одно.
 
 -- ============================ 8.1.11 RLS ====================================
 --

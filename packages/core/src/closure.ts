@@ -293,6 +293,16 @@ export function* applyParentInsert(child: string, parent: string): Eff<void> {
   yield* run(Q.pc_insert_rows!, [parent, child]);
 }
 
+/**
+ * Материализовать прямоугольник вставки БЕЗ проверок — для пути слияния,
+ * который уже решил, что вешать, и которому нельзя бросать (§4.3). Локальный
+ * путь этим не пользуется: там отказ ничего не теряет, и проверка обязана
+ * стоять перед записью.
+ */
+export function* attachParentRows(child: string, parent: string): Eff<void> {
+  yield* run(Q.pc_insert_rows!, [parent, child]);
+}
+
 /** Материализовать удаление ребра `parent(child → parent)`. Требует, чтобы оно действительно было прямым родителем. */
 export function* applyParentRemove(child: string, parent: string): Eff<void> {
   const current = yield* directParent(child);

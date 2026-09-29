@@ -362,3 +362,154 @@ describe("myc-qie.9: порядок операций между пакетами
     expect(b.store.pendingCount()).toBe(1);
   });
 });
+
+/**
+ * memory-pw6mekaa15g4: дерево, приехавшее по репликации.
+ *
+ * `parent_closure` несёт наследование — блокеры предка (миграция 010) и
+ * область с доступом вниз по дереву. Пока путь репликации его не трогал,
+ * узел, перевешенный на ДРУГОЙ машине, оставался здесь ничьим потомком:
+ * блокеры родителя на него не распространялись, и очередь считала его
+ * свободным. Молча — до первого `myc doctor --recount`.
+ */
+describe("memory-pw6mekaa15g4: parent, приехавший по репликации, ведёт замыкание", () => {
+  /** Прямые предки узла: то, на чём держится наследование. */
+  function ancestors(site: Site, id: string): Array<{ ancestor: string; depth: number }> {
+    return site.driver.all<{ ancestor: string; depth: number }>(
+      {
+        name: "t_pc",
+        sql: "SELECT ancestor, depth FROM parent_closure WHERE descendant = ?1 ORDER BY depth",
+        params: ["descendant"],
+      },
+      [id],
+    );
+  }
+
+  test("ребро parent с чужого сайта вешает поддерево, а не только сам узел", async () => {
+    const a = await openSite("siteA", "anna");
+    const b = await openSite("siteB", "boris", 1_700_000_100_000);
+
+    // На A строится цепочка дед → отец → внук, и всё это ЛОКАЛЬНО.
+    const grand = a.store.createNode({ kind: "task", title: "дед" });
+    const father = a.store.createNode({ kind: "task", title: "отец" });
+    const child = a.store.createNode({ kind: "task", title: "внук" });
+    a.store.addEdge(father.id, "parent", grand.id);
+    a.store.addEdge(child.id, "parent", father.id);
+
+    b.store.applyOps(opsOf(a), 0);
+
+    // Не «отец привешен», а ВСЁ ПОДДЕРЕВО: у внука обязаны появиться оба
+    // предка, иначе блокеры деда на него не распространятся.
+    expect(ancestors(b, father.id)).toEqual([{ ancestor: grand.id, depth: 1 }]);
+    expect(ancestors(b, child.id)).toEqual([
+      { ancestor: father.id, depth: 1 },
+      { ancestor: grand.id, depth: 2 },
+    ]);
+    // И то же самое, что у источника.
+    expect(ancestors(b, child.id)).toEqual(ancestors(a, child.id));
+  });
+
+  test("повторная доставка того же пакета ничего не меняет", async () => {
+    const a = await openSite("siteA", "anna");
+    const b = await openSite("siteB", "boris", 1_700_000_100_000);
+    const parent = a.store.createNode({ kind: "task", title: "родитель" });
+    const kid = a.store.createNode({ kind: "task", title: "ребёнок" });
+    a.store.addEdge(kid.id, "parent", parent.id);
+
+    b.store.applyOps(opsOf(a), 0);
+    const once = ancestors(b, kid.id);
+    b.store.applyOps(opsOf(a), 0);
+    expect(ancestors(b, kid.id)).toEqual(once);
+  });
+
+  test("двое перевесили узел независимо — слот забирают часы, а не порядок доставки", async () => {
+    const a = await openSite("siteA", "anna");
+    const b = await openSite("siteB", "boris", 1_700_000_100_000);
+    const c = await openSite("siteC", "clara", 1_700_000_200_000);
+
+    const kid = a.store.createNode({ kind: "task", title: "ребёнок" });
+    const p1 = a.store.createNode({ kind: "task", title: "родитель 1" });
+    const p2 = a.store.createNode({ kind: "task", title: "родитель 2" });
+    b.store.applyOps(opsOf(a), 0);
+    c.store.applyOps(opsOf(a), 0);
+
+    // Офлайн: A вешает под первого, B — под второго. Часы B ПОЗЖЕ (сайт
+    // открыт со сдвигом), значит слот его.
+    a.store.addEdge(kid.id, "parent", p1.id);
+    b.store.addEdge(kid.id, "parent", p2.id);
+
+    // Порядок доставки разный у двух получателей — итог обязан совпасть.
+    c.store.applyOps(opsOf(a), 0);
+    c.store.applyOps(opsOf(b), 0);
+    const d = await openSite("siteD", "dmitry", 1_700_000_300_000);
+    d.store.applyOps(opsOf(b), 0);
+    d.store.applyOps(opsOf(a), 0);
+
+    expect(ancestors(c, kid.id)).toEqual([{ ancestor: p2.id, depth: 1 }]);
+    expect(ancestors(d, kid.id)).toEqual(ancestors(c, kid.id));
+  });
+
+  test("цикл, приехавший мержем, помечается на ребре, а не рушит пакет", async () => {
+    const a = await openSite("siteA", "anna");
+    const b = await openSite("siteB", "boris", 1_700_000_100_000);
+    const x = a.store.createNode({ kind: "task", title: "X" });
+    const y = a.store.createNode({ kind: "task", title: "Y" });
+    b.store.applyOps(opsOf(a), 0);
+
+    // Встречные рёбра: A говорит «Y под X», B — «X под Y». Каждое по
+    // отдельности законно, вместе они цикл.
+    a.store.addEdge(y.id, "parent", x.id);
+    b.store.addEdge(x.id, "parent", y.id);
+
+    // Пакет ПРИНИМАЕТСЯ: операция уже принята на своём сайте, отвергать её
+    // здесь значило бы потерять её молча (§4.3).
+    expect(() => b.store.applyOps(opsOf(a), 0)).not.toThrow();
+
+    const marked = b.driver.all<{ src: string; dst: string; attrs: string }>(
+      {
+        name: "t_marked",
+        sql: "SELECT src, dst, attrs FROM edges WHERE type = 'parent' AND attrs LIKE '%cycle%'",
+        params: [],
+      },
+      [],
+    );
+    expect(marked).toHaveLength(1);
+    expect(JSON.parse(marked[0]!.attrs).cycle).toBe(1);
+    // Дерево при этом цело: X остался под Y, а не осиротел.
+    expect(ancestors(b, x.id)).toEqual([{ ancestor: y.id, depth: 1 }]);
+  });
+
+  test("снятие, пришедшее ПОСЛЕ выжившего добавления, не сиротит узел", async () => {
+    const a = await openSite("siteA", "anna");
+    const b = await openSite("siteB", "boris", 1_700_000_100_000);
+    const parent = a.store.createNode({ kind: "task", title: "родитель" });
+    const kid = a.store.createNode({ kind: "task", title: "ребёнок" });
+    a.store.addEdge(kid.id, "parent", parent.id);
+    b.store.applyOps(opsOf(a), 0);
+
+    // B снимает ребро, видя тег A. A параллельно переподвешивает — и его
+    // добавление получает НОВЫЙ тег, которого снятие B не видело.
+    b.store.removeEdge(kid.id, "parent", parent.id);
+    a.store.removeEdge(kid.id, "parent", parent.id);
+    a.store.addEdge(kid.id, "parent", parent.id);
+
+    // ПОРЯДОК ЗДЕСЬ И ЕСТЬ ПРОВЕРКА: третий сайт сперва получает пакет A
+    // (ребро живо новым тегом), и лишь потом — снятие B. Add-wins говорит,
+    // что ребро остаётся живым; значит и дерево обязано устоять. Сними
+    // проверку «ребро пережило» — и узел осиротеет при живом ребре.
+    const c = await openSite("siteC", "clara", 1_700_000_200_000);
+    c.store.applyOps(opsOf(a), 0);
+    c.store.applyOps(opsOf(b), 0);
+
+    const edge = c.driver.one<{ deleted_at: number | null }>(
+      {
+        name: "t_edge",
+        sql: "SELECT deleted_at FROM edges WHERE src = ?1 AND type = 'parent' AND dst = ?2",
+        params: ["src", "dst"],
+      },
+      [kid.id, parent.id],
+    );
+    expect(edge?.deleted_at).toBeNull();
+    expect(ancestors(c, kid.id)).toEqual([{ ancestor: parent.id, depth: 1 }]);
+  });
+});

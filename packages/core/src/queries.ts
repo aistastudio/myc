@@ -568,6 +568,31 @@ export const Q = defineQueries({
       "deleted_at",
     ],
   },
+  /**
+   * Атрибуты ребра текстом. CAST нужен Postgres: там колонка jsonb, и без
+   * него драйвер вернёт объект, а вызывающий ждёт строку — как у attrs узла.
+   */
+  edge_attrs_get: {
+    name: "edge_attrs_get",
+    sql: `SELECT CAST(attrs AS TEXT) AS attrs FROM edges
+           WHERE src = ?1 AND type = ?2 AND dst = ?3`,
+    params: ["src", "type", "dst"],
+  },
+  /**
+   * Пометка на ребре (сейчас — `cycle` из §4.3). Пишется целиком прочитанным
+   * и дополненным объектом, а не json_set/jsonb_set: путь редкий (цикл,
+   * приехавший мержем), и два дешёвых запроса тут честнее третьего диалектного
+   * расхождения в переводе путей json.
+   */
+  edge_set_attrs: {
+    name: "edge_set_attrs",
+    sql: `UPDATE edges SET attrs = ?4 WHERE src = ?1 AND type = ?2 AND dst = ?3`,
+    pg: toPgDialectJsonb(
+      `UPDATE edges SET attrs = ?4 WHERE src = ?1 AND type = ?2 AND dst = ?3`,
+      4,
+    ),
+    params: ["src", "type", "dst", "attrs"],
+  },
   /** Локальные, нереплицируемые колонки ребра — пишет только свой addEdge. */
   edge_set_local: {
     name: "edge_set_local",

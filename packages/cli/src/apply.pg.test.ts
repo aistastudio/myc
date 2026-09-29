@@ -132,18 +132,25 @@ describe("применитель: синхронно и асинхронно —
       ["field_clock", "SELECT entity_id, field, site_id FROM field_clock ORDER BY entity_id, field"],
       ["counters", "SELECT entity_id, field, site_id, value FROM counters ORDER BY entity_id, field"],
       ["oplog", "SELECT op, entity, entity_id, field, scope, origin FROM oplog ORDER BY op_id"],
-
+      // parent_closure СРАВНИВАЕТСЯ (memory-pw6mekaa15g4 закрыт). Прежде
+      // приехавшее ребро parent обновляло замыкание только на Postgres —
+      // там его вели триггеры, здесь код локальной записи, и путь
+      // репликации не звал ни того, ни другого. Теперь правило одно
+      // (applyParentEdgeMerged), и таблица обязана совпадать: именно она
+      // несёт наследование блокеров и области вниз по дереву.
+      [
+        "parent_closure",
+        "SELECT ancestor, descendant, depth FROM parent_closure ORDER BY ancestor, descendant",
+      ],
     ];
-    // parent_closure СЮДА НЕ ВХОДИТ, и это названо, а не забыто: приехавшее
-    // по репликации ребро parent обновляет замыкание на Postgres (триггер
-    // myc_pc_ins) и НЕ обновляет на SQLite (там его ведёт код локальной
-    // записи). Это баг memory-pw6mekaa15g4, найденный этим же стендом;
-    // сравнивать таблицу до его починки значило бы либо закрепить
-    // расхождение ожиданием, либо держать тест красным.
     for (const [name, sql] of tables) {
       const a = normalize(lite!.database.query(sql).all() as unknown[]);
       const b = normalize(await pg!.withTenant(TENANT, async (tx) => tx.raw(sql)));
       expect([name, b]).toEqual([name, a]);
+      // ПУСТОЕ РАВНО ПУСТОМУ — НЕ ПАРИТЕТ: пакет обязан оставить след в
+      // каждой сравниваемой таблице, иначе сравнение проверяет согласие
+      // молчать.
+      expect([name, a.length > 0]).toEqual([name, true]);
     }
   });
 });

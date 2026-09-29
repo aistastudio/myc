@@ -16,7 +16,15 @@
  * зелёным — иначе он не шаг.
  */
 
-import { applyParentInsert, applyParentMove, applyParentRemove, ancestorsOf } from "./closure.ts";
+import {
+  applyParentInsert,
+  applyParentMove,
+  applyParentRemove,
+  ancestorsOf,
+  attachParentRows,
+  checkParentInsert,
+  ClosureError,
+} from "./closure.ts";
 import { checkEdgeAcyclic } from "./cycle.ts";
 import { EDGE_SEMANTICS, type EdgeKind } from "./index.ts";
 import {
@@ -1120,10 +1128,21 @@ export function* applyOne(
     if (op.op === "edge_add") {
       const outcome = yield* projectEdgeAdd(ctx, op);
       if (outcome === "collided") tally.collided.push(op.op_id);
-      else tally.applied++;
+      else {
+        tally.applied++;
+        // ЗАМЫКАНИЕ ВЕДЁТ ПРИМЕНИТЕЛЬ, И ВЕДЁТ ЕГО ЗДЕСЬ ТОЖЕ. Прежде этот
+        // путь его не трогал вовсе: узел, перевешенный на другой машине,
+        // приезжал ничьим потомком — блокеры родителя на него не
+        // распространялись, и очередь считала его свободным. Молча
+        // (memory-pw6mekaa15g4).
+        if (op.field === "parent") {
+          yield* applyParentEdgeMerged(ctx, src, dst, op.hlc, op.site_id);
+        }
+      }
     } else {
       yield* projectEdgeDel(ctx, op);
       tally.applied++;
+      if (op.field === "parent") yield* applyParentEdgeMergedRemove(src, dst);
     }
     yield* unpark(ctx, op.op_id, tally, true);
     return undefined;
@@ -1339,6 +1358,81 @@ export function* applyParentEdgeRemove(child: string, parent: string): Eff<void>
   const current = (yield* ancestorsOf(child)).find((a) => num(a.depth) === 1)?.ancestor;
   if (current !== parent) return;
   yield* applyParentRemove(child, parent);
+}
+
+/**
+ * ДЕРЕВО ПРИ РЕБРЕ `parent`, ПРИЕХАВШЕМ ПО РЕПЛИКАЦИИ (§4.2, §4.3).
+ *
+ * Локальный путь (`applyParentEdgeAdd`) вправе ОТКАЗАТЬ: операции ещё нет,
+ * отказ ничего не теряет. Здесь отказывать нельзя — операция уже принята на
+ * своём сайте и, возможно, у половины команды. Поэтому материализация
+ * идемпотентна и не бросает: она либо вешает поддерево, либо оставляет
+ * дерево как есть и ПОМЕЧАЕТ ребро.
+ *
+ * ТРИ ИСХОДА, и каждый из них — решение, а не обработка ошибки:
+ *
+ *  - родитель уже тот же — ничего; повтор доставки не должен ничего менять;
+ *  - родителя не было — вешаем. Если вставка создала бы ЦИКЛ или превысила
+ *    глубину, дерево не трогаем, а на ребре ставим `attrs.cycle = 1` (§4.3:
+ *    цикл, приехавший мержем, помечается, а не отвергается; разрывает
+ *    человек);
+ *  - родитель БЫЛ И ДРУГОЙ — две стороны перевесили узел независимо. Слот
+ *    «мой родитель» односоставный (§3.2: `path(n)` знает одного), поэтому
+ *    ничью решают часы ребра, как у любого поля: позднейшее (hlc, site_id)
+ *    забирает слот. Оба ребра при этом остаются живыми в `edges` — там
+ *    OR-Set, и стирать чужое добавление мы не вправе; расходится не
+ *    состояние, а его прочтение, и назвать это должен `myc doctor`.
+ */
+export function* applyParentEdgeMerged(
+  ctx: ApplyCtx,
+  child: string,
+  parent: string,
+  hlc: Hlc,
+  site: string,
+): Eff<void> {
+  const current = (yield* ancestorsOf(child)).find((a) => num(a.depth) === 1)?.ancestor;
+  if (current === parent) return;
+  if (current !== undefined) {
+    const cur = yield* one<EdgeClockRow>(Q.edge_clock_get, [child, "parent", current]);
+    // Часов у текущего ребра нет (замыкание старше рёбер) — не спорим.
+    if (cur === undefined) return;
+    if (compareClock(hlc, site, readHlc(cur.hlc), cur.site_id) <= 0) return;
+    yield* applyParentRemove(child, current);
+  }
+  try {
+    yield* checkParentInsert(child, parent);
+  } catch (e) {
+    if (!(e instanceof ClosureError)) throw e;
+    // Дерево оставляем как было: снятый выше родитель возвращается, иначе
+    // приехавший цикл ещё и осиротил бы узел.
+    if (current !== undefined) yield* attachParentRows(child, current);
+    yield* markEdgeCycle(child, "parent", parent);
+    return;
+  }
+  yield* attachParentRows(child, parent);
+}
+
+/**
+ * Снятие ребра `parent`, приехавшее по репликации. Ребро могло ПЕРЕЖИТЬ
+ * снятие (add-wins: добавление с тегом, которого удаление не видело), и
+ * тогда дерево трогать нельзя — иначе узел осиротеет при живом ребре.
+ */
+export function* applyParentEdgeMergedRemove(child: string, parent: string): Eff<void> {
+  const row = yield* one<EdgeClockRow>(Q.edge_clock_get, [child, "parent", parent]);
+  if (row !== undefined && row.deleted_at === null) return;
+  const current = (yield* ancestorsOf(child)).find((a) => num(a.depth) === 1)?.ancestor;
+  if (current !== parent) return;
+  yield* applyParentRemove(child, parent);
+}
+
+/** Пометка §4.3 на ребре. Идемпотентна: второй раз ничего не пишет. */
+export function* markEdgeCycle(src: string, type: string, dst: string): Eff<void> {
+  const row = yield* one<{ attrs: string | null }>(Q.edge_attrs_get, [src, type, dst]);
+  if (row === undefined) return;
+  const attrs = parseAttrs(row.attrs) as Record<string, JsonValue>;
+  if (attrs["cycle"] === 1) return;
+  attrs["cycle"] = 1;
+  yield* run(Q.edge_set_attrs, [src, type, dst, JSON.stringify(attrs)]);
 }
 
 /**
