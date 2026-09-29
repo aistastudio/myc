@@ -48,6 +48,26 @@ interface SecretPattern {
    * месте ради читаемости.
    */
   readonly valueGroup?: number;
+  /**
+   * ОБЯЗАТЕЛЬНЫЙ ЛИТЕРАЛ ПАТТЕРНА — для двухступенчатого поиска
+   * (memory-mymxhccswnp8).
+   *
+   * Три паттерна платят за откат ПО СУЩЕСТВУ: в `generic_key_assignment`
+   * хвост имени `(?:[_.-][A-Za-z0-9]+)*` жадно съедает `_KEY` и обязан его
+   * отдать, поэтому приём с атомарной группой тут неприменим. На настоящей
+   * стенограмме 37 МБ этот паттерн стоил 246 мс из ~1.1 с.
+   *
+   * Но у каждого из них есть подстрока, БЕЗ КОТОРОЙ совпадения не бывает.
+   * Её ищет быстрый скан, и полный регекс запускается липким флагом только
+   * от тех мест, где совпадение вообще возможно. Найденное обязано
+   * совпадать с прежним ПОБАЙТОВО — это код безопасности, и эквивалентность
+   * здесь важнее скорости (D23); сторож — тест равенства двух путей.
+   *
+   * `back` — сколько символов имени может стоять ЛЕВЕЕ литерала: от места
+   * попадания отматываемся назад по этому классу и пробуем липкое
+   * совпадение с каждой позиции слева направо.
+   */
+  readonly prefilter?: { readonly literal: RegExp; readonly back?: RegExp };
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +109,7 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     confidence: "high",
     regex: /\bDefaultEndpointsProtocol=https?;[^;\n]*AccountKey=([A-Za-z0-9+/=]{20,})/,
     valueGroup: 1,
+    prefilter: { literal: /DefaultEndpointsProtocol=/ },
   },
   {
     kind: "private_key_pem",
@@ -100,6 +121,7 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     kind: "db_connection_string",
     confidence: "high",
     regex: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^:\s/@]+:[^@\s]+@[^\s'"`]+/i,
+    prefilter: { literal: /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\//i },
   },
   {
     kind: "basic_auth_url",
@@ -138,6 +160,11 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     regex:
       /\b((?:[A-Za-z][A-Za-z0-9]*(?:[_.-][A-Za-z0-9]+)*[_.-])?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)S?)\s*[:=]\s*["']?([A-Za-z0-9\-_/+.=]{8,})["']?/i,
     valueGroup: 2,
+    // Без одного из этих слов и знака присваивания совпадения не бывает.
+    prefilter: {
+      literal: /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)S?\s*[:=]/i,
+      back: /[A-Za-z0-9_.-]/,
+    },
   },
   {
     /**
@@ -159,11 +186,24 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 
 interface CompiledPattern extends SecretPattern {
   readonly compiled: RegExp;
+  /** Липкая копия того же выражения — для попытки с конкретной позиции. */
+  readonly sticky: RegExp;
+  /** Глобальная копия обязательного литерала, если он объявлен. */
+  readonly literal: RegExp | undefined;
 }
 
 function compilePattern(pattern: SecretPattern): CompiledPattern {
   const flags = pattern.regex.flags.includes("g") ? pattern.regex.flags : `${pattern.regex.flags}g`;
-  return { ...pattern, compiled: new RegExp(pattern.regex.source, flags) };
+  const sticky = pattern.regex.flags.replace(/[gy]/g, "");
+  return {
+    ...pattern,
+    compiled: new RegExp(pattern.regex.source, flags),
+    sticky: new RegExp(pattern.regex.source, `${sticky}y`),
+    literal:
+      pattern.prefilter === undefined
+        ? undefined
+        : new RegExp(pattern.prefilter.literal.source, `${pattern.prefilter.literal.flags.replace(/[gy]/g, "")}g`),
+  };
 }
 
 const COMPILED_PATTERNS: readonly CompiledPattern[] = SECRET_PATTERNS.map(compilePattern);
@@ -273,32 +313,107 @@ function findEntropyMatches(text: string): RawMatch[] {
   return matches;
 }
 
+/**
+ * Совпадения одного паттерна В ТОМ ЖЕ ПОРЯДКЕ И ТОМ ЖЕ СОСТАВЕ, что дал бы
+ * обычный `exec`-цикл, но без сканирования всего текста жадным выражением
+ * (memory-mymxhccswnp8).
+ *
+ * Как это остаётся тем же самым. Каждое совпадение обязано содержать
+ * обязательный литерал, поэтому кандидаты на начало — только позиции слева
+ * от его вхождений. Для каждого вхождения отматываемся назад по классу имени
+ * и пробуем липкое совпадение СЛЕВА НАПРАВО: первое сработавшее и есть
+ * самое левое, как у `exec`. Позиции, накрытые уже найденным совпадением,
+ * пропускаются — ровно так же ведёт себя `lastIndex`.
+ */
+function* stickyMatches(pattern: CompiledPattern, text: string): Generator<RegExpExecArray> {
+  const literal = pattern.literal!;
+  const back = pattern.prefilter?.back;
+  literal.lastIndex = 0;
+  let consumedTo = 0;
+  let hit: RegExpExecArray | null;
+  while ((hit = literal.exec(text)) !== null) {
+    if (hit.index < consumedTo) continue;
+    let from = hit.index;
+    if (back !== undefined) {
+      while (from > consumedTo && back.test(text[from - 1]!)) from -= 1;
+    }
+    for (let start = from; start <= hit.index; start += 1) {
+      pattern.sticky.lastIndex = start;
+      const m = pattern.sticky.exec(text);
+      if (m === null || m[0].length === 0) continue;
+      yield m;
+      // Позиции внутри уже найденного пропускаются проверкой выше — так же,
+      // как `exec` не возвращается за свой lastIndex. Двигать lastIndex
+      // литерала было бы вторым способом сделать то же самое, а два способа
+      // одного правила расходятся молча.
+      consumedTo = m.index + m[0].length;
+      break;
+    }
+  }
+}
+
 function findPatternMatches(text: string): RawMatch[] {
   const matches: RawMatch[] = [];
   for (const pattern of COMPILED_PATTERNS) {
     pattern.compiled.lastIndex = 0;
+    if (pattern.literal !== undefined) {
+      for (const m of stickyMatches(pattern, text)) collect(pattern, m, matches);
+      continue;
+    }
     let m: RegExpExecArray | null;
     while ((m = pattern.compiled.exec(text)) !== null) {
-      const full = m[0];
-      if (full.length === 0) {
+      if (m[0].length === 0) {
         pattern.compiled.lastIndex += 1;
         continue;
       }
-      const groupIdx = pattern.valueGroup;
-      const value = groupIdx !== undefined ? m[groupIdx] : undefined;
-      if (groupIdx !== undefined && value === undefined) continue;
-      const target = value ?? full;
-      const start = groupIdx !== undefined ? m.index + full.lastIndexOf(target) : m.index;
-      matches.push({
-        kind: pattern.kind,
-        confidence: pattern.confidence,
-        start,
-        end: start + target.length,
-        value: target,
-      });
+      collect(pattern, m, matches);
     }
   }
   return matches;
+}
+
+/**
+ * ОБА ПУТИ ПОИСКА, доступные тесту (memory-mymxhccswnp8). Двухступенчатый
+ * поиск обязан давать ПОБАЙТОВО то же, что прямой скан, — это код
+ * безопасности, и эквивалентность здесь важнее скорости (D23). Доказать это
+ * можно только сравнив их на одном тексте, значит оба должны быть
+ * вызываемы.
+ */
+export function scanPatternsForTest(text: string, usePrefilter: boolean): RawMatch[] {
+  const matches: RawMatch[] = [];
+  for (const pattern of COMPILED_PATTERNS) {
+    if (usePrefilter && pattern.literal !== undefined) {
+      for (const m of stickyMatches(pattern, text)) collect(pattern, m, matches);
+      continue;
+    }
+    pattern.compiled.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.compiled.exec(text)) !== null) {
+      if (m[0].length === 0) {
+        pattern.compiled.lastIndex += 1;
+        continue;
+      }
+      collect(pattern, m, matches);
+    }
+  }
+  return matches;
+}
+
+/** Одно совпадение в находку. Общее у обоих путей — иначе они разойдутся. */
+function collect(pattern: CompiledPattern, m: RegExpExecArray, out: RawMatch[]): void {
+  const full = m[0];
+  const groupIdx = pattern.valueGroup;
+  const value = groupIdx !== undefined ? m[groupIdx] : undefined;
+  if (groupIdx !== undefined && value === undefined) return;
+  const target = value ?? full;
+  const start = groupIdx !== undefined ? m.index + full.lastIndexOf(target) : m.index;
+  out.push({
+    kind: pattern.kind,
+    confidence: pattern.confidence,
+    start,
+    end: start + target.length,
+    value: target,
+  });
 }
 
 /** Убирает перекрытия: паттерны приоритетнее энтропии, длиннее — приоритетнее короче. */

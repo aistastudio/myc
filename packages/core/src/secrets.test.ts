@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { redactSecrets } from "./secrets.ts";
+import {
+  redactSecrets,
+  scanPatternsForTest,
+} from "./secrets.ts";
 
 // Синтетические строки корректной формы. НИ ОДНОГО настоящего секрета.
 
@@ -410,3 +413,70 @@ function referenceJitter(): number {
   if (x === -1) console.log(x); // копилка результата: без неё JIT вправе выбросить цикл
   return worst;
 }
+
+/**
+ * ДВУХСТУПЕНЧАТЫЙ ПОИСК ОБЯЗАН НАХОДИТЬ ТО ЖЕ САМОЕ (memory-mymxhccswnp8).
+ *
+ * Три паттерна платят за откат по существу: в `generic_key_assignment`
+ * хвост имени жадно съедает `_KEY` и обязан его отдать. Приём — искать
+ * обязательный литерал быстрым сканом и запускать полное выражение липким
+ * флагом только оттуда, где совпадение возможно. Это код безопасности, и
+ * эквивалентность здесь важнее скорости (D23), поэтому она и проверяется —
+ * а не подразумевается.
+ *
+ * Корпус СИНТЕТИЧЕСКИЙ и детерминированный: настоящие стенограммы для этого
+ * сравнивались отдельно (20 файлов, 160 МБ, 1649 находок — списки совпали у
+ * всех), но в репозиторий им дороги нет.
+ */
+describe("поиск с префильтром равен прямому скану", () => {
+  /** Детерминированный генератор: один и тот же корпус в каждом прогоне. */
+  function corpus(): string {
+    let x = 12345;
+    const rnd = (n: number): number => ((x = (x * 1103515245 + 12345) & 0x7fffffff) % n);
+    const names = ["API_KEY", "api.key", "db-password", "PGPASSWORD", "monkey", "turkeys", "X_SECRET_TOKEN", "credentials"];
+    const seps = ["=", ": ", " = ", ":"];
+    const vals = ["abcdefgh12345678", "short", "AAAA-BBBB_CCCC.DDDD", "'quoted-value-1234'", "\"dq-value-5678\""];
+    const prose = [
+      "обычная строка без ничего",
+      "postgres://user:pass@host:5432/db",
+      "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=" + "Q".repeat(40),
+      "монтируем ключ в конфиг и идём дальше",
+      "KEY=KEY=KEY=aaaaaaaaaaaa",
+    ];
+    const out: string[] = [];
+    for (let i = 0; i < 4000; i++) {
+      out.push(
+        rnd(3) === 0
+          ? prose[rnd(prose.length)]!
+          : `${names[rnd(names.length)]}${seps[rnd(seps.length)]}${vals[rnd(vals.length)]}`,
+      );
+    }
+    return out.join("\n");
+  }
+
+  test("на сгенерированном корпусе списки находок совпадают побайтово", () => {
+    const text = corpus();
+    const direct = scanPatternsForTest(text, false);
+    const staged = scanPatternsForTest(text, true);
+    // Сравнение по СОСТАВУ: порядок внутри одного паттерна одинаков, между
+    // паттернами он задан порядком реестра у обоих путей.
+    expect(staged).toEqual(direct);
+    // Сторож обязан доказать, что смотрел на что-то: пустое равно пустому.
+    expect(direct.length).toBeGreaterThan(1000);
+  });
+
+  test("пограничные случаи: соседние совпадения, регистр, имя с точками", () => {
+    const cases = [
+      "A_KEY=aaaaaaaaaaaa B_TOKEN=bbbbbbbbbbbb",
+      "api.key = cccccccccccc",
+      "MONKEY=dddddddddddd",
+      "x_secret=eeeeeeeeeeee;y_pwd=ffffffffffff",
+      "KEY:KEY:gggggggggggg",
+      "postgres://u:p@h/db mysql://u2:p2@h2/db2",
+      "нет ничего похожего вообще",
+    ];
+    for (const c of cases) {
+      expect([c, scanPatternsForTest(c, true)]).toEqual([c, scanPatternsForTest(c, false)]);
+    }
+  });
+});

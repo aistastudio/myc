@@ -131,6 +131,34 @@ async function embedOneNative(
 /** Батч одним прогоном на native-сессии; отдельного пула воркеров нет —
  * native не блокирует главный JS-поток так, как WASM под JSC (см.
  * bench-ort-native.ts). */
+/**
+ * НАИБОЛЬШИЙ ПАКЕТ, ДАЮЩИЙ ТОТ ЖЕ ВЕКТОР, ЧТО И ОДИНОЧНЫЙ ПУТЬ
+ * (memory-d2nht8e1yn14).
+ *
+ * Один и тот же текст, прогнанный в пакете, давал ДРУГОЙ вектор: под разную
+ * форму тензора onnxruntime берёт разные ядра GEMM. Пока модель была
+ * англоязычной, это ничего не стоило — её различающие зазоры порядка
+ * 0.1–0.2. У multilingual-e5-small косинусы лежат в узком поясе, и зазор
+ * между первым и десятым кандидатом те же 0.005–0.02: шум пакета СРАВНИМ С
+ * СИГНАЛОМ, то есть выдача зависела от того, каким пакетом индексировали.
+ *
+ * ЗАМЕРЕНО (2026-09-30, darwin-arm64, оба поставляемых квантованных
+ * профиля). Косинус к одиночному вектору по размеру пакета:
+ *   1–3 → 1.0000000;  4–6 → 0.9980129;  7–9 → 0.9968072;  10 → 0.9975121.
+ * То есть порог — ТРИ, и он не про паддинг: при соседе той же длины эффекта
+ * нет, а при восьми соседях он есть.
+ *
+ * ЦЕНА НУЛЕВАЯ, И ЭТО ТОЖЕ ЗАМЕРЕНО: 48 узлов, медиана трёх трейлов —
+ * по одному 23.4 мс/узел, пакетами по 3 — 7.9, по 8 — 8.3, по 16 — 9.1.
+ * Пакет из трёх оказался не только точным, но и самым быстрым.
+ *
+ * Число — СВОЙСТВО РАНТАЙМА, а не константа предметной области, поэтому его
+ * стережёт тест равенства путей (separation.test.ts): сменится сборка
+ * onnxruntime — тест скажет об этом, а не индекс молча разъедется с
+ * запросом.
+ */
+const EXACT_BATCH = 3;
+
 async function embedManyNative(
   core: NativeCore,
   texts: readonly string[],
@@ -378,6 +406,17 @@ export class LocalEmbedder implements Embedder {
     }
     if (!this.initDone) {
       return this.allWarming(texts.length);
+    }
+    // ПАКЕТ РЕЖЕТСЯ НА ПОДПАКЕТЫ РОВНО ЗАТЕМ, ЧТОБЫ ВЕКТОР НЕ ЗАВИСЕЛ ОТ
+    // РАЗМЕРА ПАКЕТА (memory-d2nht8e1yn14). Смотри EXACT_BATCH ниже.
+    if (texts.length > EXACT_BATCH) {
+      const started = performance.now();
+      const results: EmbedResult[] = [];
+      for (let i = 0; i < texts.length; i += EXACT_BATCH) {
+        const part = await this.embedBatch(texts.slice(i, i + EXACT_BATCH), role);
+        results.push(...part.results);
+      }
+      return { results, ok: results.filter((r) => r.state === "ok").length, ms: performance.now() - started };
     }
     if (this.ortBackend === "native") {
       if (this._state !== "ok" || this.nativeCore === null) {

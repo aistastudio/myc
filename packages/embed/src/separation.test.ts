@@ -151,3 +151,41 @@ d("языковое качество эмбеддера на реальных т
     await embedder.destroy();
   }, 60_000);
 });
+
+/**
+ * ОДИН ТЕКСТ — ОДИН ВЕКТОР, КАКИМ БЫ ПУТЁМ ЕГО НИ СЧИТАЛИ
+ * (memory-d2nht8e1yn14).
+ *
+ * Тот же текст, прогнанный в пакете, давал ДРУГОЙ вектор: под разную форму
+ * тензора onnxruntime берёт разные ядра GEMM. У англоязычной модели это
+ * ничего не стоило — её зазоры порядка 0.1–0.2. У multilingual-e5-small
+ * косинусы лежат в узком поясе, и зазор между первым и десятым кандидатом
+ * те же 0.005–0.02: шум пакета СРАВНИМ С СИГНАЛОМ, и выдача зависела от
+ * того, каким пакетом индексировали корпус.
+ *
+ * Починка — потолок подпакета (EXACT_BATCH в local.ts), а он СВОЙСТВО
+ * РАНТАЙМА, не предметной области. Поэтому сторожит его именно поведение:
+ * сменится сборка onnxruntime — упадёт этот тест, а не выдача recall.
+ */
+d("вектор не зависит от размера пакета", () => {
+  const TEXT = "узел памяти проекта: правило, записанное словами, а не числом";
+
+  test("cos(embed, embedBatch[0]) = 1 при любом размере пакета", async () => {
+    const embedder = createLocalEmbedder(dir !== undefined ? { modelsDir: dir } : {});
+    expect(await embedder.warmup()).toBe("ok");
+    const one = await embedder.embed(TEXT, "passage");
+    expect(one.vec).not.toBeNull();
+
+    // Размеры по обе стороны прежнего порога: до починки пакеты от четырёх
+    // расходились (0.998), а двойка совпадала — то есть тест на двойке
+    // ничего бы не поймал.
+    for (const n of [2, 4, 8, 16]) {
+      const texts = [TEXT, ...Array.from({ length: n - 1 }, (_, i) => `сосед номер ${i} с текстом`)];
+      const batch = await embedder.embedBatch(texts, "passage");
+      const got = batch.results[0]?.vec;
+      expect([n, got === null || got === undefined]).toEqual([n, false]);
+      expect([n, cosineSimilarity(one.vec!, got!) > 0.99999]).toEqual([n, true]);
+    }
+    await embedder.destroy?.();
+  }, 120_000);
+});
