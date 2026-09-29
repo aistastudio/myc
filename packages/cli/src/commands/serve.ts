@@ -35,6 +35,8 @@ export interface ServeDeps {
   readonly write: (s: string) => void;
   /** Ожидание сигнала — тот же приём, что у viz: в тестах подменяется. */
   readonly wait: () => Promise<string>;
+  /** Окружение: отсюда берётся первый арендатор контейнера (MYC_BOOTSTRAP_*). */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface ServeStopped {
@@ -84,6 +86,46 @@ function num(ctx: CommandContext, name: string): number | undefined {
     return Number.isFinite(n) ? n : undefined;
   }
   return undefined;
+}
+
+/**
+ * Завести первого арендатора и первый токен, если о них попросили
+ * окружением. Возвращает строку для журнала или `undefined`, когда делать
+ * нечего — молчание здесь важнее вежливости: пустых строк в журнале
+ * контейнера и так хватает.
+ */
+export async function bootstrapTenant(
+  pg: PostgresDriver,
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  const tenant = (env["MYC_BOOTSTRAP_TENANT"] ?? "").trim();
+  if (tenant === "") return undefined;
+  const lines: string[] = [];
+  const made = await pg.raw<{ id: string }>(
+    `INSERT INTO tenants (id, title, created_at) VALUES ($1, '', $2)
+     ON CONFLICT (id) DO NOTHING RETURNING id`,
+    [tenant, Date.now()],
+  );
+  if (made.length > 0) lines.push(`bootstrap tenant ${tenant} registered`);
+
+  const name = (env["MYC_BOOTSTRAP_TOKEN"] ?? "").trim();
+  if (name !== "") {
+    // Живой токен у арендатора уже есть — второй не нужен и печатать нечего.
+    const live = await pg.raw<{ n: number | string }>(
+      "SELECT count(*) AS n FROM api_tokens WHERE tenant_id = $1 AND revoked_at IS NULL",
+      [tenant],
+    );
+    if (Number(live[0]?.n ?? 0) === 0) {
+      const minted = await addToken(pg, tenant, name, { role: "owner" });
+      lines.push(
+        `bootstrap token ${minted.id} for ${name} @ ${tenant} · owner`,
+        minted.token,
+        "This is the only time the secret is shown, and it is in the container log:",
+        "a real install drops MYC_BOOTSTRAP_* and mints tokens by hand.",
+      );
+    }
+  }
+  return lines.length === 0 ? undefined : `${lines.join("\n")}\n`;
 }
 
 export function createServeCommand(deps: ServeDeps = { write: (s) => process.stdout.write(s), wait: waitForSignal }): Command {
@@ -245,6 +287,24 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
 
         if (wantList) {
           return { ok: true, data: { tokens: await listTokens(pg!) } };
+        }
+
+        // ПЕРВЫЙ АРЕНДАТОР И ПЕРВЫЙ ТОКЕН ИЗ ОКРУЖЕНИЯ (приёмка
+        // memory-3n0svbkbjaew: «docker compose up даёт рабочий сервер без
+        // ручных шагов»). Без этого поднятый контейнер — пустая коробка: в
+        // базе нет ни одного арендатора, и войти в неё нечем.
+        //
+        // ОБА ШАГА ИДЕМПОТЕНТНЫ и оба молчат, когда делать нечего: токен
+        // минтится ТОЛЬКО если у арендатора нет ни одного живого. Иначе
+        // каждый рестарт контейнера печатал бы в журнал новый секрет, и их
+        // накапливалось бы по числу перезапусков.
+        //
+        // Секрет уходит в ЖУРНАЛ, и это сказано вслух: в настоящей установке
+        // переменные убирают и выдают токен руками. Дверь эта открывается
+        // только явной переменной — по умолчанию её нет.
+        const bootstrapped = pg === undefined ? undefined : await bootstrapTenant(pg, deps.env ?? process.env);
+        if (bootstrapped !== undefined && !ctx.globals.json && !ctx.globals.ndjson) {
+          deps.write(bootstrapped);
         }
 
         const t0 = Date.now();

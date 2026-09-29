@@ -157,15 +157,17 @@ async function main(): Promise<void> {
   ) as { version: string };
   const version = cliPkg.version;
 
-  // Версия живёт в двух местах — в манифесте и в CLI_VERSION, который печатает
-  // `myc --version`. Разошлись — пакет врёт о себе; ловим на сборке, а не в
-  // отчёте пользователя.
-  const indexTs = await readFile(join(ROOT, "packages/cli/src/index.ts"), "utf8");
-  const m = /export const CLI_VERSION = "([^"]+)"/.exec(indexTs);
-  if (m === null) throw new Error("не нашёл CLI_VERSION в packages/cli/src/index.ts");
+  // Версия живёт в двух местах — в манифесте и в MYC_VERSION, который печатает
+  // `myc --version` и отдаёт `/v1/health` сервера. Разошлись — пакет врёт о
+  // себе; ловим на сборке, а не в отчёте пользователя. Читается из ЯДРА:
+  // прежде у сервера была своя константа «0.0.0», и образ на вопрос о версии
+  // отвечал ложью.
+  const versionTs = await readFile(join(ROOT, "packages/core/src/version.ts"), "utf8");
+  const m = /export const MYC_VERSION = "([^"]+)"/.exec(versionTs);
+  if (m === null) throw new Error("не нашёл MYC_VERSION в packages/core/src/version.ts");
   if (m[1] !== version) {
     throw new Error(
-      `версии разошлись: package.json ${version}, CLI_VERSION ${m[1]}. ` +
+      `версии разошлись: package.json ${version}, MYC_VERSION ${m[1]}. ` +
         "Правьте оба места.",
     );
   }

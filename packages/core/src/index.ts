@@ -69,6 +69,7 @@ export * from "./closure.ts";
 export * from "./cycle.ts";
 export * from "./oplog.ts";
 export * from "./sync.ts";
+export * from "./version.ts";
 export * from "./graph.ts";
 export * from "./secrets.ts";
 export * from "./memory.ts";

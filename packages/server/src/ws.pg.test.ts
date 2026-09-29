@@ -26,6 +26,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
+import { MYC_VERSION } from "@myc/core";
 import { addToken } from "./auth.ts";
 import { startHttpServer, type MycHttpServer } from "./index.ts";
 import { boundedInt, parseWsPath, WS_LIMIT_MAX } from "./ws.ts";
@@ -97,6 +98,27 @@ describe("данные воркспейса по HTTP", () => {
     const res = await fetch(`${srv!.url}${path}`, { headers: { authorization: `Bearer ${token}` } });
     return { status: res.status, body: await res.json() };
   };
+
+  test("проба готовности спрашивает Postgres, а не локальный файл SQLite", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    // Прежде этот путь всегда открывал SQLite, и в контейнере проба
+    // получала вечное `db.missing: no database file: …/.myc/myc.db` —
+    // оркестратор держал бы исправный сервер вне ротации.
+    const { status, body } = await get("/v1/health/db", acme);
+    expect(status).toBe(200);
+    expect(body.db).toBe("postgres");
+    expect(typeof body.schema).toBe("string");
+    expect(body.latency_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test("версия сервера — та же, что у всего myc, а не ноль", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const res = await fetch(`${srv!.url}/v1/health`);
+    const body = (await res.json()) as { ver: string };
+    // «0.0.0» в образе означало, что проба не отличит старый контейнер от
+    // нового: версия обязана быть одна на весь проект.
+    expect(body.ver).toBe(MYC_VERSION);
+  });
 
   test("разбор пути и потолок limit — до всякой базы", () => {
     expect(parseWsPath("/v1/ws/cherry/nodes")).toEqual({ ws: "cherry", rest: "/nodes" });

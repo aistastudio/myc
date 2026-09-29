@@ -12,6 +12,7 @@ import {
   type CommandResult,
   type Globals,
 } from "./registry.ts";
+import { MYC_VERSION } from "@myc/core";
 import {
   isIterable,
   renderDataHuman,
@@ -19,7 +20,8 @@ import {
   renderWarnLines,
 } from "./render.ts";
 
-export const CLI_VERSION = "0.3.14";
+/** Версия одна на весь проект и живёт в ядре (packages/core/src/version.ts). */
+export const CLI_VERSION = MYC_VERSION;
 
 export type RunResult = {
   code: ExitCode;

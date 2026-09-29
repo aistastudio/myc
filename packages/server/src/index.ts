@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 import { adminOverview, adminTenants, renderAdminPage } from "./admin.ts";
-import { aclParams, type Viewer } from "@myc/core";
+import { aclParams, MYC_VERSION, type Viewer } from "@myc/core";
 import {
   boundedInt,
   parseWsPath,
@@ -60,7 +60,12 @@ import {
   seesWorkspace,
 } from "./auth.ts";
 
-export const SERVER_VERSION = "0.0.0";
+/**
+ * Версия сервера — та же, что у всего myc. Прежде здесь стоял ноль, и
+ * `/v1/health` образа отвечал «0.0.0»: проба не могла отличить старый
+ * контейнер от нового (проверено `docker compose up` 2026-09-29).
+ */
+export const SERVER_VERSION = MYC_VERSION;
 
 export type ServerConfig = {
   readonly port: number;
@@ -451,6 +456,28 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
 
     // readiness: соединение, версия схемы, латентность — 503 при недоступной БД
     if (url.pathname === "/v1/health/db") {
+      // НА КОМАНДНОМ СЕРВЕРЕ БАЗА — POSTGRES, И СПРАШИВАТЬ НАДО ЕЁ. Прежде
+      // этот путь всегда открывал локальный файл SQLite, поэтому в
+      // контейнере проба готовности получала вечное
+      // `db.missing: no database file: /home/myc/.myc/myc.db` — то есть
+      // оркестратор держал бы исправный сервер вне ротации (найдено
+      // `docker compose up` 2026-09-29).
+      if (pg !== undefined) {
+        try {
+          const t0 = performance.now();
+          await pg.raw("SELECT 1");
+          const latency = Math.round((performance.now() - t0) * 100) / 100;
+          const [v] = await pg.raw<{ v: string | null }>(
+            "SELECT max(version) AS v FROM schema_migrations",
+          );
+          // BIGINT приходит строкой; версия наружу — как у SQLite, `vN`.
+          const schema = v?.v == null ? null : `v${Number(v.v)}`;
+          return json({ ok: true, db: "postgres", latency_ms: latency, schema, migrations_pending: 0 });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return json({ ok: false, error: { code: "db.query", msg } }, 503);
+        }
+      }
       let db: ReadDb;
       try {
         db = openDb();

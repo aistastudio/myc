@@ -5,15 +5,24 @@
 # пароль (секрет оркестратора), обратный прокси с сертификатом перед портом
 # 8080 и резервное копирование тома.
 #
-# Первый запуск на пустой базе. Схему накатывает СУПЕРПОЛЬЗОВАТЕЛЬ — она
-# создаёт таблицы, триггеры и политики RLS, и прав myc_app для этого нет и не
-# должно быть; дальше сервер живёт ролью myc_app (её вход заводит
-# deploy/initdb/10-app-role.sql при инициализации кластера):
+# РУЧНЫХ ШАГОВ НЕТ. На пустом томе Postgres сам исполняет каталог
+# docker-entrypoint-initdb.d СУПЕРПОЛЬЗОВАТЕЛЕМ: сперва заводится роль myc_app
+# со входом (10-app-role.sql), затем накатывается схема (20-schema.sql — это и
+# есть db/schema.postgres.sql, примонтированный сюда). Прав myc_app на создание
+# таблиц, триггеров и политик RLS нет и не должно быть, поэтому схему обязан
+# накатить именно суперпользователь — а сервер дальше живёт ролью myc_app.
+#
+# Первый арендатор и первый токен заводятся из окружения (MYC_BOOTSTRAP_*).
+# Секрет печатается В ЖУРНАЛ КОНТЕЙНЕРА один раз, при первом старте:
+#   docker compose -f deploy/compose.yml logs server | grep 'bootstrap token'
+# В настоящей установке это убирают и выдают токен руками —
+# `myc serve --add-token <арендатор>:<имя>`, — потому что журнал читают не
+# только те, кому этот токен предназначен.
+#
+# На СУЩЕСТВУЮЩЕМ томе initdb не исполняется вовсе (так устроен образ
+# Postgres): базу, поднятую прежней версией без схемы, догоняют однократно
 #   docker compose -f deploy/compose.yml run --rm \
 #     -e MYC_PG_URL=postgres://postgres:change-me@db:5432/myc server serve --apply-schema
-#   docker compose -f deploy/compose.yml run --rm server serve --add-tenant acme
-#   docker compose -f deploy/compose.yml run --rm server serve --add-token acme:anna
-# Секрет печатается один раз: в базе лежит только его sha256.
 
 services:
   db:
@@ -25,9 +34,16 @@ services:
       POSTGRES_PASSWORD: change-me
     volumes:
       - myc-pg:/var/lib/postgresql/data
-      # Только при инициализации ПУСТОГО тома: заводит роль myc_app со входом.
-      # На существующем томе каталог игнорируется — роль уже есть.
-      - ./initdb:/docker-entrypoint-initdb.d:ro
+      # Только при инициализации ПУСТОГО тома; на существующем каталог
+      # docker-entrypoint-initdb.d игнорируется целиком — так устроен образ.
+      # Файлы названы ПООТДЕЛЬНО, а не каталогом: схема лежит в db/ и
+      # копировать её сюда нельзя — две копии разъедутся молча. Каталог,
+      # примонтированный `:ro`, вложить в себя файл не даёт.
+      #
+      # Порядок задают имена: сперва роль myc_app со входом, потом схема —
+      # политики RLS ссылаются на эту роль.
+      - ./initdb/10-app-role.sql:/docker-entrypoint-initdb.d/10-app-role.sql:ro
+      - ../db/schema.postgres.sql:/docker-entrypoint-initdb.d/20-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d myc"]
       interval: 5s
@@ -47,6 +63,12 @@ services:
       # просто не работает (db/schema.postgres.sql, раздел RLS).
       MYC_PG_URL: postgres://myc_app:change-me@db:5432/myc
       MYC_SERVE_PORT: "8080"
+      # Первый арендатор и первый токен — чтобы `docker compose up` давал
+      # сервер, с которым можно работать, а не пустую коробку. Оба шага
+      # идемпотентны: на втором старте ничего не создаётся и ничего не
+      # печатается. В настоящей установке эти две строки убирают.
+      MYC_BOOTSTRAP_TENANT: acme
+      MYC_BOOTSTRAP_TOKEN: anna
     ports:
       # Наружу — только через прокси; здесь порт открыт для локальной пробы.
       - "127.0.0.1:8080:8080"
