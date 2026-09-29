@@ -46,9 +46,15 @@ function realGrammarBytes(name: GrammarName): Buffer {
   return readFileSync(path);
 }
 
+type ResponseBody = ConstructorParameters<typeof Response>[0];
+
 function stubFetch(body: Uint8Array, status = 200): typeof fetch {
   return (async () =>
-    new Response(status === 200 ? body : null, {
+    // Тип берётся у САМОГО конструктора: имя BodyInit есть не в каждой
+    // конфигурации, а Uint8Array<ArrayBufferLike> свежие типы в него не
+    // пускают, хотя рантайм принимает. Ошибка была латентной — полная
+    // проверка типов до этого файла доходит не всегда.
+    new Response(status === 200 ? (body as unknown as ResponseBody) : null, {
       status,
       headers: { "content-length": String(body.byteLength) },
     })) as unknown as typeof fetch;

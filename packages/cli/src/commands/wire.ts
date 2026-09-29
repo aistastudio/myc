@@ -1974,6 +1974,38 @@ export function createUnwireCommand(overrides: Partial<Pick<WireDeps, "env" | "p
 
       if (!dryRun && kept.length === 0) rmSync(jPath, { force: true });
 
+      // ПУСТЫЕ КАТАЛОГИ, ОСТАВШИЕСЯ ОТ НАШИХ ФАЙЛОВ, ТОЖЕ УБИРАЕМ
+      // (memory-v30bvbp54qvc). Справка обещает «remove exactly what myc wire
+      // installed», а после снятия оставались `.claude/`, `.codex/`,
+      // `.kimi-code/`, `.opencode/` — пустые каталоги, которых до wire не
+      // было: человек видит их в `git status` и не знает, откуда они.
+      //
+      // Инструмент выбран НАМЕРЕННО: `rmdir` не удаляет непустой каталог, и
+      // это свойство, а не проверка — если внутри осталось хоть что-то
+      // чужое, каталог остаётся, и придумывать правила «наше/не наше» не
+      // требуется. Идём снизу вверх и останавливаемся на первом, который не
+      // поддался; выше корня воркспейса не поднимаемся никогда.
+      if (!dryRun) {
+        const base = resolve(root);
+        const dirs = new Set<string>();
+        for (const entry of journal.entries) {
+          let dir = dirname(resolve(base, entry.path));
+          while (dir.startsWith(`${base}/`)) {
+            dirs.add(dir);
+            dir = dirname(dir);
+          }
+        }
+        // Глубокие раньше мелких: иначе родитель ещё не пуст.
+        for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+          try {
+            rmdirSync(dir);
+            removed.push(`${relative(base, dir)}/ (empty directory left by wire — removed)`);
+          } catch {
+            // Непустой или уже нет — обе причины законны, и обе молчат.
+          }
+        }
+      }
+
       const data: UnwireData = { removed, kept, gone, dry_run: dryRun };
       return { ok: true, data };
     },

@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { run, type RunResult } from "../index.ts";
@@ -1084,6 +1084,35 @@ describe("unwire удаляет файлы, которые создал wire", (
     expect(un.code).toBe(0);
     for (const p of CREATED) expect([p, has(p)]).toEqual([p, false]);
     expect(String((JSON.parse(un.stdout as string).data as { removed: string[] }).removed)).toContain("file created by wire — deleted");
+  });
+
+  test("и пустые каталоги: после unwire дерево такое же, каким было до wire", async () => {
+    // memory-v30bvbp54qvc: файлы удалялись, а `.claude/`, `.codex/`,
+    // `.kimi-code/`, `.opencode/` оставались пустыми — человек видит их в
+    // `git status` и не знает, откуда они. Справка при этом обещает
+    // «remove exactly what myc wire installed».
+    const before = readdirSync(dir).sort();
+    const r = new Registry();
+    r.register(createPrimeCommand());
+    r.register(createAbsorbSessionCommand());
+    r.register(createWireCommand(r, { probeStatusLine: () => ({ ok: true }), env: { CLAUDE_CONFIG_DIR: join(dir, "cfg") }, platform: "darwin" }));
+    r.register(createUnwireCommand());
+    const sl = (...args: string[]): Promise<RunResult> => run(["-C", dir, ...args], { registry: r, env: { MYC_ACTOR: "tester" } });
+    expect((await sl("wire", "--status-line", "--agents-md")).code).toBe(0);
+    expect((await sl("wire", "--agents", "opencode")).code).toBe(0);
+    expect(readdirSync(dir).sort()).not.toEqual(before);
+
+    expect((await sl("unwire")).code).toBe(0);
+    expect(readdirSync(dir).sort()).toEqual(before);
+  });
+
+  test("каталог с чужим содержимым остаётся: rmdir непустой не удаляет", async () => {
+    await myc("wire", "--agents", "claude");
+    write(".claude/чужое.txt", "не наше\n");
+    expect((await myc("unwire")).code).toBe(0);
+    // Каталог остался вместе с чужим файлом — и это не проверка «наше/не
+    // наше», а свойство rmdir: непустой он не трогает.
+    expect(has(".claude/чужое.txt")).toBe(true);
   });
 
   test("файл, бывший до wire, остаётся — даже пустым", async () => {

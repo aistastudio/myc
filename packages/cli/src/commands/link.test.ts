@@ -214,6 +214,22 @@ describe("myc link: зависимости идут через движок dep,
     expect(cycle.error!.code).toBe("conflict.dep_cycle");
   });
 
+  test("dep add и dep rm называют концы ребра ОДИНАКОВО, даже через blocked-by", async () => {
+    // memory-5hxpgf1sh331: add отдавал нормализованную пару (src — тот, кто
+    // блокирует), rm — пару В ПОРЯДКЕ ВВОДА. На `blocked-by` две команды
+    // отвечали про одно и то же ребро разными парами, и снятие выглядело
+    // снятием другого ребра.
+    const a = await task("A");
+    const b = await task("B");
+    const added = await mycJson("dep", "add", a, "blocked-by", b);
+    expect(added.code).toBe(ExitCode.OK);
+    const removed = await mycJson("dep", "rm", a, "blocked-by", b);
+    expect(removed.code).toBe(ExitCode.OK);
+    expect([removed.data["src"], removed.data["dst"]]).toEqual([added.data["src"], added.data["dst"]]);
+    // И это именно нормализованная пара: блокирует B.
+    expect(removed.data["src"]).toBe(b);
+  });
+
   test("эффект ready назван: задача ушла из очереди и вернулась в неё", async () => {
     const a = await task("A");
     const b = await task("B");

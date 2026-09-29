@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExitCode } from "../exit.ts";
@@ -244,6 +244,51 @@ describe("границы автоподъёма базы в import", () => {
 
     const imported = await myc(beta, "import");
     expect(imported.code).toBe(ExitCode.NOWS);
+    expect(existsSync(join(beta, ".myc", "myc.db"))).toBe(false);
+  });
+});
+
+/**
+ * memory-6gr1mc91ske3: свежий клон — не пустое место. В нём уже лежат
+ * `.myc/workspace.toml` и оплог, и нужен ему `myc import`, а не `myc init`:
+ * init даст пустую базу, и человек решит, что данные не приехали. До S60
+ * тот же неверный совет ещё и молча менял слаг.
+ *
+ * Проверяется способом сторожа честности: исполняем совет — ответ обязан
+ * измениться.
+ */
+describe("свежий клон советует import, и совет работает", () => {
+  test("первая команда в клоне: отказ называет клон и советует import", async () => {
+    const { origin } = await originWithKnowledge();
+    const beta = cloneAs(origin, "zeta-box");
+
+    const ready = await myc(beta, "ready");
+    expect(ready.code).toBe(ExitCode.NOWS);
+    const text = String(ready.stdout) + String(ready.stderr ?? "");
+    expect(text).toContain("ws.not_materialized");
+    expect(text).toContain("import");
+    // Прежний совет отправлял в init — он и был дефектом.
+    expect(text).not.toMatch(/hint:\s*myc init/);
+
+    // СОВЕТ ИСПОЛНЯЕМ: после него та же команда отвечает по существу.
+    expect((await myc(beta, "import")).code).toBe(ExitCode.OK);
+    const after = await myc(beta, "ready");
+    expect(after.code).toBe(ExitCode.OK);
+  });
+
+  test("слаг, который сборка не примет, называется — иначе import бездействует молча", async () => {
+    const { origin } = await originWithKnowledge();
+    const beta = cloneAs(origin, "eta-box");
+    const cfg = join(beta, ".myc", "workspace.toml");
+    writeFileSync(cfg, readFileSync(cfg, "utf8").replace(/^slug\s*=.*$/m, 'slug = "СЛИШКОМ-ДЛИННЫЙ"'));
+
+    const imported = await myc(beta, "import");
+    expect(imported.code).toBe(ExitCode.NOWS);
+    const text = String(imported.stdout) + String(imported.stderr ?? "");
+    // Причина названа вместе с правилом: без этого `import` просто ничего не
+    // делает, и человек получает тот же отказ второй раз.
+    expect(text).toContain("usage.slug");
+    expect(text).toContain("lowercase letters and digits");
     expect(existsSync(join(beta, ".myc", "myc.db"))).toBe(false);
   });
 });

@@ -137,8 +137,53 @@ export interface WorkspaceFound {
   readonly worktree?: WorktreeLink;
 }
 
+/**
+ * Каким myc принимает слаг: две-восемь строчных букв и цифр, первая —
+ * буква. Из него растут id узлов, поэтому правило узкое. Живёт ЗДЕСЬ, а не
+ * в init.ts: правило нужно отказу на горячем пути открытия воркспейса, а
+ * тянуть туда модуль инициализации нельзя — он тащит за собой проверку
+ * обновлений и всё её замыкание (сторож: hot-path.test.ts).
+ */
+export const SLUG_RULE = /^[a-z][a-z0-9]{1,7}$/;
+export const SLUG_RULE_TEXT = "2 to 8 lowercase letters and digits, starting with a letter";
+
+/**
+ * Слаг из `.myc/workspace.toml` КАК ЕСТЬ — включая неподходящий. Нужен
+ * только отказу: без него «базы нет» звучит одинаково и для свежего клона, и
+ * для конфига со слагом, который эта сборка не примет, — а это разные
+ * новости и разные действия (memory-6gr1mc91ske3).
+ *
+ * Разбор без регулярки с кавычками намеренно: сторож советуемых команд
+ * читает строковые литералы файла, и кавычки внутри регулярного выражения
+ * сбивают ему разметку — литерал соседнего комментария начинает выглядеть
+ * советом.
+ */
+export function rawConfigSlug(mycDir: string): string | undefined {
+  const path = join(mycDir, "workspace.toml");
+  if (!existsSync(path)) return undefined;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("slug")) continue;
+    const eq = t.indexOf("=");
+    if (eq < 0) continue;
+    return t.slice(eq + 1).trim().replace(/^[\u0022']|[\u0022']$/g, "");
+  }
+  return undefined;
+}
+
 export interface WorkspaceNotFound {
   readonly searched: readonly string[];
+  /**
+   * Воркспейс найден, но не материализован: есть `.myc/workspace.toml`, нет
+   * базы. Это свежий клон, и ему нужен `myc import`, а не `myc init`.
+   */
+  readonly unmaterialized?: string;
   /** Непусто, если старт был внутри worktree: причина обязана быть названа. */
   readonly worktree?: WorktreeLink;
   readonly worktreeMiss?: WorktreeMiss;
@@ -154,6 +199,13 @@ function climb(startDir: string): {
   readonly hit: { readonly dbPath: string; readonly wsDir: string } | undefined;
   readonly searched: readonly string[];
   readonly dirs: readonly string[];
+  /**
+   * Каталог, где воркспейс ЕСТЬ, а базы нет: свежий клон принёс
+   * `.myc/workspace.toml` (и оплог в `.myc/graph`), но проекции ещё не
+   * материализованы. Отличать это состояние обязательно — иначе совет
+   * отправляет не туда (memory-6gr1mc91ske3).
+   */
+  readonly unmaterialized: string | undefined;
 } {
   const boundary = resolve(personalHome());
   const searched: string[] = [];
@@ -165,13 +217,24 @@ function climb(startDir: string): {
     dirs.push(dir);
     const dbPath = join(dir, ".myc", "myc.db");
     searched.push(dbPath);
-    if (existsSync(dbPath)) return { hit: { dbPath, wsDir: dir }, searched, dirs };
+    if (existsSync(dbPath)) return { hit: { dbPath, wsDir: dir }, searched, dirs, unmaterialized: undefined };
     const parent = dirname(dir);
     if (parent === dir) break; // корень ФС — дальше подниматься некуда
     dir = parent;
     climbed = true;
   }
-  return { hit: undefined, searched, dirs };
+  // Конфиг ищется ТОЛЬКО когда базы не нашлось, и это не мелочь: подъём
+  // стоит микросекунды и зовётся на каждую команду, а лишний stat на каждый
+  // каталог удорожал удачный путь в 1.66 раза (замер wsfind.latency).
+  // Неудачный путь и так заканчивается отказом, там эта цена не видна.
+  let unmaterialized: string | undefined;
+  for (const d of dirs) {
+    if (existsSync(join(d, ".myc", "workspace.toml"))) {
+      unmaterialized = d;
+      break;
+    }
+  }
+  return { hit: undefined, searched, dirs, unmaterialized };
 }
 
 /**
@@ -204,9 +267,15 @@ export function findWorkspaceDb(startDir: string): WorkspaceFound | WorkspaceNot
       searched: [...local.searched, ...inMain.searched],
       worktree: link,
       worktreeMiss: "main-no-workspace",
+      ...(inMain.unmaterialized ?? local.unmaterialized) === undefined
+        ? {}
+        : { unmaterialized: (inMain.unmaterialized ?? local.unmaterialized)! },
     };
   }
-  return { searched: local.searched };
+  return {
+    searched: local.searched,
+    ...(local.unmaterialized === undefined ? {} : { unmaterialized: local.unmaterialized }),
+  };
 }
 
 /**

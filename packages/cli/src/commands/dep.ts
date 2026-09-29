@@ -187,8 +187,13 @@ function buildDepRm(deps: StoreDeps): Command {
         const backReady =
           after.open_blockers === 0 && after.anc_blockers === 0 && after.status === "open";
         const data: DepEdgeData = {
-          src: from.node.id,
-          dst: to.node.id,
+          // НОРМАЛИЗОВАНО, как у `dep add` (memory-5hxpgf1sh331): src — тот,
+          // кто блокирует, независимо от того, каким концом его назвали.
+          // Прежде здесь стоял порядок ВВОДА, и на `blocked-by` две команды
+          // отвечали про одно ребро разными парами: снятие выглядело
+          // снятием другого ребра, а сравнить их машинно было нельзя.
+          src: src.id,
+          dst: dst.id,
           type,
           from_label: from.node.id,
           removed: true,

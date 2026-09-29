@@ -23,8 +23,11 @@ import {
   mapIntoMain,
   mapIntoWorktree,
   personalHome,
+  rawConfigSlug,
   readWorktreeLink,
   relUnder,
+  SLUG_RULE,
+  SLUG_RULE_TEXT,
   workspaceDirOfDb,
   type WorkspaceNotFound,
   type WorktreeLink,
@@ -775,6 +778,40 @@ function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
         `${link.mainRoot}, not in the parent directories`,
       exit: ExitCode.NOWS,
       hint: `myc -C ${link.mainRoot} init`,
+    };
+  }
+  // СВЕЖИЙ КЛОН — ЭТО НЕ ПУСТОЕ МЕСТО (memory-6gr1mc91ske3). В нём уже лежат
+  // `.myc/workspace.toml` и оплог в `.myc/graph`: воркспейс ЕСТЬ, просто
+  // проекции ещё не собраны. Совет `myc init` отправляет не туда — человек
+  // получит пустую базу и решит, что данные не приехали. Собирает их
+  // `myc import`, и до S60 тот же неверный совет ещё и молча менял слаг,
+  // делая приехавшие узлы невидимыми: цена уже была заплачена однажды.
+  if (found.unmaterialized !== undefined) {
+    const where = found.unmaterialized;
+    // Слаг, который эта сборка не примет, делает `myc import` БЕЗДЕЙСТВИЕМ:
+    // он молча не поднимет базу, и человек получит тот же отказ второй раз.
+    // Значит причина обязана быть названа здесь, а не оставлена ему на
+    // догадку.
+    const raw = rawConfigSlug(join(where, ".myc"));
+    if (raw !== undefined && !SLUG_RULE.test(raw)) {
+      return {
+        ok: false,
+        code: "usage.slug",
+        msg:
+          `workspace ${where} has no database, and its .myc/workspace.toml cannot make one: ` +
+          `slug "${raw}" is not one myc accepts (${SLUG_RULE_TEXT}) — node ids are built from it`,
+        exit: ExitCode.NOWS,
+        hint: `fix slug in ${join(where, ".myc", "workspace.toml")} and run myc -C ${where} import`,
+      };
+    }
+    return {
+      ok: false,
+      code: "ws.not_materialized",
+      msg:
+        `workspace ${where} has no database yet: its .myc/workspace.toml is here (a fresh clone), ` +
+        "but the node and edge projections are a local cache and are never committed",
+      exit: ExitCode.NOWS,
+      hint: `myc -C ${where} import   # replays .myc/graph into a new local database`,
     };
   }
   return {
