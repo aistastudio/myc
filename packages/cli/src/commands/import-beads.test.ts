@@ -1353,8 +1353,12 @@ describe("статус без имени в myc не отменяет ввоз (
     expect(t.get("ms-free")!.attrs["external_status"]).toBeUndefined();
     expect(t.get("ms-free")!.attrs["tags"]).toBeUndefined();
 
-    // в очереди — ровно то, что было бы в `bd ready`
-    expect(await readyRefs()).toEqual(["ms-epic", "ms-free"]);
+    // В очереди — то же, что в `bd ready`, МИНУС эпик: у myc веха из очереди
+    // исключена намеренно (memory-ghbe6hg7xm9e), потому что взять её нельзя,
+    // а дети при этом свободны. Это единственное расхождение с bd в этом
+    // месте, и оно названное, а не случайное: `myc ready --kind epic`
+    // показывает веху явно.
+    expect(await readyRefs()).toEqual(["ms-free"]);
   });
 
   test("видна как отложенная: show печатает метку, list --tag deferred находит, метки beads целы", async () => {
@@ -1420,8 +1424,9 @@ describe("статус без имени в myc не отменяет ввоз (
     expect(away.status).toBe("blocked");
     expect(away.attrs["external_status"]).toBe("deferred");
     expect(away.attrs["tags"]).toEqual(["deferred"]);
-    // ms-8mm снова в очереди (родитель открыт, блокеров нет), ms-free ушла
-    expect(await readyRefs()).toEqual(["ms-8mm", "ms-epic"]);
+    // ms-8mm снова в очереди (родитель открыт, блокеров нет), ms-free ушла;
+    // эпика в очереди нет по той же причине, что выше.
+    expect(await readyRefs()).toEqual(["ms-8mm"]);
   });
 
   /**

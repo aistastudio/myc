@@ -96,8 +96,16 @@ const ARGS: Args = [SCOPE, W.pri, W.unb, W.fresh, W.anch, W.type, 10, Date.now()
 
 /** Очередь со счётчиком — ровно тот SQL, что исполняет команда. */
 const SQL_COUNTER = readyQueries.ready_top_noanchors.sql;
-/** Прежнее правило: наследования нет вовсе (схема 9). */
-const SQL_OLD = SQL_COUNTER.replace(" AND n.anc_blockers = 0", "");
+/**
+ * Прежнее правило: наследования нет вовсе (схема 9). Индекс переименован
+ * обратно в тот, что существовал ТОГДА: сегодняшний `ix_nodes_ready_work`
+ * появился миграцией 14, и соперник обязан идти по своему индексу, а не по
+ * несуществующему у себя (иначе это не соперник, а ошибка подготовки).
+ */
+const SQL_OLD = SQL_COUNTER.replace(" AND n.anc_blockers = 0", "").replace(
+  "ix_nodes_ready_work",
+  "ix_nodes_ready",
+);
 /** Честный соперник: прежний индекс схемы 9 плюс подъём по замыканию. */
 const SQL_TRAVERSAL = SQL_OLD.replace(
   "n.open_blockers = 0",
@@ -179,7 +187,10 @@ async function build(maxVersion: number): Promise<Database> {
 // оставался без своего — и падал именно он, унося за собой afterAll.
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "myc-anc-lat-"));
-  v10 = await build(10);
+  // Здоровая сторона — на ТЕКУЩЕЙ схеме: сегодняшний запрос пинит индекс
+  // миграции 14, и собирать его на снимке версии 10 значило бы проверять
+  // запрос, которого тогда не было.
+  v10 = await build(Math.max(...migrations.map((m) => m.version)));
   v9 = await build(9);
 }, 180_000);
 
@@ -224,7 +235,7 @@ test("наследование РАБОТАЕТ и совпадает с обх�
   expect(byOldRule.length - byCounter.length).toBe(360);
 });
 
-test("план: счётчик остаётся одним сканом ix_nodes_ready, обход добавляет спуск", () => {
+test("план: счётчик остаётся одним сканом ix_nodes_ready_work, обход добавляет спуск", () => {
   const plan = (db: Database, sql: string): string[] =>
     db
       .query<{ detail: string }, Args>(`EXPLAIN QUERY PLAN ${sql}`)
@@ -232,7 +243,7 @@ test("план: счётчик остаётся одним сканом ix_nodes
       .map((r) => r.detail);
 
   const healthy = plan(v10, SQL_COUNTER);
-  expect(healthy.join(" | ")).toMatch(/USING INDEX ix_nodes_ready\b/);
+  expect(healthy.join(" | ")).toMatch(/USING INDEX ix_nodes_ready_work\b/);
   expect(healthy.filter((d) => /SCAN nodes/.test(d))).toEqual([]);
 
   // Соперник тоже на индексе — иначе это было бы чучело, а не альтернатива.
