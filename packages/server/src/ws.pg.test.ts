@@ -199,6 +199,8 @@ describe("данные воркспейса по HTTP", () => {
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("denied.no_token");
   });
 
+  const made200 = (r: { status: number; body: any }): boolean => r.status === 200 && r.body.error === undefined;
+
   const post = async (path: string, token: string, body: unknown): Promise<{ status: number; body: any }> => {
     const res = await fetch(`${srv!.url}${path}`, {
       method: "POST",
@@ -244,7 +246,16 @@ describe("данные воркспейса по HTTP", () => {
     const rows = await pg!.withTenant("acme", async (tx) =>
       tx.raw<{ field: string }>("SELECT field FROM oplog WHERE entity_id = $1 ORDER BY field", [id]),
     );
-    expect(rows.map((r) => r.field)).toEqual(["kind", "priority", "scope", "seen_count", "status", "title"]);
+    expect(rows.map((r) => r.field)).toEqual([
+      "actor",
+      "kind",
+      "owner_id",
+      "priority",
+      "scope",
+      "seen_count",
+      "status",
+      "title",
+    ]);
     const clocks = await pg!.withTenant("acme", async (tx) =>
       tx.raw<{ n: string }>("SELECT count(*) AS n FROM field_clock WHERE entity_id = $1", [id]),
     );
@@ -506,6 +517,102 @@ describe("данные воркспейса по HTTP", () => {
     expect(anonCore).toContain("cherry-core");
     expect(anonCore).not.toContain("cherry-mine");
     expect(anon.body.data.digest.reach.hidden).toBeGreaterThan(mine.body.data.digest.reach.hidden);
+  });
+
+  test("приватный узел соседа не виден: ни в списке, ни в числе, ни по id", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const boris = (await addToken(pg!, "acme", "dev-boris")).token;
+
+    // Аня заводит приватную заметку.
+    const mine = await post("/v1/ws/cherry/nodes", acme, {
+      kind: "note",
+      title: "моё приватное",
+      acl: "private",
+    });
+    expect(made200(mine)).toBe(true);
+    const id = mine.body.data.id as string;
+
+    // Себе она видна.
+    expect((await get(`/v1/ws/cherry/nodes/${id}`, acme)).status).toBe(200);
+
+    // Борису — нет, и ТЕМ ЖЕ отказом, что у несуществующего узла.
+    const foreign = await get(`/v1/ws/cherry/nodes/${id}`, boris);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error.code).toBe("notfound.node");
+
+    // Ни в списке...
+    const listed = await get("/v1/ws/cherry/nodes?limit=500", boris);
+    expect((listed.body.data as Array<{ id: string }>).map((n) => n.id)).not.toContain(id);
+
+    // ...НИ В ЧИСЛЕ: «всего 12» при одиннадцати видимых — та же утечка,
+    // только в одну цифру (приёмка memory-w0r3vhgkxmsw).
+    const mineList = await get("/v1/ws/cherry/nodes?limit=500", acme);
+    expect(listed.body.meta.total).toBeLessThan(mineList.body.meta.total);
+    expect(listed.body.meta.total).toBe((listed.body.data as unknown[]).length);
+  });
+
+  test("узел команды виден обоим, приватный — только своему", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const boris = (await addToken(pg!, "acme", "dev-boris")).token;
+    const shared = await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "общее дело" });
+    const secret = await post("/v1/ws/cherry/nodes", acme, {
+      kind: "task",
+      title: "только моё",
+      acl: "private",
+    });
+    const sharedId = shared.body.data.id as string;
+    const secretId = secret.body.data.id as string;
+
+    const seen = (await get("/v1/ws/cherry/nodes?limit=500", boris)).body.data as Array<{ id: string }>;
+    const ids = seen.map((n) => n.id);
+    expect(ids).toContain(sharedId);
+    expect(ids).not.toContain(secretId);
+  });
+
+  test("приватное не попадает ни в очередь, ни в контекст соседа", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const boris = (await addToken(pg!, "acme", "dev-boris")).token;
+    // Приватная ЗАДАЧА высшего приоритета: в чужой очереди её быть не должно
+    // ни строкой, ни местом в top-k.
+    const task = await post("/v1/ws/cherry/nodes", acme, {
+      kind: "task",
+      title: "срочное и приватное",
+      priority: 0,
+      acl: "private",
+    });
+    const taskId = task.body.data.id as string;
+    // Приватное ЗНАНИЕ: в чужой контекст оно не поедет.
+    await pg!.withTenant("acme", async (tx) => {
+      await tx.raw(
+        `INSERT INTO nodes (id, kind, layer, scope, title, excerpt, content_hash, status, priority,
+                            attrs, acl, owner_id, salience, created_at, updated_at)
+         VALUES ('cherry-secret','note',3,'cherry','секрет','суть секрета','h-secret','active',2,
+                 '{"reach":"project"}','private','dev-anna',9.5,1,1)`,
+      );
+    });
+
+    const mineQueue = await get("/v1/ws/cherry/ready?n=50", acme);
+    expect((mineQueue.body.data as Array<{ id: string }>).map((r) => r.id)).toContain(taskId);
+
+    const theirQueue = await get("/v1/ws/cherry/ready?n=50", boris);
+    const theirIds = (theirQueue.body.data as Array<{ id: string }>).map((r) => r.id);
+    expect(theirIds).not.toContain(taskId);
+    // И число готовых у соседа меньше — иначе утечка одной цифрой.
+    expect(theirQueue.body.meta.total).toBeLessThan(mineQueue.body.meta.total);
+
+    const mineCtx = await get("/v1/ws/cherry/prime", acme);
+    const theirCtx = await get("/v1/ws/cherry/prime", boris);
+    const coreOf = (r: { body: any }): string[] =>
+      r.body.data.digest.core.map((i: { id: string }) => i.id);
+    expect(coreOf(mineCtx)).toContain("cherry-secret");
+    expect(coreOf(theirCtx)).not.toContain("cherry-secret");
+  });
+
+  test("негодный уровень доступа отвергается до базы", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const bad = await post("/v1/ws/cherry/nodes", acme, { kind: "task", title: "х", acl: "секретно" });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.code).toBe("usage.acl");
   });
 
   test("негодный вход отвергается ДО базы и говорит, что не так", async () => {

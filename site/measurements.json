@@ -356,8 +356,18 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-tatk1jg3qjfs", "status": "open", "priority": 2, "title": "Хук post-edit платит за граф модулей дренажа на каждую правку агента" },
-          { "id": "memory-vt0rkpv0xwn2", "status": "open", "priority": 2, "title": "Справедливость очереди ready между агентами" }
+          {
+            "id": "memory-tatk1jg3qjfs",
+            "status": "open",
+            "priority": 2,
+            "title": "Хук post-edit платит за граф модулей дренажа на каждую правку агента"
+          },
+          {
+            "id": "memory-vt0rkpv0xwn2",
+            "status": "open",
+            "priority": 2,
+            "title": "Справедливость очереди ready между агентами"
+          }
         ]
       },
       {
@@ -383,8 +393,18 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-da4pb1ws4zhk", "status": "open", "priority": 2, "title": "Ретеншн L0, decay, prune и purge" },
-          { "id": "memory-kj05ajqrrq3x", "status": "open", "priority": 3, "title": "score_rel — публичный контракт: нужна заметка о миграции" }
+          {
+            "id": "memory-da4pb1ws4zhk",
+            "status": "open",
+            "priority": 2,
+            "title": "Ретеншн L0, decay, prune и purge"
+          },
+          {
+            "id": "memory-kj05ajqrrq3x",
+            "status": "open",
+            "priority": 3,
+            "title": "score_rel — публичный контракт: нужна заметка о миграции"
+          }
         ]
       },
       {
@@ -398,8 +418,18 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-q036cwa85b04", "status": "open", "priority": 2, "title": "myc digest — пакет знаний по теме" },
-          { "id": "memory-wfgj2r5j39qv", "status": "open", "priority": 2, "title": "Смягчить расхождение отпечатка по полю бэкенда" }
+          {
+            "id": "memory-q036cwa85b04",
+            "status": "open",
+            "priority": 2,
+            "title": "myc digest — пакет знаний по теме"
+          },
+          {
+            "id": "memory-wfgj2r5j39qv",
+            "status": "open",
+            "priority": 2,
+            "title": "Смягчить расхождение отпечатка по полю бэкенда"
+          }
         ]
       },
       {
@@ -438,7 +468,12 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-eyqdv56a95s5", "status": "open", "priority": 2, "title": "Пул разбора перестал окупаться на tree-sitter: замерить и перенастроить размер" }
+          {
+            "id": "memory-eyqdv56a95s5",
+            "status": "open",
+            "priority": 2,
+            "title": "Пул разбора перестал окупаться на tree-sitter: замерить и перенастроить размер"
+          }
         ]
       },
       {
@@ -464,7 +499,12 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-40r75txge0fb", "status": "open", "priority": 3, "title": "Число слотов и полосы — конфигом ~/.myc/queue.toml [lanes.heavy] slots, умолчание по ядрам" }
+          {
+            "id": "memory-40r75txge0fb",
+            "status": "open",
+            "priority": 3,
+            "title": "Число слотов и полосы — конфигом ~/.myc/queue.toml [lanes.heavy] slots, умолчание по ядрам"
+          }
         ]
       },
       {
@@ -478,17 +518,72 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-0sbdhdt7fm36", "status": "open", "priority": 1, "title": "myc sync и разрешение конфликтов" },
-          { "id": "memory-2xgh8mg2fs24", "status": "open", "priority": 1, "title": "Postgres DDL и pgvector HNSW halfvec" },
-          { "id": "memory-bjy6fq9kxj47", "status": "open", "priority": 1, "title": "myc serve: HTTP API, Bearer, мульти-воркспейс" },
-          { "id": "memory-czm24d25q295", "status": "open", "priority": 1, "title": "Приёмка M4: команда на общей базе" },
-          { "id": "memory-dastrwgyzty9", "status": "open", "priority": 1, "title": "Сетевая синхронизация поверх готового обмена оплогом" },
-          { "id": "memory-w0r3vhgkxmsw", "status": "open", "priority": 1, "title": "ACL: четыре уровня, фильтр до ранжирования" },
-          { "id": "memory-3n0svbkbjaew", "status": "open", "priority": 2, "title": "Контейнеры и compose-топология" },
-          { "id": "memory-gpknypxyk91j", "status": "open", "priority": 2, "title": "Веб-визуализация графа" },
-          { "id": "memory-krn44m79r4dr", "status": "open", "priority": 2, "title": "SSE-дельты с Last-Event-ID по oplog.seq" },
-          { "id": "memory-s8zk9v8h5rp0", "status": "open", "priority": 2, "title": "MCP-профили leader и full" },
-          { "id": "memory-zzz7w3c8dc6x", "status": "open", "priority": 2, "title": "Миграция SQLite в Postgres" }
+          {
+            "id": "memory-0sbdhdt7fm36",
+            "status": "open",
+            "priority": 1,
+            "title": "myc sync и разрешение конфликтов"
+          },
+          {
+            "id": "memory-2xgh8mg2fs24",
+            "status": "open",
+            "priority": 1,
+            "title": "Postgres DDL и pgvector HNSW halfvec"
+          },
+          {
+            "id": "memory-bjy6fq9kxj47",
+            "status": "open",
+            "priority": 1,
+            "title": "myc serve: HTTP API, Bearer, мульти-воркспейс"
+          },
+          {
+            "id": "memory-czm24d25q295",
+            "status": "open",
+            "priority": 1,
+            "title": "Приёмка M4: команда на общей базе"
+          },
+          {
+            "id": "memory-dastrwgyzty9",
+            "status": "open",
+            "priority": 1,
+            "title": "Сетевая синхронизация поверх готового обмена оплогом"
+          },
+          {
+            "id": "memory-w0r3vhgkxmsw",
+            "status": "open",
+            "priority": 1,
+            "title": "ACL: четыре уровня, фильтр до ранжирования"
+          },
+          {
+            "id": "memory-3n0svbkbjaew",
+            "status": "open",
+            "priority": 2,
+            "title": "Контейнеры и compose-топология"
+          },
+          {
+            "id": "memory-gpknypxyk91j",
+            "status": "open",
+            "priority": 2,
+            "title": "Веб-визуализация графа"
+          },
+          {
+            "id": "memory-krn44m79r4dr",
+            "status": "open",
+            "priority": 2,
+            "title": "SSE-дельты с Last-Event-ID по oplog.seq"
+          },
+          {
+            "id": "memory-s8zk9v8h5rp0",
+            "status": "open",
+            "priority": 2,
+            "title": "MCP-профили leader и full"
+          },
+          {
+            "id": "memory-zzz7w3c8dc6x",
+            "status": "open",
+            "priority": 2,
+            "title": "Миграция SQLite в Postgres"
+          }
         ]
       },
       {
@@ -502,19 +597,84 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-0adbcy3rhqj4", "status": "open", "priority": 2, "title": "Приёмка M5: роутинг доказуемо экономит" },
-          { "id": "memory-0wfmcf2kgbvb", "status": "open", "priority": 2, "title": "Отпечаток задачи: 28 классов intent × scope" },
-          { "id": "memory-76byppzy2a2k", "status": "open", "priority": 2, "title": "myc route, myc report models и MCP-инструмент" },
-          { "id": "memory-91apr1tp1qzw", "status": "open", "priority": 2, "title": "Честная оценка: пропенсити, IPS/SNIPS/DR и контроль" },
-          { "id": "memory-ch6qen5t9rbe", "status": "open", "priority": 2, "title": "Сигналы исхода, атрибуция и отложенные события" },
-          { "id": "memory-d64pv4dw3m1j", "status": "open", "priority": 2, "title": "Общий пул статистики агентов: какие агенты лучше для каких задач — от метки исхода к публичному пулу и монетизации" },
-          { "id": "memory-fxazm220dtsq", "status": "open", "priority": 2, "title": "Таблицы swarm_attempt, swarm_signal, swarm_route_decision, приоры" },
-          { "id": "memory-qe0dtdf1h3rz", "status": "open", "priority": 2, "title": "Модель стоимости и функция полезности" },
-          { "id": "memory-y1k58t110cdq", "status": "open", "priority": 2, "title": "Жизненный цикл попытки и git-трейлеры" },
-          { "id": "memory-z7k5x3bppvr0", "status": "open", "priority": 2, "title": "Томпсон-семплинг и иерархические приоры" },
-          { "id": "memory-zga00epa0rky", "status": "open", "priority": 2, "title": "Приватность приоров и валидатор на сервере" },
-          { "id": "memory-ast410zxvdpd", "status": "open", "priority": 3, "title": "Забывание и детектор смены режима" },
-          { "id": "memory-xjzvw9fyxkz0", "status": "open", "priority": 3, "title": "Каскад и формула порога эскалации" }
+          {
+            "id": "memory-0adbcy3rhqj4",
+            "status": "open",
+            "priority": 2,
+            "title": "Приёмка M5: роутинг доказуемо экономит"
+          },
+          {
+            "id": "memory-0wfmcf2kgbvb",
+            "status": "open",
+            "priority": 2,
+            "title": "Отпечаток задачи: 28 классов intent × scope"
+          },
+          {
+            "id": "memory-76byppzy2a2k",
+            "status": "open",
+            "priority": 2,
+            "title": "myc route, myc report models и MCP-инструмент"
+          },
+          {
+            "id": "memory-91apr1tp1qzw",
+            "status": "open",
+            "priority": 2,
+            "title": "Честная оценка: пропенсити, IPS/SNIPS/DR и контроль"
+          },
+          {
+            "id": "memory-ch6qen5t9rbe",
+            "status": "open",
+            "priority": 2,
+            "title": "Сигналы исхода, атрибуция и отложенные события"
+          },
+          {
+            "id": "memory-d64pv4dw3m1j",
+            "status": "open",
+            "priority": 2,
+            "title": "Общий пул статистики агентов: какие агенты лучше для каких задач — от метки исхода к публичному пулу и монетизации"
+          },
+          {
+            "id": "memory-fxazm220dtsq",
+            "status": "open",
+            "priority": 2,
+            "title": "Таблицы swarm_attempt, swarm_signal, swarm_route_decision, приоры"
+          },
+          {
+            "id": "memory-qe0dtdf1h3rz",
+            "status": "open",
+            "priority": 2,
+            "title": "Модель стоимости и функция полезности"
+          },
+          {
+            "id": "memory-y1k58t110cdq",
+            "status": "open",
+            "priority": 2,
+            "title": "Жизненный цикл попытки и git-трейлеры"
+          },
+          {
+            "id": "memory-z7k5x3bppvr0",
+            "status": "open",
+            "priority": 2,
+            "title": "Томпсон-семплинг и иерархические приоры"
+          },
+          {
+            "id": "memory-zga00epa0rky",
+            "status": "open",
+            "priority": 2,
+            "title": "Приватность приоров и валидатор на сервере"
+          },
+          {
+            "id": "memory-ast410zxvdpd",
+            "status": "open",
+            "priority": 3,
+            "title": "Забывание и детектор смены режима"
+          },
+          {
+            "id": "memory-xjzvw9fyxkz0",
+            "status": "open",
+            "priority": 3,
+            "title": "Каскад и формула порога эскалации"
+          }
         ]
       },
       {
@@ -529,10 +689,30 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-gxbf5h1kwya6", "status": "open", "priority": 2, "title": "Польза одному пользователю: разница между моделями видна на данных одного репозитория (критерий остановки общего пула)" },
-          { "id": "memory-rsje5wn1w75r", "status": "open", "priority": 2, "title": "Метка исхода с разбросом: попытки пишутся сами, в них оркестратор и судья; доработки, правки координатора и перекрёстный вердикт — сигналы" },
-          { "id": "memory-x80d134ygdwy", "status": "open", "priority": 2, "title": "Пул команды (§2.7): закрытый пул организации — первая платная функция, оркестратор и судья — измерения на сервере" },
-          { "id": "memory-7n2h02wm1eer", "status": "open", "priority": 3, "title": "Публичный пул по согласию: give-to-get, превью отправки, k-анонимность ячеек, защита от накрутки; затем платные тарифы" }
+          {
+            "id": "memory-gxbf5h1kwya6",
+            "status": "open",
+            "priority": 2,
+            "title": "Польза одному пользователю: разница между моделями видна на данных одного репозитория (критерий остановки общего пула)"
+          },
+          {
+            "id": "memory-rsje5wn1w75r",
+            "status": "open",
+            "priority": 2,
+            "title": "Метка исхода с разбросом: попытки пишутся сами, в них оркестратор и судья; доработки, правки координатора и перекрёстный вердикт — сигналы"
+          },
+          {
+            "id": "memory-x80d134ygdwy",
+            "status": "open",
+            "priority": 2,
+            "title": "Пул команды (§2.7): закрытый пул организации — первая платная функция, оркестратор и судья — измерения на сервере"
+          },
+          {
+            "id": "memory-7n2h02wm1eer",
+            "status": "open",
+            "priority": 3,
+            "title": "Публичный пул по согласию: give-to-get, превью отправки, k-анонимность ячеек, защита от накрутки; затем платные тарифы"
+          }
         ]
       },
       {
@@ -546,13 +726,48 @@
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          { "id": "memory-3akx1aywngt6", "status": "open", "priority": 3, "title": "Proxy-режим, выключенный по умолчанию" },
-          { "id": "memory-44rwc3hw1h7g", "status": "open", "priority": 3, "title": "absorb, ступень B на LLM" },
-          { "id": "memory-7mgcnf2z2eeh", "status": "open", "priority": 3, "title": "skills как поверхность" },
-          { "id": "memory-b990rs205an8", "status": "open", "priority": 3, "title": "Абстракция LLM-провайдеров" },
-          { "id": "memory-dpbjv4e8wz2m", "status": "open", "priority": 3, "title": "Приёмка M6: контекст проекта собирается сам" },
-          { "id": "memory-ez3a7gpgccce", "status": "open", "priority": 3, "title": "Дистиллятор L0 → L1: извлечение атомов" },
-          { "id": "memory-jqgga8mrgbzm", "status": "open", "priority": 3, "title": "Подъём L1 → L2 → L3" }
+          {
+            "id": "memory-3akx1aywngt6",
+            "status": "open",
+            "priority": 3,
+            "title": "Proxy-режим, выключенный по умолчанию"
+          },
+          {
+            "id": "memory-44rwc3hw1h7g",
+            "status": "open",
+            "priority": 3,
+            "title": "absorb, ступень B на LLM"
+          },
+          {
+            "id": "memory-7mgcnf2z2eeh",
+            "status": "open",
+            "priority": 3,
+            "title": "skills как поверхность"
+          },
+          {
+            "id": "memory-b990rs205an8",
+            "status": "open",
+            "priority": 3,
+            "title": "Абстракция LLM-провайдеров"
+          },
+          {
+            "id": "memory-dpbjv4e8wz2m",
+            "status": "open",
+            "priority": 3,
+            "title": "Приёмка M6: контекст проекта собирается сам"
+          },
+          {
+            "id": "memory-ez3a7gpgccce",
+            "status": "open",
+            "priority": 3,
+            "title": "Дистиллятор L0 → L1: извлечение атомов"
+          },
+          {
+            "id": "memory-jqgga8mrgbzm",
+            "status": "open",
+            "priority": 3,
+            "title": "Подъём L1 → L2 → L3"
+          }
         ]
       }
     ]
@@ -1192,8 +1407,7 @@
         "id": "memory-4ez67f48fcdv",
         "en": "The code index and anchors work; what is open is anchors surviving refactors, and the acceptance itself.",
         "ru": "Индекс кода и якоря работают; открыто выживание якорей при рефакторинге и сама приёмка.",
-        "items": [
-        ]
+        "items": []
       },
       {
         "id": "memory-x20k85amw3z9",
@@ -1424,14 +1638,14 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 4056,
+    "pass": 4061,
     "fail": 0,
     "skip": 16,
     "files": 269,
-    "assertions": 37753,
-    "seconds": 414.1,
-    "sources": "abc2dc940a5302e1",
-    "date": "2026-09-26",
+    "assertions": 37827,
+    "seconds": 515.3,
+    "sources": "ce78a017564911c0",
+    "date": "2026-09-29",
     "myc": "0.3.14"
   }
 }

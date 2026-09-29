@@ -35,6 +35,7 @@ import {
   unknownRepoPredicate,
   visibleInRepo,
 } from "./repo.ts";
+import { aclClause, aclParams, type Viewer } from "./acl.ts";
 import { defineQueries, toPgDialect } from "./sql.ts";
 import { awaitingReviewPredicate, liveStatusPredicate, notPendingClause } from "./review.ts";
 import { anchorsAlivePredicate, anchorsAllLostSql, lostAnchorOwnersSql } from "./anchors-predicates.ts";
@@ -52,12 +53,12 @@ import { anchorsAlivePredicate, anchorsAllLostSql, lostAnchorOwnersSql } from ".
  * Смысл сохранён дословно: те же условия, тот же порядок (layer DESC,
  * salience DESC) и тот же LIMIT — паритет сверяет строки (parity.pg.test.ts).
  */
-function digestScanPgSql(withRepo: boolean): string {
+function digestScanPgSql(withRepo: boolean, acl = false): string {
   return `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
                  ${reachColumns("n")}${withRepo ? `, ${repoColumns("n")}` : ""}
             FROM nodes n
            WHERE n.scope = ?1 AND n.layer >= 2${historyClause("follow", "n")}
-             AND n.deleted_at IS NULL${reachClause("n", 3)}${withRepo ? repoClause("n", 4) : ""}${notPendingClause("n")}
+             AND n.deleted_at IS NULL${reachClause("n", 3)}${withRepo ? repoClause("n", 4) : ""}${notPendingClause("n")}${acl ? aclClause("n", withRepo ? 5 : 4) : ""}
              AND ${liveStatusPredicate("n")}
              AND ${anchorsAlivePredicate("n")}
            ORDER BY n.layer DESC, n.salience DESC
@@ -310,6 +311,12 @@ export function* digestScan(
   focus: string | undefined,
   session: string,
   repo: string,
+  /**
+   * Смотрящий. `undefined` — локальный одно-пользовательский режим: предиката
+   * видимости в запросе нет вовсе (стык S16). Задан — берутся варианты с ACL,
+   * и чужое приватное не попадает ни в секции, ни в счётчик скрытого.
+   */
+  viewer?: Viewer,
 ): Eff<DigestPayload> {
   // Обе оси платятся ТОЛЬКО когда о них реально спросили (И1): без --repo
   // ни скан, ни счётчики не трогают json_extract(attrs,'$.repo') вовсе (см.
@@ -326,13 +333,33 @@ export function* digestScan(
     episode_raw: string | null;
     repo_raw?: string | null;
   };
-  const rows = withRepo
-    ? yield* all<Row>(primeQueries.prime_digest_scan_repo, [scope, DIGEST_SCAN_LIMIT, session, repo])
-    : yield* all<Row>(primeQueries.prime_digest_scan, [scope, DIGEST_SCAN_LIMIT, session]);
-  const counts = yield* one<{ hidden: number | null; unknown: number | null }>(
-    primeQueries.prime_reach_counts,
-    [scope, session],
-  );
+  // Вариант запроса выбирается по тому, известен ли смотрящий: локально его
+  // нет, и терма в SQL нет тоже.
+  const acl = viewer === undefined ? [] : aclParams(viewer);
+  const rows =
+    viewer === undefined
+      ? withRepo
+        ? yield* all<Row>(primeQueries.prime_digest_scan_repo, [scope, DIGEST_SCAN_LIMIT, session, repo])
+        : yield* all<Row>(primeQueries.prime_digest_scan, [scope, DIGEST_SCAN_LIMIT, session])
+      : withRepo
+        ? yield* all<Row>(primeQueriesAcl.prime_digest_scan_repo_acl, [
+            scope,
+            DIGEST_SCAN_LIMIT,
+            session,
+            repo,
+            ...acl,
+          ])
+        : yield* all<Row>(primeQueriesAcl.prime_digest_scan_acl, [scope, DIGEST_SCAN_LIMIT, session, ...acl]);
+  const counts =
+    viewer === undefined
+      ? yield* one<{ hidden: number | null; unknown: number | null }>(primeQueries.prime_reach_counts, [
+          scope,
+          session,
+        ])
+      : yield* one<{ hidden: number | null; unknown: number | null }>(
+          primeQueriesAcl.prime_reach_counts_acl,
+          [scope, session, ...acl],
+        );
   const reach: ReachSummary = {
     hidden: num(counts?.hidden),
     unknown: num(counts?.unknown),
@@ -388,3 +415,63 @@ export function* digestScan(
   return { core, decisions, reach, repo: repoSummary, pending, lost };
 }
 
+
+
+/**
+ * ТОТ ЖЕ ДАЙДЖЕСТ, НО С ПРЕДИКАТОМ ВИДИМОСТИ — для сервера, где смотрящий
+ * известен. Чужая приватная заметка не должна ни попасть в CORE, ни
+ * учитываться в числе скрытого: первое — утечка текста, второе — утечка
+ * факта, что текст есть.
+ *
+ * Отдельный реестр, а не флаг: у локального пути (95 % запусков) лишнего
+ * терма нет вовсе, а у серверного нет возможности позвать вариант без
+ * проверки.
+ */
+const ACL_PARAMS = ["owner", "team", "agent"] as const;
+
+export const primeQueriesAcl = defineQueries({
+  prime_digest_scan_acl: {
+    name: "prime_digest_scan_acl",
+    // У SQLite двухшаговый скан по rowid; ACL-терм идёт внутрь, к остальным
+    // условиям отбора, а не наружу к окну — фильтровать надо ДО LIMIT.
+    sql: `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
+                 ${reachColumns("n")}
+            FROM (SELECT nodes.rowid AS rid
+            FROM nodes INDEXED BY ix_nodes_prime_reach
+           WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
+             AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${notPendingClause("nodes")}${aclClause("nodes", 4)}
+             AND ${liveStatusPredicate("nodes")}
+           ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT -1) w
+           CROSS JOIN nodes n ON n.rowid = w.rid
+           WHERE ${anchorsAlivePredicate("n")}
+           LIMIT ?2`,
+    pg: toPgDialect(digestScanPgSql(false, true)),
+    params: ["scope", "lim", "session", ...ACL_PARAMS],
+  },
+  prime_digest_scan_repo_acl: {
+    name: "prime_digest_scan_repo_acl",
+    sql: `SELECT n.id, n.layer, n.title, n.excerpt, n.updated_at,
+                 ${reachColumns("n")}, ${repoColumns("n")}
+            FROM (SELECT nodes.rowid AS rid
+            FROM nodes INDEXED BY ix_nodes_prime_reach
+           WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
+             AND nodes.deleted_at IS NULL${reachClause("nodes", 3)}${repoClause("nodes", 4)}${notPendingClause("nodes")}${aclClause("nodes", 5)}
+             AND ${liveStatusPredicate("nodes")}
+           ORDER BY nodes.layer DESC, nodes.salience DESC LIMIT -1) w
+           CROSS JOIN nodes n ON n.rowid = w.rid
+           WHERE ${anchorsAlivePredicate("n")}
+           LIMIT ?2`,
+    pg: toPgDialect(digestScanPgSql(true, true)),
+    params: ["scope", "lim", "session", "repo", ...ACL_PARAMS],
+  },
+  prime_reach_counts_acl: {
+    name: "prime_reach_counts_acl",
+    sql: `SELECT
+            sum(CASE WHEN ${reachPredicate("nodes", 2)} THEN 0 ELSE 1 END) AS hidden,
+            sum(CASE WHEN ${unknownReachPredicate("nodes")} THEN 1 ELSE 0 END) AS unknown
+            FROM nodes INDEXED BY ix_nodes_prime_reach
+           WHERE nodes.scope = ?1 AND nodes.layer >= 2${historyClause("follow", "nodes")}
+             AND nodes.deleted_at IS NULL${aclClause("nodes", 3)}`,
+    params: ["scope", "session", ...ACL_PARAMS],
+  },
+});

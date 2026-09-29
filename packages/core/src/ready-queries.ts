@@ -18,6 +18,7 @@
 
 import { freshnessClockSql } from "./freshness.ts";
 import { repoClause, repoPredicate } from "./repo.ts";
+import { aclClause } from "./acl.ts";
 import { defineQueries, toPgDialect, type Dialect } from "./sql.ts";
 
 export interface ReadyWeights {
@@ -115,7 +116,17 @@ function freshnessTermSql(dialect: Dialect): string {
  *  - `min(a,b)` → `least(a,b)`: в Postgres min — агрегат, а не скаляр;
  *  - свежесть и отсечение дробной части — см. freshnessTermSql.
  */
-function scoredTopSql(anchorTerm: string, withRepo: boolean, dialect: Dialect = "sqlite"): string {
+/**
+ * `acl` — добавить предикат видимости (сервер: смотрящий известен всегда).
+ * Локально его нет вовсе: у одного человека со своей базой проверять некого,
+ * и лишний терм в горячем пути очереди не нужен (стык S16).
+ */
+function scoredTopSql(
+  anchorTerm: string,
+  withRepo: boolean,
+  dialect: Dialect = "sqlite",
+  acl = false,
+): string {
   const round2 = (expr: string): string =>
     dialect === "pg" ? `round((${expr})::numeric, 2)` : `round(${expr}, 2)`;
   const least = (x: string, y: string): string => (dialect === "pg" ? `least(${x}, ${y})` : `min(${x}, ${y})`);
@@ -132,13 +143,14 @@ function scoredTopSql(anchorTerm: string, withRepo: boolean, dialect: Dialect = 
     FROM nodes AS n INDEXED BY ${withRepo ? "ix_nodes_ready_repo" : "ix_nodes_ready"}
    WHERE n.scope = ?1 AND n.kind = 'task' AND n.status = 'open'
      AND n.open_blockers = 0 AND n.anc_blockers = 0
-     AND n.deleted_at IS NULL${withRepo ? repoClause("n", 9) : ""}
+     AND n.deleted_at IS NULL${withRepo ? repoClause("n", 9) : ""}${acl ? aclClause("n", withRepo ? 10 : 9) : ""}
    ORDER BY score DESC, n.priority ASC, n.id ASC
    LIMIT ?7`;
 }
 
 const TOP_PARAMS = ["scope", "w_pri", "w_unb", "w_fresh", "w_anch", "w_type", "lim", "now"] as const;
 const TOP_PARAMS_REPO = [...TOP_PARAMS, "repo"] as const;
+const ACL_PARAMS = ["owner", "team", "agent"] as const;
 
 /** Экспортировано для теста бюджета (ready.repo-latency.test.ts): замер обязан
  * идти по ТОМУ ЖЕ тексту SQL, что и горячий путь, а не по его копии. */
@@ -293,3 +305,41 @@ export const readyQueries = defineQueries({
   },
 });
 
+
+
+/**
+ * ТОТ ЖЕ РЕЕСТР, НО С ПРЕДИКАТОМ ВИДИМОСТИ. Им пользуется сервер: там
+ * смотрящий известен всегда, и очередь обязана считать только видимое —
+ * иначе чужая приватная задача займёт место в top-k, а `total_ready`
+ * расскажет, сколько её.
+ *
+ * Отдельный реестр, а не флаг в запросе: у локального пути не должно быть ни
+ * одного лишнего терма, а у серверного — ни одной возможности позвать вариант
+ * без проверки.
+ */
+export const readyQueriesAcl = defineQueries({
+  ready_top_noanchors_acl: {
+    name: "ready_top_noanchors_acl",
+    sql: scoredTopSql("0.5", false, "sqlite", true),
+    pg: toPgDialect(scoredTopSql("0.5", false, "pg", true)),
+    params: [...TOP_PARAMS, ...ACL_PARAMS],
+  },
+  ready_top_anchors_acl: {
+    name: "ready_top_anchors_acl",
+    sql: scoredTopSql(ANCHOR_SUBQ, false, "sqlite", true),
+    pg: toPgDialect(scoredTopSql(ANCHOR_SUBQ, false, "pg", true)),
+    params: [...TOP_PARAMS, ...ACL_PARAMS],
+  },
+  ready_top_noanchors_repo_acl: {
+    name: "ready_top_noanchors_repo_acl",
+    sql: scoredTopSql("0.5", true, "sqlite", true),
+    pg: toPgDialect(scoredTopSql("0.5", true, "pg", true)),
+    params: [...TOP_PARAMS_REPO, ...ACL_PARAMS],
+  },
+  ready_top_anchors_repo_acl: {
+    name: "ready_top_anchors_repo_acl",
+    sql: scoredTopSql(ANCHOR_SUBQ, true, "sqlite", true),
+    pg: toPgDialect(scoredTopSql(ANCHOR_SUBQ, true, "pg", true)),
+    params: [...TOP_PARAMS_REPO, ...ACL_PARAMS],
+  },
+});

@@ -19,12 +19,19 @@
  * и пока её нет, сервер честно отвечает на запись кодом, а не молчанием.
  */
 
-import { defineQueries, type JsonValue } from "@myc/core";
+import { aclClause, aclParams, defineQueries, type JsonValue, type Viewer } from "@myc/core";
 import type { PostgresDriver } from "@myc/store-postgres";
 
 /** Сколько узлов отдаём за раз, если не попросили иначе, и потолок просьбы. */
 export const WS_LIMIT_DEFAULT = 50;
 export const WS_LIMIT_MAX = 500;
+
+/**
+ * Хвост ACL и его параметры. Сервер ВСЕГДА знает смотрящего, поэтому у
+ * серверных запросов вариант один — с предикатом; отдельного «без ACL» здесь
+ * нет и быть не должно, иначе однажды позовут не тот.
+ */
+const ACL = (alias: string, first: number): string => aclClause(alias, first);
 
 export const wsQueries = defineQueries({
   // Список узлов воркспейса. Фильтры необязательные: пустая строка значит
@@ -39,11 +46,13 @@ export const wsQueries = defineQueries({
              AND deleted_at IS NULL
              AND (?2 = '' OR kind = ?2)
              AND (?3 = '' OR status = ?3)
-             AND (?4 = 0 OR updated_at >= ?4)
+             AND (?4 = 0 OR updated_at >= ?4)${ACL("nodes", 7)}
            ORDER BY updated_at DESC, id ASC
            LIMIT ?5 OFFSET ?6`,
-    params: ["scope", "kind", "status", "since", "limit", "offset"],
+    params: ["scope", "kind", "status", "since", "limit", "offset", "owner", "team", "agent"],
   },
+  // СЧЁТЧИК ВИДИТ ТО ЖЕ, ЧТО И СПИСОК. «Всего 12» при трёх видимых — утечка
+  // через число: по нему узнают, что чужое есть, и сколько его.
   ws_nodes_count: {
     name: "ws_nodes_count",
     sql: `SELECT count(*) AS n
@@ -52,8 +61,8 @@ export const wsQueries = defineQueries({
              AND deleted_at IS NULL
              AND (?2 = '' OR kind = ?2)
              AND (?3 = '' OR status = ?3)
-             AND (?4 = 0 OR updated_at >= ?4)`,
-    params: ["scope", "kind", "status", "since"],
+             AND (?4 = 0 OR updated_at >= ?4)${ACL("nodes", 5)}`,
+    params: ["scope", "kind", "status", "since", "owner", "team", "agent"],
   },
   // Узел по id — ОБЯЗАТЕЛЬНО с фильтром воркспейса: без него сосед по
   // арендатору читал бы чужой проект, зная один лишь идентификатор.
@@ -62,8 +71,8 @@ export const wsQueries = defineQueries({
     sql: `SELECT id, kind, layer, scope, title, body, excerpt, status, priority,
                  assignee, actor, acl, attrs, created_at, updated_at, closed_at
             FROM nodes
-           WHERE scope = ?1 AND id = ?2 AND deleted_at IS NULL`,
-    params: ["scope", "id"],
+           WHERE scope = ?1 AND id = ?2 AND deleted_at IS NULL${ACL("nodes", 3)}`,
+    params: ["scope", "id", "owner", "team", "agent"],
   },
   // Рёбра узла в обе стороны — чем он блокирует и чем блокируется.
   ws_node_edges: {
@@ -83,10 +92,10 @@ export const wsQueries = defineQueries({
     name: "ws_list",
     sql: `SELECT scope AS ws, count(*) AS nodes, max(updated_at) AS updated_at
             FROM nodes
-           WHERE deleted_at IS NULL AND scope <> ''
+           WHERE deleted_at IS NULL AND scope <> ''${ACL("nodes", 1)}
            GROUP BY scope
            ORDER BY scope`,
-    params: [],
+    params: ["owner", "team", "agent"],
   },
 });
 
@@ -139,8 +148,14 @@ export function renderNode(row: Record<string, unknown>): Record<string, unknown
 }
 
 /** Воркспейсы арендатора: считаются ПОД ним, то есть через ту же RLS. */
-export async function wsList(pg: PostgresDriver, tenant: string): Promise<WsListEntry[]> {
-  const rows = await pg.withTenant(tenant, async (tx) => tx.all<Record<string, unknown>>(wsQueries.ws_list, []));
+export async function wsList(
+  pg: PostgresDriver,
+  tenant: string,
+  viewer: Viewer,
+): Promise<WsListEntry[]> {
+  const rows = await pg.withTenant(tenant, async (tx) =>
+    tx.all<Record<string, unknown>>(wsQueries.ws_list, aclParams(viewer)),
+  );
   return rows.map((r) => ({
     ws: String(r["ws"] ?? ""),
     nodes: Number(r["nodes"] ?? 0),

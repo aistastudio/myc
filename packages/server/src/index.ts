@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 import { adminOverview, adminTenants, renderAdminPage } from "./admin.ts";
+import { aclParams, type Viewer } from "@myc/core";
 import {
   boundedInt,
   parseWsPath,
@@ -548,7 +549,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
     if (url.pathname === "/v1/ws") {
       if (pg === undefined) return noPg();
       const t0 = performance.now();
-      const list = await wsList(pg, who!.tenant);
+      const list = await wsList(pg, who!.tenant, { owner: who!.subject, team: "", agent: "" });
       return envelope("ws", "", list, { took_ms: Math.round((performance.now() - t0) * 100) / 100, count: list.length });
     }
 
@@ -559,6 +560,11 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
       const tenant = who!.tenant;
       // Токен, привязанный к одному проекту, о чужих не узнаёт даже
       // отказом: ответ тот же, что у несуществующего воркспейса.
+      // Кто смотрит. Владелец — subject токена; команда и агент пока не
+      // заводятся (их назначает выдача токена, §8.2), и пустые значения
+      // означают «такой принадлежности нет», а не «любая».
+      const viewer: Viewer = { owner: who?.subject ?? "", team: "", agent: "" };
+      const acl = aclParams(viewer);
       if (!seesWorkspace(who, ws)) {
         return json(
           { ok: false, cmd: "ws", ws, error: { code: "notfound.ws", msg: `no workspace ${ws}` } },
@@ -594,7 +600,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
           }
           const created = await createNode(pg, tenant, ws, parsed.data, who!.subject);
           const [node] = await pg.withTenant(tenant, async (tx) => [
-            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, created.id]),
+            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, created.id, ...acl]),
           ]);
           return envelope("node", ws, node === undefined ? { id: created.id } : renderNode(node), {
             took_ms: took(),
@@ -612,6 +618,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
             q.get("session") ?? "",
             q.get("repo") ?? "",
             boundedInt(q.get("n"), READY_LIMIT_DEFAULT, READY_LIMIT_MAX),
+            viewer,
           );
           return envelope("prime", ws, answer, { took_ms: took() });
         }
@@ -619,7 +626,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         if ((rest === "/ready" || rest === "/ready/") && req.method === "GET") {
           const q = url.searchParams;
           const limit = boundedInt(q.get("n"), READY_LIMIT_DEFAULT, READY_LIMIT_MAX);
-          const queue = await readyQueue(pg, tenant, ws, limit, q.get("repo") ?? "");
+          const queue = await readyQueue(pg, tenant, ws, limit, viewer, q.get("repo") ?? "");
           return envelope("ready", ws, queue.items, {
             took_ms: took(),
             count: queue.items.length,
@@ -690,7 +697,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
             );
           }
           const [node] = await pg.withTenant(tenant, async (tx) => [
-            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id]),
+            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id, ...acl]),
           ]);
           return envelope("node", ws, node === undefined ? { id } : renderNode(node), {
             took_ms: took(),
@@ -716,8 +723,8 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
           const offset = boundedInt(q.get("offset"), 0, Number.MAX_SAFE_INTEGER);
           const filters = [ws, q.get("kind") ?? "", q.get("status") ?? "", boundedInt(q.get("since"), 0, Number.MAX_SAFE_INTEGER)];
           const [rows, counted] = await pg.withTenant(tenant, async (tx) => [
-            await tx.all<Record<string, unknown>>(wsQueries.ws_nodes_list, [...filters, limit, offset]),
-            await tx.one<{ n: string | number }>(wsQueries.ws_nodes_count, filters),
+            await tx.all<Record<string, unknown>>(wsQueries.ws_nodes_list, [...filters, limit, offset, ...acl]),
+            await tx.one<{ n: string | number }>(wsQueries.ws_nodes_count, [...filters, ...acl]),
           ]);
           return envelope("nodes", ws, rows, {
             took_ms: took(),
@@ -731,7 +738,7 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         if (onePath !== null) {
           const id = decodeURIComponent(onePath[1]!);
           const [node, edges] = await pg.withTenant(tenant, async (tx) => [
-            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id]),
+            await tx.one<Record<string, unknown>>(wsQueries.ws_node_get, [ws, id, ...acl]),
             await tx.all<Record<string, unknown>>(wsQueries.ws_node_edges, [ws, id]),
           ]);
           // Чужой воркспейс отвечает ТЕМ ЖЕ, что несуществующий узел: иначе

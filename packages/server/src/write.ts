@@ -24,6 +24,7 @@ import {
   applyLocalOps,
   applyOps,
   assertEdgeKind,
+  ACL_LEVELS,
   assertNodeKind,
   assertStatus,
   claimNode,
@@ -54,6 +55,8 @@ import type { AsyncDbDriver } from "@myc/core";
 export interface NodeCreate {
   readonly kind: string;
   readonly title: string;
+  /** Уровень доступа: private|team|restricted|agent. Умолчание — team. */
+  readonly acl?: string;
   readonly body?: string;
   readonly priority?: number;
   readonly status?: string;
@@ -98,6 +101,10 @@ export function validateCreate(input: unknown): WriteResult<NodeCreate> {
   if (!PRIORITIES.has(priority)) {
     return { ok: false, error: { code: "usage.priority", msg: "priority must be 0, 1, 2 or 3" } };
   }
+  const aclRaw = typeof o["acl"] === "string" ? o["acl"] : undefined;
+  if (aclRaw !== undefined && !(ACL_LEVELS as readonly string[]).includes(aclRaw)) {
+    return { ok: false, error: { code: "usage.acl", msg: `unknown acl '${aclRaw}': ${ACL_LEVELS.join("|")}` } };
+  }
   const body = typeof o["body"] === "string" ? o["body"] : undefined;
   const assignee = typeof o["assignee"] === "string" ? o["assignee"] : undefined;
   const status = typeof o["status"] === "string" ? o["status"] : undefined;
@@ -105,7 +112,7 @@ export function validateCreate(input: unknown): WriteResult<NodeCreate> {
     typeof o["attrs"] === "object" && o["attrs"] !== null
       ? (o["attrs"] as Record<string, JsonValue>)
       : undefined;
-  return { ok: true, data: { kind, title, body, priority, assignee, status, attrs } };
+  return { ok: true, data: { kind, title, body, priority, assignee, status, attrs, acl: aclRaw } };
 }
 
 /** Поля, которые принимает правка. `attrs` мержится поключево, а не заменяет. */
@@ -174,13 +181,19 @@ export async function tenantSite(tx: AsyncDbDriver, ws: string): Promise<string>
 }
 
 /** Операции рождения узла — тот же набор, что приезжает по репликации. */
-export function birthOps(f: OpFactory, id: string, ws: string, input: NodeCreate): Op[] {
+export function birthOps(f: OpFactory, id: string, ws: string, input: NodeCreate, owner: string): Op[] {
   const ops: Op[] = [
     f.set(id, "kind", input.kind),
     f.set(id, "scope", ws),
     f.set(id, "title", input.title),
     f.set(id, "priority", input.priority ?? 2),
+    // ВЛАДЕЛЕЦ СТАВИТСЯ ВСЕГДА. Без него `acl = private` не значит ничего:
+    // узел без владельца не виден никому — либо, при неосторожном предикате,
+    // виден всем. Владелец — тот, чьим токеном пришли.
+    f.set(id, "owner_id", owner),
+    f.set(id, "actor", owner),
   ];
+  if (input.acl !== undefined) ops.push(f.set(id, "acl", input.acl));
   if (input.body !== undefined) ops.push(f.set(id, "body", input.body));
   // СТАТУС СТАВИТСЯ ВСЕГДА, и это не мелочь: применитель материализует
   // приехавший узел со статусом `active` (он не знает вида), а у задачи
@@ -235,7 +248,7 @@ export async function createNode(
     // самого пакета. Отдельного «быстрого создания» на сервере нет — оно и
     // было бы второй реализацией правил.
     await runAsync(syncTail(ctx), tx);
-    const ops = birthOps(f, id, ws, input);
+    const ops = birthOps(f, id, ws, input, actor);
     const result = await runAsync(applyOps(ctx, ops, 1), tx);
     return { id, applied: result.applied, collided: result.collided };
   });

@@ -207,6 +207,10 @@ const NAMED: Readonly<Record<string, unknown>> = {
   session: "sess-1",
   kind: "",
   status: "",
+  // Смотрящий для предиката ACL: владелец есть, команды и агента нет.
+  owner: "tester",
+  team: "",
+  agent: "",
   since: 0,
   offset: 0,
   w_pri: 0.4,
@@ -275,7 +279,11 @@ const WS_CASES: readonly Case[] = [
   { q: W.ws_nodes_count, params: named(W.ws_nodes_count) },
   { q: W.ws_node_get, params: named(W.ws_node_get) },
   { q: W.ws_node_edges, params: named(W.ws_node_edges) },
-  { q: W.ws_list, params: [] },
+  { q: W.ws_list, params: named(W.ws_list) },
+  // Предикат видимости: своя приватная видна, чужая — нет, и это одинаково
+  // на обеих базах. Сравнение идёт по составу строк, поэтому расхождение
+  // предиката здесь и вылезет.
+  { q: W.ws_nodes_list, params: named(W.ws_nodes_list, { kind: "note", limit: 50 }), label: "видимость" },
 ];
 
 const P = primeQueries;

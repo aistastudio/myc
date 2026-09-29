@@ -58,6 +58,7 @@ export * from "./id.ts";
 export * from "./sql.ts";
 export * from "./queries.ts";
 export * from "./effect.ts";
+export * from "./acl.ts";
 export * from "./apply.ts";
 export * from "./freshness.ts";
 export * from "./ready-queries.ts";

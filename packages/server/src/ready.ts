@@ -17,10 +17,13 @@ import {
   DEFAULT_READY_WEIGHTS,
   digestScan,
   primeQueries,
+  aclParams,
   readyQueries,
+  readyQueriesAcl,
   runAsync,
   type DigestPayload,
   type ReadyWeights,
+  type Viewer,
 } from "@myc/core";
 import type { PostgresDriver } from "@myc/store-postgres";
 
@@ -59,6 +62,7 @@ export async function readyQueue(
   tenant: string,
   ws: string,
   limit: number,
+  viewer: Viewer,
   repo = "",
   weights: ReadyWeights = DEFAULT_READY_WEIGHTS,
   now: number = Date.now(),
@@ -66,13 +70,16 @@ export async function readyQueue(
   return pg.withTenant(tenant, async (tx) => {
     const hasTouches = (await tx.one(readyQueries.ready_touches_exist, [])) !== undefined;
     const withRepo = repo.length > 0;
+    // ВАРИАНТ С ACL — ЕДИНСТВЕННЫЙ, которым сервер вправе считать очередь:
+    // чужая приватная задача не должна ни занимать место в top-k, ни
+    // попадать в число готовых.
     const query = withRepo
       ? hasTouches
-        ? readyQueries.ready_top_anchors_repo
-        : readyQueries.ready_top_noanchors_repo
+        ? readyQueriesAcl.ready_top_anchors_repo_acl
+        : readyQueriesAcl.ready_top_noanchors_repo_acl
       : hasTouches
-        ? readyQueries.ready_top_anchors
-        : readyQueries.ready_top_noanchors;
+        ? readyQueriesAcl.ready_top_anchors_acl
+        : readyQueriesAcl.ready_top_noanchors_acl;
     const args: unknown[] = [
       ws,
       weights.priority,
@@ -83,7 +90,11 @@ export async function readyQueue(
       limit,
       now,
     ];
-    const rows = await tx.all<Record<string, unknown>>(query, withRepo ? [...args, repo] : args);
+    const acl = aclParams(viewer);
+    const rows = await tx.all<Record<string, unknown>>(
+      query,
+      withRepo ? [...args, repo, ...acl] : [...args, ...acl],
+    );
     const items: ReadyRow[] = [];
     for (const row of rows) {
       const id = String(row["id"]);
@@ -131,10 +142,11 @@ export async function primeDigest(
   session: string,
   repo: string,
   readyLimit: number,
+  viewer: Viewer,
 ): Promise<PrimeAnswer> {
-  const queue = await readyQueue(pg, tenant, ws, readyLimit, repo);
+  const queue = await readyQueue(pg, tenant, ws, readyLimit, viewer, repo);
   return pg.withTenant(tenant, async (tx) => {
-    const digest = await runAsync(digestScan(ws, "project", undefined, session, repo), tx);
+    const digest = await runAsync(digestScan(ws, "project", undefined, session, repo, viewer), tx);
     const nodes = await tx.one<{ n: number | string }>(primeQueries.prime_node_count, [ws]);
     const running = await tx.all<Record<string, unknown>>(primeQueries.prime_inprogress, [ws, 10]);
     return {
