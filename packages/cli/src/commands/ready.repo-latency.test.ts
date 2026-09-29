@@ -15,7 +15,7 @@
  * SQLite обязан ходить в строку таблицы за КАЖДОЙ отсеиваемой задачей.
  *
  * Тест проверяет три вещи, и третья важнее первых двух:
- *   1. план запроса использует ix_nodes_ready_repo и не сканирует таблицу;
+ *   1. план запроса использует ix_nodes_ready_work_repo и не сканирует таблицу;
  *   2. запрос опережает соперника — тот же запрос, но с выражением из строки
  *      таблицы, — и укладывается в бюджет;
  *   3. фильтр реально отсеивает — иначе замер относился бы к запросу без
@@ -145,14 +145,14 @@ afterAll(() => {
 type Args = [string, number, number, number, number, number, number, number, string];
 const ARGS: Args = [SCOPE, W.pri, W.unb, W.fresh, W.anch, W.type, 10, Date.now(), OWN];
 
-test("план очереди с фильтром использует ix_nodes_ready_repo и не сканирует таблицу", () => {
+test("план очереди с фильтром использует ix_nodes_ready_work_repo и не сканирует таблицу", () => {
   const plan = db
     .query<{ detail: string }, Args>(
       `EXPLAIN QUERY PLAN ${readyQueries.ready_top_noanchors_repo.sql}`,
     )
     .all(...ARGS)
     .map((r) => r.detail);
-  expect(plan.join(" | ")).toMatch(/USING INDEX ix_nodes_ready_repo/);
+  expect(plan.join(" | ")).toMatch(/USING INDEX ix_nodes_ready_work_repo/);
   // Строка проверки, а не украшение: потеря индекса — это SCAN nodes.
   expect(plan.filter((d) => /SCAN nodes/.test(d))).toEqual([]);
 });
@@ -164,7 +164,7 @@ test("очередь без фильтра осталась на своём ко
     )
     .all(SCOPE, W.pri, W.unb, W.fresh, W.anch, W.type, 10, Date.now())
     .map((r) => r.detail);
-  expect(plan.join(" | ")).toMatch(/USING INDEX ix_nodes_ready\b/);
+  expect(plan.join(" | ")).toMatch(/USING INDEX ix_nodes_ready_work\b/);
 });
 
 test(`очередь с фильтром укладывается в бюджет (И1, ready ${READY_BUDGET_MS} мс)`, () => {
@@ -173,7 +173,10 @@ test(`очередь с фильтром укладывается в бюдже�
   // таблицы — так выглядит «фильтр перестал быть частью индексного скана».
   // Меряется ЧЕРЕДУЯСЬ со здоровым, чтобы оба застали одни условия.
   const mutated = db.query<Record<string, unknown>, Args>(
-    readyQueries.ready_top_noanchors_repo.sql.replace("ix_nodes_ready_repo", "ix_nodes_ready"),
+    readyQueries.ready_top_noanchors_repo.sql.replace(
+      "ix_nodes_ready_work_repo",
+      "ix_nodes_ready_work",
+    ),
   );
 
   const m = measure(`S59 ready @${N}, ${REPOS} репозиториев`, () => void q.all(...ARGS), {

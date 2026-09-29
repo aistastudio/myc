@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { NOT_EPIC } from "@myc/core";
 import { appliedSchemaVersion, migrate, SCHEMA_UPGRADE_HINT, SchemaError, type Migration } from "../migrate.ts";
 import {
   migrations,
@@ -87,7 +88,7 @@ describe("миграция 1 — базовая схема", () => {
   test("чистая БД поднимается одной командой, все заявленные объекты в sqlite_master", async () => {
     store = open();
     const result = await migrate(store, { migrations, writable: true });
-    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(result.pendingVersions).toEqual([]);
     expect(result.degraded).toEqual([]);
 
@@ -308,10 +309,15 @@ describe("open_blockers", () => {
 });
 
 describe("план запроса ready", () => {
+  // Условие отсева эпиков берётся ИЗ РЕЕСТРА, а не переписывается сюда:
+  // частичный индекс применим, только если запрос несёт то же выражение
+  // символ в символ, и копия рано или поздно разошлась бы с оригиналом
+  // молча — план ушёл бы в скан, а тест остался бы зелёным на своей копии.
   const READY_SQL = `SELECT id, title, priority, updated_at
        FROM nodes
       WHERE scope = ?1 AND kind = 'task' AND status = 'open'
         AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
+        AND ${NOT_EPIC}
         AND (lease_expires = 0 OR lease_expires < ?2)
       ORDER BY priority ASC, updated_at ASC
       LIMIT 20`;
@@ -644,7 +650,7 @@ describe("миграция 13 — ext_dup: одна запись источни�
     insertNode(store, "n4", { content_hash: "h-own" });
 
     const applied = await migrate(store, { migrations, writable: true });
-    expect(applied.appliedVersions).toEqual([13]);
+    expect(applied.appliedVersions).toEqual([13, 14]);
 
     const rows = store
       .query("SELECT id, ext_dup, json_extract(attrs,'$.external_ref') AS ref FROM nodes ORDER BY id")
@@ -686,7 +692,7 @@ describe("миграция 13 — ext_dup: одна запись источни�
     // держим: запиши 13 туда — и каждый старый бинарь на машине (соседний
     // агент, хук, MCP-сервер) встаёт с precond.schema.
     expect((store.query("SELECT max(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(12);
-    expect(appliedSchemaVersion(store)).toBe(13);
+    expect(appliedSchemaVersion(store)).toBe(14);
     store.close();
 
     store = open();

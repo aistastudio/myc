@@ -22,8 +22,13 @@ import { migrate, migrations, GraphStore, Claims } from "@myc/store-sqlite";
 import { ExitCode } from "../exit.ts";
 import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
-import { collectTop, createReadyCommand } from "./ready.ts";
-import { createClaimCommand, createCreateCommand, createTaskCommand } from "./tasks.ts";
+import { collectTop, createReadyCommand, readyQueries } from "./ready.ts";
+import {
+  createClaimCommand,
+  createCreateCommand,
+  createEpicCommand,
+  createTaskCommand,
+} from "./tasks.ts";
 import { createDepCommand } from "./dep.ts";
 import { createShowCommand } from "./show.ts";
 import {
@@ -221,6 +226,7 @@ function makeRegistry(): Registry {
   const r = new Registry();
   r.register(createCreateCommand());
   r.register(createTaskCommand());
+  r.register(createEpicCommand());
   r.register(createClaimCommand());
   r.register(createReadyCommand());
   r.register(createDepCommand());
@@ -267,6 +273,35 @@ describe("ready: интеграция через живой CLI", () => {
    * правило давало 195 задач против 144 у `bd ready`, а все 51 «лишние» —
    * потомки заблокированных эпиков. Здесь та же форма в миниатюре.
    */
+  test("эпик не в очереди по умолчанию, но виден по явному --kind epic", async () => {
+    // memory-ghbe6hg7xm9e: дверь к вехам закрывать нельзя — по умолчанию
+    // очередь отвечает «что взять в работу», а веху взять нельзя.
+    const epic = idOf((await myc("agent", "epic", "M0 — веха", "-p", "P0")).stdout);
+    const work = idOf((await myc("agent", "task", "настоящая работа", "-p", "P2")).stdout);
+
+    const plain = (await myc("agent", "--json", "ready")).stdout as string;
+    const items = (JSON.parse(plain).data.items as Array<{ id: string }>).map((i) => i.id);
+    expect(items).toContain(work);
+    expect(items).not.toContain(epic);
+
+    // И под ДРУГИМ фильтром его тоже нет: путь с фильтрами отдельный, и
+    // «не в очереди» обязано значить одно и то же на обоих.
+    const byPri = (await myc("agent", "--json", "ready", "--priority", "P0")).stdout as string;
+    expect((JSON.parse(byPri).data.items as Array<{ id: string }>).map((i) => i.id)).not.toContain(
+      epic,
+    );
+
+    const byKind = (await myc("agent", "--json", "ready", "--kind", "epic")).stdout as string;
+    const epics = (JSON.parse(byKind).data.items as Array<{ id: string }>).map((i) => i.id);
+    expect(epics).toEqual([epic]);
+  });
+
+  test("эпик берётся поимённо: запрета на claim по id нет", async () => {
+    const epic = idOf((await myc("agent", "epic", "M1 — веха")).stdout);
+    const taken = await myc("agent", "claim", epic);
+    expect(taken.code).toBe(ExitCode.OK);
+  });
+
   test("подзадачи заблокированного эпика уходят из очереди, и подвал это НАЗЫВАЕТ", async () => {
     const epic = idOf((await myc("agent", "task", "эпик")).stdout);
     const kid1 = idOf((await myc("agent", "task", "подзадача 1", "--parent", epic)).stdout);
@@ -347,5 +382,104 @@ describe("ready: интеграция через живой CLI", () => {
     };
     expect(claimedData.data.claimed?.id).toBe(id);
     expect(claimedData.data.claimed?.holder).toBe("rescuer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memory-ghbe6hg7xm9e: эпик — контейнер вехи, а не работа
+// ---------------------------------------------------------------------------
+
+/**
+ * Приёмка бага: агент захватывал эпик вместо работы, а строка статуса
+ * показывала объём очереди больше настоящего. Проверяется именно ЗАХВАТ:
+ * эпик свободен, дети свободны, и очередь обязана отдать ребёнка.
+ */
+describe("очередь не выдаёт эпики", () => {
+  let dir: string;
+  let driver: CliDriver;
+  let handle: StoreHandle;
+  let epicId: string;
+  let kidId: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "myc-ready-epic-"));
+    driver = openDriver(join(dir, "myc.db"));
+    await migrate(driver.database, { migrations, writable: true });
+    const store = new GraphStore(driver, {
+      newId: generateId,
+      actor: "agent",
+      siteId: "siteA",
+      clock: new HlcClock(),
+    });
+    const claims = new Claims(store, { holder: "agent" });
+    handle = {
+      driver,
+      store,
+      claims,
+      actor: "agent",
+      scope: "s",
+      slug: "s",
+      wsDir: dir,
+      mycDir: join(dir, ".myc"),
+      repo: { repo: "", reason: "", from: dir },
+      weights: DEFAULT_READY_WEIGHTS,
+      vec0: driver.vec0,
+      vec0Reason: driver.vec0Reason,
+      close: () => driver.close(),
+    };
+    // Эпик стоит ВЫШЕ ребёнка по приоритету: без отсева он и оказывался
+    // первым, а балл типа 0.25 его только притормаживал.
+    epicId = store.createNode({
+      kind: "task",
+      scope: "s",
+      title: "M0 — веха",
+      priority: 0,
+      attrs: { type: "epic" },
+    }).id;
+    kidId = store.createNode({
+      kind: "task",
+      scope: "s",
+      title: "настоящая работа",
+      priority: 2,
+      attrs: { type: "task" },
+    }).id;
+  });
+
+  afterEach(() => {
+    handle.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("очередь отдаёт ребёнка, а не контейнер вехи", () => {
+    const { items } = collectTop(handle, 10, Date.now());
+    expect(items.map((i) => i.id)).toEqual([kidId]);
+    expect(items.map((i) => i.id)).not.toContain(epicId);
+  });
+
+  test("эпик не входит и в ЧИСЛО готовых — по нему человек читает объём работы", () => {
+    const { total } = collectTop(handle, 10, Date.now());
+    expect(total).toBe(1);
+  });
+
+  test("брошенный эпик не возвращается в очередь арендой", () => {
+    const ticket = handle.claims.claim(epicId, 1);
+    expect(ticket).toBeDefined();
+    const after = Date.now() + 60_000;
+    const { items, total } = collectTop(handle, 10, after);
+    expect(items.map((i) => i.id)).not.toContain(epicId);
+    expect(total).toBe(1);
+  });
+
+  test("план запроса очереди по-прежнему индексный, а не скан", () => {
+    // Отсев обязан быть БЕСПЛАТНЫМ: он стоит в предикате частичного индекса,
+    // и стоит там символ в символ. Разойдись тексты — SQLite уйдёт в скан, и
+    // починка станет регрессией (замер 2026-09-25: 4.74 мс против бюджета 3).
+    const q = readyQueries.ready_top_noanchors;
+    const plan = driver.database
+      .query(`EXPLAIN QUERY PLAN ${q.sql.replace(/\?(\d+)/g, "?")}`)
+      .all("s", 0.4, 0.27, 0.14, 0.1, 0.09, 10, Date.now()) as Array<{ detail: string }>;
+    expect(plan.map((r) => r.detail).join(" | ")).toMatch(
+      /SEARCH n USING INDEX ix_nodes_ready_work \(scope=\?\)/,
+    );
   });
 });

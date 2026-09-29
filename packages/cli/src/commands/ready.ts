@@ -258,7 +258,12 @@ export function collectTop(
     now,
     repo,
   ]);
-  const expiredItems = expiredRows.map((row) => {
+  // Брошенный ЭПИК в очередь тоже не возвращается: аренда протухла — он
+  // по-прежнему контейнер вехи, а не работа (memory-ghbe6hg7xm9e). Здесь
+  // отсев в JS, а не в SQL: скан по ix_nodes_lease короткий (обычно
+  // единицы строк), и второй частичный индекс под него не окупился бы.
+  const expiredWork = expiredRows.filter((row) => !isEpicRow(row));
+  const expiredItems = expiredWork.map((row) => {
     const unblocksN =
       h.driver.one<{ n: number }>(QR.ready_unblocks_one, [row.id])?.n ?? 0;
     const states = hasTouches
@@ -270,8 +275,21 @@ export function collectTop(
   const items = [...openItems, ...expiredItems].sort(
     (a, b) => b.score - a.score || a.priority - b.priority || a.id.localeCompare(b.id),
   );
-  const total = (rows[0]?.total_ready ?? 0) + expiredRows.length;
+  const total = (rows[0]?.total_ready ?? 0) + expiredWork.length;
   return { items: items.slice(0, limit), total };
+}
+
+/**
+ * Эпик — контейнер вехи, а не работа (memory-ghbe6hg7xm9e). В горячем пути
+ * его отсекает предикат частичного индекса (NOT_EPIC), здесь — короткие
+ * сканы, где своего индекса нет и не нужно.
+ */
+function isEpicRow(row: { readonly attrs: string }): boolean {
+  try {
+    return (JSON.parse(row.attrs) as { type?: unknown }).type === "epic";
+  } catch {
+    return false;
+  }
 }
 
 function scoreCandidates(
@@ -506,6 +524,10 @@ function collectFiltered(h: StoreHandle, ctx: CommandContext, repo: string): Rea
   ) : undefined;
 
   return items.filter((it) => {
+    // Эпик показывается ТОЛЬКО по явному запросу: `myc ready --kind epic`.
+    // Это и есть та дверь, через которую веху видно, — но по умолчанию
+    // очередь отвечает на вопрос «что взять в работу», а веху взять нельзя.
+    if (it.type === "epic" && kind !== "epic") return false;
     if (kind !== undefined && it.type !== kind) return false;
     if (pri !== undefined && it.priority !== pri) return false;
     if (assignee !== undefined && it.assignee !== assignee) return false;

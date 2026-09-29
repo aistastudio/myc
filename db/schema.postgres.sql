@@ -250,6 +250,15 @@ CREATE INDEX ix_nodes_ready ON nodes(tenant_id, scope, priority, updated_at)
   WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0 AND deleted_at IS NULL;
 CREATE INDEX ix_nodes_ready_repo ON nodes(tenant_id, scope, (attrs->>'repo'), priority, updated_at)
   WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0 AND deleted_at IS NULL;
+-- Очередь РАБОТЫ: то же без контейнеров вех (memory-ghbe6hg7xm9e). Пара
+-- держится наравне с прежней по той же причине, что в SQLite: выпущенный
+-- бинарь пинит старое имя, и сужение прежнего индекса ломало бы ему очередь.
+CREATE INDEX ix_nodes_ready_work ON nodes(tenant_id, scope, priority, updated_at)
+  WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0 AND deleted_at IS NULL
+    AND coalesce(attrs->>'type','') <> 'epic';
+CREATE INDEX ix_nodes_ready_work_repo ON nodes(tenant_id, scope, (attrs->>'repo'), priority, updated_at)
+  WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0 AND deleted_at IS NULL
+    AND coalesce(attrs->>'type','') <> 'epic';
 CREATE INDEX ix_nodes_prime ON nodes(tenant_id, scope, layer, salience DESC)
   WHERE layer >= 2 AND head_id IS NULL AND deleted_at IS NULL;
 CREATE INDEX ix_nodes_prime_reach ON nodes(
@@ -702,7 +711,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO myc_app;
 -- называется psql, а не выдумывает себе версию.
 INSERT INTO schema_migrations (version, name, checksum, applied_at, by_version)
 SELECT
-  13,
+  14,
   'postgres-baseline',
   md5(string_agg(sig, E'\n' ORDER BY sig)),
   (extract(epoch FROM now()) * 1000)::BIGINT,

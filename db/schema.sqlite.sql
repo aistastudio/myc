@@ -168,6 +168,24 @@ CREATE INDEX ix_nodes_ready
  WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
    AND deleted_at IS NULL;
 
+-- Очередь РАБОТЫ: то же, но без контейнеров вех (memory-ghbe6hg7xm9e). Эпик
+-- нельзя взять, внутри него делать нечего, а дети при этом свободны — его
+-- строки в индекс не входят, и отсев в очереди поэтому бесплатен.
+--
+-- ОТДЕЛЬНЫЙ ИНДЕКС, А НЕ СУЖЕНИЕ ПРЕЖНЕГО, и это проверено: запрос выпущенного
+-- бинаря пинит `INDEXED BY ix_nodes_ready` и НЕ несёт нового условия, а SQLite
+-- требует, чтобы предикат частичного индекса следовал из WHERE запроса. Сузи
+-- прежний — и у каждого уже работающего рядом бинаря (соседний агент, хук,
+-- MCP-сервер) `myc ready` падает «no query solution». Прежние индексы снимет
+-- отдельная миграция, когда такие бинари уйдут (memory-00xk2m2sn3aj).
+--
+-- Выражение обязано повторять NOT_EPIC из packages/core/src/ready-queries.ts
+-- СИМВОЛ В СИМВОЛ — иначе применимость индекса не доказывается.
+CREATE INDEX ix_nodes_ready_work
+    ON nodes(scope, priority, updated_at)
+ WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
+   AND deleted_at IS NULL AND coalesce(json_extract(attrs,'$.type'),'') <> 'epic';
+
 -- prime: L2+L3 по scope, по убыванию salience
 CREATE INDEX ix_nodes_prime
     ON nodes(scope, layer, salience DESC)
@@ -537,6 +555,15 @@ CREATE INDEX ix_nodes_ready_repo ON nodes(
   updated_at
 ) WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
     AND deleted_at IS NULL;
+
+-- Та же пара к охвату репозитория: работа без контейнеров вех.
+CREATE INDEX ix_nodes_ready_work_repo ON nodes(
+  scope,
+  json_extract(attrs,'$.repo'),
+  priority,
+  updated_at
+) WHERE kind='task' AND status='open' AND open_blockers=0 AND anc_blockers=0
+    AND deleted_at IS NULL AND coalesce(json_extract(attrs,'$.type'),'') <> 'epic';
 
 -- ============================ 8.1.10 код-интеллект (И3, S52) ================
 -- Собственный текстовый индекс кода: graft опционален, без него всё работает.

@@ -54,6 +54,37 @@ export interface WorkspaceConfig {
 
 const CLOSED = "('closed','cancelled','superseded','retracted')";
 
+/**
+ * ЭПИК В ОЧЕРЕДЬ НЕ ПОПАДАЕТ (memory-ghbe6hg7xm9e).
+ *
+ * Эпик — КОНТЕЙНЕР вехи, а не работа: взять его нельзя, внутри него делать
+ * нечего, а дети при этом свободны. Балл 0.25 по типу его только опускал, и
+ * он всё равно стоял вторым-четвёртым сверху: на копии базы второй же
+ * `ready --claim` выдал «M0 — Ядро и задачи» и занял веху на полчаса. Ту же
+ * цифру берёт строка статуса, поэтому человек читал 74 готовых там, где
+ * работы 66.
+ *
+ * ОТСЕВ СТОИТ В ПРЕДИКАТЕ ЧАСТИЧНОГО ИНДЕКСА, а не поверх выдачи, и это
+ * измерено: любой предикат по `attrs` в самом запросе заставляет доставать
+ * строку и лишает `ix_nodes_ready` преимущества — замер 2026-09-25 дал p50
+ * 4.74 мс против бюджета p99 3 мс. Тот же текст, стоящий в WHERE индекса,
+ * бесплатен: строки эпиков в индекс просто не входят, и планировщик о них
+ * не знает. Поэтому выражение обязано повторяться В ИНДЕКСЕ СИМВОЛ В СИМВОЛ
+ * (db/schema.sqlite.sql, миграция 014, db/schema.postgres.sql). Расхождение
+ * тихим не будет: запрос пинит индекс через `INDEXED BY`, и SQLite, не
+ * доказав применимость частичного индекса, отвечает «no query solution» —
+ * очередь падает сразу, а не деградирует в скан незаметно.
+ *
+ * Постфильтр поверх top-k здесь невозможен ещё и по существу: он сломал бы
+ * и счёт (`count(*) OVER ()`), и полноту окна — ровно как у ACL (§8.2.2).
+ */
+export const NOT_EPIC = "coalesce(json_extract(nodes.attrs,'$.type'),'') <> 'epic'";
+
+/** То же выражение под другим псевдонимом таблицы. */
+export function notEpic(alias: string): string {
+  return NOT_EPIC.replace("nodes.", `${alias}.`);
+}
+
 // Слагаемые формулы S21 — в SQL: score считается для всех кандидатов одним
 // сканом частичного индекса ix_nodes_ready, через мост уходят только top-k
 // строк. Слагаемые округлены до сотых ДО суммы — как и в JS-скоринге ниже,
@@ -75,10 +106,11 @@ const ANCHOR_SUBQ = `COALESCE((SELECT CASE
  * ОХВАТ РЕПОЗИТОРИЯ В ИСТОЧНИКЕ (S59, И1). Фильтр стоит в SQL, а не над
  * выдачей: score считается для ВСЕХ кандидатов, а top-k режется уже после
  * сортировки, поэтому отсев в JS пришёл бы после LIMIT и выдавал бы неполную
- * очередь. Вариант с фильтром пинится к ix_nodes_ready_repo (миграция 007):
+ * очередь. Вариант с фильтром пинится к ix_nodes_ready_work_repo (миграции
+ * 007 и 014):
  * выражение `json_extract(attrs,'$.repo')` лежит там второй колонкой, и
  * SQLite отбрасывает чужой репозиторий, не читая строку таблицы. Вариант без
- * фильтра остаётся на более коротком ix_nodes_ready — за то, чего не просили,
+ * фильтра остаётся на более коротком ix_nodes_ready_work — за то, чего не просили,
  * платить не надо.
  */
 /**
@@ -140,10 +172,11 @@ function scoredTopSql(
                        WHEN 'bug' THEN 1.0 WHEN 'task' THEN 0.5 ELSE 0.25 END`)}
        AS score,
        count(*) OVER () AS total_ready
-    FROM nodes AS n INDEXED BY ${withRepo ? "ix_nodes_ready_repo" : "ix_nodes_ready"}
+    FROM nodes AS n INDEXED BY ${withRepo ? "ix_nodes_ready_work_repo" : "ix_nodes_ready_work"}
    WHERE n.scope = ?1 AND n.kind = 'task' AND n.status = 'open'
      AND n.open_blockers = 0 AND n.anc_blockers = 0
-     AND n.deleted_at IS NULL${withRepo ? repoClause("n", 9) : ""}${acl ? aclClause("n", withRepo ? 10 : 9) : ""}
+     AND n.deleted_at IS NULL
+     AND ${notEpic("n")}${withRepo ? repoClause("n", 9) : ""}${acl ? aclClause("n", withRepo ? 10 : 9) : ""}
    ORDER BY score DESC, n.priority ASC, n.id ASC
    LIMIT ?7`;
 }
@@ -234,17 +267,19 @@ export const readyQueries = defineQueries({
   // живут в том же кеше футера — на вызов приходится ноль лишних сканов.
   ready_repo_unknown: {
     name: "ready_repo_unknown",
-    sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_ready_repo
+    sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_ready_work_repo
            WHERE scope = ?1 AND kind = 'task' AND status = 'open'
              AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
+             AND ${NOT_EPIC}
              AND json_extract(nodes.attrs,'$.repo') IS NULL`,
     params: ["scope"],
   },
   ready_repo_foreign: {
     name: "ready_repo_foreign",
-    sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_ready_repo
+    sql: `SELECT count(*) AS n FROM nodes INDEXED BY ix_nodes_ready_work_repo
            WHERE scope = ?1 AND kind = 'task' AND status = 'open'
              AND open_blockers = 0 AND anc_blockers = 0 AND deleted_at IS NULL
+             AND ${NOT_EPIC}
              AND NOT ${repoPredicate("nodes", 2)}`,
     params: ["scope", "repo"],
   },
