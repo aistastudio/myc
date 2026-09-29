@@ -507,7 +507,15 @@ function renderCommentHuman(raw: unknown): string {
  * Комментарий к задаче — постоянная история проекта, его ищут через полгода.
  * `note` L1 хранится бессрочно, индексируется и ищется.
  */
-export function createCommentCommand(deps: StoreDeps = realStoreDeps): Command {
+/**
+ * Чтение stdin отдельным параметром — по образцу `statusline`: иначе путь
+ * «текст пришёл трубой» проверить нечем, а именно он и был сломан
+ * (memory-qkzery4s28rv).
+ */
+export function createCommentCommand(
+  deps: StoreDeps = realStoreDeps,
+  readStdin: () => Promise<string> = () => new Response(Bun.stdin.stream()).text(),
+): Command {
   return {
     name: "comment",
     summary: "comment on a node: a note joined to it by a replies_to edge",
@@ -530,8 +538,14 @@ export function createCommentCommand(deps: StoreDeps = realStoreDeps): Command {
       let text = ctx.args.slice(1).join(" ").trim();
       const bRaw = flagStr(ctx, "body");
       let fromStdin = false;
-      if (bRaw === "-") {
-        text = (await new Response(Bun.stdin.stream()).text()).trim();
+      // ПОЗИЦИОННЫЙ `-` — ТОЖЕ STDIN, как и обещает справка. Прежде его читал
+      // только `-b -`, а `myc comment <id> -` записывал в тред дефис и
+      // выходил с нулём: агент уходил дальше в уверенности, что отчёт
+      // записан (memory-qkzery4s28rv). Отказа не было, потому что дефис —
+      // законный непустой текст; значит и починка не в проверке, а в том,
+      // чтобы обе двери вели в одно место.
+      if (bRaw === "-" || (bRaw === undefined && text === "-")) {
+        text = (await readStdin()).trim();
         fromStdin = true;
       } else if (bRaw !== undefined) {
         text = bRaw;

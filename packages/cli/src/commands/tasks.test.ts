@@ -26,6 +26,7 @@ import {
   createTaskCommand,
   createUpdateCommand,
 } from "./tasks.ts";
+import { realStoreDeps } from "./store.ts";
 import { createShowCommand } from "./show.ts";
 import { createListCommand } from "./list.ts";
 import { createDepCommand } from "./dep.ts";
@@ -49,12 +50,16 @@ function makeRegistry(): Registry {
   r.register(createDepCommand());
   r.register(createReadyCommand());
   r.register(createMsgCommand());
-  r.register(createCommentCommand());
+  r.register(createCommentCommand(realStoreDeps, async () => pipedStdin));
   r.register(createEpicCommand());
   return r;
 }
 
+/** Что «пришло трубой» в этом тесте: подменяемый stdin команды comment. */
+let pipedStdin = "";
+
 beforeEach(async () => {
+  pipedStdin = "";
   process.env.MYC_ACTOR = "tester";
   dir = mkdtempSync(join(tmpdir(), "myc-cmd-"));
   mkdirSync(join(dir, ".myc"));
@@ -955,5 +960,45 @@ describe("--anchor вне корня репозитория", () => {
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * memory-qkzery4s28rv: справка команды обещает, что `-` читает stdin, а на
+ * деле это делал только `-b -`. Позиционный дефис уходил в тело как есть —
+ * БЕЗ отказа и с кодом 0, поэтому агент шёл дальше в уверенности, что отчёт
+ * записан, а в треде оставался дефис. Ловится это только поведением: «текст
+ * не тот» здесь важнее, чем «команда упала».
+ */
+describe("comment: обе двери к stdin ведут в одно место", () => {
+  test("позиционный '-' читает stdin, а не пишет дефис", async () => {
+    const id = (await mycJson("task", "проба")).env.data as { id: string };
+    pipedStdin = "отчёт из трубы\n";
+    const out = await mycJson("comment", id.id, "-");
+    expect(out.code).toBe(ExitCode.OK);
+    const d = out.env.data as { title: string; body_stdin_chars?: number };
+    expect(d.title).toBe("отчёт из трубы");
+    // И это именно труба, а не позиционный текст: команда сама называет,
+    // сколько символов пришло со stdin.
+    expect(d.body_stdin_chars).toBe("отчёт из трубы".length);
+  });
+
+  test("`-b -` читает тот же stdin — обе формы дают одно тело", async () => {
+    const id = (await mycJson("task", "проба")).env.data as { id: string };
+    pipedStdin = "отчёт из трубы\n";
+    const out = await mycJson("comment", id.id, "-b", "-");
+    expect(out.code).toBe(ExitCode.OK);
+    const d = out.env.data as { title: string; body_stdin_chars?: number };
+    expect(d.title).toBe("отчёт из трубы");
+    // И это именно труба, а не позиционный текст: команда сама называет,
+    // сколько символов пришло со stdin.
+    expect(d.body_stdin_chars).toBe("отчёт из трубы".length);
+  });
+
+  test("пустая труба — отказ, а не пустой комментарий", async () => {
+    const id = (await mycJson("task", "проба")).env.data as { id: string };
+    pipedStdin = "   \n";
+    const out = await mycJson("comment", id.id, "-");
+    expect(out.code).toBe(ExitCode.USAGE);
   });
 });
