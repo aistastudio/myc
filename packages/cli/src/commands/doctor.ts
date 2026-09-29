@@ -417,6 +417,42 @@ function closureDrift(driver: CliDriver): string[] {
   }
 }
 
+/**
+ * ДЕРЕВО ПОСЛЕ СЛИЯНИЯ (§4.3, memory-61cntyz5j5v6). Две вещи, которые
+ * применитель пометил, но разбирать которые — работа человека:
+ *
+ *  - ребро `parent`, приехавшее мержем и образующее ЦИКЛ. Отвергнуть его
+ *    нельзя (операция уже принята на своём сайте), поэтому оно помечено
+ *    `attrs.cycle = 1`, а дерево осталось прежним. Пока пометку никто не
+ *    называет, она украшение: цикл видит только тот, кто заглянет в attrs
+ *    руками;
+ *  - узел с ДВУМЯ живыми рёбрами `parent`. Само по себе не порча — OR-Set не
+ *    вправе стереть чужое добавление, и оба ребра законны, — но слот «мой
+ *    родитель» односоставный, и наследование пойдёт по одному из них.
+ *
+ * Ремонта здесь нет намеренно: §4.3 говорит «разрывает человек», и угадывать
+ * за него, какое из двух рёбер лишнее, значит молча потерять чью-то правку.
+ */
+function treeCheck(driver: CliDriver): Check {
+  const cycles = driver.all<{ src: string; dst: string }>(Q.edges_cycle_marked, []);
+  const multi = driver.all<{ id: string; n: number }>(Q.nodes_multi_parent, []);
+  if (cycles.length === 0 && multi.length === 0) {
+    return { name: "tree", verdict: "ok", detail: "no merge cycles, no node with two parents" };
+  }
+  const items = [
+    ...cycles.map((r) => `cycle marked on parent(${r.src} → ${r.dst}) — a human breaks it`),
+    ...multi.map((r) => `${r.id}: ${Number(r.n)} live parent edges, inheritance follows one`),
+  ];
+  return {
+    name: "tree",
+    verdict: "drift",
+    detail:
+      `${cycles.length} cycle${cycles.length === 1 ? "" : "s"} from merge, ` +
+      `${multi.length} node${multi.length === 1 ? "" : "s"} with two parents`,
+    items: items.slice(0, 20),
+  };
+}
+
 function counterCheck(name: string, rows: readonly DriftRow[]): Check {
   if (rows.length === 0) return { name, verdict: "ok", detail: "matches the recount" };
   return {
@@ -452,6 +488,15 @@ function checkRecount(driver: CliDriver): RecountSection {
   } catch (e) {
     checks.push({
       name: "parent_closure",
+      verdict: "unknown",
+      detail: `not checked: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+  try {
+    checks.push(treeCheck(driver));
+  } catch (e) {
+    checks.push({
+      name: "tree",
       verdict: "unknown",
       detail: `not checked: ${e instanceof Error ? e.message : String(e)}`,
     });

@@ -161,7 +161,7 @@ describe("myc doctor: здоровый воркспейс", () => {
     expect(env.data?.sections).toEqual(["schema", "recount", "hooks", "background"]);
     expect(env.data?.ok).toBe(true);
     const names = (env.data?.recount?.checks ?? []).map((c) => c.name);
-    expect(names).toEqual(["open_blockers", "anc_blockers", "parent_closure"]);
+    expect(names).toEqual(["open_blockers", "anc_blockers", "parent_closure", "tree"]);
   });
 
   test("флаг сужает вывод до одного раздела", async () => {
@@ -225,6 +225,46 @@ describe("myc doctor --recount: испорченное состояние", () =
     const rowsAfter = after.query("SELECT count(*) AS n FROM parent_closure").get() as { n: number };
     after.close();
     expect(rowsAfter.n).toBe(rowsBefore.n);
+  });
+
+  test("цикл из мержа и второй живой родитель НАЗЫВАЮТСЯ, но не чинятся", async () => {
+    // memory-61cntyz5j5v6: применитель помечает такое ребро, а разбирать —
+    // работа человека (§4.3). Пока это никто не называет, пометка украшение:
+    // цикл видит только тот, кто заглянет в attrs руками.
+    const { driver, store } = open();
+    const x = store.createNode({ kind: "task", scope: "s", title: "X" });
+    const y = store.createNode({ kind: "task", scope: "s", title: "Y" });
+    const z = store.createNode({ kind: "task", scope: "s", title: "Z" });
+    store.addEdge(y.id, "parent", x.id);
+    // Ребро с пометкой цикла и ВТОРОЕ живое ребро parent — оба состояния
+    // законны после слияния и оба обязаны быть названы.
+    driver.database.run(
+      `INSERT INTO edges (src, type, dst, add_tag, created_at, attrs)
+       VALUES (?1, 'parent', ?2, 'tag-cycle', 1, '{"cycle":1}')`,
+      [x.id, y.id],
+    );
+    driver.database.run(
+      `INSERT INTO edges (src, type, dst, add_tag, created_at)
+       VALUES (?1, 'parent', ?2, 'tag-2nd', 1)`,
+      [y.id, z.id],
+    );
+    driver.close();
+
+    const res = await doctor("--recount");
+    const out = text(res);
+    expect(out).toContain(`cycle marked on parent(${x.id} → ${y.id})`);
+    expect(out).toContain(`${y.id}: 2 live parent edges`);
+    // Конверт отказа несёт находки в warn[] — без них агент не узнал бы, ЧТО
+    // именно нашлось.
+    const env = await envelope("--recount");
+    expect((env.warn ?? []).map((w) => w.msg).join(" | ")).toContain("1 cycle from merge");
+
+    // Замыкание при этом расхождением НЕ объявляется, и это главное: пересчёт
+    // живёт по тому же правилу, что применитель — помеченное ребро не
+    // читает, а из двух живых родителей берёт позднейшего. Разойдись они —
+    // doctor показывал бы вечное расхождение, а ремонт материализовал бы
+    // DAG вместо дерева.
+    expect(out).not.toContain("parent_closure: rows that differ");
   });
 
   test("здоровое замыкание расхождением не объявляется", async () => {

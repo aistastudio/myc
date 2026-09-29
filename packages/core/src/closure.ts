@@ -157,14 +157,40 @@ const Q = defineQueries({
   // стабильно, пока в DDL edges ровно один PRIMARY KEY (миграция 001).
   pc_rebuild_from_edges: {
     name: "pc_rebuild_from_edges",
-    sql: `WITH RECURSIVE closure(descendant, ancestor, depth) AS (
-            SELECT src, dst, 1 FROM edges INDEXED BY sqlite_autoindex_edges_1
-             WHERE type = 'parent' AND deleted_at IS NULL
+    /**
+     * ПЕРЕСЧЁТ ЖИВЁТ ПО ТОМУ ЖЕ ПРАВИЛУ, ЧТО ПРИМЕНИТЕЛЬ. Он читает рёбра
+     * напрямую, а значит легко становится ВТОРЫМ определением дерева — и
+     * тогда `doctor` показывает вечное расхождение, а его ремонт ломает то,
+     * что применитель уберёг. Поэтому `live` повторяет оба решения §4.3:
+     *
+     *  - ребро, помеченное `attrs.cycle`, деревом не является вовсе. Иначе
+     *    пересчёт вносил бы цикл обратно — строки ancestor = descendant и
+     *    тысяча витков по кругу до предела глубины;
+     *  - у ребёнка берётся ОДНО ребро — позднейшее по (hlc, site_id). После
+     *    независимого перевешивания на двух машинах живых рёбер `parent`
+     *    бывает два (OR-Set не вправе стереть чужое добавление), но слот
+     *    «мой родитель» односоставный (§3.2). Возьми пересчёт оба — и
+     *    получилась бы DAG вместо дерева, то есть ремонт нарушил бы
+     *    инвариант, ради которого таблица и заведена.
+     *
+     * Второе ребро при этом не теряется и не молчит: его называет
+     * `myc doctor` (проверка `tree`), а разбирает человек.
+     */
+    sql: `WITH RECURSIVE live(src, dst) AS (
+            SELECT e.src, e.dst FROM edges e INDEXED BY sqlite_autoindex_edges_1
+             WHERE e.type = 'parent' AND e.deleted_at IS NULL
+               AND coalesce(json_extract(e.attrs,'$.cycle'),0) = 0
+               AND NOT EXISTS (
+                     SELECT 1 FROM edges o
+                      WHERE o.src = e.src AND o.type = 'parent' AND o.deleted_at IS NULL
+                        AND coalesce(json_extract(o.attrs,'$.cycle'),0) = 0
+                        AND (o.hlc > e.hlc OR (o.hlc = e.hlc AND o.site_id > e.site_id)))
+          ),
+          closure(descendant, ancestor, depth) AS (
+            SELECT src, dst, 1 FROM live
             UNION ALL
-            SELECT c.descendant, e.dst, c.depth + 1
-              FROM closure c
-              JOIN edges e INDEXED BY sqlite_autoindex_edges_1
-                ON e.src = c.ancestor AND e.type = 'parent' AND e.deleted_at IS NULL
+            SELECT c.descendant, l.dst, c.depth + 1
+              FROM closure c JOIN live l ON l.src = c.ancestor
              WHERE c.depth < 1000
           )
           INSERT INTO parent_closure (ancestor, descendant, depth)

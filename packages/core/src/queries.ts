@@ -593,6 +593,34 @@ export const Q = defineQueries({
     ),
     params: ["src", "type", "dst", "attrs"],
   },
+  /**
+   * Рёбра, помеченные циклом при слиянии (§4.3). Диагностика: полный проход
+   * по рёбрам `parent` здесь уместен — это `myc doctor`, а не горячий путь.
+   */
+  edges_cycle_marked: {
+    name: "edges_cycle_marked",
+    sql: `SELECT src, dst FROM edges
+           WHERE type = 'parent' AND deleted_at IS NULL
+             AND coalesce(json_extract(attrs,'$.cycle'),0) = 1
+           ORDER BY src, dst`,
+    params: [],
+  },
+  /**
+   * Узлы, у которых живых рёбер `parent` больше одного. Само по себе это не
+   * порча: OR-Set не вправе стереть чужое добавление, и после независимого
+   * перевешивания на двух машинах оба ребра законно живы. Но слот «мой
+   * родитель» односоставный (§3.2), и наследование пойдёт по одному из них —
+   * значит человек должен об этом УЗНАТЬ, а не обнаружить по странному
+   * порядку очереди.
+   */
+  nodes_multi_parent: {
+    name: "nodes_multi_parent",
+    sql: `SELECT src AS id, count(*) AS n FROM edges
+           WHERE type = 'parent' AND deleted_at IS NULL
+           GROUP BY src HAVING count(*) > 1
+           ORDER BY src`,
+    params: [],
+  },
   /** Локальные, нереплицируемые колонки ребра — пишет только свой addEdge. */
   edge_set_local: {
     name: "edge_set_local",

@@ -12,6 +12,7 @@ import { openSqlite, type SqliteDriver } from "./index.ts";
 import { migrate } from "./migrate.ts";
 import { migrations } from "./migrations/index.ts";
 import { GraphStore, Q, rowToOp } from "./queries.ts";
+import { applyRebuild } from "./closure.ts";
 
 let dir: string;
 const drivers: SqliteDriver[] = [];
@@ -477,6 +478,38 @@ describe("memory-pw6mekaa15g4: parent, приехавший по реплика�
     expect(JSON.parse(marked[0]!.attrs).cycle).toBe(1);
     // Дерево при этом цело: X остался под Y, а не осиротел.
     expect(ancestors(b, x.id)).toEqual([{ ancestor: y.id, depth: 1 }]);
+  });
+
+  test("полный пересчёт замыкания не возвращает помеченный цикл обратно", async () => {
+    // `doctor --recount` и ремонт читают РЁБРА напрямую. Если бы пересчёт не
+    // знал про пометку, он вносил бы цикл в замыкание — то есть ремонт
+    // ломал бы ровно то, что применитель уберёг: строки ancestor =
+    // descendant и тысяча витков по кругу до предела глубины.
+    const a = await openSite("siteA", "anna");
+    const b = await openSite("siteB", "boris", 1_700_000_100_000);
+    const x = a.store.createNode({ kind: "task", title: "X" });
+    const y = a.store.createNode({ kind: "task", title: "Y" });
+    b.store.applyOps(opsOf(a), 0);
+    a.store.addEdge(y.id, "parent", x.id);
+    b.store.addEdge(x.id, "parent", y.id);
+    b.store.applyOps(opsOf(a), 0);
+
+    const before = JSON.stringify(
+      b.driver.all(
+        { name: "pc_all", sql: "SELECT ancestor, descendant, depth FROM parent_closure ORDER BY 1,2", params: [] },
+        [],
+      ),
+    );
+    b.driver.tx("immediate", (tx) => applyRebuild(tx));
+    const after = JSON.stringify(
+      b.driver.all(
+        { name: "pc_all2", sql: "SELECT ancestor, descendant, depth FROM parent_closure ORDER BY 1,2", params: [] },
+        [],
+      ),
+    );
+    expect(after).toBe(before);
+    // И ни одной строки-петли: их появление и означало бы, что цикл внесён.
+    expect(after).not.toContain(`"ancestor":"${x.id}","descendant":"${x.id}"`);
   });
 
   test("снятие, пришедшее ПОСЛЕ выжившего добавления, не сиротит узел", async () => {
