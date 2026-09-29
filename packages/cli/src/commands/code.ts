@@ -1741,10 +1741,11 @@ interface GrepData {
 const GREP_FLAGS: readonly FlagSpec[] = [
   { name: "repo", value: "string", description: "repo id to search (default: derived from cwd)" },
   { name: "ignore-case", description: "case-insensitive match" },
-  { name: "lang", value: "string", description: "limit to these languages, comma-separated (ts,py,md)" },
+  { name: "lang", value: "string", list: true, description: "limit to these languages, comma-separated (ts,py,md)" },
   {
     name: "in",
     value: "string",
+        list: true,
     description: "only under these paths from the repo root, comma-separated (dirs or files)",
   },
   { name: "limit", value: "number", description: "symbol groups to print (default 60); the count is always exhaustive" },

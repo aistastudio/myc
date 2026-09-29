@@ -1499,6 +1499,7 @@ function buildFinishCommand(deps: AttemptDeps): Command {
       {
         name: "caveat",
         value: "string",
+        list: true,
         description: `comma-separated: ${CAVEATS.join(", ")}`,
       },
       { name: "retries", value: "number", description: "rework rounds before acceptance" },

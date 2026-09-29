@@ -81,11 +81,28 @@ function storeValue(
     if (!Number.isFinite(n)) {
       return `flag --${spec.name} expects a number, got '${raw}'`;
     }
+    if (flags[spec.name] !== undefined) return repeated(spec);
     flags[spec.name] = n;
+    return undefined;
+  }
+  const seen = flags[spec.name];
+  if (seen !== undefined) {
+    // СПИСОК НАКАПЛИВАЕТСЯ, однозначный флаг ОТКАЗЫВАЕТ. Молчаливое «берём
+    // последнее» теряло первое значение без единого слова: `--in a --in b`
+    // искал только в b (memory-jwpptwdqvgkq).
+    if (spec.list !== true) return repeated(spec);
+    flags[spec.name] = `${String(seen)},${raw}`;
     return undefined;
   }
   flags[spec.name] = raw;
   return undefined;
+}
+
+function repeated(spec: FlagSpec): string {
+  return (
+    `flag --${spec.name} is given more than once, and it takes a single value — ` +
+    "say which one you mean"
+  );
 }
 
 /**

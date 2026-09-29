@@ -772,7 +772,7 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
     summary: "show a node (batch via commas, --field for projection)",
     remote: true,
     flags: [
-      { name: "field", value: "string", description: "comma-separated fields for batch projection" },
+      { name: "field", value: "string", list: true, description: "comma-separated fields for batch projection" },
       { name: "depth", value: "number", description: "0 (default) | 1 — one-line summaries of neighbours" },
       { name: "source", description: "read the code at the node's anchors, lost ones excluded (up to 200 lines each)" },
       { name: "chain", description: "full_history: print the whole version chain (§6.3)" },

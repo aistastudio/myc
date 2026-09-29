@@ -995,6 +995,23 @@ describe("comment: обе двери к stdin ведут в одно место"
     expect(d.body_stdin_chars).toBe("отчёт из трубы".length);
   });
 
+  test("тот же текст ко ВТОРОМУ узлу записывается, а не падает сырым UNIQUE", async () => {
+    // memory-rnavnw2zbf4y: два разных ответа вправе совпасть дословно —
+    // «ок», «сделал», один и тот же отчёт к двум задачам. Прежде второй
+    // падал `internal.unexpected: UNIQUE constraint failed`, то есть агент
+    // читал «myc сломан» там, где сломано было ожидание.
+    const a = (await mycJson("task", "первая")).env.data as { id: string };
+    const b = (await mycJson("task", "вторая")).env.data as { id: string };
+    const first = await mycJson("comment", a.id, "сделал");
+    const second = await mycJson("comment", b.id, "сделал");
+    expect([first.code, second.code]).toEqual([ExitCode.OK, ExitCode.OK]);
+    // Это РАЗНЫЕ узлы, прицепленные к разным задачам.
+    const one = first.env.data as { id: string; replies_to: string };
+    const two = second.env.data as { id: string; replies_to: string };
+    expect(one.id).not.toBe(two.id);
+    expect([one.replies_to, two.replies_to]).toEqual([a.id, b.id]);
+  });
+
   test("пустая труба — отказ, а не пустой комментарий", async () => {
     const id = (await mycJson("task", "проба")).env.data as { id: string };
     pipedStdin = "   \n";

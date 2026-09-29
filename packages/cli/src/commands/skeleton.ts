@@ -39,7 +39,7 @@ function failure(code: string, msg: string, exit: ExitCode, hint?: string): Comm
 
 const FLAGS: readonly FlagSpec[] = [
   { name: "repo", value: "string", description: "repo id (default: derived from cwd)" },
-  { name: "kind", value: "string", description: "keep only these kinds, comma-separated" },
+  { name: "kind", value: "string", list: true, description: "keep only these kinds, comma-separated" },
   { name: "exported", description: "only exported declarations — the API as others see it" },
 ];
 

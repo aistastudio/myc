@@ -62,10 +62,10 @@ const FIELDS: Readonly<Record<string, (r: RetrieveRow) => string>> = {
 export const FIELD_NAMES: readonly string[] = Object.keys(FIELDS);
 
 const SEARCH_FLAGS: readonly FlagSpec[] = [
-  { name: "kind", value: "string", description: `comma-separated kinds: ${KIND_NAMES.join(",")}` },
-  { name: "tag", value: "string", description: "comma-separated tags (any match)" },
+  { name: "kind", value: "string", list: true, description: `comma-separated kinds: ${KIND_NAMES.join(",")}` },
+  { name: "tag", value: "string", list: true, description: "comma-separated tags (any match)" },
   { name: "author", value: "string", description: "actor that recorded the node" },
-  { name: "acl", value: "string", description: "comma-separated acl modes" },
+  { name: "acl", value: "string", list: true, description: "comma-separated acl modes" },
   { name: "layer", value: "string", description: "L0..L3 or a range like L1..L3" },
   { name: "since", value: "string", description: "updated within, e.g. 30d, 12h" },
   { name: "until", value: "string", description: "updated no later than, e.g. 1d" },

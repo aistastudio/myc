@@ -82,6 +82,7 @@ const FLAGS: readonly FlagSpec[] = [
   {
     name: "kind",
     value: "string",
+    list: true,
     description:
       `ref kinds to keep, comma-separated or all: ${REF_KINDS.join(",")} ` +
       "(default: every kind for --direction in, call,new for out)",

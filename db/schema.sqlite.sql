@@ -149,9 +149,17 @@ CREATE TABLE nodes (
 -- (attrs.external_ref пишет myc import-beads: у записи чужого трекера
 -- идентичность даёт его id, а не текст — в beads две разные задачи имеют
 -- право на дословно одинаковые заголовок и тело). Миграция 9.
+-- РЕПЛИКА В ЭТОТ ДОМЕН НЕ ВХОДИТ (миграция 15, memory-rnavnw2zbf4y), и по той
+-- же причине, что ввезённое: два разных ответа вправе совпасть дословно —
+-- «ок», «сделал», один и тот же отчёт к двум задачам. Идентичность реплики
+-- даёт то, К ЧЕМУ она прицеплена (ребро replies_to), а не её текст, и
+-- положить это в хеш нельзя: он считается из колонок узла и обязан совпасть
+-- на всех репликах, а цель живёт в ребре. Прежде второй такой комментарий
+-- падал сырым `UNIQUE constraint failed` под кодом internal.unexpected.
 CREATE UNIQUE INDEX ux_nodes_content
     ON nodes(scope, kind, content_hash)
- WHERE deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL;
+ WHERE deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL
+   AND coalesce(json_extract(attrs,'$.type'),'') <> 'comment';
 
 -- на этом же индексе стоит идемпотентность повторного импорта. Четвёртая
 -- колонка ext_dup разводит тот случай, который CRDT отвергнуть не может:

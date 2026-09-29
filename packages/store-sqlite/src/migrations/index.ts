@@ -13,6 +13,7 @@ import { migration011CodeRefSites } from "./011-code-ref-sites.ts";
 import { migration012CodeSearch } from "./012-code-search.ts";
 import { migration013NodesExtDup } from "./013-nodes-ext-dup.ts";
 import { migration014ReadyNoEpics } from "./014-ready-no-epics.ts";
+import { migration015CommentsNotContent } from "./015-comments-not-content.ts";
 
 /**
  * Базовый набор миграций SQLite. Версия 1 — вся схема §8.1 целиком,
@@ -34,7 +35,10 @@ import { migration014ReadyNoEpics } from "./014-ready-no-epics.ts";
  * applyOps на UNIQUE, и синхронизация вставала навсегда,
  * версия 14 — эпик вне очереди `ready` (memory-ghbe6hg7xm9e): отсев встроен
  * в предикат частичного индекса, потому что тот же предикат в запросе стоит
- * чтения строки и ломает бюджет очереди.
+ * чтения строки и ломает бюджет очереди,
+ * версия 15 — реплика вне домена идентичности по содержимому
+ * (memory-rnavnw2zbf4y): два разных ответа вправе совпасть дословно, и
+ * второй падал сырым UNIQUE.
  * Векторные объекты сюда не входят намеренно (решение S26) — см. ./vec.ts.
  */
 export const migrations: readonly Migration[] = [
@@ -52,6 +56,7 @@ export const migrations: readonly Migration[] = [
   migration012CodeSearch,
   migration013NodesExtDup,
   migration014ReadyNoEpics,
+  migration015CommentsNotContent,
 ];
 
 export { migration001Init } from "./001-init.ts";
@@ -68,6 +73,7 @@ export { migration011CodeRefSites } from "./011-code-ref-sites.ts";
 export { migration012CodeSearch } from "./012-code-search.ts";
 export { migration013NodesExtDup } from "./013-nodes-ext-dup.ts";
 export { migration014ReadyNoEpics } from "./014-ready-no-epics.ts";
+export { migration015CommentsNotContent } from "./015-comments-not-content.ts";
 export { vecMigration001Init } from "./vec-001-init.ts";
 export {
   migrateVectors,

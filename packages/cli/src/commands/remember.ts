@@ -198,7 +198,7 @@ function enqueueAll(
 // ---------------------------------------------------------------------------
 
 const REMEMBER_FLAGS: readonly FlagSpec[] = [
-  { name: "tag", value: "string", description: "comma-separated tags" },
+  { name: "tag", value: "string", list: true, description: "comma-separated tags" },
   {
     name: "anchor",
     value: "string",

@@ -307,13 +307,21 @@ export const Q = defineQueries({
     sql: "UPDATE nodes SET content_hash = ?2 WHERE id = ?1",
     params: ["id", "content_hash"],
   },
+  /**
+   * `indexed` обязан повторять домен ux_nodes_content СИМВОЛ В СИМВОЛ:
+   * `settleContent` по нему решает, понижать хеш или нет, и разойдись они —
+   * узел либо получал бы пониженный хеш вне индекса (мусор), либо
+   * канонический внутри него (UNIQUE в лицо).
+   */
   node_content_row: {
     name: "node_content_row",
     sql: `SELECT kind, scope, title, body, content_hash,
-                 (deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL) AS indexed
+                 (deleted_at IS NULL AND json_extract(attrs,'$.external_ref') IS NULL
+                  AND coalesce(json_extract(attrs,'$.type'),'') <> 'comment') AS indexed
             FROM nodes WHERE id = ?1`,
     pg: `SELECT kind, scope, title, body, content_hash,
-                 (deleted_at IS NULL AND attrs->>'external_ref' IS NULL) AS indexed
+                 (deleted_at IS NULL AND attrs->>'external_ref' IS NULL
+                  AND coalesce(attrs->>'type','') <> 'comment') AS indexed
             FROM nodes WHERE id = $1`,
     params: ["id"],
   },

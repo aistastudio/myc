@@ -89,8 +89,8 @@ const RECALL_FLAGS: readonly FlagSpec[] = [
   { name: "limit", short: "n", value: "number", description: `max hits (default ${DEFAULT_LIMIT})` },
   { name: "offset", value: "number", description: "skip N rows (continues a previous page's cursor)" },
   { name: "budget", value: "number", description: `output character budget (default ${DEFAULT_BUDGET})` },
-  { name: "kind", value: "string", description: `comma-separated kinds: ${KIND_NAMES.join(",")}` },
-  { name: "tag", value: "string", description: "comma-separated tags (any match)" },
+  { name: "kind", value: "string", list: true, description: `comma-separated kinds: ${KIND_NAMES.join(",")}` },
+  { name: "tag", value: "string", list: true, description: "comma-separated tags (any match)" },
   { name: "layer", value: "string", description: "L0..L3 or a range like L1..L3" },
   { name: "since", value: "string", description: "only nodes updated within, e.g. 30d, 12h" },
   {
@@ -103,7 +103,7 @@ const RECALL_FLAGS: readonly FlagSpec[] = [
   },
   { name: "mode", value: "string", description: "hybrid (default) | vec | bm25" },
   { name: "why", description: "print why each retrieval branch was or was not used" },
-  { name: "reach", value: "string", description: "comma-separated: session,project,unknown (S58)" },
+  { name: "reach", value: "string", list: true, description: "comma-separated: session,project,unknown (S58)" },
   {
     name: "repo",
     value: "string",

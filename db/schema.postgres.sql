@@ -241,8 +241,11 @@ CREATE TABLE nodes (
 -- Идентичность узла: по СОДЕРЖИМОМУ для того, что myc завёл сам, и по ССЫЛКЕ
 -- НА ИСТОЧНИК для ввезённого (миграции 9 и 13). Разрешитель ext_dup —
 -- четвёртая колонка внешнего индекса, как в SQLite.
+-- Реплика в этот домен не входит (memory-rnavnw2zbf4y): два разных ответа
+-- вправе совпасть дословно, а идентичность реплики даёт ребро replies_to.
 CREATE UNIQUE INDEX ux_nodes_content ON nodes(tenant_id, scope, kind, content_hash)
-  WHERE deleted_at IS NULL AND (attrs->>'external_ref') IS NULL;
+  WHERE deleted_at IS NULL AND (attrs->>'external_ref') IS NULL
+    AND coalesce(attrs->>'type','') <> 'comment';
 CREATE UNIQUE INDEX ux_nodes_external ON nodes(tenant_id, scope, kind, (attrs->>'external_ref'), ext_dup)
   WHERE deleted_at IS NULL AND (attrs->>'external_ref') IS NOT NULL;
 
@@ -711,7 +714,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO myc_app;
 -- называется psql, а не выдумывает себе версию.
 INSERT INTO schema_migrations (version, name, checksum, applied_at, by_version)
 SELECT
-  14,
+  15,
   'postgres-baseline',
   md5(string_agg(sig, E'\n' ORDER BY sig)),
   (extract(epoch FROM now()) * 1000)::BIGINT,

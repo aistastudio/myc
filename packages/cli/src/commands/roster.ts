@@ -281,7 +281,7 @@ const MODEL_FLAGS: readonly FlagSpec[] = [
   { name: "version", value: "string", description: "model version, e.g. 5.4" },
   { name: "parent", value: "string", description: "previous version's model id" },
   { name: "tps", value: "number", description: "tokens per second (cold-start latency estimate)" },
-  { name: "strengths", value: "string", description: "comma-separated task classes the model is good at" },
+  { name: "strengths", value: "string", list: true, description: "comma-separated task classes the model is good at" },
   ...PRICE_FLAGS,
 ];
 
