@@ -333,6 +333,12 @@ export const Q = defineQueries({
    * Старшинство — часы set(kind), то есть момент создания узла: они
    * реплицируются, и порядок одинаков на всех репликах.
    */
+  /**
+   * Предикат повторяет домен ux_nodes_content СИМВОЛ В СИМВОЛ, включая
+   * исключение реплик (миграция 15): иначе SQLite не докажет применимость
+   * частичного индекса и уйдёт в скан по (scope, kind) — сторож на это
+   * divergence.test.ts, «читаются по индексам, без SCAN».
+   */
   content_group: {
     name: "content_group",
     sql: `SELECT n.id AS id, n.content_hash AS content_hash,
@@ -341,14 +347,16 @@ export const Q = defineQueries({
             LEFT JOIN field_clock fc ON fc.entity_id = n.id AND fc.field = 'kind'
            WHERE n.scope = ?1 AND n.kind = ?2
              AND n.content_hash >= ?3 AND n.content_hash < ?4
-             AND n.deleted_at IS NULL AND json_extract(n.attrs,'$.external_ref') IS NULL`,
+             AND n.deleted_at IS NULL AND json_extract(n.attrs,'$.external_ref') IS NULL
+             AND coalesce(json_extract(n.attrs,'$.type'),'') <> 'comment'`,
     pg: `SELECT n.id AS id, n.content_hash AS content_hash,
                  CAST(fc.hlc AS TEXT) AS born_hlc, fc.site_id AS born_site
             FROM nodes n
             LEFT JOIN field_clock fc ON fc.entity_id = n.id AND fc.field = 'kind'
            WHERE n.scope = $1 AND n.kind = $2
              AND n.content_hash >= $3 AND n.content_hash < $4
-             AND n.deleted_at IS NULL AND n.attrs->>'external_ref' IS NULL`,
+             AND n.deleted_at IS NULL AND n.attrs->>'external_ref' IS NULL
+             AND coalesce(n.attrs->>'type','') <> 'comment'`,
     params: ["scope", "kind", "lo", "hi"],
   },
   /** Все пониженные дубликаты с их каноническим узлом — для doctor и web. */
