@@ -104,8 +104,14 @@ export interface TranscriptUsage extends TranscriptTotals {
   readonly responses: number;
   /** Записей, нёсших usage, до склейки. */
   readonly usageRecords: number;
-  /** Всего разобранных записей файла. */
+  /** Всего разобранных записей файла (уже внутри окна). */
   readonly records: number;
+  /**
+   * Записей, ОТСЕЧЁННЫХ окном (`since`/`until`). Нужно вызывающему, чтобы
+   * отличить «расхода не было» от «расход был, но весь вне окна»: второе —
+   * не ноль, а повод сказать вслух, какое окно применено (И2).
+   */
+  readonly outsideWindow: number;
   readonly startedAt: string | null;
   readonly endedAt: string | null;
   readonly models: readonly string[];
@@ -152,6 +158,16 @@ export interface ReadTranscriptOptions {
    * `timestamp` учитывается: время ей не приписать, а usage у неё не бывает.
    */
   readonly until?: number;
+  /**
+   * И НИЖНЯЯ ГРАНИЦА, симметрично верхней (memory-ryzym8rxhgex).
+   *
+   * Терминал переиспользуют: одна и та же сессия исполнителя берёт задачу за
+   * задачей, и её стенограмма — общая. Без нижней границы финиш складывал в
+   * расход попытки ВСЮ сессию с самого начала, то есть приписывал ей работу
+   * над предыдущими задачами — молча и тем сильнее, чем дольше живёт
+   * терминал. Граница — момент начала попытки.
+   */
+  readonly since?: number;
 }
 
 /** Время записи для среза `until`; нечитаемое — `undefined` (запись учитывается). */
@@ -197,6 +213,7 @@ export function readTranscriptUsage(path: string, options: ReadTranscriptOptions
   const seenFields = new Set<string>();
   const models = new Set<string>();
   let records = 0;
+  let outsideWindow = 0;
   let usageRecords = 0;
   let recognized = 0;
   let startedAt: string | null = null;
@@ -214,9 +231,16 @@ export function readTranscriptUsage(path: string, options: ReadTranscriptOptions
       continue;
     }
     if (!isRecord(rec)) continue;
-    if (options.until !== undefined) {
+    if (options.until !== undefined || options.since !== undefined) {
       const at = recordTime(rec);
-      if (at !== undefined && at > options.until) continue;
+      if (at !== undefined) {
+        const late = options.until !== undefined && at > options.until;
+        const early = options.since !== undefined && at < options.since;
+        if (late || early) {
+          outsideWindow += 1;
+          continue;
+        }
+      }
     }
     records += 1;
 
@@ -327,6 +351,7 @@ export function readTranscriptUsage(path: string, options: ReadTranscriptOptions
     responses: groups.size,
     usageRecords,
     records,
+    outsideWindow,
     startedAt,
     endedAt,
     models: [...models].sort(),

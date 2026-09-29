@@ -1379,7 +1379,13 @@ export function recordedSpend(
   }
   try {
     const path = sessionTranscriptPath(run!, who.sessionId, resolve(ctx.globals.directory ?? process.cwd()));
-    const read = readTranscriptUsage(path);
+    // Нижняя граница — финиш ПРЕДЫДУЩЕЙ попытки этой же сессии: терминал
+    // переиспользуют, стенограмма у задач общая, и без границы сюда
+    // приезжал расход предыдущих (memory-ryzym8rxhgex). Начало ЭТОЙ попытки
+    // границей быть не может: у записи, заведённой задним числом, оно
+    // синтетично и обрезало бы настоящую работу.
+    const prevEnd = swarm.attribution.previousAttemptEnd(who.sessionId, attemptId);
+    const read = readTranscriptUsage(path, prevEnd === undefined ? {} : { since: prevEnd });
     const model = attemptModel(swarm.db, attempt?.modelId ?? "");
     const check = checkTranscriptModels(read.models, model);
     if (!check.ok) {
@@ -1390,7 +1396,24 @@ export function recordedSpend(
       );
       return { ...spend, via: "none" };
     }
-    return { tokens: spendTokens(read), transcript: read, via: "recorded" };
+    const tokens = spendTokens(read);
+    // ОКНО ВЫРЕЗАЛО ВСЁ — ЭТО НЕ НОЛЬ, А ПОВОД СКАЗАТЬ. Нижняя граница
+    // отсекает работу той же сессии над предыдущими задачами, но если
+    // попытку завели ПОЗЖЕ, чем исполнитель начал, за границей окажется и
+    // настоящий расход. Записать ноль молча здесь — худшее из возможного
+    // (И2): человек увидит бесплатную попытку.
+    if (read.outsideWindow > 0 && Object.values(tokens).every((n) => n === 0)) {
+      ctx.warn(
+        "spend.outside_window",
+        `${attemptId}: usage not taken — all ${read.outsideWindow} records of ${path} are outside ` +
+          `the attempt window (the previous attempt of this session ended ` +
+          `${new Date(prevEnd!).toISOString()}); ` +
+          `if the executor began before the attempt was recorded, name the transcript: ` +
+          `myc attempt recost ${attemptId} --from-session ${who.sessionId} --apply`,
+      );
+      return { ...spend, via: "none" };
+    }
+    return { tokens, transcript: read, via: "recorded" };
   } catch (e) {
     const code = e instanceof TranscriptError ? e.code : "transcript.unreadable";
     ctx.warn(
@@ -2022,6 +2045,10 @@ function planRecost(
   explicit: { readonly file?: string; readonly session?: string } | undefined,
   warn: (code: string, msg: string) => void,
 ): RecostPlan {
+  // ОКНО РАСХОДА ОГРАНИЧЕНО С ОБЕИХ СТОРОН (memory-ryzym8rxhgex). Верхняя
+  // граница была: сессия исполнителя живёт и после приёмки. Нижней не было,
+  // и при переиспользовании терминала — одна сессия, задача за задачей — в
+  // расход попытки попадала вся предыдущая работа той же сессии.
   const until = attempt.finishedAt ?? undefined;
   const model = attemptModel(swarm.db, attempt.modelId);
   const decide = (read: TranscriptUsage, sessionId: string | null, why: string): RecostPlan => {
@@ -2041,6 +2068,12 @@ function planRecost(
     try {
       const path =
         explicit.file !== undefined ? expandHome(explicit.file) : locateSessionTranscript(explicit.session!, cwd);
+      // ЯВНО НАЗВАННУЮ СТЕНОГРАММУ ОКНО НЕ СУЖАЕТ СНИЗУ. Нижняя граница
+      // существует, чтобы разобраться в ОБЩЕЙ сессии, выбранной
+      // автоматически; здесь человек уже сказал, что читать, и обрезать его
+      // выбор началом попытки значило бы спорить с ним молча. Ровно так же
+      // здесь ведёт себя и проверка модели: «taken anyway because the
+      // transcript was named explicitly».
       read = readTranscriptUsage(path, { ...(until !== undefined ? { until } : {}) });
     } catch (e) {
       return refusedPlan(e, "named transcript not read", explicit.session ?? null);
@@ -2116,7 +2149,13 @@ function planRecost(
   let read: TranscriptUsage;
   try {
     path = sessionTranscriptPath(run!, who.sessionId, cwd);
-    read = readTranscriptUsage(path, { ...(until !== undefined ? { until } : {}) });
+    // Та же нижняя граница, что у финиша: конец предыдущей работы этой
+    // сессии (memory-ryzym8rxhgex).
+    const prevEnd = swarm.attribution.previousAttemptEnd(who.sessionId, attempt.attemptId);
+    read = readTranscriptUsage(path, {
+      ...(until !== undefined ? { until } : {}),
+      ...(prevEnd === undefined ? {} : { since: prevEnd }),
+    });
   } catch (e) {
     return refusedPlan(e, "executor transcript not found", who.sessionId);
   }

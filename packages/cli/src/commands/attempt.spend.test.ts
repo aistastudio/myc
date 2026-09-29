@@ -478,6 +478,66 @@ describe("attempt recost", () => {
     expect(r.envelope.error.code).toBe("notfound.session");
   });
 
+  /**
+   * memory-ryzym8rxhgex: терминал переиспользуют — одна сессия берёт задачу
+   * за задачей, и стенограмма у них ОБЩАЯ. Без нижней границы окна расход
+   * первой задачи приезжал во вторую: молча и тем сильнее, чем дольше живёт
+   * терминал.
+   */
+  test("вторая задача той же сессии не берёт расход первой", async () => {
+    // Одна сессия исполнителя, два ответа: до закрытия первой задачи и после.
+    writeTranscript(wt, EXEC, "claude-sonnet-5", [
+      { i: 1, o: 1, r: 5_000_000, w: 1, at: "2026-09-07T09:10:00.000Z" }, // работа над ПЕРВОЙ
+      { i: 2, o: 2, r: 11, w: 2, at: "2026-09-07T09:50:00.000Z" }, // работа над второй
+    ]);
+    const first = await newTask("Первая задача этой сессии");
+    const second = await newTask("Вторая задача той же сессии");
+    // Первая закрыта в 09:30 — всё, что после, принадлежит второй.
+    legacyAttempt({
+      task: first, model: "sonnet", session: EXEC, dispatch: true,
+      transcriptPath: null, spend: { i: 1, o: 1, r: 5_000_000, w: 1 },
+      finishedAt: Date.parse("2026-09-07T09:30:00Z"),
+    });
+    const secondAttempt = legacyAttempt({
+      task: second, model: "sonnet", session: EXEC, dispatch: true,
+      transcriptPath: null, spend: null, finishedAt: FINISHED,
+    });
+
+    const r = await json(main, "attempt", "recost", secondAttempt, "--apply");
+    expect(r.code).toBe(ExitCode.OK);
+    // 11, а не 5 000 011: чтения кеша первой задачи остались за границей.
+    expect(tokensOf(secondAttempt).r).toBe(11);
+  });
+
+  test("финиш второй задачи той же сессии не берёт расход первой", async () => {
+    // Тот же дефект, что у recost, но на пути ФИНИША: он читает стенограмму
+    // исполнителя сам, и без нижней границы окна складывал в расход всю
+    // сессию с начала (memory-ryzym8rxhgex).
+    //
+    // Первая попытка заводится с ЯВНЫМ временем финиша: граница окна — это
+    // она, и в тесте она обязана быть названной, а не взятой из часов стенда.
+    const first = await newTask("Первая задача терминала");
+    legacyAttempt({
+      task: first, model: "sonnet", session: EXEC, dispatch: true,
+      transcriptPath: null, spend: { i: 1, o: 1, r: 5_000_000, w: 1 },
+      finishedAt: Date.parse("2026-09-07T09:30:00Z"),
+    });
+
+    // ТОТ ЖЕ терминал берёт вторую задачу и дописывает в ТУ ЖЕ стенограмму.
+    const second = await newTask("Вторая задача того же терминала");
+    asExecutor();
+    expect((await json(wt, "attempt", "start", second, "--model", "sonnet")).code).toBe(ExitCode.OK);
+    writeTranscript(wt, EXEC, "claude-sonnet-5", [
+      { i: 1, o: 1, r: 5_000_000, w: 1, at: "2026-09-07T09:10:00.000Z" }, // первая задача
+      { i: 2, o: 2, r: 11, w: 2, at: "2026-09-07T09:50:00.000Z" }, // вторая
+    ]);
+    asCoordinator();
+    const r = await json(main, "attempt", "finish", "--task", second, "--verdict", "accepted");
+    expect(r.code).toBe(ExitCode.OK);
+    // 11, а не 5 000 011: чтения первой задачи остались за нижней границей.
+    expect(r.envelope.data.tokensCacheRead).toBe(11);
+  });
+
   test("явная сессия исполнителя чинит строку координатора", async () => {
     writeTranscript(main, COORD, "claude-opus-5", [COORD_USAGE]);
     writeTranscript(wt, EXEC, "claude-sonnet-5", [{ ...EXEC_USAGE, at: "2026-09-07T09:30:00.000Z" }]);

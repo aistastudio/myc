@@ -770,8 +770,15 @@ const absorb = async (client: any, sessionID: string): Promise<string> =>
 /** Сжатия, уже записанные основным хуком: страховка их не переписывает. */
 const handled = new Map<string, number>();
 const HANDLED_MS = 60000;
-/** Сессии, которым уже отдали prime: он стоит запроса, а не каждого запроса. */
-const primed = new Set<string>();
+/** Текст prime на сессию: считается один раз, кладётся в каждый запрос. */
+const primed = new Map<string, string>();
+/**
+ * Признак служебного запроса opencode. Отличить его больше нечем: на вход
+ * хука приходит только {sessionID, model}. Проверено на настоящем запуске
+ * opencode: у генератора заголовка первый системный промпт начинается с
+ * "You are a title generator" (memory-synef5yh4xf2).
+ */
+const SERVICE_PROMPT = /^\s*you are a (title|summary)/i;
 
 export const MycPlugin = async ({ client, directory }: { client: any; directory?: string }) => {
   if (typeof directory === "string" && directory.length > 0) DIR = directory;
@@ -804,8 +811,18 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
     },
     /**
      * prime вместо несуществующего session.start. Системный промпт — тот
-     * единственный канал, который у плагина есть: событие создания сессии
-     * текст доставить некуда.  Один раз на сессию, не на каждый запрос.
+     * единственный канал, который у плагина есть.
+     *
+     * КЛАДЁТСЯ В КАЖДЫЙ ЗАПРОС, А НЕ ОДИН РАЗ НА СЕССИЮ (memory-synef5yh4xf2,
+     * замерено на настоящем запуске opencode 1.18.31 с записью тел запросов).
+     * opencode зовёт этот хук на КАЖДЫЙ запрос к модели и собирает системный
+     * промпт заново — в историю он не пишется. А первым запросом новой
+     * сессии идёт ГЕНЕРАТОР ЗАГОЛОВКА, с тем же sessionID: «один раз на
+     * сессию» уезжал именно туда, и оба шага основного агента приходили без
+     * prime. В TUI агент не видел его практически никогда.
+     *
+     * Текст считается один раз и кешируется на сессию (запускать myc prime
+     * на каждый запрос к модели нельзя), а кладётся всегда.
      */
     "experimental.chat.system.transform": async (
       input: { sessionID?: string },
@@ -814,9 +831,15 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
       if (!${sessionStart ? "true" : "false"}) return;
       try {
         const id = input?.sessionID;
-        if (typeof id !== "string" || id.length === 0 || primed.has(id)) return;
-        primed.add(id);
-        const text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+        if (typeof id !== "string" || id.length === 0) return;
+        // Служебный вызов (генератор заголовка, сводка) — не агент: контекст
+        // ему не нужен, а прежняя логика уезжала ровно сюда.
+        if (SERVICE_PROMPT.test(output?.system?.[0] ?? "")) return;
+        let text = primed.get(id);
+        if (text === undefined) {
+          text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+          primed.set(id, text);
+        }
         if (text.trim().length > 0) output.system.push(text);
       } catch {}
     },
@@ -918,16 +941,24 @@ export function opencodeUserPlugin(opts: OpencodeUserPluginOptions): string {
   }
   if (opts.events.includes("session-start")) {
     hooks.push(`    // prime in place of the session.start opencode does not have: the system
-    // prompt is the one channel a plugin has. Once per session.
+    // prompt is the one channel a plugin has. Added to EVERY request, not once
+    // per session: opencode rebuilds the system prompt for each model call and
+    // the first call of a new session is the title generator, which is where
+    // "once per session" used to go (memory-synef5yh4xf2). The text itself is
+    // computed once and cached.
     "experimental.chat.system.transform": async (
       input: { sessionID?: string },
       output: { system: string[] },
     ): Promise<void> => {
       try {
         const id = input?.sessionID;
-        if (typeof id !== "string" || id.length === 0 || primed.has(id)) return;
-        primed.add(id);
-        const text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+        if (typeof id !== "string" || id.length === 0) return;
+        if (SERVICE_PROMPT.test(output?.system?.[0] ?? "")) return;
+        let text = primed.get(id);
+        if (text === undefined) {
+          text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+          primed.set(id, text);
+        }
         if (text.trim().length > 0) output.system.push(text);
       } catch {}
     },`);
@@ -1021,7 +1052,15 @@ function bin(): string {
 const handled = new Map<string, number>();
 const HANDLED_MS = 60000;
 /** Sessions that already got prime: it costs a request, not every request. */
-const primed = new Set<string>();
+/** The prime text per session: computed once, added to every request. */
+const primed = new Map<string, string>();
+/**
+ * How a service request of opencode is told apart. There is nothing else to
+ * go by: the hook receives only {sessionID, model}. Measured on a real
+ * opencode run — the title generator's first system prompt starts with
+ * "You are a title generator" (memory-synef5yh4xf2).
+ */
+const SERVICE_PROMPT = /^\s*you are a (title|summary)/i;
 
 // One set of hooks per opencode instance. A server process may serve several
 // directories and imports this module once, so the project directory lives in

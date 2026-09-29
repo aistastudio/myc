@@ -615,6 +615,36 @@ export class Attribution {
   }
 
   /**
+   * ГДЕ КОНЧИЛАСЬ ПРЕДЫДУЩАЯ РАБОТА ЭТОЙ СЕССИИ — нижняя граница окна
+   * расхода (memory-ryzym8rxhgex).
+   *
+   * Терминал переиспользуют: одна сессия исполнителя берёт задачу за
+   * задачей, и стенограмма у них ОБЩАЯ. Без нижней границы финиш складывал в
+   * расход попытки всю сессию с самого начала, то есть приписывал ей работу
+   * над предыдущими задачами — молча и тем сильнее, чем дольше живёт
+   * терминал.
+   *
+   * Границей взят финиш ПРЕДЫДУЩЕЙ попытки, а не начало этой, и это важно:
+   * `started_at` у записи, заведённой задним числом, синтетичен и обрезал бы
+   * настоящую работу. А всё, что случилось ПОСЛЕ закрытия прошлой задачи,
+   * принадлежит текущей по построению.
+   *
+   * `undefined` — предыдущей попытки нет, и граница не нужна.
+   */
+  previousAttemptEnd(sessionId: string, attemptId: string): number | undefined {
+    const row = this.#db
+      .query(
+        `SELECT max(a.finished_at) AS t
+           FROM swarm_attempt_run r JOIN swarm_attempt a ON a.attempt_id = r.attempt_id
+          WHERE r.session_id = ?1 AND r.attempt_id <> ?2 AND a.finished_at IS NOT NULL
+            AND a.finished_at <= COALESCE(
+                  (SELECT finished_at FROM swarm_attempt WHERE attempt_id = ?2), ?3)`,
+      )
+      .get(sessionId, attemptId, Number.MAX_SAFE_INTEGER) as { t: number | null } | null;
+    return row?.t == null ? undefined : Number(row.t);
+  }
+
+  /**
    * Наблюдение за процессом. ТОЛЬКО в сторону exited: воскрешать запись
    * нельзя — pid переиспользуются, и «был мёртв, стал жив» означало бы,
    * что мы приняли чужой процесс за свой. Возвращает true, если запись

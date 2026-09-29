@@ -409,8 +409,16 @@ for (const fn of Object.values(mod)) {
   out.keys = Object.keys(hooks);
   const sys = { system: [] };
   await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, sys);
-  await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, { system: [] });
+  // ВТОРОЙ запрос той же сессии: opencode собирает системный промпт заново
+  // на каждый вызов модели, поэтому prime обязан прийти и сюда.
+  const again = { system: [] };
+  await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, again);
+  // Служебный вызов (генератор заголовка) — контекст ему не нужен.
+  const service = { system: ["You are a title generator. Produce a short title."] };
+  await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, service);
   out.system = sys.system;
+  out.systemAgain = again.system;
+  out.systemService = service.system;
   await hooks["tool.execute.after"]?.({ tool: "edit", args: { filePath: directory + "/a.ts" } });
   const ctx = { context: [] };
   await hooks["experimental.session.compacting"]?.({ sessionID: "s1" }, ctx);
@@ -422,6 +430,10 @@ console.log(JSON.stringify(out));
 interface PluginRun {
   readonly keys: string[];
   readonly system: string[];
+  /** Системный промпт ВТОРОГО запроса той же сессии. */
+  readonly systemAgain: string[];
+  /** Системный промпт служебного вызова (генератор заголовка). */
+  readonly systemService: string[];
   readonly context: string[];
 }
 
@@ -456,7 +468,12 @@ describe("плагин пользовательского слоя opencode: к�
     expect((await myc(registry(), "wire", "--scope", "user", "--agents", "opencode")).code).toBe(0);
     const plain = join(root, "tunnel", "deep");
     mkdirSync(plain, { recursive: true });
-    expect(runPlugin(pluginPath(), plain, join(root, "tunnel"))).toEqual({ keys: [], system: [], context: [] });
+    expect(runPlugin(pluginPath(), plain, join(root, "tunnel"))).toMatchObject({
+      keys: [],
+      system: [],
+      systemAgain: [],
+      context: [],
+    });
     expect(mycCalls()).toEqual([]);
   });
 
@@ -480,9 +497,19 @@ describe("плагин пользовательского слоя opencode: к�
     const out = runPlugin(pluginPath(), sub, wt);
     expect(out.keys).toEqual(ALL_HOOKS);
     expect(out.system).toEqual(["PRIME-FROM-STUB\n"]);
+    // memory-synef5yh4xf2: opencode собирает системный промпт ЗАНОВО на
+    // каждый запрос к модели и в историю его не пишет, поэтому prime обязан
+    // приходить в каждый запрос — иначе агент видит его только в первом, а в
+    // новой сессии первым идёт генератор заголовка, и агент не видит вовсе.
+    expect(out.systemAgain).toEqual(["PRIME-FROM-STUB\n"]);
+    // А служебному вызову контекст не нужен: его системный промпт остаётся
+    // таким, каким пришёл.
+    expect(out.systemService).toEqual(["You are a title generator. Produce a short title."]);
     expect(out.context).toEqual(["PACKET-FROM-STUB\n"]);
     const calls = mycCalls();
-    // prime — ровно один раз на сессию, хоть хук и позван дважды; все вызовы — из каталога инстанса.
+    // Сам `myc prime` при этом запускается ОДИН раз: текст кешируется на
+    // сессию, иначе он шёл бы на каждый запрос к модели. Все вызовы — из
+    // каталога инстанса.
     expect(calls.filter((c) => c.includes(" prime "))).toEqual([`${sub} prime --budget 2000 --format agent --session s1`]);
     expect(calls).toContain(`${sub} anchor touch ${sub}/a.ts`);
     expect(calls.some((c) => c.startsWith(`${sub} absorb-session --reason compact --transcript - `))).toBe(true);
@@ -507,7 +534,13 @@ describe("плагин пользовательского слоя opencode: к�
     for (const dir of [wired, mcpOnly, pluginOnly]) {
       const sub = join(dir, "pkg");
       mkdirSync(sub, { recursive: true });
-      expect({ dir, ...runPlugin(pluginPath(), sub, dir) }).toEqual({ dir, keys: [], system: [], context: [] });
+      expect({ dir, ...runPlugin(pluginPath(), sub, dir) }).toMatchObject({
+        dir,
+        keys: [],
+        system: [],
+        systemAgain: [],
+        context: [],
+      });
     }
     expect(mycCalls()).toEqual([]);
 
