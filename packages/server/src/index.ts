@@ -374,6 +374,43 @@ const noPg = (): Response =>
     404,
   );
 
+/**
+ * ОТКАЗ СЕРВЕРА ВСЕГДА КОНВЕРТ, ДАЖЕ КОГДА НИКТО ЕГО НЕ ЖДАЛ
+ * (memory-3h980j79swnh).
+ *
+ * До этой правки ошибка, вылетевшая мимо явных catch, доставалась Bun, и
+ * снаружи приходило `500 Something went wrong!` — страница по умолчанию:
+ * без кода, без причины, не JSON. Ловилось на самом вероятном отказе боевой
+ * установки: соединение с Postgres поднимается в `authenticate`, то есть
+ * РАНЬШЕ разбора маршрута и раньше любого catch внутри него, и при лежащей
+ * базе каждый запрос с токеном получал эту страницу. Клиент не мог отличить
+ * «токен не тот» от «база недоступна», а стек уходил в журнал контейнера,
+ * то есть причина была известна и не доезжала до спросившего.
+ *
+ * Классификация ОДНА и живёт здесь: недоступная база — 503 `db.query`
+ * (тем же кодом отвечает разбор внутри воркспейса, и второй код для того же
+ * события означал бы, что клиенту надо знать оба), всё прочее — 500
+ * `internal.unexpected`. Наружу идёт текст ошибки, но не стек: сообщение
+ * драйвера называет причину, трассировка называет наше устройство.
+ */
+export function failureEnvelope(e: unknown, cmd: string, ws?: string): Response {
+  const msg = e instanceof Error ? e.message : String(e);
+  // Признак драйвера, а не наш: у ошибок подключения Postgres код лежит в
+  // `errno`/`code` (ECONNREFUSED, ENOTFOUND) либо в тексте — «connection»,
+  // «terminated», «timeout». Классифицируем по обоим, потому что драйвер
+  // отдаёт разные формы на разрыв и на недоступность.
+  const code = (e as { code?: unknown } | null)?.code;
+  const down =
+    (typeof code === "string" && /^(ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|EHOSTUNREACH)$/.test(code)) ||
+    /connect|connection|terminated|timeout|socket|closed/i.test(msg);
+  return json(
+    down
+      ? { ok: false, cmd, ...(ws === undefined ? {} : { ws }), error: { code: "db.query", msg } }
+      : { ok: false, cmd, ...(ws === undefined ? {} : { ws }), error: { code: "internal.unexpected", msg } },
+    down ? 503 : 500,
+  );
+}
+
 export function startHttpServer(config: ServerConfig): MycHttpServer {
   const dbPath = dbPathOf(config);
   const startedAt = Date.now();
@@ -384,6 +421,18 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
   const pg: PostgresDriver | undefined = config.pg === undefined ? undefined : openPostgres(config.pg);
 
   const fetch = async (req: Request): Promise<Response> => {
+    // ЕДИНСТВЕННАЯ ГРАНИЦА, ЗА КОТОРУЮ ОШИБКА НЕ УХОДИТ. Внутри есть свои
+    // catch там, где отказ ожидаем и у него своё имя; этот — для всего
+    // остального, включая `authenticate`, который ходит в Postgres РАНЬШЕ
+    // разбора маршрута (memory-3h980j79swnh).
+    try {
+      return await route(req);
+    } catch (e) {
+      return failureEnvelope(e, "serve");
+    }
+  };
+
+  const route = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
 
     // liveness: процесс жив, базу не трогаем — 200 всегда
@@ -394,6 +443,33 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
         uptime_s: Math.round((Date.now() - startedAt) / 1000),
         pid: process.pid,
       });
+    }
+
+    // ГОТОВНОСТЬ: база жива и схема та, которую знает этот бинарь.
+    //
+    // ОТДЕЛЬНО ОТ ЖИВОСТИ, И ЭТО НЕ УДВОЕНИЕ (memory-e66rf6qv5qfk).
+    // `/v1/health` намеренно не трогает базу: контейнер жив, даже когда
+    // Postgres лёг, и оркестратор не должен перезапускать его из-за чужой
+    // аварии. Но тогда у развёртывания не остаётся способа сказать «я готов
+    // принимать работу»: проба отвечала `ok`, трафик шёл, и каждый запрос с
+    // токеном получал отказ. Две пробы отвечают на два разных вопроса.
+    //
+    // БЕЗ ТОКЕНА — и потому МОЛЧАЛИВАЯ. Пробу зовёт оркестратор, у которого
+    // токена нет и быть не должно; значит наружу нельзя отдавать ни версию
+    // схемы, ни текст ошибки базы — это сведения о системе. Достаточно
+    // ok/не-ok и кода причины.
+    if (url.pathname === "/v1/readyz" && req.method === "GET") {
+      if (pg === undefined) {
+        // Без Postgres сервер — локальный срез над SQLite: готовность
+        // совпадает с живостью, и врать про базу, которой нет, незачем.
+        return json({ ok: true, db: "sqlite" });
+      }
+      try {
+        await pg.raw("SELECT 1");
+        return json({ ok: true, db: "postgres" });
+      } catch {
+        return json({ ok: false, error: { code: "db.unavailable" } }, 503);
+      }
     }
 
     // ВХОД БРАУЗЕРА. Единственный POST на сервере: страница админки — обычная
@@ -799,8 +875,9 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
           return envelope("node", ws, { ...renderNode(node), edges }, { took_ms: took() });
         }
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return json({ ok: false, cmd: "ws", ws, error: { code: "db.query", msg } }, 503);
+        // Та же классификация, что на внешней границе: два разбора одного
+        // события разъехались бы, и клиенту пришлось бы знать оба.
+        return failureEnvelope(e, "ws", ws);
       }
 
       return json(

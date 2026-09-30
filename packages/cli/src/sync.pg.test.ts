@@ -355,4 +355,17 @@ describe("обмен с сервером", () => {
     expect(byOther).not.toContain("секрет анны");
     expect(byOther).toContain("общая заметка");
   });
+
+  /**
+   * Вторая половина утверждения о готовности (memory-e66rf6qv5qfk): на
+   * мёртвой базе она отвечает 503 — это держит index.test.ts без Postgres;
+   * здесь проверяется, что на ЖИВОЙ она отвечает ok. Один тест без другого
+   * доказывает половину: «всегда 503» и «всегда 200» прошли бы каждый свой.
+   */
+  test("готовность на живой базе отвечает ok и не требует токена", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const r = await fetch(`${srv!.url}/v1/readyz`);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true, db: "postgres" });
+  });
 });

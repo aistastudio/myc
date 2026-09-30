@@ -167,6 +167,9 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
       "nobody can read the secret back. Revoking is one row: `--revoke-token tok_…`.\n\n" +
       "TLS is the deployment's job, not the server's: put it behind a reverse proxy and let it " +
       "set X-Forwarded-Proto, so the session cookie is issued with Secure.\n\n" +
+      "Two probes answer two different questions and neither needs a token: /v1/health is liveness — the " +
+      "process is up, and it deliberately never touches the database, so someone else's outage does not get " +
+      "the container restarted; /v1/readyz is readiness — the database answers, so work can be accepted.\n\n" +
       "Without --pg there are no tenants and no tokens: the server then serves the health trio " +
       "over the local SQLite workspace and binds 127.0.0.1, as `myc viz` does.",
     handler: async (ctx: CommandContext): Promise<CommandResult> => {

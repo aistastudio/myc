@@ -79,8 +79,18 @@ curl https://myc.example.com/v1/health
 # {"ok":true,"ver":"0.4.0","uptime_s":…,"pid":…}
 ```
 
-`/v1/health` is the only route without a token. Everything else answers 401
-until one is sent.
+Two probes, two questions, neither needs a token. `/v1/health` is liveness:
+the process is up. It never touches the database on purpose, so a Postgres
+outage does not get your container restarted. `/v1/readyz` is readiness: the
+database answers, so work can be accepted — point the orchestrator's traffic
+decision at this one.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://myc.example.com/v1/readyz
+# 200 while the database answers, 503 db.unavailable while it does not
+```
+
+Everything else answers 401 until a token is sent.
 
 ## 3. Tenants and tokens
 
@@ -223,7 +233,7 @@ import of an existing workspace.
 | `denied.scope: this token has no 'sync' scope` | the token is a `member`; mint one with `--role owner` or `--scopes …,sync` |
 | `usage.ws_mismatch` | the local slug and the server workspace differ — the message names both |
 | `precond.no_remote` | that command has no remote mode; run it locally |
-| health says `ok`, every other route `500 Something went wrong!` | the container is alive but cannot reach Postgres. The liveness probe knows nothing about the database on purpose; the 500 is a bare page with no code or reason (a known defect, memory-3h980j79swnh) — the reason is in the container log |
+| health says `ok`, every other route `503 db.query` | the container is alive but cannot reach Postgres. Liveness knows nothing about the database on purpose — ask `/v1/readyz`, which answers `503 db.unavailable` in exactly this case |
 | `/v1/readyz` answers `401`, and with a token `notfound.route` | there is no readiness route: `/v1/health` is liveness and knows nothing about the database on purpose. Point the orchestrator's probe at it and watch the database separately (memory-e66rf6qv5qfk) |
 
 ---

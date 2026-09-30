@@ -288,3 +288,70 @@ describe("myc serve (HTTP API, M0)", () => {
     60_000,
   );
 });
+
+/**
+ * ОТКАЗ ПРИ НЕДОСТУПНОЙ БАЗЕ — КОНВЕРТОМ, И ГОТОВНОСТЬ ОТДЕЛЬНО ОТ ЖИВОСТИ
+ * (memory-3h980j79swnh, memory-e66rf6qv5qfk).
+ *
+ * Postgres здесь НЕ НУЖЕН, и это не экономия: предмет проверки — поведение
+ * сервера, когда базы нет, и заведомо закрытый порт даёт его точнее и
+ * дешевле, чем живая база, которую пришлось бы ронять посреди теста.
+ *
+ * Мутации, которые этот describe обязан ловить (обе проверены прогоном):
+ *   1) снять внешний try/catch вокруг обработчика — запрос с токеном снова
+ *      получает страницу Bun «Something went wrong!» вместо конверта;
+ *   2) убрать маршрут `/v1/readyz` — готовность отвечает notfound.route, и
+ *      у оркестратора снова нет способа отличить «жив» от «работает».
+ */
+describe("недоступная база: живость, готовность и отказ", () => {
+  const DEAD = "postgres://myc_app:myc@127.0.0.1:59999/nope";
+  let srv: MycHttpServer | undefined;
+
+  beforeEach(() => {
+    srv = startHttpServer({ port: 0, db: join(tmpdir(), "no-such-myc.db"), pg: DEAD });
+  });
+  afterEach(() => {
+    srv?.stop();
+    srv = undefined;
+  });
+
+  test("живость отвечает ok: контейнер жив, и чужая авария его не роняет", async () => {
+    const r = await fetch(`${srv!.url}/v1/health`);
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { ok: boolean }).ok).toBe(true);
+  });
+
+  test("готовность отвечает 503 с кодом и без подробностей о системе", async () => {
+    const r = await fetch(`${srv!.url}/v1/readyz`);
+    expect(r.status).toBe(503);
+    const body = (await r.json()) as { ok: boolean; error: { code: string } };
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("db.unavailable");
+    // Пробу зовёт оркестратор без токена: ни версии схемы, ни текста ошибки
+    // базы наружу — это сведения о системе.
+    expect(JSON.stringify(body)).not.toContain("59999");
+  });
+
+  test("запрос с токеном — КОНВЕРТ с кодом, а не страница Bun", async () => {
+    const r = await fetch(`${srv!.url}/v1/ws/acme/ready`, {
+      headers: { authorization: "Bearer myc_whatever" },
+    });
+    expect(r.status).toBe(503);
+    expect(r.headers.get("content-type")).toContain("application/json");
+    const body = (await r.json()) as { ok: boolean; error: { code: string; msg: string } };
+    expect(body.ok).toBe(false);
+    // Именно недоступность базы, а не «токен не тот»: клиент обязан их
+    // различать, иначе будет чинить не то.
+    expect(body.error.code).toBe("db.query");
+    expect(body.error.msg.length).toBeGreaterThan(0);
+    // Стек наружу не идёт: сообщение драйвера называет причину, трассировка
+    // называет наше устройство.
+    expect(body.error.msg).not.toContain("    at ");
+  });
+
+  test("без токена причина по-прежнему своя: доступ проверяется раньше базы", async () => {
+    const r = await fetch(`${srv!.url}/v1/ws/acme/ready`);
+    expect(r.status).toBe(401);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe("denied.no_token");
+  });
+});
