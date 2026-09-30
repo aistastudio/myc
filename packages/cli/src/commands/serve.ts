@@ -138,6 +138,17 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
       { name: "pg", value: "string", description: "Postgres URL; without it the server is a local health slice over SQLite" },
       { name: "add-tenant", value: "string", description: "register a tenant: <id>[:title]; tokens are issued under it" },
       { name: "add-token", value: "string", description: "mint an access token: <tenant>:<name>; the secret is printed once" },
+      // Роль и права ОБЪЯВЛЕНЫ, а не только прочитаны (memory-c1m2apmnhf42):
+      // без объявления разбор отвергал их как неизвестные, и выпустить можно
+      // было только member — а у member нет права `sync`, то есть токен для
+      // обмена не выдавался из CLI вовсе.
+      { name: "role", value: "string", description: `role of the new token: ${ROLES.join("|")} (default member)` },
+      {
+        name: "scopes",
+        value: "string",
+        description: `narrow the role's rights: comma-separated ${SCOPES.join(",")} (default: whatever the role means)`,
+      },
+      { name: "token-ws", value: "string", description: "bind the new token to one workspace (default: every workspace of the tenant)" },
       { name: "revoke-token", value: "string", description: "revoke a token by its id" },
       { name: "tokens", description: "list tokens: who holds them and when each was last used, never the secrets" },
       { name: "apply-schema", description: "create the schema in an EMPTY database and exit; an existing one is left alone" },

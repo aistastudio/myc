@@ -8,6 +8,32 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+
+    # Postgres ПОДНЯТ ЗДЕСЬ, а не «по возможности». Десять файлов `*.pg.test.ts`
+    # — весь серверный слой, обмен и RLS — пропускали себя без MYC_PG_URL, и на
+    # раннере не выполнялись ни разу: зелёный прогон ничего не говорил про
+    # сервер. Образ тот же, что у разработчика и у deploy/compose.yml
+    # (pgvector поверх Postgres 17): halfvec и HNSW нужны схеме.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: myc
+          POSTGRES_DB: myc
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d myc"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # Тесты подключаются суперпользователем и сами заводят роль myc_app,
+      # под которой работает сервер: RLS суперпользователя не касается, и
+      # проверять изоляцию под ним значит не проверять её вовсе.
+      MYC_PG_URL: postgres://postgres:myc@127.0.0.1:55432/myc
+
     steps:
       - uses: actions/checkout@v4
 
