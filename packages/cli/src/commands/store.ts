@@ -71,9 +71,7 @@ import {
   appliedSchemaVersion,
   migrate,
   migrations,
-  migrateVectors,
-  vectorMigrations,
-  VEC_MIGRATIONS_TABLE,
+  ensureVectorSchema,
   GraphStore,
   Claims,
   type GraphStoreOptions,
@@ -510,48 +508,6 @@ type OpenWorkspaceResult =
   | { readonly ok: false; readonly failure: CommandFailure };
 
 /** Версия векторного набора в базе; `null` — таблицы учёта ещё нет. */
-function vecSchemaVersion(d: CliDriver): number | null {
-  try {
-    const row = d.database
-      .query(`SELECT max(version) AS v FROM ${VEC_MIGRATIONS_TABLE}`)
-      .get() as { v: number | null } | null;
-    return row?.v ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Накат векторного набора с терпимостью к ОДНОВРЕМЕННОМУ первому открытию.
- *
- * Векторные миграции по своей природе идут БЕЗ транзакции (vec.ts: откат
- * CREATE VIRTUAL TABLE с shadow-таблицами vec0 движок не гарантирует), а
- * значит проверка «версия отстаёт» и сам накат не атомарны. Пока набор звали
- * только тесты и бенчи, это ничего не стоило. С S45 его зовёт `recall` — то
- * есть команда, которую агенты запускают параллельно десятками процессов, и
- * первое же открытие свежего воркспейса стало гонкой: замер до этой правки —
- * 15 отказов `table nodes_vec already exists` на 36 одновременных recall.
- *
- * Проигравший в гонке не пострадавший: набор у него применит победитель, и
- * достаточно дождаться и перечитать таблицу учёта. Ждём так же, как этажом
- * выше ждут чужой write-lock, — ограниченным числом коротких попыток, а не
- * бесконечно. SchemaError (расхождение версии/контрольной суммы) не гонка и
- * пробрасывается сразу.
- */
-async function ensureVectorSchema(d: CliDriver, maxVecKnown: number): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (vecSchemaVersion(d) === maxVecKnown) return;
-    try {
-      await migrateVectors(d.database, { vec0Loaded: true, writable: true });
-      return;
-    } catch (e) {
-      if (e instanceof SchemaError) throw e;
-      if (attempt === 49) throw e;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Присвоение охвата репозитория (S59, packages/core/src/repo.ts)
 // ---------------------------------------------------------------------------
@@ -604,7 +560,6 @@ async function openWorkspaceAt(
   // Открытие/миграция при конкурентном CLI может упереться в чужой
   // write-lock (миграция держит его дольше busy_timeout): ждём до ~5 с.
   const maxKnown = migrations.reduce((m, mig) => Math.max(m, mig.version), 0);
-  const maxVecKnown = vectorMigrations.reduce((m, mig) => Math.max(m, mig.version), 0);
   let driver: CliDriver | undefined;
   let lastError: unknown;
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -623,7 +578,7 @@ async function openWorkspaceAt(
         // созданную без расширения: её базовая схема к векторам не
         // прикасалась, поэтому накат — чистое добавление объектов, без
         // пересоздания и без миграции данных (S45).
-        if (d.vec0) await ensureVectorSchema(d, maxVecKnown);
+        if (d.vec0) await ensureVectorSchema(d.database);
       } catch (e) {
         d.close();
         if (e instanceof SchemaError) {

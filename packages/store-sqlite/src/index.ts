@@ -245,6 +245,8 @@ export {
 
 export { migrations, migration001Init, vecMigration001Init } from "./migrations/index.ts";
 export {
+  appliedVectorVersion,
+  ensureVectorSchema,
   migrateVectors,
   vectorMigrations,
   VEC_MIGRATIONS_TABLE,

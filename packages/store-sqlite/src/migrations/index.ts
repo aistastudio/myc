@@ -76,6 +76,8 @@ export { migration014ReadyNoEpics } from "./014-ready-no-epics.ts";
 export { migration015CommentsNotContent } from "./015-comments-not-content.ts";
 export { vecMigration001Init } from "./vec-001-init.ts";
 export {
+  appliedVectorVersion,
+  ensureVectorSchema,
   migrateVectors,
   vectorMigrations,
   VEC_MIGRATIONS_TABLE,

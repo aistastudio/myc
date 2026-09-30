@@ -103,9 +103,8 @@ function assertObjectsPresent(db: Database, migration: Migration): void {
  * проигравший получит `table nodes_vec already exists`. Это не гипотеза —
  * замер на CLI после S45 (myc-ye3.8): 15 отказов на 36 одновременных
  * `recall`. Ждать и перечитывать обязан ВЫЗЫВАЮЩИЙ, там же, где он уже ждёт
- * чужой write-lock при открытии (packages/cli/src/commands/store.ts,
- * ensureVectorSchema). Следующая поверхность, которая позовёт этот набор
- * (MCP — myc-6lc), обязана сделать то же самое.
+ * чужой write-lock при открытии. Ожидание живёт ниже, в `ensureVectorSchema`
+ * этого же файла, и обе поверхности — CLI и MCP — зовут именно её.
  */
 export async function migrateVectors(
   db: Database,
@@ -188,4 +187,53 @@ export async function migrateVectors(
     skipped: false,
     degraded: [],
   };
+}
+
+/**
+ * Накат векторного набора с терпимостью к ОДНОВРЕМЕННОМУ первому открытию —
+ * ЕДИНСТВЕННАЯ реализация этого ожидания (memory-dm7p05hyskv9).
+ *
+ * Векторные миграции по своей природе идут БЕЗ транзакции (выше: откат
+ * виртуальной таблицы vec0 внутри BEGIN не работает), поэтому чтение таблицы
+ * учёта и создание объектов разнесены во времени: два процесса, открывшие
+ * свежую базу одновременно, оба видят «набор не применён», и проигравший
+ * получает `table nodes_vec already exists`. Замер на CLI после S45: 15
+ * отказов на 36 одновременных `recall`.
+ *
+ * Проигравший в гонке не пострадавший: набор у него применит победитель, и
+ * достаточно дождаться и перечитать таблицу учёта. Ждём ограниченным числом
+ * коротких попыток, а не бесконечно — так же, как этажом выше ждут чужой
+ * write-lock. SchemaError (расхождение версии или контрольной суммы) — не
+ * гонка, и пробрасывается сразу.
+ *
+ * Жило это ожидание в ДВУХ копиях — у CLI (store.ts) и у MCP (mcp/store.ts),
+ * — и копии уже разошлись: MCP писал имя таблицы учёта строкой мимо
+ * VEC_MIGRATIONS_TABLE, а «набора нет» обозначал нулём вместо null. Обе
+ * поверхности зовут теперь эту функцию.
+ */
+export async function ensureVectorSchema(db: Database, attempts = 50): Promise<void> {
+  const maxKnown = vectorMigrations.reduce((m, mig) => Math.max(m, mig.version), 0);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (appliedVectorVersion(db) === maxKnown) return;
+    try {
+      await migrateVectors(db, { vec0Loaded: true, writable: true });
+      return;
+    } catch (e) {
+      if (e instanceof SchemaError) throw e;
+      if (attempt === attempts - 1) throw e;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+}
+
+/** Версия применённого векторного набора; null — таблицы учёта ещё нет. */
+export function appliedVectorVersion(db: Database): number | null {
+  try {
+    const row = db
+      .query(`SELECT max(version) AS v FROM ${VEC_MIGRATIONS_TABLE}`)
+      .get() as { v: number | null } | null;
+    return row?.v ?? null;
+  } catch {
+    return null;
+  }
 }

@@ -167,4 +167,59 @@ describe("MCP: стор с расширениями", () => {
       else process.env.MYC_SQLITE = saved;
     }
   });
+
+  /**
+   * ГОНКА ПЕРВОГО ОТКРЫТИЯ НА ПОВЕРХНОСТИ MCP (memory-dm7p05hyskv9).
+   *
+   * Векторные миграции идут БЕЗ транзакции, поэтому проверка «версия
+   * отстаёт» и сам накат не атомарны: два процесса, открывшие свежую базу
+   * одновременно, оба видят «набор не применён», и проигравший получает
+   * `table nodes_vec already exists`. На CLI это измерено (15 отказов на 36
+   * одновременных `recall`) и закрыто ожиданием; MCP-путь звал `migrateVectors`
+   * своей копией того же ожидания, и копии уже разошлись — имя таблицы учёта
+   * писалось строкой мимо `VEC_MIGRATIONS_TABLE`. Теперь обе поверхности
+   * зовут одну `ensureVectorSchema` из store-sqlite, и этот тест держит её
+   * со стороны MCP.
+   *
+   * Настоящие процессы, а не имитация: гонка живёт между процессами.
+   *
+   * Мутация, которую тест обязан ловить: заменить в openMcpStore вызов
+   * `ensureVectorSchema(driver.database)` на голый
+   * `migrateVectors(driver.database, { vec0Loaded: true, writable: true })`.
+   * Проверено тремя прогонами: 10, 12 и 12 отказов `already exists` из 12
+   * процессов. С ожиданием — пять прогонов подряд по 0.
+   */
+  test("двенадцать одновременных открытий стора: ни одного отказа, набор накатан один раз", async () => {
+    const WORKER = join(import.meta.dir, "store.vector.worker.ts");
+    const WORKERS = 12;
+    // Общий момент старта: без него процессы доходят до открытия по
+    // очереди и гонки не выходит вовсе — см. комментарий в воркере.
+    const startAt = Date.now() + 1500;
+    const procs = Array.from({ length: WORKERS }, () =>
+      Bun.spawn([process.execPath, WORKER, dir, String(startAt)], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, NODE_ENV: "test", MYC_ACTOR: "tester" },
+      }),
+    );
+    const codes = await Promise.all(procs.map((p) => p.exited));
+    const errors = await Promise.all(procs.map((p) => new Response(p.stderr).text()));
+    expect(errors.filter((e) => e.includes("already exists"))).toEqual([]);
+    expect(codes).toEqual(Array.from({ length: WORKERS }, () => 0));
+
+    if (VEC0) {
+      // Ровно один комплект записей учёта: победитель накатил, проигравшие
+      // дождались и перечитали, а не накатили поверх.
+      const db = new Database(join(dir, ".myc", "myc.db"), { readonly: true });
+      try {
+        const rows = db
+          .query("SELECT version, count(*) AS n FROM schema_migrations_vec GROUP BY version")
+          .all() as Array<{ version: number; n: number }>;
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.filter((r) => r.n !== 1)).toEqual([]);
+      } finally {
+        db.close();
+      }
+    }
+  }, 60_000);
 });
