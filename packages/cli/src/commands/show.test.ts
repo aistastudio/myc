@@ -469,6 +469,74 @@ async function spawnWorker(args: string[]): Promise<WorkerOut> {
   return JSON.parse(out.trim().split("\n").at(-1)!) as WorkerOut;
 }
 
+/**
+ * ВХОДЫ ПРАВИЛА СЛИЯНИЯ, а не только его итог (memory-aa64aacm9w46).
+ *
+ * `show.test.ts` один раз упал в полном прогоне на слиянии оплога и не
+ * воспроизвёлся: 15 отдельных прогонов при первом разборе, 60 при втором,
+ * плюс полный прогон под load 24 — ноль падений. Разбирать было нечего:
+ * сравнение двух списков id говорит, ЧТО разошлось, и ничего не говорит,
+ * ПОЧЕМУ. Голову цепочки выбирает LWW по (hlc, site_id), поэтому следующий
+ * случай обязан прийти с этими числами — с обеих машин.
+ *
+ * Проверено мутацией (убрать импорт ветки A в B): падение печатает 38 строк
+ * оплога обеих машин с seq, site, hlc, origin и значением поля — и то же
+ * расхождение теперь объяснимо по одному журналу CI.
+ */
+function lwwEvidence(root: string, ids: readonly string[]): string[] {
+  const db = new Database(join(root, ".myc", "myc.db"), { readonly: true });
+  try {
+    const out: string[] = [];
+    for (const row of db
+      .query(
+        `SELECT id, head_id, status FROM nodes WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY id`,
+      )
+      .all(...ids) as Array<{ id: string; head_id: string | null; status: string }>) {
+      out.push(`${root}: узел ${row.id} head_id=${row.head_id ?? "null"} status=${row.status}`);
+    }
+    // Не весь оплог, а то, чем решается спор: цепочку задают head_id,
+    // status и рёбра supersedes. Полный дамп — восемьдесят строк на машину,
+    // и нужное в нём тонет.
+    for (const row of db
+      .query(
+        `SELECT seq, site_id, hlc, op, entity, entity_id, field, value, origin
+           FROM oplog
+          WHERE (entity_id IN (${ids.map(() => "?").join(",")})
+                 OR ${ids.map(() => "entity_id LIKE ?").join(" OR ")})
+            AND (field IN ('head_id', 'status') OR op LIKE 'edge%')
+          ORDER BY seq`,
+      )
+      .all(...ids, ...ids.map((id) => `%${id}%`)) as Array<Record<string, unknown>>) {
+      out.push(
+        `${root}: seq=${row["seq"]} site=${row["site_id"]} hlc=${row["hlc"]} origin=${row["origin"]} ` +
+          `${row["op"]} ${row["entity"]} ${row["entity_id"]} ${row["field"] ?? ""}=${row["value"] ?? ""}`,
+      );
+    }
+    return out;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Пусто, когда списки совпали; иначе — расхождение И его входы. Форма
+ * «ожидается пустой список» выбрана затем, что bun печатает разницу целиком:
+ * в журнале CI окажутся все строки оплога обеих машин.
+ */
+function sameOrEvidence(
+  label: string,
+  got: readonly string[],
+  want: readonly string[],
+  roots: readonly string[],
+  ids: readonly string[],
+): string[] {
+  if (got.length === want.length && got.every((v, i) => v === want[i])) return [];
+  return [
+    `${label}: получено [${got.join(", ")}], ожидалось [${want.join(", ")}]`,
+    ...roots.flatMap((r) => lwwEvidence(r, ids)),
+  ];
+}
+
 describe("слияние двух веток оплога: цепочка цела и порядок не важен", () => {
   test(
     "две машины надстроили свою версию над общим предком — обе сходятся к одной цепочке",
@@ -523,17 +591,30 @@ describe("слияние двух веток оплога: цепочка цел
       const chainA = await showJson<ShowView>(A, ancestor, "--chain");
       const chainB = await showJson<ShowView>(B, ancestor, "--chain");
 
+      const roots = [A, B] as const;
+
       // 1. Ни одна версия не потеряна ни на одной машине.
-      expect([...chainA.chain!.map((c) => c.id)].sort()).toEqual(all);
-      expect([...chainB.chain!.map((c) => c.id)].sort()).toEqual(all);
+      expect(sameOrEvidence("состав цепочки A", [...chainA.chain!.map((c) => c.id)].sort(), all, roots, all))
+        .toEqual([]);
+      expect(sameOrEvidence("состав цепочки B", [...chainB.chain!.map((c) => c.id)].sort(), all, roots, all))
+        .toEqual([]);
 
       // 2. Порядок применения не изменил итог: обе машины видят одно и то же.
-      expect(chainB.chain!.map((c) => c.id)).toEqual(chainA.chain!.map((c) => c.id));
+      expect(
+        sameOrEvidence(
+          "порядок цепочки",
+          chainB.chain!.map((c) => c.id),
+          chainA.chain!.map((c) => c.id),
+          roots,
+          all,
+        ),
+      ).toEqual([]);
 
       // 3. Актуальная версия одна и та же — расхождения нет.
       const headA = chainA.chain!.find((c) => c.current)!.id;
       const headB = chainB.chain!.find((c) => c.current)!.id;
-      expect(headB).toBe(headA);
+      expect(sameOrEvidence("голова цепочки", [headB], [headA], roots, all)).toEqual([]);
+      // Здесь входы не нужны: сообщение само называет голову и обе ветки.
       expect([va.id, vb.id]).toContain(headA);
 
       // 4. Развилка не замолчана: обе ветки названы, на обеих машинах одинаково.
