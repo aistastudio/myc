@@ -144,8 +144,12 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
       // обмена не выдавался из CLI вовсе.
       { name: "role", value: "string", description: `role of the new token: ${ROLES.join("|")} (default member)` },
       {
+        // list: true — обещание из описания: запятая значит, что флаг
+        // накапливается, а не съедает предыдущее значение. Сторож
+        // flags.list.test.ts держит это соответствие.
         name: "scopes",
         value: "string",
+        list: true,
         description: `narrow the role's rights: comma-separated ${SCOPES.join(",")} (default: whatever the role means)`,
       },
       { name: "token-ws", value: "string", description: "bind the new token to one workspace (default: every workspace of the tenant)" },

@@ -137,12 +137,17 @@ describe("myc serve --add-token: роль, права и воркспейс за
     expect(r.env.data.scopes.split(",")).toContain("sync");
   });
 
-  test("--scopes сужает права роли явно", async () => {
+  test("--scopes сужает права роли явно и НАКАПЛИВАЕТСЯ", async () => {
     if (skip !== null) return void console.log(`[skip] ${skip}`);
     const r = await mint("acme:bot", "--role", "owner", "--scopes", "read,sync");
     expect([r.code, r.env.error ?? null]).toEqual([ExitCode.OK, null]);
     expect(r.env.data.role).toBe("owner");
     expect(r.env.data.scopes).toBe("read,sync");
+    // Описание обещает запятую, значит повтор флага складывается, а не съедает
+    // первое значение (flags.list.test.ts держит это обещание для всех флагов).
+    const twice = await mint("acme:bot2", "--role", "owner", "--scopes", "read", "--scopes", "sync");
+    expect([twice.code, twice.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    expect(twice.env.data.scopes).toBe("read,sync");
   });
 
   test("--token-ws привязывает токен к одному воркспейсу", async () => {

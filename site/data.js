@@ -328,8 +328,8 @@ window.MYC_DATA = {
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 5.06,
-    "unpacked_mb": 15.63,
+    "compressed_mb": 5.1,
+    "unpacked_mb": 15.79,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.3.14",
+    "version": "0.4.0",
     "date": "2026-09-19"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-09-19",
-    "source": "myc 0.3.14 (schema 1) · 13 epics of this repository's workspace",
+    "as_of": "2026-09-30",
+    "source": "myc 0.4.0 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -515,29 +515,11 @@ window.MYC_DATA = {
         "title_en": "team: myc serve, ACL, network sync, Postgres",
         "title_ru": "команда: myc serve, ACL, сетевая синхронизация, Postgres",
         "status": "open",
-        "done": 3,
-        "total": 14,
+        "done": 10,
+        "total": 15,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          {
-            "id": "memory-0sbdhdt7fm36",
-            "status": "open",
-            "priority": 1,
-            "title": "myc sync и разрешение конфликтов"
-          },
-          {
-            "id": "memory-2xgh8mg2fs24",
-            "status": "open",
-            "priority": 1,
-            "title": "Postgres DDL и pgvector HNSW halfvec"
-          },
-          {
-            "id": "memory-bjy6fq9kxj47",
-            "status": "open",
-            "priority": 1,
-            "title": "myc serve: HTTP API, Bearer, мульти-воркспейс"
-          },
           {
             "id": "memory-czm24d25q295",
             "status": "open",
@@ -545,28 +527,10 @@ window.MYC_DATA = {
             "title": "Приёмка M4: команда на общей базе"
           },
           {
-            "id": "memory-dastrwgyzty9",
+            "id": "memory-f0gj4xdwrje0",
             "status": "open",
             "priority": 1,
-            "title": "Сетевая синхронизация поверх готового обмена оплогом"
-          },
-          {
-            "id": "memory-w0r3vhgkxmsw",
-            "status": "open",
-            "priority": 1,
-            "title": "ACL: четыре уровня, фильтр до ранжирования"
-          },
-          {
-            "id": "memory-3n0svbkbjaew",
-            "status": "open",
-            "priority": 2,
-            "title": "Контейнеры и compose-топология"
-          },
-          {
-            "id": "memory-gpknypxyk91j",
-            "status": "open",
-            "priority": 2,
-            "title": "Веб-визуализация графа"
+            "title": "Гибридный поиск на Postgres: tsvector как лексический источник и HNSW halfvec как векторный"
           },
           {
             "id": "memory-krn44m79r4dr",
@@ -1352,6 +1316,37 @@ window.MYC_DATA = {
             "ru": "<code>doctor</code> предупреждает, когда прогон якорей или индекс кода не шли два своих периода, а работа в воркспейсе шла; сборка проверяет, что новый бинарь делает фоновую работу, прежде чем заменить старый."
           }
         ]
+      },
+      {
+        "key": "team",
+        "title_en": "Team server",
+        "title_ru": "Командный сервер",
+        "items": [
+          {
+            "since": "0.4.0",
+            "cmd": "myc serve --pg <url>",
+            "en": "A team server over Postgres: HTTP API per workspace, row-level isolation between tenants, and an admin page that asks a browser for a token in a form and keeps it in an HttpOnly cookie. Everything but the liveness probe needs a token.",
+            "ru": "Командный сервер над Postgres: HTTP API на воркспейс, изоляция арендаторов на уровне строк и админка, которая спрашивает у браузера токен формой и держит его в HttpOnly-куке. Всё, кроме пробы живости, требует токена."
+          },
+          {
+            "since": "0.4.0",
+            "cmd": "myc serve --pg <url> --add-token acme:anna --role owner",
+            "en": "Tokens per person or agent, with roles and rights: the secret is printed once and only its sha256 is stored, so a copy of the database gives no access. The right to pull a replica is separate from the right to read, because a replica is not filtered by the visibility predicate.",
+            "ru": "Токен на человека или агента, с ролью и правами: секрет печатается один раз, хранится только его sha256, поэтому копия базы доступа не даёт. Право забрать реплику отделено от права читать: реплика не фильтруется предикатом видимости."
+          },
+          {
+            "since": "0.4.0",
+            "cmd": "myc sync",
+            "en": "Exchange with the server in both directions: operations, not rows — deduplicated by op_id, replayed through the same CRDT path as a git merge, with a cursor per site, so repeating it changes nothing and an interrupted exchange resumes.",
+            "ru": "Обмен с сервером в обе стороны: операции, а не строки — дедупликация по op_id, воспроизведение тем же путём CRDT, что и слияние в git, курсор на каждый сайт, поэтому повтор ничего не меняет, а оборванный обмен продолжается."
+          },
+          {
+            "since": "0.4.0",
+            "cmd": "myc ready",
+            "en": "Part of the CLI works against a server through MYC_SERVER and MYC_TOKEN — creating nodes, update, claim, list, ready, show, prime and sync. Every other command refuses out loud instead of quietly using the local database.",
+            "ru": "Часть CLI работает против сервера через MYC_SERVER и MYC_TOKEN — создание узлов, update, claim, list, ready, show, prime и sync. Остальные команды отказывают вслух, а не уходят молча в локальную базу."
+          }
+        ]
       }
     ]
   },
@@ -1439,31 +1434,6 @@ window.MYC_DATA = {
         "ru": "Сегодня myc однопользовательский, над файлами в git. M4 — командная половина; от сервера пока есть только пакет с эндпоинтами здоровья и без команды.",
         "items": [
           {
-            "id": "memory-bjy6fq9kxj47",
-            "en": "<code>myc serve</code>: an HTTP API with Bearer tokens and several workspaces in one process that cannot see each other's data.",
-            "ru": "<code>myc serve</code>: HTTP API с Bearer-токенами и несколькими воркспейсами в одном процессе, не видящими данных друг друга."
-          },
-          {
-            "id": "memory-w0r3vhgkxmsw",
-            "en": "ACL at four levels — private, team, restricted, agent — filtered before ranking, compiled into every retrieval query.",
-            "ru": "ACL на четыре уровня — private, team, restricted, agent — с фильтром до ранжирования, вкомпилированным в каждый запрос ретривала."
-          },
-          {
-            "id": "memory-0sbdhdt7fm36",
-            "en": "<code>myc sync</code>: exchange the oplog with a server from a sequence number; three clients with offline edits converge in any order.",
-            "ru": "<code>myc sync</code>: обмен оплогом с сервером начиная с номера операции; три клиента с офлайн-правками сходятся в любом порядке."
-          },
-          {
-            "id": "memory-dastrwgyzty9",
-            "en": "Network sync over the oplog exchange git already proves: same oplog, same deduplication, a different transport.",
-            "ru": "Сетевая синхронизация поверх обмена оплогом, уже доказанного через git: тот же оплог, та же дедупликация, другой транспорт."
-          },
-          {
-            "id": "memory-2xgh8mg2fs24",
-            "en": "A Postgres store — tsvector and pgvector HNSW over halfvec — passing the same query set as SQLite with the same results.",
-            "ru": "Хранилище на Postgres — tsvector и pgvector HNSW по halfvec, — проходящее тот же набор запросов, что и SQLite, с теми же результатами."
-          },
-          {
             "id": "memory-zzz7w3c8dc6x",
             "en": "Migration from SQLite to Postgres without loss and without re-embedding when the embedding fingerprint matches.",
             "ru": "Переезд с SQLite на Postgres без потерь и без пересчёта векторов, если совпал отпечаток эмбеддингов."
@@ -1477,16 +1447,6 @@ window.MYC_DATA = {
             "id": "memory-s8zk9v8h5rp0",
             "en": "MCP profiles for a leader agent and a full one, narrowed by the role of the token when working through the server.",
             "ru": "MCP-профили для ведущего агента и полный, суженные ролью токена при работе через сервер."
-          },
-          {
-            "id": "memory-3n0svbkbjaew",
-            "en": "Containers and a compose topology: myc plus pgvector, an optional embedder sidecar, health and readiness endpoints.",
-            "ru": "Контейнеры и compose-топология: myc и pgvector, необязательный сайдкар эмбеддера, эндпоинты здоровья и готовности."
-          },
-          {
-            "id": "memory-gpknypxyk91j",
-            "en": "A graph view served by the server for large graphs; the local <code>myc viz</code> graph already lays out up to 25 000 nodes.",
-            "ru": "Представление графа, отдаваемое сервером, для больших графов; локальный граф <code>myc viz</code> уже раскладывает до 25 000 узлов."
           },
           {
             "id": "memory-czm24d25q295",
@@ -1640,16 +1600,16 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4148,
+    "pass": 4166,
     "fail": 0,
     "skip": 16,
-    "files": 274,
-    "assertions": 38212,
-    "seconds": 425.6,
-    "sources": "2020bad0f944e5d0",
+    "files": 276,
+    "assertions": 38294,
+    "seconds": 497.6,
+    "sources": "2c09e890749dc62a",
     "date": "2026-09-30",
-    "myc": "0.3.14"
+    "myc": "0.4.0"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-30T05:59:36.138Z", assertions: 77 };
-window.MYC_DATA.release = "0.3.14";
+window.MYC_DATA.verified = { at: "2026-09-30T11:49:43.385Z", assertions: 77 };
+window.MYC_DATA.release = "0.4.0";
