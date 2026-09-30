@@ -575,6 +575,9 @@ through the same CRDT path as a git merge (per-field LWW, add-wins edges,
 G-counters), with a cursor per site, so repeating it changes nothing and an
 interrupted exchange resumes.
 
+Step by step, for a real host with TLS, tokens per person, backups and what
+to do when something refuses: [`docs/deploy.md`](docs/deploy.md).
+
 ## Syncing between machines
 
 Only the oplog goes to git (`myc export` → `.myc/graph`, `myc import` on
