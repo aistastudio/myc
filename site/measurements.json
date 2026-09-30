@@ -326,7 +326,7 @@
   },
   "package": {
     "command": "bun run pack:npm",
-    "compressed_mb": 5.1,
+    "compressed_mb": 5.11,
     "unpacked_mb": 15.79,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
@@ -337,13 +337,13 @@
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.4.0",
+    "version": "0.4.1",
     "date": "2026-09-19"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
     "as_of": "2026-09-30",
-    "source": "myc 0.4.0 (schema 1) · 13 epics of this repository's workspace",
+    "source": "myc 0.4.1 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -1604,8 +1604,8 @@
     "files": 276,
     "assertions": 38576,
     "seconds": 450.1,
-    "sources": "b5cc6ed87277a77c",
+    "sources": "885acde41fdd6c8c",
     "date": "2026-09-30",
-    "myc": "0.4.0"
+    "myc": "0.4.1"
   }
 }

@@ -10,4 +10,4 @@
  * манифестом пакета держит `scripts/pack-npm.ts` — версии в package.json и
  * здесь обязаны совпадать, иначе упаковка отказывает.
  */
-export const MYC_VERSION = "0.4.0";
+export const MYC_VERSION = "0.4.1";
