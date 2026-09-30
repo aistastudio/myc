@@ -5,7 +5,14 @@
 // rank — целочисленная позиция (1 = лучший), не сырой bm25-скор, потому что
 // RRF комбинирует источники по рангу, а не по несопоставимым шкалам скоров.
 
-import { defineQueries, historyClause, type DbDriver, type Layer } from "@myc/core";
+import {
+  defineQueries,
+  historyClause,
+  toPgDialectJsonb,
+  type DbDriver,
+  type Dialect,
+  type Layer,
+} from "@myc/core";
 import { liveStatusPredicate, notPendingClause } from "./review.ts";
 
 export interface FtsSearchHit {
@@ -89,6 +96,66 @@ export const ftsQueries = defineQueries({
       ORDER BY rank ASC
       LIMIT ?9
     `,
+    // POSTGRES: та же выдача, другой источник лексики.
+    //
+    // Отдельный текст, а не механический перевод, потому что расходится
+    // само устройство: в SQLite полнотекст — ОТДЕЛЬНАЯ таблица FTS5, к
+    // которой присоединяются по rowid; в Postgres это КОЛОНКА `tsv`
+    // (generated, GIN-индекс `ix_nodes_tsv`), и присоединяться не к чему.
+    //
+    // РАНГ — ПОЗИЦИЯ, А НЕ СКОР, и только поэтому две базы сравнимы.
+    // `bm25()` растёт вниз (лучшее — самое отрицательное), `ts_rank_cd()` —
+    // вверх; равенства чисел не будет никогда и не требуется (§8.3: «разные
+    // тексты, наружу одинаковый {id, rank}»). Одинаковым обязан быть
+    // ПОРЯДОК, поэтому здесь `DESC`, а там `ASC`.
+    //
+    // Веса колонок повторяют bm25(nodes_fts, 10.0, 1.0, 1.0): заголовок
+    // весит десятикратно против тела. В tsvector это метки A (title) и B
+    // (body), а массив ts_rank_cd задаёт их как {D,C,B,A} — отсюда
+    // {0.1, 0.2, 0.1, 1.0}, то есть A:B = 10:1.
+    //
+    // `::int` у ранга обязателен: BIGINT приходит из Postgres СТРОКОЙ, а
+    // контракт FtsSearchHit.rank — число. Без приведения расхождение
+    // всплыло бы не здесь, а у того, кто сравнит ранги.
+    pg: toPgDialectJsonb(
+      `
+      WITH matches AS (
+        SELECT n.id AS node_id,
+               ts_rank_cd('{0.1, 0.2, 0.1, 1.0}', n.tsv, q.query) AS score
+        FROM to_tsquery('simple', ?1) AS q(query), nodes n
+        WHERE n.tsv @@ q.query
+          AND n.deleted_at IS NULL
+         ${historyClause("follow")}
+          AND ${liveStatusPredicate("n")}
+          AND n.scope IN (SELECT value FROM jsonb_array_elements_text(?2) AS value)
+          AND n.layer BETWEEN ?3 AND ?4
+          AND (
+            (n.acl = 'private' AND n.owner_id = ?5)
+            OR (n.acl = 'team' AND n.team_id = ?6)
+            OR (n.acl = 'agent' AND n.agent_id = ?7)
+            OR (n.acl = 'restricted' AND EXISTS (
+                  SELECT 1 FROM acl_grants g
+                  WHERE g.node_id = n.id
+                    AND g.principal IN (SELECT value FROM jsonb_array_elements_text(?8) AS value)
+                ))
+          )${notPendingClause("n")}
+      ),
+      ranked AS (
+        SELECT node_id, RANK() OVER (ORDER BY score DESC) AS r
+        FROM matches
+      )
+      SELECT node_id AS id, MIN(r)::int AS rank
+      FROM ranked
+      GROUP BY node_id
+      ORDER BY rank ASC
+      LIMIT ?9
+    `,
+      // Списки приходят строкой JSON, и без двойного приведения драйвер
+      // отправил бы их в jsonb СКАЛЯРОМ: «cannot extract elements from a
+      // scalar». Правило одно на весь проект и живёт в toPgDialectJsonb.
+      2,
+      8,
+    ),
     params: [
       "q",
       "scopes",
@@ -118,10 +185,6 @@ export const ftsQueries = defineQueries({
 // форма префикса вне кавычек в FTS5 query grammar.
 
 const WORD_RE = /[\p{L}\p{N}_][\p{L}\p{N}_.-]*/gu;
-
-function quoteTerm(term: string): string {
-  return `"${term.replace(/"/g, '""')}"`;
-}
 
 function tokenizeWords(input: string): string[] {
   const matches = input.match(WORD_RE);
@@ -195,13 +258,60 @@ export interface PreparedFtsQuery {
  * Термин, у которого пользователь сам попросил префикс (`foo*`), и фраза в
  * кавычках («две слова») не трогаются: там намерение уже выражено явно.
  */
-function prefixTerm(quoted: string): string {
-  if (quoted.endsWith("*")) return quoted;
-  const inner = quoted.slice(1, -1);
-  if (inner.includes(" ") || inner.includes('""')) return quoted;
-  if (inner.length < 6) return quoted;
-  return `"${inner.slice(0, Math.max(5, inner.length - 3))}"*`;
+function prefixTerm(term: Term): Term {
+  if (term.prefix || term.words.length !== 1) return term;
+  const word = term.words[0]!;
+  if (word.length < 6) return term;
+  return { words: [word.slice(0, Math.max(5, word.length - 3))], prefix: true };
 }
+
+/**
+ * ТЕРМИН БЕЗ ДИАЛЕКТА. Разбор ввода даёт слова и намерение (фраза, префикс),
+ * а операторы и кавычки навешивает рендерер того диалекта, в который запрос
+ * поедет: у FTS5 это `"слово"*` и неявное И пробелом, у Postgres —
+ * `'слово':*` и `&`. Лестница откатов (И → префиксное И → «все кроме
+ * одного» → …) от диалекта не зависит и живёт в одном месте — иначе у двух
+ * баз разошлись бы не тексты, а СМЫСЛ отката, и расхождение было бы
+ * незаметным.
+ */
+interface Term {
+  /** Одно слово, либо несколько — тогда это фраза «слова подряд». */
+  readonly words: readonly string[];
+  readonly prefix: boolean;
+}
+
+/** Как термины и операторы выглядят в конкретном диалекте. */
+interface LexicalSyntax {
+  term(t: Term): string;
+  readonly and: string;
+  readonly or: string;
+}
+
+const FTS5: LexicalSyntax = {
+  term: (t) => {
+    const inner = t.words.join(" ").replace(/"/g, '""');
+    return t.prefix ? `"${inner}"*` : `"${inner}"`;
+  },
+  and: " ",
+  or: " OR ",
+};
+
+/**
+ * tsquery: лексема в одинарных кавычках, префикс через `:*`, фраза — цепочка
+ * `<->` (расстояние 1), которую обязательно скобить, иначе `&` и `|` соседей
+ * свяжутся не с тем. Конфигурация 'simple' — та же, что у генерируемой
+ * колонки `tsv` в db/schema.postgres.sql: другая означала бы, что запрос
+ * ищет не то, что проиндексировано.
+ */
+const TSQUERY: LexicalSyntax = {
+  term: (t) => {
+    const lex = (w: string): string => `'${w.replace(/'/g, "''")}'`;
+    if (t.words.length > 1) return `(${t.words.map(lex).join(" <-> ")})`;
+    return t.prefix ? `${lex(t.words[0]!)}:*` : lex(t.words[0]!);
+  },
+  and: " & ",
+  or: " | ",
+};
 
 /**
  * «Все кроме k» — объединение всех сочетаний, где выброшено ровно k терминов.
@@ -209,7 +319,7 @@ function prefixTerm(quoted: string): string {
  * терминов: слагаемое из одного терма — это уже плоское ИЛИ, ради ухода от
  * которого лестница и построена.
  */
-function dropEach(terms: readonly string[], k: number): string {
+function dropEach(terms: readonly Term[], k: number, syn: LexicalSyntax): string {
   if (terms.length - k < 2) return "";
   const parts: string[] = [];
   const combos: number[][] = [];
@@ -227,9 +337,9 @@ function dropEach(terms: readonly string[], k: number): string {
   pick(0, []);
   for (const skip of combos) {
     const kept = terms.filter((_, i) => !skip.includes(i));
-    parts.push(`(${kept.join(" ")})`);
+    parts.push(`(${kept.map(syn.term).join(syn.and)})`);
   }
-  return parts.join(" OR ");
+  return parts.join(syn.or);
 }
 
 /**
@@ -239,16 +349,16 @@ function dropEach(terms: readonly string[], k: number): string {
  * вернуть пустой результат без обращения к FTS5, а не подставлять "" в MATCH
  * (пустая строка — syntax error в fts5).
  */
-export function prepareFtsQuery(rawInput: string): string | null {
-  return analyzeFtsQuery(rawInput)?.and ?? null;
+export function prepareFtsQuery(rawInput: string, dialect: Dialect = "sqlite"): string | null {
+  return analyzeFtsQuery(rawInput, dialect)?.and ?? null;
 }
 
-/** Тот же разбор, что и prepareFtsQuery, но отдаёт термины и обе формы (S44). */
-export function analyzeFtsQuery(rawInput: string): PreparedFtsQuery | null {
+/** Разбор ввода в термины без диалекта. null — ни одного термина не осталось. */
+function parseTerms(rawInput: string): Term[] | null {
   const raw = rawInput.trim();
   if (raw.length === 0) return null;
 
-  const parts: string[] = [];
+  const terms: Term[] = [];
   let i = 0;
   const n = raw.length;
   while (i < n) {
@@ -257,11 +367,7 @@ export function analyzeFtsQuery(rawInput: string): PreparedFtsQuery | null {
       let j = i + 1;
       while (j < n && raw[j] !== '"') j++;
       const phraseWords = tokenizeWords(raw.slice(i + 1, j));
-      if (phraseWords.length === 1) {
-        parts.push(quoteTerm(phraseWords[0]!));
-      } else if (phraseWords.length > 1) {
-        parts.push(quoteTerm(phraseWords.join(" ")));
-      }
+      if (phraseWords.length > 0) terms.push({ words: phraseWords, prefix: false });
       i = j < n ? j + 1 : j;
       continue;
     }
@@ -271,32 +377,54 @@ export function analyzeFtsQuery(rawInput: string): PreparedFtsQuery | null {
       i++;
       continue;
     }
-    const term = match[0];
-    const end = i + term.length;
+    const word = match[0];
+    const end = i + word.length;
     if (raw[end] === "*") {
-      parts.push(`${quoteTerm(term)}*`);
+      terms.push({ words: [word], prefix: true });
       i = end + 1;
     } else {
-      parts.push(quoteTerm(term));
+      terms.push({ words: [word], prefix: false });
       i = end;
     }
   }
+  return terms.length === 0 ? null : terms;
+}
 
-  if (parts.length === 0) return null;
-  const prefixes = parts.map(prefixTerm);
+/**
+ * Тот же разбор, что и prepareFtsQuery, но отдаёт термины и все формы (S44) —
+ * в синтаксисе того диалекта, в который запрос поедет.
+ *
+ * ЛЕСТНИЦА ОДНА НА ОБА ДИАЛЕКТА, и это не экономия строк: «все термины кроме
+ * одного» — правило отката, а не текст. Вторая его запись под Postgres
+ * означала бы, что на сервере откат ведёт себя иначе, чем локально, и
+ * заметить это можно было бы только по разной выдаче.
+ */
+export function analyzeFtsQuery(
+  rawInput: string,
+  dialect: Dialect = "sqlite",
+): PreparedFtsQuery | null {
+  const terms = parseTerms(rawInput);
+  if (terms === null) return null;
+  const syn = dialect === "pg" ? TSQUERY : FTS5;
+  const prefixes = terms.map(prefixTerm);
+  const render = (list: readonly Term[], op: string): string =>
+    list.map(syn.term).join(op);
   return {
-    terms: parts,
-    and: parts.join(" "),
-    prefixAnd: prefixes.join(" "),
-    prefixRelaxed: dropEach(prefixes, 1),
-    prefixRelaxed2: dropEach(prefixes, 2),
-    or: parts.join(" OR "),
-    prefixOr: prefixes.join(" OR "),
+    terms: terms.map(syn.term),
+    and: render(terms, syn.and),
+    prefixAnd: render(prefixes, syn.and),
+    prefixRelaxed: dropEach(prefixes, 1, syn),
+    prefixRelaxed2: dropEach(prefixes, 2, syn),
+    or: render(terms, syn.or),
+    prefixOr: render(prefixes, syn.or),
   };
 }
 
 export function ftsSearch(db: DbDriver, params: FtsSearchParams): FtsSearchHit[] {
-  const match = prepareFtsQuery(params.text);
+  // Диалект спрашивается У ДРАЙВЕРА, а не передаётся вызывающим: строка
+  // запроса обязана быть в том же синтаксисе, что и текст SQL, который её
+  // примет, и связывает их одно — соединение, в которое всё это уедет.
+  const match = prepareFtsQuery(params.text, db.dialect);
   if (match === null) return [];
   if (params.scopes.length === 0) return [];
 

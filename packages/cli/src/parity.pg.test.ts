@@ -38,6 +38,7 @@ import { Q, migrate, migrations, openSqlite, type SqliteDriver } from "@myc/stor
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 import { opsForPeerQuery, resolveQueryText, syncQueries, type QueryDef } from "@myc/core";
 import { wsQueries } from "@myc/server/ws";
+import { analyzeFtsQuery, ftsQueries } from "@myc/retrieval";
 import { primeQueries } from "./commands/prime.ts";
 import { readyQueries } from "./commands/ready.ts";
 
@@ -61,6 +62,24 @@ const SEED: readonly string[] = [
    VALUES ('${SCOPE}-0002','task',1,'${SCOPE}','починить дренаж','тело первой задачи','open',2,'h-1:${SCOPE}-0002','{"reach":"project","external_ref":"bd-42"}',20,20,200,'siteA','${SCOPE}-0002')`,
   `INSERT INTO nodes (id, kind, layer, scope, title, body, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
    VALUES ('${SCOPE}-0003','note',2,'${SCOPE}','решение про очередь','очередь разбирается по одному','active',2,'h-3','{"reach":"project"}',30,30,300,'siteA')`,
+  // Два узла РОВНО ДЛЯ ПОРЯДКА лексической выдачи: один несёт термин в
+  // ЗАГОЛОВКЕ, другой — только в ТЕЛЕ. Заголовок весит десятикратно в обеих
+  // базах (bm25(nodes_fts, 10.0, 1.0, 1.0) и ts_rank_cd '{…,0.1,1.0}'),
+  // поэтому первый обязан стоять выше второго.
+  //
+  // Термин «водосток» нарочно НЕ встречается больше нигде: на нём выдача из
+  // двух узлов без единой ничьей, и порядок в ней — утверждение, а не
+  // случайность планировщика. У 0001 и 0002 текст совпадает дословно, они
+  // всегда делят одно место, и порядок ВНУТРИ ничьей не обещает ни одна из
+  // двух баз — поэтому такие случаи сверяются составом.
+  //
+  // Слой 1, а не 2: prime сканирует от второго, и два узла с одинаковой
+  // важностью встали бы там ничьёй, которую планировщики разбирают
+  // по-разному. Лексический поиск смотрит слои 0–3 и их видит.
+  `INSERT INTO nodes (id, kind, layer, scope, title, body, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0041','note',1,'${SCOPE}','водосток засорился','заметка о том, что случилось','active',2,'h-41','{"reach":"project"}',50,50,500,'siteA')`,
+  `INSERT INTO nodes (id, kind, layer, scope, title, body, status, priority, content_hash, attrs, created_at, updated_at, hlc, site_id)
+   VALUES ('${SCOPE}-0042','note',1,'${SCOPE}','заметка про трубы','водосток упомянут только в теле','active',2,'h-42','{"reach":"project"}',60,60,600,'siteA')`,
   `INSERT INTO edges (src, type, dst, add_tag, created_at, hlc, site_id)
    VALUES ('${SCOPE}-0001','blocks','${SCOPE}-0003','tag-1',40,400,'siteA')`,
   `INSERT INTO field_clock (entity_id, field, hlc, site_id) VALUES ('${SCOPE}-0001','kind',100,'siteA'), ('${SCOPE}-0002','kind',200,'siteA')`,
@@ -163,6 +182,29 @@ interface Case {
    * строки сортируются перед сравнением, и здесь это сказано вслух.
    */
   readonly unordered?: boolean;
+  /**
+   * Параметры Postgres, когда они законно ДРУГИЕ. Единственный такой случай —
+   * строка лексического запроса: `"оплог" "мерж"` понимает FTS5, а
+   * `'оплог' & 'мерж'` — tsquery. Это такой же артефакт диалекта, как сам
+   * текст SQL, и прячется он там же — в реестре (analyzeFtsQuery(text,
+   * dialect)). Список терминов, лестница откатов и порядок выдачи при этом
+   * обязаны совпасть, что тест и проверяет.
+   */
+  readonly pgParams?: readonly unknown[];
+  /**
+   * Сравнивать ТОЛЬКО `id`, в том же порядке.
+   *
+   * Для лексического поиска это не послабление, а сама спека (§8.3,
+   * memory-f0gj4xdwrje0): `bm25()` и `ts_rank_cd()` — разные функции с
+   * разными шкалами, равенства ЧИСЕЛ ранга не будет никогда и оно не
+   * требуется. Обещано наружу другое — состав и порядок, то есть ранг как
+   * ПОЗИЦИЯ. Замер расхождения, ради которого это поле и заведено: на
+   * запросе «дренаж» обе базы дают один и тот же порядок
+   * 0001, 0002, 0041, 0042, но ранги 1,1,3,4 против 1,1,1,4 — ts_rank_cd
+   * ставит попадание в заголовке вровень с попаданием в дословно совпавшем
+   * тексте, bm25 их разделяет.
+   */
+  readonly idsOnly?: true;
 }
 
 const CASES: readonly Case[] = [
@@ -267,6 +309,38 @@ const READY_CASES: readonly Case[] = [
   { q: R.ready_top_anchors, params: named(R.ready_top_anchors) },
   { q: R.ready_top_noanchors_repo, params: named(R.ready_top_noanchors_repo) },
   { q: R.ready_top_anchors_repo, params: named(R.ready_top_anchors_repo) },
+];
+
+/**
+ * ЛЕКСИЧЕСКИЙ ПОИСК (приёмка memory-f0gj4xdwrje0). Слева FTS5 с bm25, справа
+ * tsvector с ts_rank_cd — разные функции, разные шкалы, и равенства ЧИСЕЛ
+ * тут не будет никогда (§8.3). Сравнивается то, что обещано наружу: состав
+ * top-k и ПОРЯДОК, то есть колонки {id, rank}, где rank — позиция.
+ *
+ * Запрос выбран так, чтобы различать: «дренаж» есть у двух задач с ОДНИМ
+ * текстом (0001 и 0002 — дубль по внешней ссылке), «очередь» — у заметки
+ * 0003. Одно слово, попадающее и туда и туда, показало бы только то, что обе
+ * базы умеют возвращать строки.
+ */
+const ftsCase = (text: string, unordered = false): Case => {
+  const rest = [JSON.stringify([SCOPE]), 0, 3, "tester", "", "", JSON.stringify([]), 5];
+  return {
+    q: ftsQueries.ftsSearch,
+    params: [analyzeFtsQuery(text, "sqlite")!.and, ...rest],
+    pgParams: [analyzeFtsQuery(text, "pg")!.and, ...rest],
+    label: text,
+    idsOnly: true,
+    unordered,
+  };
+};
+
+const FTS_CASES: readonly Case[] = [
+  // Порядок: заголовок выше тела, ничьих нет.
+  ftsCase("водосток"),
+  // Состав: у обоих попаданий ничья, и порядок внутри неё ничем не обещан.
+  ftsCase("дренаж", true),
+  ftsCase("очередь", true),
+  ftsCase("починить дренаж", true),
 ];
 
 const W = wsQueries;
@@ -389,13 +463,16 @@ describe("паритет диалектов на одном посеве", () =>
   const sorted = (rows: unknown[]): unknown[] =>
     [...rows].sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
 
-  for (const c of [...CASES, ...READY_CASES, ...PRIME_CASES, ...WS_CASES, ...SYNC_CASES]) {
+  for (const c of [...CASES, ...READY_CASES, ...PRIME_CASES, ...WS_CASES, ...SYNC_CASES, ...FTS_CASES]) {
     const title = c.label === undefined ? c.q.name : `${c.q.name} (${c.label})`;
     test(`${title}: SQLite и Postgres отвечают одинаково`, async () => {
       if (skip !== null) return void console.log(`[skip] ${skip}`);
       const order = (rows: unknown[]): unknown[] => (c.unordered === true ? sorted(rows) : rows);
-      const fromLite = order(normalize(lite!.all(c.q, c.params)));
-      const fromPg = order(normalize(await pg!.withTenant(TENANT, async (tx) => tx.all(c.q, c.params))));
+      const pgParams = c.pgParams ?? c.params;
+      const ids = (rows: unknown[]): unknown[] =>
+        c.idsOnly === true ? rows.map((r) => (r as { id: unknown }).id) : rows;
+      const fromLite = order(ids(normalize(lite!.all(c.q, c.params))));
+      const fromPg = order(ids(normalize(await pg!.withTenant(TENANT, async (tx) => tx.all(c.q, pgParams)))));
       // Текст запроса печатается при расхождении: разбирать паритет по голому
       // «не равно» — то же самое, что разбирать его вслепую.
       if (JSON.stringify(fromLite) !== JSON.stringify(fromPg)) {
