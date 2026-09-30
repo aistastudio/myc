@@ -23,11 +23,14 @@ import { Database } from "bun:sqlite";
 import { SQL } from "bun";
 import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 import { addToken } from "@myc/server/auth";
+import { wsQueries } from "@myc/server/ws";
+import { aclParams } from "@myc/core";
 import { startHttpServer, type MycHttpServer } from "@myc/server";
 import { ExitCode } from "./exit.ts";
 import { run } from "./index.ts";
 import { Registry } from "./registry.ts";
 import { createInitCommand } from "./commands/init.ts";
+import { createRememberCommand } from "./commands/remember.ts";
 import { createSyncCommand } from "./commands/sync.ts";
 import { createTaskCommand, createUpdateCommand } from "./commands/tasks.ts";
 import { createListCommand } from "./commands/list.ts";
@@ -47,6 +50,7 @@ let local = "";
 function registry(): Registry {
   const r = new Registry();
   r.register(createInitCommand());
+  r.register(createRememberCommand());
   r.register(createSyncCommand());
   r.register(createTaskCommand());
   r.register(createUpdateCommand());
@@ -304,5 +308,51 @@ describe("обмен с сервером", () => {
     const alone = await call(["sync"]);
     expect(alone.code).toBe(ExitCode.PRECOND);
     expect(alone.env.error.code).toBe("precond.no_remote");
+  });
+
+  /**
+   * memory-a5y13v8aj6k9: ПРИВАТНОЕ, УЕХАВШЕЕ ОБМЕНОМ, ВИДИТ ЕГО АВТОР — И
+   * ТОЛЬКО ОН.
+   *
+   * До правки локальная запись не ставила `owner_id`, и это работало по
+   * совпадению: пустой владелец узла совпадал с пустым владельцем
+   * вызывающего. На сервере вызывающий приходит из токена и имеет имя —
+   * совпадение кончалось, и заметку переставал видеть даже её автор.
+   * Измерено тогда: 2 узла из 3.
+   *
+   * Проверяется обе стороны утверждения. Одна половина без второй ничего не
+   * стоит: «автор видит» выполняется и предикатом, пускающим всех, а «чужой
+   * не видит» — предикатом, не пускающим никого.
+   *
+   * Мутация, которую тест обязан ловить: убрать из `createNode`
+   * (store-sqlite/queries.ts) строку, ставящую `owner_id`. Проверено
+   * прогоном: автор перестаёт видеть свою заметку.
+   */
+  test("приватный узел после обмена виден автору и не виден другому токену", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    // Автор — тот, чьим токеном ходят: локальная запись ставит владельцем
+    // актора, и на сервере он обязан совпасть с subject токена.
+    const mine = await call(["remember", "секрет анны", "--acl", "private"]);
+    expect([mine.code, mine.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    const shared = await call(["remember", "общая заметка"]);
+    expect([shared.code, shared.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    expect((await sync()).code).toBe(ExitCode.OK);
+
+    const visible = async (owner: string): Promise<string[]> =>
+      pg!.withTenant("acme", async (tx) =>
+        (
+          await tx.all<{ title: string }>(wsQueries.ws_nodes_list, [
+            WS, "", "", 0, 50, 0, ...aclParams({ owner, team: "", agent: "" }),
+          ])
+        ).map((r) => r.title),
+      );
+
+    const byAuthor = await visible("anna");
+    expect(byAuthor).toContain("секрет анны");
+    expect(byAuthor).toContain("общая заметка");
+
+    const byOther = await visible("boris");
+    expect(byOther).not.toContain("секрет анны");
+    expect(byOther).toContain("общая заметка");
   });
 });

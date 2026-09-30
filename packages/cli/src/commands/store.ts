@@ -490,9 +490,64 @@ export function processActor(): string {
   return process.env.MYC_ACTOR ?? process.env.USER ?? "agent";
 }
 
+/** myc_meta: личность, записанная воркспейсом при создании. */
+export const META_ACTOR = "actor";
+
+/**
+ * Личность И ОТКУДА ОНА ВЗЯТА.
+ *
+ * Явное (`--as`, `$MYC_ACTOR`) сильнее всего и не спрашивает воркспейс.
+ * Неявное — умолчание, и вот его воркспейс вправе уточнить: при создании
+ * `myc init` записывает в `myc_meta.actor` личность из git, потому что
+ * `$USER` — это логин операционной системы, а не тот, кем человек
+ * подписывает работу. Читается запись при открытии базы (она там всё равно
+ * открыта), поэтому git на горячем пути не запускается НИ РАЗУ.
+ *
+ * У воркспейса, созданного прежними версиями, записи нет — и умолчание
+ * остаётся прежним, `$USER`. Это не переходный костыль, а единственный
+ * честный ответ: в базе с сотнями узлов под одним именем сменить личность
+ * молча значит осиротить каждую аренду и каждое назначение.
+ */
+export function actorChoice(ctx: CommandContext): { actor: string; explicit: boolean } {
+  const flag = flagStr(ctx, "as");
+  if (flag !== undefined) return { actor: flag, explicit: true };
+  const env = process.env.MYC_ACTOR;
+  if (env !== undefined && env.length > 0) return { actor: env, explicit: true };
+  return { actor: process.env.USER ?? "agent", explicit: false };
+}
+
 /** Кто действует: --as команды, затем MYC_ACTOR, затем $USER. */
 export function resolveActor(ctx: CommandContext): string {
-  return flagStr(ctx, "as") ?? processActor();
+  return actorChoice(ctx).actor;
+}
+
+/**
+ * Личность из git — та же, которой человек подписывает коммиты.
+ *
+ * Зовётся ТОЛЬКО при создании воркспейса (`myc init`): запуск git стоит
+ * миллисекунд, а бюджет И1 у горячего пути — единицы миллисекунд целиком.
+ * Записанное потом читается из `myc_meta`.
+ *
+ * `user.name`, а не `user.email`: спрашивали имя, и именно оно стоит в
+ * `git log` — по нему участники узнают друг друга. Почта берётся, только
+ * если имени нет: пустая личность хуже неудобной.
+ */
+export function gitActor(cwd: string): string | undefined {
+  for (const key of ["user.name", "user.email"]) {
+    try {
+      const r = Bun.spawnSync(["git", "config", "--get", key], {
+        cwd,
+        stdout: "pipe",
+        stderr: "ignore",
+        timeout: 2000,
+      });
+      const value = r.exitCode === 0 ? r.stdout.toString().trim() : "";
+      if (value.length > 0) return value;
+    } catch {
+      // git нет в PATH — не повод не создать воркспейс.
+    }
+  }
+  return undefined;
 }
 
 interface OpenedWorkspace {
@@ -548,6 +603,11 @@ async function openWorkspaceAt(
   opts: {
     readonly slug: string;
     readonly actor: string;
+    /**
+     * Личность названа явно (`--as`, `$MYC_ACTOR`). Умолчание воркспейс
+     * вправе уточнить своей записью, явное — нет (см. actorChoice).
+     */
+    readonly actorExplicit?: boolean;
     readonly extensions?: boolean;
     /**
      * Охват репозитория (S59), выведенный из пути вызова. `undefined` —
@@ -625,11 +685,17 @@ async function openWorkspaceAt(
   // покрывается и прежний случай «база создана мимо init»: тогда решение —
   // «minted». Проверка стоит одного statSync (0.59 мкс) и пишет в myc_meta
   // только при изменении.
+  const meta = driverMeta(driver);
   const { siteId } = ensureSiteId({
-    meta: driverMeta(driver),
+    meta,
     dbPath,
     mint: () => mintSiteId(opts.slug),
   });
+  // Личность воркспейса (её пишет `myc init` из git) уточняет УМОЛЧАНИЕ и
+  // никогда — явно названное. База здесь уже открыта, поэтому чтение стоит
+  // одного PK-запроса и git на горячем пути не запускается.
+  const recorded = opts.actorExplicit === true ? undefined : meta.read(META_ACTOR);
+  const actor = recorded !== undefined && recorded.length > 0 ? recorded : opts.actor;
   // HLC-join нового одноразового соединения: часы стартуют от последней
   // записи оплога (PK-lookup, бесплатно). Иначе create в одном соединении
   // и update/close в следующем в пределах той же миллисекунды дают равные
@@ -642,7 +708,7 @@ async function openWorkspaceAt(
   }
   const storeOpts: GraphStoreOptions = {
     newId: () => generateId(opts.slug),
-    actor: opts.actor,
+    actor,
     siteId,
     ...(clock !== undefined ? { clock } : {}),
   };
@@ -652,7 +718,7 @@ async function openWorkspaceAt(
       : new RepoScopedStore(driver, storeOpts, opts.repo);
   return {
     ok: true,
-    workspace: { driver, store, claims: new Claims(store, { holder: opts.actor }), actor: opts.actor, siteId },
+    workspace: { driver, store, claims: new Claims(store, { holder: actor }), actor, siteId },
   };
 }
 
@@ -975,7 +1041,7 @@ export async function openStore(
     warnBorrowedConfig(ctx, startDir, dbPath, tomlPath, config.slug);
   }
 
-  const actor = resolveActor(ctx);
+  const chosen = actorChoice(ctx);
   // Охват репозитория (S59) выводится ОДИН раз, здесь: и запись новых узлов,
   // и умолчание фильтров читают его из хендла, поэтому «откуда позвали» и
   // «что показываем» не могут разъехаться.
@@ -984,14 +1050,17 @@ export async function openStore(
   const repoRoot = ctx.globals.db !== undefined ? workspaceDirOfDb(dbPath) : wsDir;
   const repo = deriveRepoAcrossWorktrees(repoRoot, startDir, worktree);
   const opened = await openWorkspaceAt(dbPath, {
+    actorExplicit: chosen.explicit,
     slug: config.slug,
-    actor,
+    actor: chosen.actor,
     extensions: options?.extensions === true,
     ...(repo.repo !== undefined ? { repo: repo.repo } : {}),
   });
   if (!opened.ok) return opened;
   warnSqliteOld(ctx);
-  const { driver, store, claims } = opened.workspace;
+  // Личность — из открытого воркспейса, а не из догадки до открытия: там она
+  // могла быть уточнена записью `myc_meta.actor` (см. actorChoice).
+  const { driver, store, claims, actor } = opened.workspace;
   return {
     ok: true,
     handle: {
@@ -1078,7 +1147,7 @@ export async function openPersonalStore(
   const status = personalWorkspaceStatus(home);
   if (!status.exists) return { ok: true, handle: undefined };
 
-  const actor = resolveActor(ctx);
+  const chosen = actorChoice(ctx);
   // Личный ярус (S41) хранит память о человеке и его практиках и по своему
   // определению не привязан к репозиторию: охват у него ОБЩИЙ, и это
   // определённый ответ, а не неудача вывода. Выводить его из cwd было бы
@@ -1086,13 +1155,14 @@ export async function openPersonalStore(
   const repo: RepoDerivation = { repo: "", reason: "", from: status.dir };
   const opened = await openWorkspaceAt(status.dbPath, {
     slug: PERSONAL_SLUG,
-    actor,
+    actor: chosen.actor,
+    actorExplicit: chosen.explicit,
     extensions: options?.extensions === true,
     repo: "",
   });
   if (!opened.ok) return opened;
   warnSqliteOld(ctx);
-  const { driver, store, claims } = opened.workspace;
+  const { driver, store, claims, actor } = opened.workspace;
   return {
     ok: true,
     handle: {
@@ -1161,7 +1231,16 @@ export async function createPersonalWorkspace(
       mint: () => mintSiteId(PERSONAL_SLUG),
     });
     siteId = decided.siteId;
-    if (decided.origin === "minted") db.prepare(Q.meta_set.sql).run("slug", PERSONAL_SLUG);
+    if (decided.origin === "minted") {
+      db.prepare(Q.meta_set.sql).run("slug", PERSONAL_SLUG);
+      // Личность — из git и только при СОЗДАНИИ, как у проектного яруса
+      // (init.ts, createWorkspaceDb). Иначе два яруса одного человека
+      // подписывались бы по-разному: проектный — именем из git, личный —
+      // логином системы. Каталог git'а здесь домашний, а не репозиторий:
+      // у личного яруса репозитория нет, и `user.name` всё равно живёт в
+      // ~/.gitconfig.
+      db.prepare(Q.meta_set.sql).run(META_ACTOR, gitActor(home) ?? process.env.USER ?? "agent");
+    }
   } finally {
     db.close();
   }

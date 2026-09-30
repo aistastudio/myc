@@ -186,7 +186,7 @@ describe("схема Postgres на живой базе", () => {
     // Номер базовой строки = последняя миграция SQLite (сторож —
     // packages/server/src/schema-numbering.test.ts): слепок Postgres обязан
     // догонять её, а не жить своей нумерацией.
-    expect(Number(rows[0]!.version)).toBe(15);
+    expect(Number(rows[0]!.version)).toBe(16);
     expect(rows[0]!.name).toBe("postgres-baseline");
     // DDL здесь применён напрямую, без бинаря — и он это признаёт, а не
     // приписывает накат несуществующей версии myc.

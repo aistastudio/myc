@@ -63,6 +63,8 @@ import {
   createPersonalWorkspace,
   flagBool,
   PERSONAL_SLUG,
+  gitActor,
+  META_ACTOR,
   personalHome,
   personalWipePlan,
   personalWorkspaceStatus,
@@ -287,7 +289,8 @@ function wipeLocalState(mycDir: string): void {
 async function createWorkspaceDb(
   dbPath: string,
   slug: string,
-): Promise<{ siteId: string; schemaVersion: number }> {
+  workDir: string,
+): Promise<{ siteId: string; schemaVersion: number; actor: string }> {
   // Та же SQLite, что у всех путей открытия, и выбрана до первого соединения.
   ensureSqliteLibrary();
   const db = new Database(dbPath, { create: true });
@@ -306,8 +309,22 @@ async function createWorkspaceDb(
       mint: () => mintSiteId(slug),
     });
     db.prepare(Q.meta_set.sql).run("slug", slug);
+    // ЛИЧНОСТЬ ЗАПИСЫВАЕТСЯ ПРИ СОЗДАНИИ, И ИМЕННО ИЗ GIT.
+    //
+    // `$USER` — это логин операционной системы; им подписывать работу в
+    // общем воркспейсе нечестно, и на сервере он ни с чем не совпадёт.
+    // Человек уже назвал себя git'у, той же подписью стоит в `git log`, и
+    // участники узнают друг друга по ней.
+    //
+    // Пишется ОДИН раз, здесь: дальше личность читается из этой строки, и
+    // git на горячем пути не запускается ни разу (бюджет И1). У воркспейса
+    // прежних версий строки нет — там умолчание остаётся прежним, `$USER`,
+    // потому что сменить личность молча в базе с накопленной историей
+    // значит осиротить каждую аренду и каждое назначение.
+    const actor = gitActor(workDir) ?? process.env.USER ?? "agent";
+    db.prepare(Q.meta_set.sql).run(META_ACTOR, actor);
     checkpointWal(db);
-    return { siteId, schemaVersion };
+    return { siteId, schemaVersion, actor };
   } finally {
     db.close();
   }
@@ -345,7 +362,7 @@ export async function adoptWorkspaceDb(
 
   ensureMycGitignore(mycDir);
   try {
-    const { siteId, schemaVersion } = await createWorkspaceDb(dbPath, slug);
+    const { siteId, schemaVersion } = await createWorkspaceDb(dbPath, slug, mycDir);
     return { dbPath, slug, siteId, schemaVersion };
   } catch (error) {
     // Недосозданная база хуже отсутствующей: следующий запуск примет её за
@@ -422,6 +439,13 @@ interface InitData {
   db: { path: string; schemaVersion: number | undefined; nodeCount?: number };
   personal: PersonalSummary;
   siteId?: string;
+  /**
+   * Чьим именем этот воркспейс подписывает работу. Печатается, а не
+   * прячется в myc_meta: на сервере оно обязано совпасть с subject токена,
+   * иначе приватное знание не увидит даже автор (memory-a5y13v8aj6k9), — а
+   * узнать это лучше при создании, чем потом по пустой выдаче.
+   */
+  actor?: string;
   /** Звали из git worktree: цель — основное дерево, а не текущий каталог. */
   worktree?: { dir: string; main: string };
   next: string;
@@ -514,6 +538,7 @@ function renderInitHuman(raw: unknown): string {
   lines.push("");
   lines.push(`  ✓ .myc/myc.db          sqlite, schema v${d.db.schemaVersion ?? "?"}, wal`);
   lines.push(`  ✓ .myc/workspace.toml  slug=${d.slug}`);
+  if (d.actor !== undefined) lines.push(actorLine(d.actor));
   if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, false));
   if (d.slug_changed !== undefined) {
     const n = d.slug_changed.nodes;
@@ -561,6 +586,17 @@ interface GlobalInitData {
   kept?: string[];
   next: string;
   took_ms: number;
+}
+
+/**
+ * Чьим именем воркспейс подписывает работу — строкой, а не тайной в
+ * myc_meta. На командном сервере это имя обязано совпасть с subject токена:
+ * иначе приватное знание, уехавшее обменом, не увидит даже автор
+ * (memory-a5y13v8aj6k9). Узнать об этом при создании дешевле, чем потом по
+ * пустой выдаче.
+ */
+function actorLine(actor: string): string {
+  return `  ✓ actor                ${actor} (from git; override with $MYC_ACTOR)`;
 }
 
 function countNodes(n: number): string {
@@ -858,10 +894,12 @@ export function createInitCommand(): Command {
 
       let schemaVersion: number | undefined;
       let siteId: string | undefined;
+      let actor: string | undefined;
       if (!existsSync(dbPath)) {
-        const created = await createWorkspaceDb(dbPath, slug);
+        const created = await createWorkspaceDb(dbPath, slug, workspaceDir);
         siteId = created.siteId;
         schemaVersion = created.schemaVersion;
+        actor = created.actor;
       } else {
         // Живая база под новым слагом (явный --slug): миграции на месте,
         // меняется только запись о личности.
@@ -921,6 +959,7 @@ export function createInitCommand(): Command {
         ...worktreeData(link),
         personal: readPersonalSummary(),
         ...(siteId !== undefined ? { siteId } : {}),
+        ...(actor !== undefined ? { actor } : {}),
         next: adopted ? "myc import" : 'myc task "<first task>" -p P1',
         took_ms: Math.max(1, Math.round(performance.now() - t0)),
       };

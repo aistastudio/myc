@@ -14,6 +14,7 @@ import { migration012CodeSearch } from "./012-code-search.ts";
 import { migration013NodesExtDup } from "./013-nodes-ext-dup.ts";
 import { migration014ReadyNoEpics } from "./014-ready-no-epics.ts";
 import { migration015CommentsNotContent } from "./015-comments-not-content.ts";
+import { migration016PrivateOwner } from "./016-private-owner.ts";
 
 /**
  * Базовый набор миграций SQLite. Версия 1 — вся схема §8.1 целиком,
@@ -57,6 +58,7 @@ export const migrations: readonly Migration[] = [
   migration013NodesExtDup,
   migration014ReadyNoEpics,
   migration015CommentsNotContent,
+  migration016PrivateOwner,
 ];
 
 export { migration001Init } from "./001-init.ts";
@@ -74,6 +76,7 @@ export { migration012CodeSearch } from "./012-code-search.ts";
 export { migration013NodesExtDup } from "./013-nodes-ext-dup.ts";
 export { migration014ReadyNoEpics } from "./014-ready-no-epics.ts";
 export { migration015CommentsNotContent } from "./015-comments-not-content.ts";
+export { migration016PrivateOwner } from "./016-private-owner.ts";
 export { vecMigration001Init } from "./vec-001-init.ts";
 export {
   appliedVectorVersion,

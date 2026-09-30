@@ -133,6 +133,28 @@ export MYC_TOKEN=myc_…                            # never on the command line
 myc sync
 ```
 
+**The name a person signs work with must be the name their token was issued
+to.** `myc init` takes it from git — the same identity that signs their
+commits — writes it into the workspace and prints it:
+
+```
+  ✓ actor                Anna Petrova (from git; override with $MYC_ACTOR)
+```
+
+Issue that person's token under exactly that subject
+(`--add-token acme:"Anna Petrova"`), or set `MYC_ACTOR` on their machine to
+whatever the token says. The two must agree because a private node belongs to
+its author by name: with a mismatch the node still travels, and its owner
+still sees it locally, but on the server it belongs to a name nobody holds a
+token for, and it is visible to no one. Nothing leaks — but nothing is found
+either.
+
+A workspace created by myc before 0.4.0 has no recorded identity; there the
+default stays `$USER`, unchanged, because switching it silently in a database
+with accumulated history would orphan every lease and every assignment. Look
+at any node's `actor` to see which name that workspace uses, and either issue
+the token under it or set `MYC_ACTOR`.
+
 `MYC_TOKEN` goes in the environment because arguments are visible in `ps`, in
 shell history and in hook logs. Put the two exports in the shell profile, or
 in a per-project `.envrc` that is not committed.
@@ -188,15 +210,7 @@ So the shape that works is: everyone keeps a local workspace and exchanges
 through the server. Pointing `MYC_SERVER` at the server and working "in" it
 is not the mode to plan around yet.
 
-**A private note synced from a laptop is visible to nobody on the server,
-not even its author** (memory-a5y13v8aj6k9). The local write path does not
-set `owner_id`, and the server's ACL predicate matches a private node by its
-owner; locally an empty owner matches an empty caller, on the server the
-caller comes from the token and has a name. The failure is closed — nothing
-leaks — but silent: the exchange reports `pushed` and the note is simply not
-there. Until it is fixed, keep private knowledge local or mark it `team`.
-
-Also not there yet: hybrid search on Postgres (the server's own `recall` has
+Not there yet: hybrid search on Postgres (the server's own `recall` has
 no lexical or vector branch — the lexical source works, the vector one has no
 data to search), SSE deltas for the web interface, and a bulk SQLite→Postgres
 import of an existing workspace.

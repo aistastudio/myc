@@ -88,7 +88,7 @@ describe("миграция 1 — базовая схема", () => {
   test("чистая БД поднимается одной командой, все заявленные объекты в sqlite_master", async () => {
     store = open();
     const result = await migrate(store, { migrations, writable: true });
-    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(result.appliedVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(result.pendingVersions).toEqual([]);
     expect(result.degraded).toEqual([]);
 
@@ -650,7 +650,7 @@ describe("миграция 13 — ext_dup: одна запись источни�
     insertNode(store, "n4", { content_hash: "h-own" });
 
     const applied = await migrate(store, { migrations, writable: true });
-    expect(applied.appliedVersions).toEqual([13, 14, 15]);
+    expect(applied.appliedVersions).toEqual([13, 14, 15, 16]);
 
     const rows = store
       .query("SELECT id, ext_dup, json_extract(attrs,'$.external_ref') AS ref FROM nodes ORDER BY id")
@@ -692,7 +692,7 @@ describe("миграция 13 — ext_dup: одна запись источни�
     // держим: запиши 13 туда — и каждый старый бинарь на машине (соседний
     // агент, хук, MCP-сервер) встаёт с precond.schema.
     expect((store.query("SELECT max(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(12);
-    expect(appliedSchemaVersion(store)).toBe(15);
+    expect(appliedSchemaVersion(store)).toBe(16);
     store.close();
 
     store = open();
@@ -723,5 +723,70 @@ describe("миграция 13 — ext_dup: одна запись источни�
     expect((err as SchemaError).exit).toBe(5);
     expect((err as Error).message).toContain("schema 99, this binary knows 12");
     expect((err as Error).message).toContain(SCHEMA_UPGRADE_HINT);
+  });
+});
+
+/**
+ * memory-a5y13v8aj6k9: приватному узлу выдаётся владелец — его автор.
+ *
+ * Мутации, которые этот describe обязан ловить (обе проверены прогоном):
+ *   1) убрать саму миграцию 016 из списка — накопленные приватные узлы
+ *      остаются без владельца, и первый тест краснеет;
+ *   2) снять у миграции условие `acl = 'private'` — владелец появляется у
+ *      командных узлов тоже, и краснеет второй тест. Условие не украшение:
+ *      у team своя ось видимости, и владелец на неё не влияет.
+ */
+describe("миграция 16 — владелец приватного узла", () => {
+  /** Состояние прежнего бинаря: приватные узлы без владельца. */
+  const upTo15 = migrations.filter((m) => m.version <= 15);
+
+  test("приватный узел получает владельцем своего автора", async () => {
+    store = open();
+    await migrate(store, { migrations: upTo15, writable: true });
+    insertNode(store, "p1", { acl: "private", actor: "anna" });
+    insertNode(store, "p2", { acl: "private", actor: "boris" });
+    // Автора нет — выдумывать владельца неоткуда, и узел не трогают.
+    insertNode(store, "p3", { acl: "private", actor: "" });
+
+    const applied = await migrate(store, { migrations, writable: true });
+    expect(applied.appliedVersions).toEqual([16]);
+
+    expect(
+      store.query("SELECT id, owner_id FROM nodes ORDER BY id").all(),
+    ).toEqual([
+      { id: "p1", owner_id: "anna" },
+      { id: "p2", owner_id: "boris" },
+      { id: "p3", owner_id: "" },
+    ]);
+  });
+
+  test("узлы других уровней доступа не тронуты: у них своя ось видимости", async () => {
+    store = open();
+    await migrate(store, { migrations: upTo15, writable: true });
+    insertNode(store, "t1", { acl: "team", actor: "anna" });
+    insertNode(store, "a1", { acl: "agent", actor: "anna" });
+    insertNode(store, "r1", { acl: "restricted", actor: "anna" });
+
+    await migrate(store, { migrations, writable: true });
+
+    expect(
+      store.query("SELECT id, owner_id FROM nodes ORDER BY id").all(),
+    ).toEqual([
+      { id: "a1", owner_id: "" },
+      { id: "r1", owner_id: "" },
+      { id: "t1", owner_id: "" },
+    ]);
+  });
+
+  test("владелец, уже стоящий у узла, не переписывается", async () => {
+    store = open();
+    await migrate(store, { migrations: upTo15, writable: true });
+    insertNode(store, "p1", { acl: "private", actor: "anna", owner_id: "кто-то другой" });
+
+    await migrate(store, { migrations, writable: true });
+
+    expect(store.query("SELECT owner_id FROM nodes WHERE id = 'p1'").get()).toEqual({
+      owner_id: "кто-то другой",
+    });
   });
 });

@@ -714,7 +714,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO myc_app;
 -- называется psql, а не выдумывает себе версию.
 INSERT INTO schema_migrations (version, name, checksum, applied_at, by_version)
 SELECT
-  15,
+  16,
   'postgres-baseline',
   md5(string_agg(sig, E'\n' ORDER BY sig)),
   (extract(epoch FROM now()) * 1000)::BIGINT,
