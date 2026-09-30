@@ -224,7 +224,7 @@ import of an existing workspace.
 | `usage.ws_mismatch` | the local slug and the server workspace differ — the message names both |
 | `precond.no_remote` | that command has no remote mode; run it locally |
 | health says `ok`, every other route `500 Something went wrong!` | the container is alive but cannot reach Postgres. The liveness probe knows nothing about the database on purpose; the 500 is a bare page with no code or reason (a known defect, memory-3h980j79swnh) — the reason is in the container log |
-| `/v1/readyz` answers `401` | readiness reports system state, so it needs a token too; use `/v1/health` for the orchestrator's liveness probe |
+| `/v1/readyz` answers `401`, and with a token `notfound.route` | there is no readiness route: `/v1/health` is liveness and knows nothing about the database on purpose. Point the orchestrator's probe at it and watch the database separately (memory-e66rf6qv5qfk) |
 
 ---
 
