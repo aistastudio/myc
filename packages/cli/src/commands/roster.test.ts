@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -312,5 +312,36 @@ describe("воркспейс", () => {
     expect(result.code).toBe(ExitCode.NOWS);
     const envelope = JSON.parse(result.stdout as string);
     expect(envelope.error.code).toBe("ws.not_initialized");
+  });
+
+  // Без --db база ищется подъёмом (myc-vtwmxdk8g9w7), а не склейкой
+  // <запуск-каталог>/.myc/myc.db: воркспейс в X виден из X/sub/dir.
+  test("воркспейс в X, запуск из X/sub/dir — база найдена подъёмом", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "myc-roster-ws-"));
+    try {
+      mkdirSync(join(ws, ".myc"), { recursive: true });
+      new Database(join(ws, ".myc", "myc.db"), { create: true }).close();
+      const nested = join(ws, "sub", "dir");
+      mkdirSync(nested, { recursive: true });
+      const result = await run(["model", "list", "-C", nested, "--json"], { registry });
+      expect(result.code).toBe(ExitCode.OK);
+      const envelope = JSON.parse(result.stdout as string);
+      expect(envelope).toMatchObject({ ok: true, cmd: "model list", meta: { count: 0 } });
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("воркспейса нет нигде вверх по дереву — прежний отказ ws.not_initialized", async () => {
+    const bare = mkdtempSync(join(tmpdir(), "myc-roster-bare-"));
+    try {
+      const result = await run(["model", "list", "-C", bare, "--json"], { registry });
+      expect(result.code).toBe(ExitCode.NOWS);
+      const envelope = JSON.parse(result.stdout as string);
+      expect(envelope.error.code).toBe("ws.not_initialized");
+      expect(envelope.error.msg).toContain("searched");
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
   });
 });

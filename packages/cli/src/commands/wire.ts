@@ -200,18 +200,37 @@ interface Evicted {
   readonly command: string;
 }
 
+/**
+ * Абсолютный путь бинаря, который добрался до отслеживаемого git'ом
+ * JSON-конфига MCP (myc-ncjz3ktdgvcd). Сам по себе выбор человека законен,
+ * но в закоммиченном файле текст пути остаётся в git: клон на другой машине
+ * получает путь, которого у неё нет. О каждом таком совпадении wire говорит
+ * вслух — кодом `wire.absolute_path_tracked` в выводе отчёта.
+ */
+interface TrackedAbsolute {
+  readonly path: string;
+  /** Абсолютная команда из MYC_BIN. */
+  readonly bin: string;
+  /** Относительная команда, уже стоявшая в файле (kept=true — она осталась). */
+  readonly command: string;
+  /** true — относительную команду оставили, абсолютную НЕ писали. */
+  readonly kept: boolean;
+}
+
 interface Plan {
   readonly actions: Action[];
   readonly conflicts: Conflict[];
   readonly evicted: Evicted[];
   readonly untouched: string[];
   readonly notes: string[];
+  /** Предупреждения плана: дойдут до человека через ctx.warn после планирования. */
+  readonly trackedAbsolute: TrackedAbsolute[];
   /** Наша строка статуса и то, что она заменила, — для журнала и unwire. */
   statusLine?: StatusLineRecord;
 }
 
 function emptyPlan(): Plan {
-  return { actions: [], conflicts: [], evicted: [], untouched: [], notes: [] };
+  return { actions: [], conflicts: [], evicted: [], untouched: [], notes: [], trackedAbsolute: [] };
 }
 
 /**
@@ -756,6 +775,60 @@ export function resolveMycBin(
   return { command: "myc", source: "none" };
 }
 
+/**
+ * Отслеживает ли git этот файл проекта. Спрос у самого git
+ * (`ls-files --error-unmatch`), а не чтение .gitignore: игноры вложенные,
+ * а индекс — истина в последней инстанции. Нет git (не установлен или
+ * каталог не репозиторий) — файл считается неотслеживаемым и wire ведёт
+ * себя как раньше: отсутствие git не повод ломать установку.
+ */
+function trackedByGit(root: string, rel: string): boolean {
+  try {
+    return (
+      Bun.spawnSync(["git", "ls-files", "--error-unmatch", rel], {
+        cwd: root,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      }).exitCode === 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Что писать в `mcpServers.myc` JSON-конфига MCP (myc-ncjz3ktdgvcd).
+ *
+ * MYC_BIN — явный выбор человека и почти всегда абсолютный путь ЭТОЙ машины.
+ * Для машинных файлов (`.claude/settings.json`) это уместно, но
+ * `.mcp.json` лежит в git, и клон на другой машине получит чужой путь.
+ * Поэтому для отслеживаемого файла два правила:
+ *
+ * 1. в нём уже стоит относительная команда myc — она ОСТАЁТСЯ, абсолютная
+ *    её не заменяет (файл остаётся переносимым, прогон — без записи);
+ * 2. абсолютный путь всё же попадает в файл (наш узел там впервые или
+ *    там уже чужой абсолютный путь) — wire говорит об этом вслух кодом
+ *    `wire.absolute_path_tracked`: человек узнаёт, что собирается
+ *    закоммитить путь своей машины.
+ *
+ * Git спрашивают только когда ответ может что-то изменить: относительная
+ * команда переносима в любом файле, и лишний запуск git ни к чему.
+ */
+function planMcpServer(plan: Plan, o: WireOptions, rel: string, existing: unknown): Record<string, unknown> {
+  const fresh = { command: o.mycBin.command, args: ["mcp", "--profile", "agent"] };
+  if (!isAbsolute(o.mycBin.command)) return fresh;
+  if (!trackedByGit(o.root, rel)) return fresh;
+  const current = asRecord(existing)["command"];
+  if (typeof current === "string" && current.length > 0 && !isAbsolute(current)) {
+    plan.trackedAbsolute.push({ path: rel, bin: o.mycBin.command, command: current, kept: true });
+    // «Оставить как есть»: вся запись целиком, с чужими полями вроде env.
+    return asRecord(existing);
+  }
+  plan.trackedAbsolute.push({ path: rel, bin: o.mycBin.command, command: "(no relative command in the file)", kept: false });
+  return fresh;
+}
+
 function planClaude(plan: Plan, o: WireOptions): void {
   const specs = HOOK_SPECS.filter((s) => o.events.includes(s.event));
   const settings = ".claude/settings.json";
@@ -785,7 +858,7 @@ function planClaude(plan: Plan, o: WireOptions): void {
   planJsonMerge(plan, o.root, ".mcp.json", (source) => {
     const value = { ...source.value };
     const servers = asRecord(value["mcpServers"]);
-    servers["myc"] = { command: o.mycBin.command, args: ["mcp", "--profile", "agent"] };
+    servers["myc"] = planMcpServer(plan, o, ".mcp.json", servers["myc"]);
     value["mcpServers"] = servers;
     return { nodes: ["mcpServers.myc"], conflicts: [], value };
   });
@@ -1097,7 +1170,7 @@ function planKimi(plan: Plan, o: WireOptions): void {
   planJsonMerge(plan, o.root, ".kimi-code/mcp.json", (source) => {
     const value = { ...source.value };
     const servers = asRecord(value["mcpServers"]);
-    servers["myc"] = { command: o.mycBin.command, args: ["mcp", "--profile", "agent"] };
+    servers["myc"] = planMcpServer(plan, o, ".kimi-code/mcp.json", servers["myc"]);
     value["mcpServers"] = servers;
     return { nodes: ["mcpServers.myc"], conflicts: [], value };
   });
@@ -1603,7 +1676,7 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
         );
       }
 
-      const mycBin = resolveMycBin(root);
+      const mycBin = resolveMycBin(root, deps.env);
       const statusLine = ctx.flags["status-line"] === true;
 
       // Хук очереди — только Claude Code и только на myc, который знает `run`
@@ -1696,6 +1769,20 @@ export function createWireCommand(registry: Registry, overrides: Partial<WireDep
           ].join("\n"),
           ExitCode.CONFLICT,
           "myc wire --hook-mode append",
+        );
+      }
+
+      // myc-ncjz3ktdgvcd: абсолютный путь бинаря добрался до отслеживаемого
+      // git'ом конфига MCP. Молчать нельзя и здесь — человек должен узнать
+      // об этом в момент wire, а не когда путь его машины уедет в git.
+      for (const t of plan.trackedAbsolute) {
+        ctx.warn(
+          "wire.absolute_path_tracked",
+          t.kept
+            ? `${t.path} is tracked by git: the relative myc command already there (${t.command}) is kept, ` +
+              `the absolute MYC_BIN path (${t.bin}) was not written — a clone on another machine would not have it`
+            : `${t.path} is tracked by git and now carries the absolute path ${t.bin} — committing it publishes ` +
+              "this machine's path; prefer a repo-relative myc (e.g. ./dist/myc) or keep this change out of the commit",
         );
       }
 

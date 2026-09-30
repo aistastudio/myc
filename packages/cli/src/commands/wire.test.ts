@@ -244,6 +244,128 @@ describe("resolveMycBin — команда для .mcp.json", () => {
   });
 });
 
+/**
+ * myc-ncjz3ktdgvcd: `MYC_BIN=$PWD/dist/myc myc wire` переписал закоммиченный
+ * .mcp.json: было "./dist/myc", стало "/Users/<кто-то>/src/memory/dist/myc".
+ * Для машинного .claude/settings.json абсолютный путь уместен, а файл,
+ * лежащий в git, — нет: клон на другой машине получает путь, которого у неё
+ * нет. Проверка «отслеживается ли файл» — у самого git.
+ */
+describe("отслеживаемый git'ом .mcp.json и абсолютный MYC_BIN", () => {
+  const RELATIVE_MCP = `${JSON.stringify(
+    { mcpServers: { myc: { command: "./dist/myc", args: ["mcp", "--profile", "agent"] } } },
+    null,
+    2,
+  )}\n`;
+  /** Абсолютный путь бинаря ЭТОЙ машины — то, что человек передаёт в MYC_BIN. */
+  let absBin: string;
+
+  beforeEach(() => {
+    absBin = join(dir, "dist", "myc");
+  });
+
+  function git(...a: string[]): boolean {
+    return Bun.spawnSync(["git", ...a], { cwd: dir, stdout: "pipe", stderr: "pipe" }).success;
+  }
+
+  /** Кладёт rel в индекс git: с этого момента файл отслеживается. */
+  function trackFile(rel: string, content: string): void {
+    if (!git("init", "-q")) throw new Error("git unavailable in test environment");
+    write(rel, content);
+    if (!git("add", rel)) throw new Error("git add failed");
+  }
+
+  /** Пишет бинарь (exists() обязана его найти) и зовёт wire с абсолютным MYC_BIN. */
+  function absMyc(...args: string[]): Promise<RunResult> {
+    write("dist/myc", "#!/bin/sh\n");
+    const r = new Registry();
+    r.register(createPrimeCommand());
+    r.register(createAbsorbSessionCommand());
+    r.register(createWireCommand(r, { env: { MYC_BIN: absBin } }));
+    r.register(createUnwireCommand());
+    return run(["-C", dir, ...args], { registry: r, env: { MYC_ACTOR: "tester" } });
+  }
+
+  function warnCodes(r: RunResult): string[] {
+    return ((JSON.parse(r.stdout as string) as { warn: { code: string }[] }).warn ?? []).map((w) => w.code);
+  }
+
+  test("ОТСЛЕЖИВАЕМЫЙ .mcp.json с относительной командой абсолютная не переписывает", async () => {
+    trackFile(".mcp.json", RELATIVE_MCP);
+    expect((await absMyc("wire", "--agents", "claude")).code).toBe(0);
+    expect(read(".mcp.json")).toBe(RELATIVE_MCP);
+    // И повторный прогон тоже: «оставить как есть» — не разовая уступка.
+    expect((await absMyc("wire", "--agents", "claude")).code).toBe(0);
+    expect(read(".mcp.json")).toBe(RELATIVE_MCP);
+  });
+
+  test("…и в отчёте — WARN wire.absolute_path_tracked, человеку видно и без --json", async () => {
+    trackFile(".mcp.json", RELATIVE_MCP);
+    const r = await absMyc("wire", "--agents", "claude", "--json");
+    expect(r.code).toBe(0);
+    expect(warnCodes(r)).toContain("wire.absolute_path_tracked");
+    const env = JSON.parse(r.stdout as string) as { warn: { code: string; msg: string }[] };
+    const msg = env.warn.find((w) => w.code === "wire.absolute_path_tracked")?.msg ?? "";
+    // Человек узнаёт свою ситуацию: файл, который он коммитит, команда,
+    // которую у него оставили, и путь, который туда не попал.
+    expect(msg).toContain(".mcp.json");
+    expect(msg).toContain("./dist/myc");
+    expect(msg).toContain(absBin);
+    // Человеческий отчёт: строка WARN с тем же кодом.
+    const human = await absMyc("wire", "--agents", "claude");
+    expect(String(human.stdout)).toContain("WARN wire.absolute_path_tracked");
+  });
+
+  test("в отслеживаемом файле БЕЗ относительной команды абсолютный путь появляется — и назван", async () => {
+    trackFile(".mcp.json", '{}\n');
+    const r = await absMyc("wire", "--agents", "claude", "--json");
+    expect(r.code).toBe(0);
+    const mcp = JSON.parse(read(".mcp.json")) as { mcpServers: { myc: { command: string } } };
+    expect(mcp.mcpServers.myc.command).toBe(absBin);
+    expect(warnCodes(r)).toContain("wire.absolute_path_tracked");
+  });
+
+  test("нет git — файл неотслеживаемый, поведение прежнее: абсолютный путь пишется", async () => {
+    write(".mcp.json", RELATIVE_MCP);
+    const r = await absMyc("wire", "--agents", "claude", "--json");
+    expect(r.code).toBe(0);
+    const mcp = JSON.parse(read(".mcp.json")) as { mcpServers: { myc: { command: string } } };
+    expect(mcp.mcpServers.myc.command).toBe(absBin);
+    expect(warnCodes(r)).not.toContain("wire.absolute_path_tracked");
+  });
+
+  test(".claude/settings.json (неотслеживаемый) абсолютный путь по-прежнему получает", async () => {
+    // В одном прогоне: отслеживаемый .mcp.json держит относительную команду,
+    // а машинный settings.json принимает абсолютную, как и раньше.
+    trackFile(".mcp.json", RELATIVE_MCP);
+    write("dist/myc", "#!/bin/sh\n"); // exists() обязана найти MYC_BIN
+    const r = new Registry();
+    r.register(createPrimeCommand());
+    r.register(createAbsorbSessionCommand());
+    r.register(
+      createWireCommand(r, {
+        env: { MYC_BIN: absBin, CLAUDE_CONFIG_DIR: join(dir, "cfg") },
+        probeStatusLine: () => ({ ok: true }),
+      }),
+    );
+    r.register(createUnwireCommand());
+    const res = await run(["-C", dir, "wire", "--agents", "claude", "--status-line"], {
+      registry: r,
+      env: { MYC_ACTOR: "tester" },
+    });
+    expect(res.code).toBe(0);
+    const settings = JSON.parse(read(".claude/settings.json")) as { statusLine: { command: string } };
+    expect(settings.statusLine.command).toContain(absBin);
+    expect(read(".mcp.json")).toBe(RELATIVE_MCP);
+  });
+
+  test("то же правило для отслеживаемого .kimi-code/mcp.json", async () => {
+    trackFile(".kimi-code/mcp.json", RELATIVE_MCP);
+    expect((await absMyc("wire", "--agents", "kimi")).code).toBe(0);
+    expect(read(".kimi-code/mcp.json")).toBe(RELATIVE_MCP);
+  });
+});
+
 describe(".myc/.gitignore: машинные файлы не уходят в git проекта", () => {
   const MACHINE_FILES = ["hooks.json", "wire.json", "bootstrap.cache.json", "anchor-dirty.log"];
 

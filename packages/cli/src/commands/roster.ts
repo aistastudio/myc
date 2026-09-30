@@ -49,7 +49,8 @@ import {
 import { ExitCode } from "../exit.ts";
 import type { FlagSpec } from "../flags.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
-import { flagBool, flagNum, flagStr, sqliteGate } from "./store.ts";
+import { flagBool, flagNum, flagStr, noWorkspaceFailure, sqliteGate } from "./store.ts";
+import { findWorkspaceDb } from "./wsfind.ts";
 
 export interface RosterHandle {
   readonly roster: Roster;
@@ -63,15 +64,28 @@ export interface RosterDeps {
 
 function realOpenRoster(ctx: CommandContext): RosterHandle | CommandFailure {
   const dir = resolve(ctx.globals.directory ?? process.cwd());
-  const dbPath = ctx.globals.db ?? join(dir, ".myc", "myc.db");
-  if (!existsSync(dbPath)) {
-    return {
-      ok: false,
-      code: "ws.not_initialized",
-      msg: `workspace not initialized: no ${dbPath}`,
-      exit: ExitCode.NOWS,
-      hint: "myc init",
-    };
+  let dbPath: string;
+  if (ctx.globals.db !== undefined) {
+    // Явный --db сильнее поиска: ни подъёма, ни альтернативных путей —
+    // ровно тот файл, что назвали, с прежним однопутевым сообщением.
+    dbPath = ctx.globals.db;
+    if (!existsSync(dbPath)) {
+      return {
+        ok: false,
+        code: "ws.not_initialized",
+        msg: `workspace not initialized: no ${dbPath}`,
+        exit: ExitCode.NOWS,
+        hint: "myc init",
+      };
+    }
+  } else {
+    // Без --db — общий поиск воркспейса (R1), как в store.ts: подъём к первому
+    // .myc/myc.db. Самодельная склейка <cwd>/.myc/myc.db из подкаталога
+    // проекта отвечала ws.not_initialized, хотя воркспейс был уровнем выше
+    // (myc-vtwmxdk8g9w7), — так же ломался и attempt.ts до dbPathOf.
+    const found = findWorkspaceDb(dir);
+    if (!("dbPath" in found)) return noWorkspaceFailure(found);
+    dbPath = found.dbPath;
   }
   // Библиотека SQLite — до первого `new Database` (memory-yxzsp11cpv6x).
   const refused = sqliteGate(ctx);
@@ -81,6 +95,7 @@ function realOpenRoster(ctx: CommandContext): RosterHandle | CommandFailure {
   ensureSwarmSchema(db);
   return { roster: new Roster(db), close: () => db.close() };
 }
+
 
 const realDeps: RosterDeps = { openRoster: realOpenRoster };
 

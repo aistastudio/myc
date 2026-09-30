@@ -123,6 +123,9 @@
         "@myc/core": "workspace:*",
         "sqlite-vec": "0.1.9",
       },
+      "devDependencies": {
+        "@myc/bench": "workspace:*",
+      },
     },
     "packages/swarm": {
       "name": "@myc/swarm",

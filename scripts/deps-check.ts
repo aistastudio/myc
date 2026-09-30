@@ -49,11 +49,22 @@ function shortName(fullName: string): string {
   return fullName.replace(/^@myc\//, "");
 }
 
+/**
+ * СЛОИСТОСТЬ СТОРОЖАТ РАДИ РАНТАЙМА, а `devDependencies` в рантайм не
+ * попадают (memory-p1v756t1jc1z).
+ *
+ * Прежде сюда шли все три секции разом, и правило «store-* зависит только от
+ * core» запрещало пакету ТЕСТОВУЮ оснастку. Следствие было не
+ * теоретическим: `cycle.latency.test.ts` не мог перейти на методику
+ * @myc/bench (медиана по независимым трейлам, сторож дрожания) и под
+ * нагрузкой падал, сообщая о загрузке машины, а не о коде. Так же были
+ * заперты core и swarm — три пакета из четырнадцати.
+ */
 async function collectDeclaredDeps(pkgDir: string): Promise<Set<string>> {
   const pkgJsonPath = `${PACKAGES_DIR}/${pkgDir}/package.json`;
   const pkgJson = await Bun.file(pkgJsonPath).json();
   const deps = new Set<string>();
-  for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
+  for (const field of ["dependencies", "peerDependencies"]) {
     const section = pkgJson[field] as Record<string, string> | undefined;
     if (!section) continue;
     for (const dep of Object.keys(section)) {
@@ -63,11 +74,22 @@ async function collectDeclaredDeps(pkgDir: string): Promise<Set<string>> {
   return deps;
 }
 
+/** Тестовый файл: его импорты в бинарь не попадают. */
+function isTestFile(file: string): boolean {
+  return /(?:^|[./])(?:test|spec)\.[tj]sx?$/.test(file) || /\.(?:test|spec)\./.test(file);
+}
+
 async function collectImportedDeps(pkgDir: string): Promise<Set<string>> {
   const deps = new Set<string>();
   const srcDir = `${PACKAGES_DIR}/${pkgDir}/src`;
   const glob = new Bun.Glob("**/*.{ts,tsx}");
   for await (const file of glob.scan(srcDir)) {
+    // ТЕСТЫ НЕ СЧИТАЮТСЯ ЗАВИСИМОСТЬЮ ПАКЕТА. Правило слоистости защищает
+    // рантайм: что импортирует тест, в поставку не уходит. Считая их,
+    // сторож запрещал пакету пользоваться собственной тестовой оснасткой —
+    // и именно поэтому бюджетные тесты трёх пакетов остались без методики
+    // @myc/bench (memory-p1v756t1jc1z).
+    if (isTestFile(file)) continue;
     const text = await Bun.file(`${srcDir}/${file}`).text();
     // Ищем ИМПОРТЫ, а не любое вхождение имени: комментарий, объясняющий
     // связь с соседним пакетом («тот же выключатель, что у @myc/bench»),

@@ -754,7 +754,13 @@ async function openWorkspaceAt(
  * где клон советовал `init` вместо `import`. Поэтому обе причины называются
  * словами, а подсказка ведёт в ОСНОВНОЕ дерево, а не в текущий каталог.
  */
-function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
+/**
+ * Экспортирован, потому что «воркспейса нет» обязано объясняться ОДИНАКОВО
+ * у любой команды: `myc list` и `myc model list` отвечают про одно и то же
+ * состояние, и две копии этих веток (worktree, свежий клон, негодный слаг)
+ * разошлись бы при первой же правке — что и начало происходить.
+ */
+export function noWorkspaceFailure(found: WorkspaceNotFound): CommandFailure {
   const link = found.worktree;
   if (link !== undefined && found.worktreeMiss === "main-missing") {
     return {
