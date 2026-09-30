@@ -199,12 +199,28 @@ docker compose -f deploy/compose.prod.yml up -d server
 curl -s https://myc.example.com/v1/health   # "ver" must be the new one
 ```
 
-**A release that changes the Postgres schema has no automatic migration
-today.** `--apply-schema` writes the schema into an **empty** database and
-refuses a populated one on purpose: applying DDL over live data is a
+If a release moves the schema, bring the database up to it explicitly:
+
+```bash
+docker compose -f deploy/compose.prod.yml run --rm \
+  -e MYC_PG_URL=postgres://postgres:…@db:5432/myc server serve --migrate
+```
+
+Note the **superuser** in that URL, not `myc_app`. Migrations run across every
+tenant at once, and row-level security hides other tenants' rows from the
+application role: under it a data migration would change nothing, silently,
+and still record the new version. The command refuses that outright.
+
+The server checks the schema at start and refuses to run on a database behind
+it, naming both numbers — it would otherwise write through a schema it does
+not have. A database it simply cannot reach is a different matter and does not
+stop the start: the container may well come up before its database, which is
+what `/v1/readyz` is for.
+
+`--apply-schema` stays what it was: it writes the schema into an **empty**
+database and refuses a populated one, because applying DDL over live data is a
 migration, with its own order, checks and rollback, and doing it silently on
-every container start is how databases are lost. Check the release notes
-before upgrading; if the schema number moved, treat it as a planned operation.
+every container start is how databases are lost.
 
 ## What does not work yet
 

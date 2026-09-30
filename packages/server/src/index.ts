@@ -82,6 +82,13 @@ export type ServerConfig = {
    * 404 с причиной, а не пустой страницей.
    */
   readonly pg?: string;
+  /**
+   * Версия схемы, которую знает ЗАПУСТИВШИЙ бинарь. Приходит снаружи, а не
+   * вычисляется здесь: список миграций живёт в store-sqlite, от которого
+   * пакет сервера намеренно не зависит. Без неё `migrations_pending`
+   * отвечать нечем — а отвечать нулём, как было, значит врать.
+   */
+  readonly schemaKnown?: number;
 };
 
 export interface MycHttpServer {
@@ -543,12 +550,24 @@ export function startHttpServer(config: ServerConfig): MycHttpServer {
           const t0 = performance.now();
           await pg.raw("SELECT 1");
           const latency = Math.round((performance.now() - t0) * 100) / 100;
+          // По ОБЕИМ таблицам учёта: совместимые миграции лежат не в
+          // schema_migrations, и версия по одной из них занижена.
           const [v] = await pg.raw<{ v: string | null }>(
-            "SELECT max(version) AS v FROM schema_migrations",
+            `SELECT max(v) AS v FROM (
+               SELECT max(version) AS v FROM schema_migrations
+               UNION ALL SELECT max(version) AS v FROM schema_migrations_compat
+             ) t`,
           );
           // BIGINT приходит строкой; версия наружу — как у SQLite, `vN`.
-          const schema = v?.v == null ? null : `v${Number(v.v)}`;
-          return json({ ok: true, db: "postgres", latency_ms: latency, schema, migrations_pending: 0 });
+          const have = v?.v == null ? null : Number(v.v);
+          const schema = have === null ? null : `v${have}`;
+          // Отставание СЧИТАЕТСЯ, а не пишется литералом: раньше здесь стоял
+          // ноль, и проба уверяла, что догонять нечего, на любой базе.
+          const pending =
+            have === null || config.schemaKnown === undefined
+              ? null
+              : Math.max(0, config.schemaKnown - have);
+          return json({ ok: true, db: "postgres", latency_ms: latency, schema, migrations_pending: pending });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           return json({ ok: false, error: { code: "db.query", msg } }, 503);

@@ -48,6 +48,17 @@ export interface PostgresDriver extends AsyncDbDriver {
    * как сказано в §8.3 таблицы расхождений.
    */
   withTenant<T>(tenant: string, fn: (tx: AsyncDbDriver) => Promise<T>, mode?: TxMode): Promise<T>;
+  /**
+   * Одна транзакция БЕЗ арендатора — для того, что арендаторов не касается:
+   * схема и её учёт. Отдельно от `withTenant`, потому что `SET LOCAL
+   * myc.tenant` здесь означал бы, что у DDL есть владелец, а его нет.
+   *
+   * Нужна именно транзакция, а не несколько `raw` подряд: у пула каждый
+   * вызов вправе взять СВОЁ соединение, и `BEGIN` одним запросом, а
+   * `COMMIT` другим не связывают ничего. Bun это и говорит вслух — «Only
+   * use sql.begin, sql.reserved or max: 1».
+   */
+  withTransaction<T>(fn: (tx: AsyncDbDriver) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -170,6 +181,9 @@ export function openPostgres(options: PostgresOpenOptions | string): PostgresDri
         await tx.unsafe("SELECT set_config('myc.tenant', $1, true)", [tenant]);
         return await fn(driverOn(tx));
       })) as T;
+    },
+    async withTransaction<T>(fn: (tx: AsyncDbDriver) => Promise<T>): Promise<T> {
+      return (await sql.begin(async (tx: SQL) => fn(driverOn(tx)))) as T;
     },
     async close(): Promise<void> {
       await sql.close();

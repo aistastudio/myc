@@ -279,7 +279,7 @@ export {
   SCHEMA_UPGRADE_HINT,
   schemaVersionSql,
 } from "./migrate.ts";
-export type { MigrateOptions, MigrateResult } from "./migrate.ts";
+export type { MigrateOptions, MigrateResult, Migration } from "./migrate.ts";
 
 // Обмен через git (решение S42): в git только оплог, проекции — локальный кеш.
 export {

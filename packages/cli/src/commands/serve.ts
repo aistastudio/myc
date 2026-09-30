@@ -21,6 +21,13 @@ import { openPostgres, type PostgresDriver } from "@myc/store-postgres";
 // Схема едет ВНУТРИ бинаря: контейнеру иначе пришлось бы возить psql и копию
 // файла, а «быстрый деплой» — это когда разворачивают одну вещь, а не три.
 import POSTGRES_DDL from "../../../../db/schema.postgres.sql" with { type: "text" };
+import {
+  canBypassRls,
+  knownSchemaVersion,
+  migratePostgres,
+  pgSchemaVersion,
+  type PgMigrateResult,
+} from "../pg-migrate.ts";
 import { addToken, isRole, listTokens, parseScopes, revokeToken, ROLES, SCOPES } from "@myc/server/auth";
 import { startHttpServer } from "@myc/server";
 import { CLI_VERSION } from "../index.ts";
@@ -156,6 +163,7 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
       { name: "revoke-token", value: "string", description: "revoke a token by its id" },
       { name: "tokens", description: "list tokens: who holds them and when each was last used, never the secrets" },
       { name: "apply-schema", description: "create the schema in an EMPTY database and exit; an existing one is left alone" },
+      { name: "migrate", description: "bring an existing database up to this binary's schema and exit; says what it applied" },
       { name: "health-probe", description: "ask a server already running on this host whether it is alive, and exit 0 or 1" },
     ],
     help:
@@ -201,9 +209,10 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
       const revokeId = str(ctx, "revoke-token");
       const wantList = ctx.flags["tokens"] === true;
       const applySchema = ctx.flags["apply-schema"] === true;
+      const wantMigrate = ctx.flags["migrate"] === true;
 
       if (
-        (addSpec !== undefined || addTenant !== undefined || revokeId !== undefined || wantList || applySchema) &&
+        (addSpec !== undefined || addTenant !== undefined || revokeId !== undefined || wantList || applySchema || wantMigrate) &&
         pgUrl === undefined
       ) {
         return failure("precond.no_pg", "tokens live in Postgres: pass --pg <url> (or MYC_PG_URL)", ExitCode.PRECOND);
@@ -230,6 +239,32 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
           // число, как и везде в myc, поэтому приведение здесь явное.
           const [v] = await pg!.raw<{ v: string | null }>("SELECT max(version) AS v FROM schema_migrations");
           return { ok: true, data: { applied: true, schema: v?.v == null ? null : Number(v.v) } };
+        }
+
+        if (wantMigrate) {
+          // ЯВНО И С ОТЧЁТОМ. Накат поверх живых данных — операция, у
+          // которой должен быть автор и время; молча при каждом подъёме
+          // контейнера её делать нельзя (см. --apply-schema рядом).
+          const before = await pgSchemaVersion(pg!);
+          if (before === 0) {
+            return failure(
+              "precond.no_schema",
+              "this database has no schema at all: there is nothing to migrate",
+              ExitCode.PRECOND,
+              "myc serve --pg <url> --apply-schema",
+            );
+          }
+          if (!(await canBypassRls(pg!))) {
+            return failure(
+              "precond.privileges",
+              "migrations run as the superuser, like --apply-schema: under the application role a data " +
+                "migration silently changes nothing and still records the version",
+              ExitCode.PRECOND,
+              "myc serve --pg postgres://postgres:…@host/myc --migrate",
+            );
+          }
+          const result = await migratePostgres(pg!);
+          return { ok: true, data: result satisfies PgMigrateResult };
         }
 
         if (addTenant !== undefined) {
@@ -320,6 +355,28 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
         // Секрет уходит в ЖУРНАЛ, и это сказано вслух: в настоящей установке
         // переменные убирают и выдают токен руками. Дверь эта открывается
         // только явной переменной — по умолчанию её нет.
+        // ОТСТАВШАЯ БАЗА — ОТКАЗ, А НЕ МОЛЧАЛИВЫЙ СТАРТ (memory-rjb0vk556j8e).
+        // Сервер на схеме прошлой версии выглядит работающим ровно до
+        // первого запроса, который упрётся в недостающее; хуже того, на
+        // неё продолжают писать. Отказ называет оба номера и команду, а
+        // накат остаётся явным действием.
+        if (pg !== undefined) {
+          // «Не смог прочитать» — НЕ «отстала». База может быть просто ещё
+          // не поднята: контейнер сервера стартует раньше неё, и падать из-за
+          // этого он не должен — на то и разделены живость с готовностью.
+          // Отказ только когда версия ПРОЧИТАНА и она ниже нашей.
+          const have = await pgSchemaVersion(pg).catch(() => null);
+          const knows = knownSchemaVersion();
+          if (have !== null && have > 0 && have < knows) {
+            return failure(
+              "precond.schema",
+              `the database is at schema ${have}, this myc knows ${knows} — it would write through a schema it does not have`,
+              ExitCode.PRECOND,
+              "myc serve --pg <url> --migrate",
+            );
+          }
+        }
+
         const bootstrapped = pg === undefined ? undefined : await bootstrapTenant(pg, deps.env ?? process.env);
         if (bootstrapped !== undefined && !ctx.globals.json && !ctx.globals.ndjson) {
           deps.write(bootstrapped);
@@ -328,6 +385,9 @@ export function createServeCommand(deps: ServeDeps = { write: (s) => process.std
         const t0 = Date.now();
         const server = startHttpServer({
           port,
+          // Сколько знает ЭТОТ бинарь — иначе `migrations_pending` в health
+          // считать не из чего (см. ServerConfig.schemaKnown).
+          schemaKnown: knownSchemaVersion(),
           ...(str(ctx, "host") !== undefined ? { host: str(ctx, "host")! } : {}),
           ...(ctx.globals.directory !== undefined ? { dir: ctx.globals.directory } : {}),
           ...(ctx.globals.db !== undefined ? { db: ctx.globals.db } : {}),
