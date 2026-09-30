@@ -56,8 +56,8 @@ macOS, где Bun взял бы системную (на macOS 14 это 3.43.2)
 Одна команда:
 
 ```bash
-bun install -g @aistastudio/myc   # 5.11 МБ сжатый, 15.79 МБ распакованный, 16 файлов; модели не качаются
-myc --version                     # myc 0.4.1 (schema 1)
+bun install -g @aistastudio/myc   # 5.11 МБ сжатый, 15.80 МБ распакованный, 16 файлов; модели не качаются
+myc --version                     # myc 0.4.2 (schema 1)
 ```
 
 Работает на macOS и Linux. На Windows — через WSL, Bun и myc ставятся внутри

@@ -329,7 +329,7 @@ window.MYC_DATA = {
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 5.11,
-    "unpacked_mb": 15.79,
+    "unpacked_mb": 15.8,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.4.1",
+    "version": "0.4.2",
     "date": "2026-09-19"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
     "as_of": "2026-09-30",
-    "source": "myc 0.4.1 (schema 1) · 13 epics of this repository's workspace",
+    "source": "myc 0.4.2 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -515,8 +515,8 @@ window.MYC_DATA = {
         "title_en": "team: myc serve, ACL, network sync, Postgres",
         "title_ru": "команда: myc serve, ACL, сетевая синхронизация, Postgres",
         "status": "open",
-        "done": 10,
-        "total": 15,
+        "done": 11,
+        "total": 16,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
@@ -1605,11 +1605,11 @@ window.MYC_DATA = {
     "skip": 16,
     "files": 277,
     "assertions": 38606,
-    "seconds": 445.4,
-    "sources": "dbd0967caa36645f",
+    "seconds": 486.7,
+    "sources": "2801c84f4f2a327b",
     "date": "2026-09-30",
-    "myc": "0.4.1"
+    "myc": "0.4.2"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-30T20:03:40.544Z", assertions: 77 };
-window.MYC_DATA.release = "0.4.1";
+window.MYC_DATA.verified = { at: "2026-09-30T20:15:08.378Z", assertions: 77 };
+window.MYC_DATA.release = "0.4.2";

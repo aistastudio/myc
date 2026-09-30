@@ -57,8 +57,8 @@ Install Bun: https://bun.sh
 Installation is one command:
 
 ```bash
-bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.79 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.4.1 (schema 1)
+bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.80 MB unpacked, 16 files; no models pulled
+myc --version                     # myc 0.4.2 (schema 1)
 ```
 
 It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside
