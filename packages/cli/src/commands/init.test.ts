@@ -7,17 +7,19 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ExitCode } from "../exit.ts";
 import { run, type RunResult } from "../index.ts";
 import { Registry } from "../registry.ts";
@@ -825,5 +827,71 @@ describe("init --global --force: писатель вышел начисто (н�
     expect(r.code).toBe(ExitCode.PRECOND);
     expect(r.err).toContain("database can't be read");
     expect(readFileSync(dbPath, "utf8")).toBe("это не sqlite");
+  });
+});
+
+/**
+ * memory-5enn2vd1t6mx: база свежесозданного воркспейса обязана быть ОДНИМ
+ * самодостаточным файлом.
+ *
+ * `db.close()` в bun:sqlite чекпойнта не делает — хвост записей остаётся в
+ * `-wal` (замер: из 3000 строк в самом файле после close оказалось 2983; на
+ * схеме myc — 4 КиБ основного файла против 615 КиБ журнала). Пока базу
+ * открывают вместе со спутниками, это безразлично. Но тот, кто берёт один
+ * `myc.db` — кеш раннера CI, `cp`, выгрузка артефакта, — получает обрезок,
+ * то есть ровно «database disk image is malformed», с которого начался этот
+ * баг.
+ *
+ * Мутация, которую этот describe обязан ловить: убрать `checkpointWal(db)`
+ * из `createWorkspaceDb`. Проверено прогоном: краснеет — в копии одного файла
+ * 0 объектов схемы вместо 87.
+ */
+describe("init: готовая база — один файл (memory-5enn2vd1t6mx)", () => {
+  const CLI_MAIN = join(import.meta.dir, "..", "main.ts");
+
+  async function spawnInit(): Promise<number> {
+    const proc = Bun.spawn([process.execPath, CLI_MAIN, "-C", dir, "init"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, MYC_HOME: homeDir, MYC_ACTOR: "tester" },
+    });
+    const [code] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    return code;
+  }
+
+  test("копия одного myc.db несёт всю схему и настоящий адрес экземпляра", async () => {
+    expect(await spawnInit()).toBe(0);
+    const dbPath = join(dir, ".myc", "myc.db");
+
+    const whole = new Database(dbPath, { readonly: true });
+    const wholeTables = (whole.query("SELECT count(*) c FROM sqlite_master").get() as { c: number })
+      .c;
+    whole.close();
+    expect(wholeTables).toBeGreaterThan(0);
+
+    // Один файл, без `-wal` и `-shm`: так его видит копировщик.
+    const alone = join(dir, "alone.db");
+    copyFileSync(dbPath, alone);
+    const copy = new Database(alone);
+    try {
+      expect((copy.query("SELECT count(*) c FROM sqlite_master").get() as { c: number }).c).toBe(
+        wholeTables,
+      );
+      const meta = (key: string): string | undefined =>
+        (copy.query("SELECT value FROM myc_meta WHERE key = ?1").get(key) as
+          | { value: string }
+          | null)?.value;
+      expect(meta("slug")).toBe(basename(dir).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8));
+      // Привязка site_id записана по временному пути и починена уже по
+      // настоящему: в копии одного файла обязана быть вторая запись.
+      expect(JSON.parse(meta("site_instance") ?? "{}").path).toBe(realpathSync(dbPath));
+    } finally {
+      copy.close();
+    }
   });
 });

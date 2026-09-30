@@ -21,6 +21,18 @@ jobs:
       - name: typecheck
         run: bun run typecheck
 
+      # Какая SQLite будет под тестами — в журнал, до прогона
+      # (memory-5enn2vd1t6mx, пункт 1). «database disk image is malformed» на
+      # свежесозданной базе соседа приходило с раннера и никак не называло
+      # библиотеку, которая эту базу не открыла; версия в отчёте о падении
+      # стоит одной строки здесь.
+      - name: sqlite (какая библиотека под тестами)
+        run: >
+          bun -e 'const { ensureSqliteLibrary, sqliteSourceLabel } = await
+          import("./packages/store-sqlite/src/runtime.ts");
+          const s = ensureSqliteLibrary();
+          console.log(`SQLite ${s.version} (${s.support}) — ${sqliteSourceLabel(s)}`);'
+
       # MYC_BENCH_ABSOLUTE=0 — абсолютные бюджеты И1 здесь НЕ проверяются, и
       # это не послабление, а вопрос калибровки. Числа сняты на рабочей
       # машине (14 ядер, arm64); общий раннер даёт 4 ядра x86, и на нём тот
