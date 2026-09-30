@@ -11,6 +11,10 @@
  *   «wire ставит хук без флага» — planQueueHook берёт запись и без
  *   `--queue-hook`: падают «без флага хук не ставится» и «без флага и с
  *   флагом — всё, кроме PreToolUse, побайтно одно и то же».
+ *   «probeQueueBin игнорирует ярус» — пользовательский ярус получает слово
+ *   `myc` из PATH: падает «пользовательский ярус: тот же PATH-кандидат…».
+ *   «detail называет все узлы, куда планировщик кладёт руку» — падает
+ *   «detail слияния settings.json называет только узлы, которые прогон меняет».
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -208,6 +212,28 @@ describe("wire --queue-hook: только по флагу", () => {
     expect(has(".myc/wire.json")).toBe(false);
   });
 
+  /**
+   * detail слияния — для человека: он читает «+N nodes» как «что ЭТОТ прогон
+   * изменит». Узел, уже совпадающий с тем, что myc записал бы, изменением не
+   * является и в списке не называется (memory-h744mh3f5ddy).
+   */
+  test("detail слияния settings.json называет только узлы, которые прогон меняет", async () => {
+    expect((await myc(registry(), dir, "wire", "--agents", "claude", "--queue-hook")).code).toBe(0);
+    // Ровно один узел снят руками; остальные совпадают с тем, что wire написал бы.
+    const s = settings();
+    delete s["hooks"]["PreCompact"];
+    write(".claude/settings.json", `${JSON.stringify(s, null, 2)}\n`);
+    const res = await myc(registry(), dir, "wire", "--agents", "claude", "--queue-hook", "--dry-run", "--json");
+    expect(res.code).toBe(0);
+    const data = JSON.parse(res.stdout as string).data as {
+      changed: number;
+      actions: { path: string; action: string; detail: string }[];
+    };
+    const act = data.actions.find((a) => a.path === ".claude/settings.json")!;
+    expect(act.action).toBe("merge");
+    expect(act.detail).toBe("+1 node: hooks.PreCompact");
+  });
+
   test("Windows и --agents без claude: хук не ставится, и это сказано вслух", async () => {
     const win = await myc(registry({ platform: "win32" }), dir, "wire", "--agents", "claude", "--queue-hook", "--json");
     expect(win.code).toBe(0);
@@ -269,5 +295,21 @@ describe("probeQueueBin: myc проверяется на run запуском", 
     const refused = probeQueueBin(dir, { PATH: "" });
     expect(refused.ok).toBe(false);
     expect(refused.ok ? "" : refused.why).toContain("node_modules/.bin/myc run --help: exit 2");
+  });
+
+  /**
+   * Пользовательский ярус (--scope user) получает АБСОЛЮТНЫЙ путь всегда:
+   * settings.json там личный, правила `Bash(myc:*)` над ним нет, а PATH той
+   * оболочки, которую поднимет хост, пробе не ведом (memory-h744mh3f5ddy).
+   * Проектный ярус не меняется: слово `myc` покрыто его правилом разрешений.
+   */
+  test("пользовательский ярус: тот же PATH-кандидат — абсолютным путём", () => {
+    const onPath = exe(join(root, "bin/myc"), GOOD);
+    expect(probeQueueBin(dir, { PATH: dirname(onPath) })).toEqual({ ok: true, bin: { command: "myc", source: "path" } });
+    expect(probeQueueBin(dir, { PATH: dirname(onPath) }, "user")).toEqual({ ok: true, bin: { command: onPath, source: "path" } });
+    // Сборка в проекте пользовательскому ярусу тоже пишется абсолютным путём:
+    // у слоя проекта нет, относительно чего достраивать путь.
+    exe(join(dir, "dist/myc"), GOOD);
+    expect(probeQueueBin(dir, { PATH: "" }, "user")).toEqual({ ok: true, bin: { command: join(dir, "dist/myc"), source: "repo" } });
   });
 });

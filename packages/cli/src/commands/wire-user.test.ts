@@ -23,6 +23,10 @@
  *       «проект со своей проводкой: prime ровно один раз»;
  *   «нет перехода в основное дерево» — сторож не читает `.git`-файл worktree:
  *       падает «git worktree вне дерева воркспейса».
+ *   «хук очереди пользовательского яруса зовёт myc словом из PATH» — падает
+ *       «хук очереди зовёт myc АБСОЛЮТНЫМ путём» (memory-h744mh3f5ddy);
+ *   «detail называет все узлы, куда планировщик кладёт руку» — падает
+ *       «detail слияния называет только узлы, которые прогон меняет».
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -39,6 +43,7 @@ import {
   createUnwireCommand,
   createWireCommand,
   mycPermissions,
+  probeQueueBin,
   probeUserMcpBin,
   readUserJournal,
   type WireDeps,
@@ -610,5 +615,60 @@ describe("helper пользовательского слоя: как его за
     // Свой хук очереди у проекта — пользовательский молчит.
     expect((await myc(r, "-C", proj, "wire", "--agents", "claude", "--queue-hook")).code).toBe(0);
     expect(runHook(cmd!, proj, payload, withMyc).stdout).toBe("");
+  });
+});
+
+/**
+ * Два дефекта memory-h744mh3f5ddy: голое слово `myc` в хуке очереди
+ * пользовательского яруса и detail слияния, называющий узлы, которые прогон
+ * не меняет.
+ */
+describe("хук очереди и detail слияния пользовательского яруса (memory-h744mh3f5ddy)", () => {
+  test("хук очереди зовёт myc АБСОЛЮТНЫМ путём, и этот файл существует", async () => {
+    // Проба настоящая (probeQueueBin): myc, знающий `run`, — на PATH, как у
+    // машины разработчика; MYC_BIN сброшен, чтобы выбрался кандидат из PATH —
+    // именно он раньше попадал в хук голым словом.
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const good = join(bin, "myc");
+    writeFileSync(
+      good,
+      `#!/bin/sh\n[ "$1" = run ] && [ "$2" = --help ] && echo "myc run — run a heavy command through the machine-wide queue" && exit 0\nexit 2\n`,
+    );
+    chmodSync(good, 0o755);
+    const r = registry(wireEnv({ MYC_BIN: "" }), { probeQueue: probeQueueBin });
+    expect((await myc(r, "wire", "--scope", "user", "--queue-hook")).code).toBe(0);
+    const queueHelper = join(home, ".claude", "helpers", "myc-queue.mjs");
+    const cmd = commandsOf(settingsPath(), "PreToolUse").find((c) => c.includes(queueHelper))!;
+    const last = cmd.trim().split(" ").at(-1)!;
+    // Запись пользовательского яруса абсолютна, как её helper: файл личный,
+    // а PATH оболочки, которую поднимет хост, wire не выбирает.
+    expect(last.startsWith("/")).toBe(true);
+    expect(existsSync(last)).toBe(true);
+    expect(last).toBe(good);
+  });
+
+  test("detail слияния называет только узлы, которые прогон меняет", async () => {
+    const r = registry();
+    expect((await myc(r, "wire", "--scope", "user", "--queue-hook")).code).toBe(0);
+    // Ровно один узел снят руками; остальные совпадают с тем, что wire
+    // написал бы, — значит, «+N nodes» обязан назвать один.
+    const p = settingsPath();
+    const s = JSON.parse(readText(p)) as Record<string, any>;
+    delete s["hooks"]["PreCompact"];
+    writeFileSync(p, `${JSON.stringify(s, null, 2)}\n`);
+    const dry = await json(r, "wire", "--scope", "user", "--queue-hook", "--dry-run");
+    expect(dry.code).toBe(0);
+    const data = dry.env.data as { changed: number; actions: { path: string; action: string; detail: string }[] };
+    expect(data.changed).toBe(1);
+    const act = data.actions.find((a) => a.path === p)!;
+    expect(act.action).toBe("merge");
+    expect(act.detail).toBe("+1 node: hooks.PreCompact");
+
+    // Настоящий прогон узел возвращает; следующий прогон уже ничего не меняет.
+    expect((await myc(r, "wire", "--scope", "user", "--queue-hook")).code).toBe(0);
+    const again = await json(r, "wire", "--scope", "user", "--queue-hook", "--dry-run");
+    const act2 = (again.env.data as { actions: { path: string; action: string; detail: string }[] }).actions.find((a) => a.path === p)!;
+    expect(act2.action).toBe("unchanged");
+    expect(act2.detail).toBe("up to date");
   });
 });

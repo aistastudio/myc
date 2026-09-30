@@ -324,6 +324,17 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * Узел не изменится этим прогоном: то, что собираемся записать, уже стоит.
+ * Сравнение в JSON — как файл и запишется, поэтому и раскладка ключей чужой
+ * записи, требующая перезаписи, считается изменением. Единственная копия
+ * этого правила: на ней стоит и detail слияния, и список узлов пользовательского
+ * слоя (memory-h744mh3f5ddy).
+ */
+function jsonSame(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
  * Наша ли команда хука — по имени helper-файла в ней. Helper'ов два: общий
  * (`myc-hooks.mjs`) и хука очереди (`myc-queue.mjs`, только с `--queue-hook`).
  */
@@ -423,6 +434,13 @@ function codexHookEntry(spec: HookSpec): Record<string, unknown> {
 
 interface SettingsPlan {
   readonly nodes: string[];
+  /**
+   * Узлы, которые ЭТОТ прогон реально изменит (добавит или перезапишет);
+   * их читает человек в detail. `nodes` шире — туда планировщик кладёт руку
+   * всегда, и по нему живут журнал, unwire и generatedFiles. Нет поля —
+   * меняются все перечисленные узлы (планировщики с одним узлом).
+   */
+  readonly changedNodes?: readonly string[];
   readonly conflicts: Conflict[];
   /** Что убрал `replace`; у планировщиков без хуков — пусто. */
   readonly evicted?: readonly Evicted[];
@@ -455,6 +473,7 @@ function mergeHookNodes(
   const value: Record<string, unknown> = { ...source.value };
   const hooks = asRecord(value["hooks"]);
   const nodes: string[] = [];
+  const changedNodes: string[] = [];
   const conflicts: Conflict[] = [];
   const evicted: Evicted[] = [];
   const notes: string[] = [];
@@ -494,13 +513,18 @@ function mergeHookNodes(
     }
 
     const kept = mode === "replace" ? [] : foreign;
-    hooks[event] = [...kept, ours];
+    const next = [...kept, ours];
+    hooks[event] = next;
     nodes.push(node);
+    // Уже записано ровно то, что планировщик положил бы, — узел не меняется,
+    // и человек в detail его не видит: «+N nodes» отвечает на вопрос «что
+    // изменится», а не «куда myc кладёт руку» (memory-h744mh3f5ddy).
+    if (!jsonSame(existing, next)) changedNodes.push(node);
   }
 
-  if (conflicts.length > 0) return { nodes, conflicts, evicted, notes, value };
+  if (conflicts.length > 0) return { nodes, changedNodes, conflicts, evicted, notes, value };
   if (nodes.length > 0) value["hooks"] = hooks;
-  return { nodes, conflicts, evicted, notes, value };
+  return { nodes, changedNodes, conflicts, evicted, notes, value };
 }
 
 /** Что `.claude/settings.json` получает в `permissions.allow` (см. LEGACY_PERMISSION). */
@@ -530,6 +554,7 @@ function mergeClaudeSettings(
   if (base.conflicts.length > 0) return base;
   const value = { ...base.value };
   const nodes = [...base.nodes];
+  const changedNodes = [...(base.changedNodes ?? [])];
   const notes = [...(base.notes ?? [])];
 
   const permissions = asRecord(value["permissions"]);
@@ -556,10 +581,12 @@ function mergeClaudeSettings(
     value["permissions"] = permissions;
   }
   if (added.length > 0) {
-    nodes.push(`permissions.allow[${added.length === 1 ? added[0] : `Bash(myc <command>:*) ×${added.length}`}]`);
+    const name = `permissions.allow[${added.length === 1 ? added[0] : `Bash(myc <command>:*) ×${added.length}`}]`;
+    nodes.push(name);
+    changedNodes.push(name);
   }
 
-  return { ...base, nodes, notes, value };
+  return { ...base, nodes, changedNodes, notes, value };
 }
 
 /** `.codex/hooks.json`: только узлы `hooks.<Event>`, без permissions. */
@@ -607,10 +634,13 @@ function planJsonMerge(
     plan.actions.push({ path: rel, kind: "unchanged", detail: "up to date", content, nodes: merged.nodes, backup: false, preexisting });
     return;
   }
+  // Человеку называются только те узлы, которые прогон меняет; журнал несёт
+  // весь nodes — по нему живут unwire и generatedFiles.
+  const changed = merged.changedNodes ?? merged.nodes;
   plan.actions.push({
     path: rel,
     kind: source.exists ? "merge" : "new",
-    detail: merged.nodes.length > 0 ? `+${countNodes(merged.nodes.length)}: ${merged.nodes.join(", ")}` : "no node changes",
+    detail: changed.length > 0 ? `+${countNodes(changed.length)}: ${changed.join(", ")}` : "no node changes",
     content,
     nodes: merged.nodes,
     backup: source.exists,
@@ -1029,7 +1059,16 @@ function withStatusLine(base: SettingsPlan, o: WireOptions, rel: string): Settin
         "so Claude Code will show that line, not myc's (file left alone)",
     );
   }
-  return { ...base, value, nodes: [...base.nodes, "statusLine"], notes, statusLine: { path: rel, previous, passthrough } };
+  return {
+    ...base,
+    value,
+    nodes: [...base.nodes, "statusLine"],
+    // Строку, совпадающую с той, что myc написал бы, прогон не меняет —
+    // и в detail она не попадает.
+    changedNodes: [...(base.changedNodes ?? []), ...(jsonSame(current, next) ? [] : ["statusLine"])],
+    notes,
+    statusLine: { path: rel, previous, passthrough },
+  };
 }
 
 /**
@@ -1490,6 +1529,13 @@ export const probeStatusLineBin: StatusLineProbe = (root, bin) => {
  * сам; затем сборки в проекте и ~/.myc/bin. Путь в проекте пишется
  * относительным (helper достраивает его от CLAUDE_PROJECT_DIR): settings.json
  * общий для команды, домашнему пути одного разработчика там не место.
+ *
+ * Пользовательский ярус (`--scope user`) получает АБСОЛЮТНЫЙ путь всегда,
+ * и по той же причине, что resolveUserMycBin: settings.json там личный,
+ * проектного правила `Bash(myc:*)` над ним нет, а сессии, поднятые не из
+ * терминала человека, видят другой PATH — слово `myc` в них кончается
+ * «command not found», и хук молча перестаёт оборачивать тяжёлые команды.
+ * Правило выбора бинаря одно — здесь; ярус меняет только форму команды.
  */
 export interface QueueBinChoice {
   /** Что получит хук: `myc` (ищется в PATH), путь от корня проекта или абсолютный. */
@@ -1500,9 +1546,11 @@ export interface QueueBinChoice {
 export type QueueProbe = (
   root: string,
   env: NodeJS.ProcessEnv,
+  /** Ярус: пользовательский получает абсолютный путь даже для кандидата из PATH. */
+  scope?: "project" | "user",
 ) => { readonly ok: true; readonly bin: QueueBinChoice } | { readonly ok: false; readonly why: string };
 
-export const probeQueueBin: QueueProbe = (root, env) => {
+export const probeQueueBin: QueueProbe = (root, env, scope = "project") => {
   const candidates: { command: string; exe: string; source: QueueBinChoice["source"] }[] = [];
   const own = env.MYC_BIN;
   if (own !== undefined && own.length > 0) candidates.push({ command: resolve(root, own), exe: resolve(root, own), source: "env" });
@@ -1527,7 +1575,11 @@ export const probeQueueBin: QueueProbe = (root, env) => {
     }
     try {
       const r = Bun.spawnSync([c.exe, "run", "--help"], { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10_000 });
-      if (r.exitCode === 0 && r.stdout.toString().includes("myc run")) return { ok: true, bin: { command: c.command, source: c.source } };
+      // Единственное место, где решается форма команды: проектный ярус берёт
+      // слово/относительный путь (c.command), пользовательский — абсолютный
+      // путь (c.exe вычислен здесь же, для кандидата из PATH это join(dir, "myc")).
+      if (r.exitCode === 0 && r.stdout.toString().includes("myc run"))
+        return { ok: true, bin: { command: scope === "user" ? c.exe : c.command, source: c.source } };
       const err = r.stderr.toString().trim().split("\n")[0] ?? "";
       tried.push(`${c.command} run --help: exit ${r.exitCode}${err.length > 0 ? ` (${err})` : ""}`);
     } catch (e) {
@@ -3326,7 +3378,7 @@ function planUserClaude(
 
   let queueBin: QueueBinChoice | null = null;
   if (ctx.flags["queue-hook"] === true) {
-    const probe = deps.probeQueue(paths.claudeDir, deps.env);
+    const probe = deps.probeQueue(paths.claudeDir, deps.env, "user");
     if (!probe.ok) {
       return {
         failure: failure(
@@ -3445,7 +3497,10 @@ function planUserClaude(
       }
     }
     hooks[event] = next;
-    nodes.push(`hooks.${event}`);
+    // Узел, совпадающий с записанным, не меняется — и в detail его не
+    // называют: «+N nodes» — это «что изменится», не «куда кладём руку»
+    // (memory-h744mh3f5ddy; правило то же, что у проектного mergeHookNodes).
+    if (!jsonSame(existing, next)) nodes.push(`hooks.${event}`);
   }
   if (nodes.length > 0) value["hooks"] = hooks;
 
@@ -3466,6 +3521,7 @@ function planUserClaude(
     );
   }
   // --- statusLine (только с --status-line; стоящая наша — сохраняется) ---------
+  const statusBefore = value["statusLine"];
   const sl = planUserStatusLine(value, {
     want: wantStatusLine,
     recorded: prev?.status_line,
@@ -3477,7 +3533,7 @@ function planUserClaude(
     return { failure: failure("conflict.status_line", `status line not installed, nothing written: ${sl.conflict}`, ExitCode.CONFLICT) };
   }
   notes.push(...sl.notes);
-  if (sl.node) nodes.push("statusLine");
+  if (sl.node && !jsonSame(statusBefore, value["statusLine"])) nodes.push("statusLine");
   if (!wantStatusLine && sl.record === undefined) untouched.push(`${show(paths.settings)}:statusLine (needs --status-line)`);
 
   const settingsContent = `${JSON.stringify(value, null, source.indent)}${layout.newline ? "\n" : ""}`;
