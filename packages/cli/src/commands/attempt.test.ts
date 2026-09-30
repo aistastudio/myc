@@ -624,3 +624,80 @@ describe("attempt finish --from-transcript: расход из стенограм
     expect(r.envelope.data.transcript).toBeUndefined();
   });
 });
+
+/**
+ * memory-gakchghm7pv5: ретро-попытка по `$MYC_MODEL` брала модель ТОГО, КТО
+ * ЗАКРЫВАЕТ.
+ *
+ * `$MYC_MODEL` описывает процесс, в котором стоит. Координатор, закрывающий
+ * работу исполнителя (`--as <исполнитель>` — ровно то, что подсказывает сам
+ * отказ «only the owner can close it», — или задачу с чужим `assignee`),
+ * заводил ретро-попытку на СВОЕЙ модели, молча: в статистике роя чужой труд
+ * оказывался её заслугой. Воспроизведено до правки: `close --as worker` под
+ * `MYC_MODEL=opus/5` давал `recorded: true, model_id: "opus/5"` без единого
+ * предупреждения.
+ *
+ * Противовес — два последних теста: править надо было МОЛЧАНИЕ, а не
+ * переменную. Своя работа по-прежнему записывается из окружения, а `--model`
+ * остаётся сильнее всего — им координатор и называет модель исполнителя.
+ *
+ * Мутации, которые этот describe обязан ловить (обе проверены прогоном):
+ *   1) `envForeign = false` — вернуть прежнее поведение: краснеют оба первых
+ *      теста, `recorded` приходит `true` вместо `false`;
+ *   2) `envForeign = envModel !== undefined` — перелечить, отвергая окружение
+ *      всегда: краснеет «своя работа», а с ним и прежний тест «$MYC_MODEL
+ *      мимо ростера не мешает закрыть задачу, но кричит».
+ */
+describe("close: $MYC_MODEL — модель этого процесса, а не того, за кого закрывают", () => {
+  test("закрытие --as другого не приписывает исход своей модели", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("это сделал исполнитель");
+    process.env.MYC_MODEL = "p/big";
+    const r = await json("close", id, "--as", "worker", "--verdict", "accepted");
+    expect(r.code).toBe(ExitCode.OK);
+    expect(r.envelope.data.status).toBe("closed");
+    expect(r.envelope.data.attribution.recorded).toBe(false);
+    expect(r.envelope.warn.map((w: { code: string }) => w.code)).toContain(
+      "attribution.no_model",
+    );
+    // Отказ обязан назвать ОБОИХ: чей исход и чья переменная.
+    const msg = (r.envelope.warn as { code: string; msg: string }[]).find(
+      (w) => w.code === "attribution.no_model",
+    )!.msg;
+    expect(msg).toContain("worker");
+    expect(msg).toContain("tester");
+    const list = await json("attempt", "list");
+    expect(list.envelope.data).toHaveLength(0);
+  });
+
+  test("задача назначена другому — то же самое, без --as", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("назначено исполнителю", "--assign", "worker");
+    process.env.MYC_MODEL = "p/big";
+    const r = await json("close", id, "--verdict", "accepted");
+    expect(r.code).toBe(ExitCode.OK);
+    expect(r.envelope.data.attribution.recorded).toBe(false);
+    const list = await json("attempt", "list");
+    expect(list.envelope.data).toHaveLength(0);
+  });
+
+  test("своя работа: $MYC_MODEL по-прежнему заводит ретро-попытку", async () => {
+    await addModel("p/big", "3", "15");
+    const id = await newTask("своя работа");
+    process.env.MYC_MODEL = "p/big";
+    const r = await json("close", id, "--verdict", "accepted");
+    expect(r.envelope.data.attribution.recorded).toBe(true);
+    expect(r.envelope.data.attribution.model_id).toBe("p/big");
+  });
+
+  test("--model называет модель исполнителя явно и сильнее окружения", async () => {
+    await addModel("p/big", "3", "15");
+    await addModel("p/small", "1", "2");
+    const id = await newTask("это сделал исполнитель");
+    process.env.MYC_MODEL = "p/big";
+    const r = await json("close", id, "--as", "worker", "--verdict", "accepted",
+      "--model", "p/small");
+    expect(r.envelope.data.attribution.recorded).toBe(true);
+    expect(r.envelope.data.attribution.model_id).toBe("p/small");
+  });
+});

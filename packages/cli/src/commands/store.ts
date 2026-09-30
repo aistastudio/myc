@@ -481,14 +481,20 @@ export function flagBool(ctx: CommandContext, name: string): boolean {
   return ctx.flags[name] === true;
 }
 
+/**
+ * Кто такой ЭТОТ ПРОЦЕСС — без оглядки на `--as`.
+ *
+ * Отдельно от `resolveActor` затем, что окружение (`$MYC_ACTOR`, `$MYC_MODEL`)
+ * описывает запущенный процесс, а `--as` называет того, ЗА КОГО он действует.
+ * Там, где окружение принимают за свидетельство, эти двое обязаны совпасть.
+ */
+export function processActor(): string {
+  return process.env.MYC_ACTOR ?? process.env.USER ?? "agent";
+}
+
 /** Кто действует: --as команды, затем MYC_ACTOR, затем $USER. */
 export function resolveActor(ctx: CommandContext): string {
-  return (
-    flagStr(ctx, "as") ??
-    process.env.MYC_ACTOR ??
-    process.env.USER ??
-    "agent"
-  );
+  return flagStr(ctx, "as") ?? processActor();
 }
 
 interface OpenedWorkspace {

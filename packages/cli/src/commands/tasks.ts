@@ -51,6 +51,7 @@ import {
   graphFailure,
   parseDuration,
   parsePriority,
+  processActor,
   resolveId,
   type StoreDeps,
   type StoreHandle,
@@ -1515,7 +1516,18 @@ function prepareAttribution(
   // закроется ли задача вообще, — закрытие не имеет права зависеть от того,
   // есть ли в ростере модель, которой никто не пользовался.
   const modelFlag = flagStr(ctx, "model");
-  const modelEnv = verdict === undefined ? undefined : process.env["MYC_MODEL"];
+  // …И ТОЛЬКО КОГДА ЗАКРЫВАЮТ СВОЮ РАБОТУ (memory-gakchghm7pv5).
+  // $MYC_MODEL описывает ЭТОТ процесс. Когда исход пишется не на него —
+  // задача назначена другому или закрытие идёт `--as <кто-то>`, — переменная
+  // ничего не говорит о том, кто работу делал, и ретро-попытка по ней
+  // записала бы чужой труд на модель координатора. Молча: до этой правки
+  // `myc close --as worker` под $MYC_MODEL координатора заводил попытку на
+  // его модели без единого предупреждения. Своя модель называется явно —
+  // `--model`, и флаг по-прежнему сильнее всего.
+  const outcomeActor = node.assignee !== undefined && node.assignee.length > 0 ? node.assignee : h.actor;
+  const envModel = verdict === undefined ? undefined : process.env["MYC_MODEL"];
+  const envForeign = envModel !== undefined && outcomeActor !== processActor();
+  const modelEnv = envForeign ? undefined : envModel;
   const modelRaw = modelFlag ?? modelEnv;
   const attemptFlag = flagStr(ctx, "attempt");
   if (attemptFlag !== undefined) {
@@ -1592,20 +1604,20 @@ function prepareAttribution(
     return { plan: { kind: "finish", attempt: open }, canonicalModel: canonicalModel ?? open.modelId };
   }
   if (canonicalModel === undefined) {
+    const why =
+      modelRejected !== undefined
+        ? `model "${modelRejected}" is not in the roster`
+        : envForeign
+          ? `the outcome belongs to ${outcomeActor} and $MYC_MODEL describes this process (${processActor()})`
+          : "a verdict was given but no model";
     return {
       plan: {
         kind: "none",
-        skipped:
-          modelRejected === undefined
-            ? "no open attempt and no model named"
-            : `no open attempt, and model "${modelRejected}" is not in the roster`,
+        skipped: `no open attempt, and ${why}`,
         warn: [
           "attribution.no_model",
-          `${node.id}: the outcome did not reach swarm stats — ` +
-            (modelRejected === undefined
-              ? "a verdict was given but no model"
-              : `model "${modelRejected}" is not in the roster`) +
-            " (myc attempt start <id> --model … or --model on close)",
+          `${node.id}: the outcome did not reach swarm stats — ${why} ` +
+            "(myc attempt start <id> --model … or --model on close)",
         ],
       },
     };
