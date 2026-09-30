@@ -1598,13 +1598,13 @@
   },
   "tests": {
     "command": "bun test",
-    "pass": 4166,
+    "pass": 4170,
     "fail": 0,
     "skip": 16,
     "files": 276,
-    "assertions": 38294,
-    "seconds": 497.6,
-    "sources": "2c09e890749dc62a",
+    "assertions": 38303,
+    "seconds": 463.0,
+    "sources": "5f36c1e1b2bd4250",
     "date": "2026-09-30",
     "myc": "0.4.0"
   }
