@@ -99,7 +99,7 @@ function denialsOf(text: string, cap: Cap): string[] {
 }
 
 /** Перечисление языков в стиле L1_LANGS_LABEL: `ts/tsx/…`. */
-const LANG_LIST = /(?<![\p{L}\d_])(?:ts|tsx|js|jsx|py|mjs|cjs)(?:\/(?:ts|tsx|js|jsx|py|mjs|cjs))+(?![\p{L}\d_])/giu;
+const LANG_LIST = /(?<![\p{L}\d_])(?:ts|tsx|js|jsx|py|cs|mjs|cjs)(?:\/(?:ts|tsx|js|jsx|py|cs|mjs|cjs))+(?![\p{L}\d_])/giu;
 
 function langLists(text: string): string[] {
   return [...text.matchAll(LANG_LIST)].map((m) => m[0]);
@@ -299,8 +299,8 @@ describe("детекторы ловят ровно ту ложь, что был�
   });
 
   test("неполный список языков пойман, полный — нет", () => {
-    expect(incompleteLists(OLD[0]!)).toEqual(["ts/tsx/js/jsx — нет py"]);
-    expect(incompleteLists(OLD_EN[0]!)).toEqual(["ts/tsx/js/jsx — нет py"]);
+    expect(incompleteLists(OLD[0]!)).toEqual(["ts/tsx/js/jsx — нет py,cs"]);
+    expect(incompleteLists(OLD_EN[0]!)).toEqual(["ts/tsx/js/jsx — нет py,cs"]);
     expect(incompleteLists(`символы для ${L1_LANGS_LABEL}`)).toEqual([]);
     expect(langLists(`символы для ${L1_LANGS_LABEL}`)).toEqual([L1_LANGS_LABEL]);
     expect(incompleteLists(`symbols for ${L1_LANGS_LABEL}`)).toEqual([]);

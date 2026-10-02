@@ -15,11 +15,11 @@ import { listDefs, loadLangs } from "./symbols.ts";
 import { listDefsAndRefs, listRefs, type Ref, type RefKind } from "./refs.ts";
 
 beforeAll(async () => {
-  await loadLangs(["ts", "tsx", "js", "py"]);
+  await loadLangs(["ts", "tsx", "js", "py", "cs"]);
 });
 
 /** Ссылки на одно имя — компактно, чтобы ожидания читались строкой. */
-const to = (src: string, lang: "ts" | "tsx" | "js" | "py", name: string): Ref[] =>
+const to = (src: string, lang: "ts" | "tsx" | "js" | "py" | "cs", name: string): Ref[] =>
   listRefs(src, lang).filter((r) => r.name === name);
 
 const shape = (rs: Ref[]): Array<[number, RefKind, string]> =>
@@ -247,6 +247,91 @@ describe("listRefs: python", () => {
       [9, "read", "save"],
       [10, "read", "save"],
     ]);
+  });
+});
+
+describe("listRefs: csharp", () => {
+  const src = [
+    "using System.Collections.Generic;", // 1
+    "using Alias = System.Int32;", // 2
+    "", // 3
+    "namespace App.Demo;", // 4
+    "", // 5
+    "[Obsolete]", // 6
+    "class Repo : IRepo", // 7
+    "{", // 8
+    "    public void Save(string path)", // 9
+    "    {", // 10
+    "        Helper.Run<int>(path);", // 11
+    "        var p = new List<Person>();", // 12
+    "        Make<int>();", // 13
+    "        int local(int n) => n;", // 14
+    "        var n = local(1);", // 15
+    "        Console.WriteLine(Name);", // 16
+    "        foreach (var item in items)", // 17
+    "        {", // 18
+    "            Use(item);", // 19
+    "        }", // 20
+    "        try { Go(); }", // 21
+    "        catch (Exception ex) { Log(ex); }", // 22
+    "        global::System.String s = null;", // 23
+    "    }", // 24
+    "}", // 25
+  ].join("\n");
+
+  test("using — импорт, псевдоним и имя пространства — нет", () => {
+    expect(shape(to(src, "cs", "System"))).toEqual([
+      [1, "import", ""],
+      [2, "import", ""],
+      [23, "type", "Save"],
+    ]);
+    expect(shape(to(src, "cs", "Collections"))).toEqual([[1, "import", ""]]);
+    expect(shape(to(src, "cs", "Generic"))).toEqual([[1, "import", ""]]);
+    expect(shape(to(src, "cs", "Int32"))).toEqual([[2, "import", ""]]);
+    expect(to(src, "cs", "Alias")).toEqual([]);
+    expect(to(src, "cs", "App")).toEqual([]);
+    expect(to(src, "cs", "Demo")).toEqual([]);
+  });
+
+  test("вызов, конструктор, тип и владелец-метод", () => {
+    expect(shape(to(src, "cs", "Run"))).toEqual([[11, "call", "Save"]]);
+    expect(shape(to(src, "cs", "Helper"))).toEqual([[11, "read", "Save"]]);
+    expect(shape(to(src, "cs", "List"))).toEqual([[12, "new", "Save"]]);
+    expect(shape(to(src, "cs", "Person"))).toEqual([[12, "type", "Save"]]);
+    expect(shape(to(src, "cs", "Make"))).toEqual([[13, "call", "Save"]]);
+    expect(shape(to(src, "cs", "local"))).toEqual([[15, "call", "Save"]]);
+    expect(shape(to(src, "cs", "WriteLine"))).toEqual([[16, "call", "Save"]]);
+    expect(shape(to(src, "cs", "Name"))).toEqual([[16, "read", "Save"]]);
+    expect(shape(to(src, "cs", "IRepo"))).toEqual([[7, "type", "Repo"]]);
+    // Атрибут — ребёнок объявления класса, владелец уже открыт.
+    expect(shape(to(src, "cs", "Obsolete"))).toEqual([[6, "type", "Repo"]]);
+  });
+
+  test("параметр, переменная foreach и catch: объявление не ссылка, тип и чтение — да", () => {
+    // Объявление параметра на строке 9 ссылкой не считается, чтение — да.
+    expect(shape(to(src, "cs", "path"))).toEqual([[11, "read", "Save"]]);
+    // `item` объявлен на 17 и прочитан на 19: в ссылках только чтение.
+    expect(shape(to(src, "cs", "item"))).toEqual([[19, "read", "Save"]]);
+    expect(shape(to(src, "cs", "items"))).toEqual([[17, "read", "Save"]]);
+    expect(shape(to(src, "cs", "Use"))).toEqual([[19, "call", "Save"]]);
+    expect(shape(to(src, "cs", "Exception"))).toEqual([[22, "type", "Save"]]);
+    expect(shape(to(src, "cs", "ex"))).toEqual([[22, "read", "Save"]]);
+    expect(shape(to(src, "cs", "Go"))).toEqual([[21, "call", "Save"]]);
+    expect(shape(to(src, "cs", "Log"))).toEqual([[22, "call", "Save"]]);
+    expect(shape(to(src, "cs", "String"))).toEqual([[23, "type", "Save"]]);
+    expect(to(src, "cs", "s")).toEqual([]);
+  });
+
+  test("комментарий и строка не дают ссылок", () => {
+    const cs = [
+      "// Helper",
+      "void M()",
+      "{",
+      "    var s = \"Helper\";",
+      "    Helper();",
+      "}",
+    ].join("\n");
+    expect(shape(to(cs, "cs", "Helper"))).toEqual([[5, "call", "M"]]);
   });
 });
 

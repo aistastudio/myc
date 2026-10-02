@@ -118,6 +118,33 @@ const PY_KINDS: Readonly<Record<string, DefKind>> = {
   class_definition: "class",
 };
 
+/**
+ * C# называет виды узлов сам, в отличие от python, где метод — та же
+ * `function_definition` внутри класса. Поэтому `methodByParent` пуст.
+ *
+ * Чего здесь НЕТ, и это решение, а не пропуск:
+ *   - свойство и поле (`property_declaration`, `field_declaration`) — не
+ *     метод и не тип; отдельного вида в `DefKind` для них нет, и называть
+ *     свойство методом значило бы соврать в скелете;
+ *   - индексатор и оператор — у грамматики нет поля `name` (`this`, `+`),
+ *     `listDefs` такое определение всё равно выбрасывает;
+ *   - член перечисления — определение есть у самого `enum`, как в ts.
+ * Конструктор и деструктор — методы: имя у них есть (имя типа).
+ */
+const CS_KINDS: Readonly<Record<string, DefKind>> = {
+  class_declaration: "class",
+  record_declaration: "class",
+  interface_declaration: "interface",
+  enum_declaration: "enum",
+  struct_declaration: "type",
+  record_struct_declaration: "type",
+  delegate_declaration: "type",
+  method_declaration: "method",
+  constructor_declaration: "method",
+  destructor_declaration: "method",
+  local_function_statement: "function",
+};
+
 /** Значения `const x = …`, которые делают объявление определением функции. */
 const JSTS_FUNCTION_VALUES: ReadonlySet<string> = new Set([
   "arrow_function",
@@ -143,6 +170,7 @@ const LANG_RULES: Readonly<Record<LangId, LangRule>> = {
   js: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
   jsx: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
   py: { kinds: PY_KINDS, declarators: false, methodByParent: ["block"] },
+  cs: { kinds: CS_KINDS, declarators: false, methodByParent: [] },
 };
 
 /**

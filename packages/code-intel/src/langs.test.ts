@@ -320,6 +320,8 @@ describe("перечень не-git дерева", () => {
 describe("langOf", () => {
   test("расширение — только из имени файла", () => {
     expect(langOf("src/a.ts")).toBe("ts");
+    expect(langOf("src/App.cs")).toBe("cs");
+    expect(langOf("src/App.CS")).toBe("cs");
     expect(langOf("a.TSX")).toBe("tsx");
     expect(langOf("lib/x.cjs")).toBe("js");
     expect(langOf("docs/r.md")).toBe("md");

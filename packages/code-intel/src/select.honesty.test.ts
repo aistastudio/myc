@@ -84,6 +84,20 @@ describe("python стал L1", () => {
   });
 });
 
+describe("csharp стал L1", () => {
+  test("репозиторий на C#: символы обещаны", () => {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "Repo.cs"), "class Repo { void Save() { } }\n");
+    const p = probeL1Files(dir);
+    expect(p.found).toBe(true);
+    expect(p.langs).toContain("cs");
+    const s = selectCodeIntel(dir, env(), "builtin");
+    expect(s.reason).toContain("cs");
+    expect(s.reason).toContain("myc code index");
+    expect(s.reason).not.toContain("no symbols");
+  });
+});
+
 describe("строка init обещает ровно то, что будет", () => {
   test("TS-репозиторий: символы обещаны И названо, чем они появятся", () => {
     mkdirSync(join(dir, "src"), { recursive: true });

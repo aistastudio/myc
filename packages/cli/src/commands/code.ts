@@ -1410,7 +1410,7 @@ function buildCodeFetch(deps: StoreDeps): Command {
       "Grammars are NOT shipped in the package: all 36 weigh 49MB against a 12MB package, and a " +
       "given repo needs two of them. `myc code fetch` with no arguments walks the repo and " +
       "downloads exactly the grammars its L1 files need; with arguments it takes language ids " +
-      `(${L1_LANGS_LABEL}) or grammar names (typescript, tsx, javascript, python). Repeating ` +
+      `(${L1_LANGS_LABEL}) or grammar names (typescript, tsx, javascript, python, c_sharp). Repeating ` +
       "the call touches no network: an intact file is not re-downloaded. This is the ONLY place " +
       "in the code index that opens a socket — indexing never does (see `myc code index`).",
     flags: FETCH_FLAGS,

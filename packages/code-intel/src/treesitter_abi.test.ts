@@ -36,11 +36,13 @@ describe("грамматики запускаются на этой паре в�
 
   // Именно здесь падает несовместимая пара: Language.load читает dylink-секцию
   // модуля, и на разошедшемся ABI бросает getDylinkMetadata.
-  for (const lang of ["ts", "py"] as const) {
+  for (const [lang, source] of [
+    ["ts", "export function f(): number {\n  return 1;\n}\n"],
+    ["py", "def f():\n    return 1\n"],
+    ["cs", "void f()\n{\n    return;\n}\n"],
+  ] as const) {
     test(`${lang}: грамматика грузится и даёт символы`, async () => {
       await loadLang(lang);
-      const source =
-        lang === "ts" ? "export function f(): number {\n  return 1;\n}\n" : "def f():\n    return 1\n";
       const defs = listDefs(source, lang);
       expect(defs.map((d) => [d.name, d.kind])).toEqual([["f", "function"]]);
     });

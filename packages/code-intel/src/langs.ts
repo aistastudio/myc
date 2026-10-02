@@ -25,9 +25,11 @@ import { isSecretName, isSecretPath } from "./secret-paths.ts";
  * два места не разойдутся молча, и ни одно не платит за другое.
  *
  * `py` появился здесь вместе с переходом на tree-sitter: своего парсера
- * python у нас не было и быть не могло, а грамматика есть.
+ * python у нас не было и быть не могло, а грамматика есть. `cs` — та же
+ * пара: грамматика `c_sharp` уже лежит в закреплённом `tree-sitter-wasms`,
+ * правило разбора — в `LANG_RULES`.
  */
-export const L1_LANGS: ReadonlySet<string> = new Set(["ts", "tsx", "js", "jsx", "py"]);
+export const L1_LANGS: ReadonlySet<string> = new Set(["ts", "tsx", "js", "jsx", "py", "cs"]);
 
 /** Человекочитаемый список L1 для строк отчёта — один на весь продукт. */
 export const L1_LANGS_LABEL: string = [...L1_LANGS].join("/");
@@ -40,6 +42,7 @@ export const LANG_BY_EXT: ReadonlyMap<string, string> = new Map([
   [".mjs", "js"],
   [".cjs", "js"],
   [".py", "py"],
+  [".cs", "cs"],
 ]);
 
 /**

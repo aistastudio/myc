@@ -155,6 +155,8 @@ const BINDING_PARENTS: ReadonlySet<string> = new Set([
   // ещё и то, что переименовывают, — а это обычная ссылка. Пока в списке
   // стоял `as_pattern`, класс исключения из `except Err as e` пропадал.
   "as_pattern_target",
+  // `using Alias = System.Int32` — `Alias` локальное, `System.Int32` нет.
+  "name_equals",
 ]);
 
 /**
@@ -187,10 +189,10 @@ const JSX_ELEMENTS: ReadonlySet<string> = new Set([
   "jsx_closing_element",
 ]);
 
-/** Узлы вызова: js/ts и python. */
-const CALL_NODES: ReadonlySet<string> = new Set(["call_expression", "call"]);
+/** Узлы вызова: js/ts (`call_expression`), python (`call`), csharp (`invocation_expression`). */
+const CALL_NODES: ReadonlySet<string> = new Set(["call_expression", "call", "invocation_expression"]);
 
-/** Доступ к члену: js/ts (`a.b`) и python (`a.b`). */
+/** Доступ к члену: js/ts (`a.b`) и python (`a.b`). C# — отдельно: поле члена там `name`. */
 const MEMBER_NODES: ReadonlySet<string> = new Set(["member_expression", "attribute"]);
 
 // ---------------------------------------------------------------------------
@@ -220,6 +222,50 @@ function memberIsCallee(member: TSNode): "call" | "new" | null {
 }
 
 /**
+ * Имя пространства имён (`namespace App.Demo`) — объявление, не ссылка.
+ * Поднимаемся по `qualified_name`: идентификаторы внутри имени не помечены
+ * полем `name`, помечен только весь qualified_name.
+ */
+function isNamespaceName(node: TSNode): boolean {
+  let cur: TSNode = node;
+  let parent = node.parent;
+  while (parent !== null && parent.type === "qualified_name") {
+    cur = parent;
+    parent = parent.parent;
+  }
+  if (parent === null) return false;
+  if (parent.type !== "namespace_declaration" && parent.type !== "file_scoped_namespace_declaration") {
+    return false;
+  }
+  return fieldIs(parent, "name", cur);
+}
+
+/** Имя внутри `using` — ссылка на чужой тип или пространство имён. */
+function isUsingName(node: TSNode): boolean {
+  let parent = node.parent;
+  while (parent !== null) {
+    if (parent.type === "using_directive") return true;
+    parent = parent.parent;
+  }
+  return false;
+}
+
+/**
+ * `List<Person>`, `obj.Run<int>()`, `new List<string>()`, `Make<int>()`.
+ * Имя типа сидит в `generic_name` без поля `name`; вид решает родитель.
+ */
+function genericNameKind(generic: TSNode): RefKind {
+  const gp = generic.parent;
+  if (gp === null) return "type";
+  if (gp.type === "member_access_expression" && fieldIs(gp, "name", generic)) {
+    return memberIsCallee(gp) ?? "prop";
+  }
+  if (CALL_NODES.has(gp.type) && fieldIs(gp, "function", generic)) return "call";
+  if (gp.type === "object_creation_expression" && fieldIs(gp, "type", generic)) return "new";
+  return "type";
+}
+
+/**
  * Роль вхождения, или null — это не ссылка (объявление, параметр, ключ
  * объектного литерала).
  */
@@ -242,6 +288,33 @@ function refKindOf(node: TSNode): RefKind | null {
   // Имя атрибута JSX (`prop=`) — то же, что ключ объектного литерала.
   if (pt === "jsx_attribute") return null;
   if (BINDING_PARENTS.has(pt)) return null;
+  // C#: у `variable_declarator` нет поля `name`, объявляемый identifier —
+  // прямой ребёнок. В js/ts поле `name` есть, а инициализатор — поле
+  // `value` ТОГО ЖЕ узла (`const alias = helper`). Глушить весь узел
+  // значит потерять `helper`. Глушим всё, кроме `value`.
+  if (pt === "variable_declarator" && !fieldIs(parent, "value", node)) return null;
+
+  // C#. Поле `name` у члена (`a.b`) и у атрибута (`[Obsolete]`) — это
+  // ССЫЛКА, а общее правило ниже считает любое поле `name` объявлением.
+  // Узлы есть только в грамматике c_sharp, js/ts/python их не порождают
+  // (член там `property` / `attribute`-поле, не узел `member_access_expression`).
+  if (pt === "member_access_expression") {
+    if (fieldIs(parent, "name", node)) return memberIsCallee(parent) ?? "prop";
+    return "read";
+  }
+  if (pt === "generic_name") return genericNameKind(parent);
+  if (pt === "type_argument_list") return "type";
+  if (pt === "qualified_name" || pt === "alias_qualified_name") {
+    if (isNamespaceName(node)) return null;
+    if (isUsingName(node)) return "import";
+    return "type";
+  }
+  if (pt === "using_directive") return "import";
+  if (pt === "attribute" && fieldIs(parent, "name", node)) return "type";
+  if (pt === "object_creation_expression" && fieldIs(parent, "type", node)) return "new";
+  // `foreach (var item in items)`: `item` объявлен, `items` прочитан.
+  if (pt === "for_each_statement" && fieldIs(parent, "left", node)) return null;
+
   // Имя собственного объявления: оно уже в `code_defs`, ссылкой не считается.
   if (fieldIs(parent, "name", node)) return null;
   // Ключ объектного литерала (`{ parse: listDefs }`) — не обращение к имени.
@@ -265,6 +338,10 @@ function refKindOf(node: TSNode): RefKind | null {
 
   if (pt === "dotted_name") return "import";
   if (node.type === "type_identifier") return "type";
+  // C#: тип в позиции поля `type` (`catch (Exception ex)`, `void M(Repo r)`,
+  // базовый список `: IRepo`). `new` уже разобран выше.
+  if (fieldIs(parent, "type", node)) return "type";
+  if (pt === "base_list") return "type";
   if (pt === "extends_clause" || pt === "implements_clause") return "type";
   if (node.type === "property_identifier") return "prop";
   return "read";

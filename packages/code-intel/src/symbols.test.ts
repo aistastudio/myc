@@ -22,7 +22,7 @@ import { L1_LANGS } from "./langs.ts";
 import { DEF_LANGS, findBlockEnd, listDefs, loadLangs } from "./symbols.ts";
 
 beforeAll(async () => {
-  await loadLangs(["ts", "tsx", "js", "jsx", "py"]);
+  await loadLangs(["ts", "tsx", "js", "jsx", "py", "cs"]);
 });
 
 const lines = (src: string) => src.split("\n").length;
@@ -610,6 +610,75 @@ describe("listDefs: python", () => {
 
   test("грамматика не загружена — падаем громко, а не отдаём пусто", () => {
     expect(() => listDefs("def f():\n    return 1\n", "nope" as never)).toThrow();
+  });
+});
+
+describe("listDefs: csharp", () => {
+  const src = [
+    "using System;", // 1
+    "", // 2
+    "namespace App.Demo;", // 3
+    "", // 4
+    "public delegate void Handler(int x);", // 5
+    "", // 6
+    "public enum Color { Red, Green }", // 7
+    "", // 8
+    "public interface IRepo", // 9
+    "{", // 10
+    "    string Name { get; }", // 11
+    "    void Save(string path);", // 12
+    "}", // 13
+    "", // 14
+    "public struct Point", // 15
+    "{", // 16
+    "    public int X;", // 17
+    "}", // 18
+    "", // 19
+    "public record Person(string Name);", // 20
+    "", // 21
+    "public class Repo : IRepo", // 22
+    "{", // 23
+    "    public string Name { get; set; }", // 24
+    "", // 25
+    "    public Repo(string root)", // 26
+    "    {", // 27
+    "        Name = root;", // 28
+    "    }", // 29
+    "", // 30
+    "    ~Repo() { }", // 31
+    "", // 32
+    "    public void Save(string path)", // 33
+    "    {", // 34
+    "        int local(int n) => n + 1;", // 35
+    "    }", // 36
+    "}", // 37
+    "", // 38
+    "public record struct Pair(int A, int B);", // 39
+  ].join("\n");
+
+  test("типы, методы, конструктор и локальная функция; свойство и поле — не определения", () => {
+    const defs = listDefs(src, "cs");
+    expect(defs.map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
+      ["Handler", "type", 5, 5],
+      ["Color", "enum", 7, 7],
+      ["IRepo", "interface", 9, 13],
+      ["Save", "method", 12, 12],
+      ["Point", "type", 15, 18],
+      ["Person", "class", 20, 20],
+      ["Repo", "class", 22, 37],
+      ["Repo", "method", 26, 29],
+      ["Repo", "method", 31, 31],
+      ["Save", "method", 33, 36],
+      ["local", "function", 35, 35],
+      ["Pair", "type", 39, 39],
+    ]);
+  });
+
+  test("верхнеуровневая функция файла — function, не method", () => {
+    const top = ["void f()", "{", "    return;", "}"].join("\n");
+    expect(listDefs(top, "cs").map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
+      ["f", "function", 1, 4],
+    ]);
   });
 });
 
