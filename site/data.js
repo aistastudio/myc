@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.4.2",
-    "date": "2026-09-19"
+    "version": "0.4.3",
+    "date": "2026-10-02"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
     "as_of": "2026-09-30",
-    "source": "myc 0.4.2 (schema 1) · 13 epics of this repository's workspace",
+    "source": "myc 0.4.3 (schema 1) · 13 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -940,6 +940,12 @@ window.MYC_DATA = {
             "cmd": "myc code index",
             "en": "A built-in code index on tree-sitter: symbols for TypeScript, TSX, JavaScript and Python, every other file registered by path and hash; a repeat run reparses nothing.",
             "ru": "Встроенный индекс кода на tree-sitter: символы для TypeScript, TSX, JavaScript и Python, остальные файлы — по пути и хешу; повторный прогон ничего не разбирает заново."
+          },
+          {
+            "since": "0.4.3",
+            "cmd": "myc code fetch cs",
+            "en": "C# is a definition language too (id cs, grammar c_sharp): classes and records, interfaces, enums, structs, delegates, methods, constructors, destructors and local functions. Properties, fields, indexers, operators and enum members are not definitions.",
+            "ru": "C# тоже язык с определениями (идентификатор cs, грамматика c_sharp): классы и record, интерфейсы, перечисления, структуры, делегаты, методы, конструкторы, деструкторы и локальные функции. Свойства, поля, индексаторы, операторы и члены перечислений определениями не считаются."
           },
           {
             "since": "0.3.0",
@@ -1600,16 +1606,16 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4184,
+    "pass": 4192,
     "fail": 0,
     "skip": 16,
     "files": 277,
-    "assertions": 38606,
-    "seconds": 486.7,
-    "sources": "2801c84f4f2a327b",
-    "date": "2026-09-30",
-    "myc": "0.4.2"
+    "assertions": 38650,
+    "seconds": 462.08,
+    "sources": "ca03059aaa7e3781",
+    "date": "2026-10-02",
+    "myc": "0.4.3"
   }
 };
-window.MYC_DATA.verified = { at: "2026-09-30T20:15:08.378Z", assertions: 77 };
-window.MYC_DATA.release = "0.4.2";
+window.MYC_DATA.verified = { at: "2026-10-02T04:26:01.894Z", assertions: 77 };
+window.MYC_DATA.release = "0.4.3";

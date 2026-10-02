@@ -58,7 +58,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.80 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.4.2 (schema 1)
+myc --version                     # myc 0.4.3 (schema 1)
 ```
 
 It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside
@@ -234,7 +234,7 @@ and `run`, `statusline --then`, `wire` and `unwire` ask.
 Code intelligence is built in, and it is the same engine the alternatives use:
 tree-sitter, with grammars fetched on demand rather than shipped. Symbols,
 callers and code search work for TypeScript, TSX, JavaScript (js, jsx, mjs,
-cjs) and Python — the languages myc has definition rules for. The grammar
+cjs), Python and C# — the languages myc has definition rules for. The grammar
 package holds 36; a language is added as a pair, a rule and a catalog entry,
 so a grammar that would yield no symbols is never offered. Every other file
 still gets `code grep`, anchors and staleness.
@@ -466,8 +466,8 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 4184 pass / 0 fail / 16 skip
-(`bun test`, 2026-09-30).
+is treated as absent. The full suite: 4192 pass / 0 fail / 16 skip
+(`bun test`, 2026-10-02).
 
 ## What myc does
 
