@@ -189,8 +189,13 @@ const JSX_ELEMENTS: ReadonlySet<string> = new Set([
   "jsx_closing_element",
 ]);
 
-/** Узлы вызова: js/ts (`call_expression`), python (`call`), csharp (`invocation_expression`). */
-const CALL_NODES: ReadonlySet<string> = new Set(["call_expression", "call", "invocation_expression"]);
+/** Узлы вызова: js/ts (`call_expression`), python (`call`), csharp (`invocation_expression`), java (`method_invocation`). */
+const CALL_NODES: ReadonlySet<string> = new Set([
+  "call_expression",
+  "call",
+  "invocation_expression",
+  "method_invocation",
+]);
 
 /** Доступ к члену: js/ts (`a.b`) и python (`a.b`). C# — отдельно: поле члена там `name`. */
 const MEMBER_NODES: ReadonlySet<string> = new Set(["member_expression", "attribute"]);
@@ -266,6 +271,44 @@ function genericNameKind(generic: TSNode): RefKind {
 }
 
 /**
+ * Имя пакета (`package app.demo`) — объявление, не ссылка: этот файл и есть
+ * то место, где пакет объявляется. Идентификаторы лежат в `scoped_identifier`
+ * без поля `name`, поэтому поднимаемся по нему, как `isNamespaceName` у C#.
+ */
+function isPackageName(node: TSNode): boolean {
+  let cur: TSNode = node;
+  let parent = node.parent;
+  while (parent !== null && parent.type === "scoped_identifier") {
+    cur = parent;
+    parent = parent.parent;
+  }
+  return parent !== null && parent.type === "package_declaration";
+}
+
+/** Имя внутри `import` — ссылка на чужой тип или пакет. */
+function isImportName(node: TSNode): boolean {
+  let parent = node.parent;
+  while (parent !== null) {
+    if (parent.type === "import_declaration") return true;
+    parent = parent.parent;
+  }
+  return false;
+}
+
+/**
+ * `List<Person>`, `new ArrayList<String>()`. Имя типа сидит в `generic_type` без
+ * поля `name`; вид решает родитель: `new` — если `generic_type` стоит в поле
+ * `type` объявления объекта, иначе обычный тип.
+ */
+function javaGenericNameKind(generic: TSNode): RefKind {
+  const gp = generic.parent;
+  if (gp !== null && gp.type === "object_creation_expression" && fieldIs(gp, "type", generic)) {
+    return "new";
+  }
+  return "type";
+}
+
+/**
  * Роль вхождения, или null — это не ссылка (объявление, параметр, ключ
  * объектного литерала).
  */
@@ -314,6 +357,44 @@ function refKindOf(node: TSNode): RefKind | null {
   if (pt === "object_creation_expression" && fieldIs(parent, "type", node)) return "new";
   // `foreach (var item in items)`: `item` объявлен, `items` прочитан.
   if (pt === "for_each_statement" && fieldIs(parent, "left", node)) return null;
+
+  // ---- java --------------------------------------------------------------
+  // Поле `name` у java-узлов ЗАЧАСТУЮ ссылка, а объявление, и наоборот, так
+  // что каждая форма разбирается своим правилом. Узлы ниже есть только в
+  // грамматике java: у js/ts/python их не порождают.
+  //
+  // `import java.util.List;` — все части имени в чужем файле, `package
+  // app.demo;` — объявление этого самого файла. Порядок важен: `import`
+  // проверяется первым, потому что там тоже `scoped_identifier`.
+  if (pt === "scoped_identifier" && isImportName(node)) return "import";
+  if (isPackageName(node)) return null;
+  // `@Deprecated` и `@SuppressWarnings("x")` — имя чужой аннотации, а не
+  // объявление, хотя лежит в поле `name`.
+  if (pt === "marker_annotation" || pt === "annotation") {
+    return fieldIs(parent, "name", node) ? "type" : null;
+  }
+  // `Helper.run(path)`: `run` — вызов, `Helper` — его владелец (чтение).
+  if (pt === "method_invocation") {
+    if (fieldIs(parent, "name", node)) return "call";
+    return "read";
+  }
+  // `this.root` и `System.out` — поле члена, в отличие от C#, лежит в поле
+  // `field`, а не `name`, поэтому общее правило ниже его не съедает.
+  if (pt === "field_access") return "read";
+  // `new Person(path)`, `new HashMap<>()`.
+  if (pt === "object_creation_expression" && fieldIs(parent, "type", node)) return "new";
+  if (pt === "generic_type") return javaGenericNameKind(parent);
+  if (pt === "type_arguments") return "type";
+  // `for (Person person : people)`: `person` объявлен (поле `name` поймало бы
+  // общее правило), `people` прочитан.
+  if (pt === "enhanced_for_statement" && fieldIs(parent, "name", node)) return null;
+  // `catch (Exception ex)`: `ex` объявлен и поля `name` не имеет — имя
+  // занимает `catch_type`, поэтому здесь это молча стало бы чтением.
+  if (pt === "catch_formal_parameter" && !fieldIs(parent, "name", node)) return null;
+  if (pt === "catch_type" || pt === "throws" || pt === "super_interfaces") return "type";
+  // `var` грамматика отдаёт как `type_identifier`, но тип он не называет:
+  // выводится из инициализатора. Ссылкой на тип он быть не может.
+  if (node.type === "type_identifier" && node.text === "var") return null;
 
   // Имя собственного объявления: оно уже в `code_defs`, ссылкой не считается.
   if (fieldIs(parent, "name", node)) return null;

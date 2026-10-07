@@ -47,4 +47,15 @@ describe("грамматики запускаются на этой паре в�
       expect(defs.map((d) => [d.name, d.kind])).toEqual([["f", "function"]]);
     });
   }
+
+  // У java нет функции верхнего уровня, поэтому проверка своя: метод объявлен
+  // в классе и вид у него `method`, а не `function`.
+  test("java: грамматика грузится и даёт символы", async () => {
+    await loadLang("java");
+    const defs = listDefs("class C {\n    void f() {\n    }\n}\n", "java");
+    expect(defs.map((d) => [d.name, d.kind])).toEqual([
+      ["C", "class"],
+      ["f", "method"],
+    ]);
+  });
 });

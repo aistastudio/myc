@@ -22,7 +22,7 @@ import { L1_LANGS } from "./langs.ts";
 import { DEF_LANGS, findBlockEnd, listDefs, loadLangs } from "./symbols.ts";
 
 beforeAll(async () => {
-  await loadLangs(["ts", "tsx", "js", "jsx", "py", "cs"]);
+  await loadLangs(["ts", "tsx", "js", "jsx", "py", "cs", "java"]);
 });
 
 const lines = (src: string) => src.split("\n").length;
@@ -678,6 +678,74 @@ describe("listDefs: csharp", () => {
     const top = ["void f()", "{", "    return;", "}"].join("\n");
     expect(listDefs(top, "cs").map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
       ["f", "function", 1, 4],
+    ]);
+  });
+});
+
+describe("listDefs: java", () => {
+  const src = [
+    "package app.demo;", // 1
+    "", // 2
+    "import java.util.List;", // 3
+    "", // 4
+    "@Deprecated", // 5
+    "public class Repo extends Base implements IRepo {", // 6
+    "    private static final int MAX = 10;", // 7
+    "    private List<Person> people;", // 8
+    "", // 9
+    "    public Repo(String root) {", // 10
+    "        this.root = root;", // 11
+    "    }", // 12
+    "", // 13
+    "    public void save(String path) {", // 14
+    "        System.out.println(MAX);", // 15
+    "    }", // 16
+    "}", // 17
+    "", // 18
+    "interface IRepo {", // 19
+    "    void save(String path);", // 20
+    "}", // 21
+    "", // 22
+    "enum Color { RED, GREEN }", // 23
+    "", // 24
+    "record Person(String name, int age) {}", // 25
+    "", // 26
+    "@interface Marker {", // 27
+    "    String value();", // 28
+    "}", // 29
+  ].join("\n");
+
+  test("типы, методы и конструктор; поля и члены перечисления — не определения", () => {
+    const defs = listDefs(src, "java");
+    expect(defs.map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
+      // Аннотация `@Deprecated` — часть узла класса, поэтому он начинается
+      // со строки 5, а не со строки `class`.
+      ["Repo", "class", 5, 17],
+      ["Repo", "method", 10, 12],
+      ["save", "method", 14, 16],
+      ["IRepo", "interface", 19, 21],
+      ["save", "method", 20, 20],
+      ["Color", "enum", 23, 23],
+      // `record` объявлен как класс — так же, как record в C#.
+      ["Person", "class", 25, 25],
+      // `@interface` — это интерфейс, а `String value()` — его метод.
+      ["Marker", "interface", 27, 29],
+      ["value", "method", 28, 28],
+    ]);
+  });
+
+  test("вложенный класс и метод без тела", () => {
+    const inner = [
+      "class Outer {", // 1
+      "    static class Inner {", // 2
+      "        void go();", // 3
+      "    }", // 4
+      "}", // 5
+    ].join("\n");
+    expect(listDefs(inner, "java").map((d) => [d.name, d.kind, d.startLine, d.endLine])).toEqual([
+      ["Outer", "class", 1, 5],
+      ["Inner", "class", 2, 4],
+      ["go", "method", 3, 3],
     ]);
   });
 });

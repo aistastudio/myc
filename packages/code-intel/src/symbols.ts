@@ -145,6 +145,31 @@ const CS_KINDS: Readonly<Record<string, DefKind>> = {
   local_function_statement: "function",
 };
 
+/**
+ * Java, как и C#, называет виды узлов сам, поэтому `methodByParent` пуст.
+ *
+ * Чего здесь НЕТ, и это решение, а не пропуск:
+ *   - поле (`field_declaration`) — не метод и не тип; отдельного вида в
+ *     `DefKind` для него нет, и называть поле методом значило бы соврать в
+ *     скелете (ровно как свойство в C#);
+ *   - лямбда (`lambda_expression`) — безымянная, объявлять нечего;
+ *   - член перечисления (`enum_constant`) и элемент аннотации
+ *     (`annotation_type_element_declaration` — нет, он ИМЕЕТ имя и объявлен
+ *     как метод, как метод интерфейса) — определение есть у самого `enum`,
+ *     как в ts и в C#.
+ * Конструктор — метод: имя у него есть (имя типа).
+ */
+const JAVA_KINDS: Readonly<Record<string, DefKind>> = {
+  class_declaration: "class",
+  interface_declaration: "interface",
+  enum_declaration: "enum",
+  record_declaration: "class",
+  annotation_type_declaration: "interface",
+  method_declaration: "method",
+  constructor_declaration: "method",
+  annotation_type_element_declaration: "method",
+};
+
 /** Значения `const x = …`, которые делают объявление определением функции. */
 const JSTS_FUNCTION_VALUES: ReadonlySet<string> = new Set([
   "arrow_function",
@@ -171,6 +196,7 @@ const LANG_RULES: Readonly<Record<LangId, LangRule>> = {
   jsx: { kinds: JSTS_KINDS, declarators: true, methodByParent: [] },
   py: { kinds: PY_KINDS, declarators: false, methodByParent: ["block"] },
   cs: { kinds: CS_KINDS, declarators: false, methodByParent: [] },
+  java: { kinds: JAVA_KINDS, declarators: false, methodByParent: [] },
 };
 
 /**

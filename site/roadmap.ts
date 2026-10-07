@@ -55,6 +55,7 @@ const EPICS: readonly EpicMeta[] = [
   { id: "memory-kh9wpqkwj1dm", key: "M1", title_en: "memory", title_ru: "память" },
   { id: "memory-vtvz9sdjekgx", key: "M2", title_en: "semantics", title_ru: "семантика" },
   { id: "memory-cmg64b6vrw0b", key: "M7", title_en: "human interface: board, cards, threads", title_ru: "человек в интерфейсе: доска, карточки, нити" },
+  { id: "memory-mge1djs7jyey", key: "ADE", title_en: "agent harness: TUI, supervisor, launcher, orchestration", title_ru: "харнесс агента: TUI, супервизор, launcher, оркестрация" },
   { id: "memory-4ez67f48fcdv", key: "M3", title_en: "code intelligence: anchors code <-> knowledge", title_ru: "код: якоря код ↔ знание" },
   { id: "memory-x20k85amw3z9", key: "graft", title_en: "replacing graft: built-in code intelligence on tree-sitter", title_ru: "замена graft: свой код-интеллект на tree-sitter" },
   { id: "memory-rc2s0m1e9kpz", key: "EN", title_en: "all CLI and MCP output in English", title_ru: "весь вывод CLI и MCP — на английском" },

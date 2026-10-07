@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.4.4",
-    "date": "2026-10-04"
+    "version": "0.4.5",
+    "date": "2026-10-06"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-09-30",
-    "source": "myc 0.4.3 (schema 1) · 13 epics of this repository's workspace",
+    "as_of": "2026-10-07",
+    "source": "myc 0.4.5 (schema 1) · 14 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -445,6 +445,49 @@ window.MYC_DATA = {
         "cancelled": 0,
         "in_progress": 0,
         "open": []
+      },
+      {
+        "id": "memory-mge1djs7jyey",
+        "key": "ADE",
+        "title_en": "agent harness: TUI, supervisor, launcher, orchestration",
+        "title_ru": "харнесс агента: TUI, супервизор, launcher, оркестрация",
+        "status": "open",
+        "done": 141,
+        "total": 146,
+        "cancelled": 0,
+        "in_progress": 0,
+        "open": [
+          {
+            "id": "memory-aww5rfvj9vef",
+            "status": "open",
+            "priority": 1,
+            "title": "Волна 1: оркестрация — fanout, audit, квоты v1, route/failover, leader, PTY, orca-мост, decide (jev)"
+          },
+          {
+            "id": "memory-v94y1cnsbr9y",
+            "status": "open",
+            "priority": 1,
+            "title": "Языковой адаптер: промпт и вывод на нативный язык модели"
+          },
+          {
+            "id": "memory-e80dabtdyp9a",
+            "status": "open",
+            "priority": 2,
+            "title": "Волна 2: Electron-десктоп вокруг @myc/web + встроенный браузер"
+          },
+          {
+            "id": "memory-08az9nh10mrj",
+            "status": "open",
+            "priority": 3,
+            "title": "Волна 3: Windows последней, удалённые исполнители serve, M6 питает spec compiler"
+          },
+          {
+            "id": "memory-9j6m69s7m0w0",
+            "status": "open",
+            "priority": 3,
+            "title": "qwen-code — исследование кандидата харнесса #8"
+          }
+        ]
       },
       {
         "id": "memory-4ez67f48fcdv",
@@ -946,6 +989,12 @@ window.MYC_DATA = {
             "cmd": "myc code fetch cs",
             "en": "C# is a definition language too (id cs, grammar c_sharp): classes and records, interfaces, enums, structs, delegates, methods, constructors, destructors and local functions. Properties, fields, indexers, operators and enum members are not definitions.",
             "ru": "C# тоже язык с определениями (идентификатор cs, грамматика c_sharp): классы и record, интерфейсы, перечисления, структуры, делегаты, методы, конструкторы, деструкторы и локальные функции. Свойства, поля, индексаторы, операторы и члены перечислений определениями не считаются."
+          },
+          {
+            "since": "0.4.5",
+            "cmd": "myc code fetch java",
+            "en": "Java is a definition language too (id java, grammar java): classes and records, interfaces, enums, annotation types, methods and constructors. Fields, enum constants and lambdas are not definitions.",
+            "ru": "Java тоже язык с определениями (идентификатор java, грамматика java): классы и record, интерфейсы, перечисления, аннотации-типы, методы и конструкторы. Поля, члены перечислений и лямбды определениями не считаются."
           },
           {
             "since": "0.3.0",
@@ -1606,17 +1655,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4209,
+    "pass": 4207,
     "fail": 1,
-    "skip": 16,
+    "skip": 27,
     "files": 277,
-    "assertions": 38164,
-    "seconds": 449.81,
-    "sources": "64aa0c78834dfa2c",
-    "date": "2026-10-04",
-    "myc": "0.4.4",
+    "assertions": 38672,
+    "seconds": 416.31,
+    "sources": "e668085c1b001443",
+    "date": "2026-10-06",
+    "myc": "0.4.5",
     "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-05T10:10:38.626Z", assertions: 77 };
-window.MYC_DATA.release = "0.4.4";
+window.MYC_DATA.verified = { at: "2026-10-07T13:26:09.944Z", assertions: 77 };
+window.MYC_DATA.release = "0.4.5";

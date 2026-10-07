@@ -15,11 +15,11 @@ import { listDefs, loadLangs } from "./symbols.ts";
 import { listDefsAndRefs, listRefs, type Ref, type RefKind } from "./refs.ts";
 
 beforeAll(async () => {
-  await loadLangs(["ts", "tsx", "js", "py", "cs"]);
+  await loadLangs(["ts", "tsx", "js", "py", "cs", "java"]);
 });
 
 /** Ссылки на одно имя — компактно, чтобы ожидания читались строкой. */
-const to = (src: string, lang: "ts" | "tsx" | "js" | "py" | "cs", name: string): Ref[] =>
+const to = (src: string, lang: "ts" | "tsx" | "js" | "py" | "cs" | "java", name: string): Ref[] =>
   listRefs(src, lang).filter((r) => r.name === name);
 
 const shape = (rs: Ref[]): Array<[number, RefKind, string]> =>
@@ -332,6 +332,113 @@ describe("listRefs: csharp", () => {
       "}",
     ].join("\n");
     expect(shape(to(cs, "cs", "Helper"))).toEqual([[5, "call", "M"]]);
+  });
+});
+
+describe("listRefs: java", () => {
+  const src = [
+    "package app.demo;", // 1
+    "", // 2
+    "import java.util.List;", // 3
+    "import static java.lang.Math.PI;", // 4
+    "", // 5
+    "@Deprecated", // 6
+    "class Repo extends Base implements IRepo {", // 7
+    "    public void save(String path) {", // 8
+    "        Helper.run(path);", // 9
+    "        var p = new Person(path);", // 10
+    "        List<Person> people = new ArrayList<>();", // 11
+    "        System.out.println(people.size());", // 12
+    "        for (Person person : people) {", // 13
+    "            use(person);", // 14
+    "        }", // 15
+    "        try { go(); } catch (Exception ex) { log(ex); }", // 16
+    "        throw new RuntimeException(PI);", // 17
+    "    }", // 18
+    "}", // 19
+  ].join("\n");
+
+  test("import — импорт, package — объявление и не ссылка", () => {
+    // Все части имени в чужом файле, включая вложенные `java.util`.
+    expect(shape(to(src, "java", "java"))).toEqual([
+      [3, "import", ""],
+      [4, "import", ""],
+    ]);
+    expect(shape(to(src, "java", "util"))).toEqual([[3, "import", ""]]);
+    // `List` — и импорт, и тип в строке объявления ниже.
+    expect(shape(to(src, "java", "List"))).toEqual([
+      [3, "import", ""],
+      [11, "type", "save"],
+    ]);
+    expect(shape(to(src, "java", "lang"))).toEqual([[4, "import", ""]]);
+    expect(shape(to(src, "java", "Math"))).toEqual([[4, "import", ""]]);
+    expect(shape(to(src, "java", "PI"))).toEqual([
+      [4, "import", ""],
+      [17, "read", "save"],
+    ]);
+    // Имя пакета ЭТОГО файла — объявление, а не ссылка.
+    expect(to(src, "java", "app")).toEqual([]);
+    expect(to(src, "java", "demo")).toEqual([]);
+  });
+
+  test("вызов, new, тип и владелец вызова", () => {
+    expect(shape(to(src, "java", "run"))).toEqual([[9, "call", "save"]]);
+    expect(shape(to(src, "java", "Helper"))).toEqual([[9, "read", "save"]]);
+    expect(shape(to(src, "java", "Person"))).toEqual([
+      [10, "new", "save"],
+      [11, "type", "save"],
+      [13, "type", "save"],
+    ]);
+    expect(shape(to(src, "java", "ArrayList"))).toEqual([[11, "new", "save"]]);
+    expect(shape(to(src, "java", "List"))).toEqual([
+      [3, "import", ""],
+      [11, "type", "save"],
+    ]);
+    expect(shape(to(src, "java", "println"))).toEqual([[12, "call", "save"]]);
+    expect(shape(to(src, "java", "System"))).toEqual([[12, "read", "save"]]);
+    expect(shape(to(src, "java", "out"))).toEqual([[12, "read", "save"]]);
+    expect(shape(to(src, "java", "size"))).toEqual([[12, "call", "save"]]);
+    expect(shape(to(src, "java", "RuntimeException"))).toEqual([[17, "new", "save"]]);
+  });
+
+  test("аннотация, базовый тип и интерфейс — типы", () => {
+    expect(shape(to(src, "java", "Deprecated"))).toEqual([[6, "type", "Repo"]]);
+    expect(shape(to(src, "java", "Base"))).toEqual([[7, "type", "Repo"]]);
+    expect(shape(to(src, "java", "IRepo"))).toEqual([[7, "type", "Repo"]]);
+    expect(shape(to(src, "java", "String"))).toEqual([[8, "type", "save"]]);
+  });
+
+  test("объявления не ссылка: параметр, var, переменная for и catch", () => {
+    // Параметр объявлен на 8 и прочитан на 9 и 10: в ссылках только чтения.
+    expect(shape(to(src, "java", "path"))).toEqual([
+      [9, "read", "save"],
+      [10, "read", "save"],
+    ]);
+    // `var` — ключевое слово вывода типа, а не имя типа в источнике.
+    expect(to(src, "java", "var")).toEqual([]);
+    // `p` объявлен и нигде не читается.
+    expect(to(src, "java", "p")).toEqual([]);
+    // `person` объявлен на 13 и прочитан на 14: только чтение.
+    expect(shape(to(src, "java", "person"))).toEqual([[14, "read", "save"]]);
+    expect(shape(to(src, "java", "people"))).toEqual([
+      [12, "read", "save"],
+      [13, "read", "save"],
+    ]);
+    expect(shape(to(src, "java", "Exception"))).toEqual([[16, "type", "save"]]);
+    expect(shape(to(src, "java", "ex"))).toEqual([[16, "read", "save"]]);
+  });
+
+  test("комментарий и строковый литерал не дают ссылок", () => {
+    const j = [
+      "// Helper",
+      "class M {",
+      "    void m() {",
+      "        String s = \"Helper\";",
+      "        Helper.run(s);",
+      "    }",
+      "}",
+    ].join("\n");
+    expect(shape(to(j, "java", "Helper"))).toEqual([[5, "read", "m"]]);
   });
 });
 

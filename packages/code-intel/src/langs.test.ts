@@ -322,6 +322,8 @@ describe("langOf", () => {
     expect(langOf("src/a.ts")).toBe("ts");
     expect(langOf("src/App.cs")).toBe("cs");
     expect(langOf("src/App.CS")).toBe("cs");
+    expect(langOf("src/Repo.java")).toBe("java");
+    expect(langOf("src/Repo.JAVA")).toBe("java");
     expect(langOf("a.TSX")).toBe("tsx");
     expect(langOf("lib/x.cjs")).toBe("js");
     expect(langOf("docs/r.md")).toBe("md");
