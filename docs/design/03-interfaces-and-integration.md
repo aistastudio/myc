@@ -1981,7 +1981,9 @@ hooks  codex: notify ok (14 событий), pre-compact НЕДОСТУПЕН в
 }
 ```
 
-`.opencode/plugin/myc.ts` — наш файл целиком:
+`.opencode/plugin/myc.ts` — наш файл. Ниже — сокращённый вид для чтения;
+канонический текст генерируется шаблоном `opencodePlugin`
+(`packages/cli/src/hooks/templates.ts`) и проверяется тестами:
 
 ```ts
 // .opencode/plugin/myc.ts — генерируется `myc wire`, правки перезапишутся
@@ -2012,6 +2014,31 @@ export const MycPlugin = async ({ project, client }) => ({
   },
 });
 ```
+
+**Два издания opencode — один генерируемый файл.** opencode 2.x не читает
+именованные экспорты: модуль обязан отдать `export default` — ОБЪЕКТ с `id` и
+`setup` (или `effect`), иначе `PluginModule.LoadError: Plugin must export a
+default definition with an id and an effect or setup function`, плагин не
+грузится ВООБЩЕ, и виден только WARN в
+`~/.local/share/opencode/log/opencode.log`; функция под `default` тоже не
+проходит (`Expected object at ["default"]`). 1.x, наоборот, зовёт
+`default.server()` (именованный экспорт — та же функция, дедупликация по
+значению даёт один вызов) и дополнительно `setup()` своим контекстом, где
+`session.hook` нет. Поэтому генерируется `export default {id, setup, server}`
+плюс `export const MycPlugin = server`, а хуки разделены по изданиям:
+
+- **1.x** — прежние возвратные хуки из `server()`;
+- **2.x** — `setup(ctx)` регистрирует `ctx.session.hook("context")` (prime,
+  каждый запрос), `ctx.session.hook("compaction")` (спасательный пакет в
+  `event.system` объектом `{type:"text"}`), `ctx.tool.hook("execute.after")`
+  (якорь), страховку `session.compacted` — через `ctx.event.subscribe()`;
+  стенограмма берётся у `ctx.session.context`, которая отдаёт ПЛОСКИЕ
+  сообщения (`{type, text|content}`), а не `[{info, parts}]`, — обе формы
+  разбирает общий `transcriptFrom`.
+
+Проверено живыми прогонами `opencode` 1.18.31 и 2.0.25 на изолированных
+HOME/XDG (матрица форм default-экспорта) и эту сессию на 2.0.25: оба слоя
+грузятся без WARN, `myc prime` тикает в `opencode:session-start`.
 
 Если у установленной версии opencode нет события компакта — работает та же
 деградация, что у Codex, и она видна в `myc doctor`.

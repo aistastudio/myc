@@ -134,6 +134,55 @@ test("opencode: session.compacted пишет эпизод, если хука с�
   expect(JSON.parse(rows[0]!.attrs)["session_id"]).toBe("ses_fb");
 });
 
+test("opencode 2.x: стенограмма берётся у ctx.session.context и доходит до эпизода", async () => {
+  process.env["MYC_BIN"] = mycBin;
+  const file = join(dir, "plugin-v2.ts");
+  writeFileSync(file, opencodePlugin({ events: [...EVENTS], hookOutput: "json" }));
+  const mod = (await import(file)) as { default: { setup(ctx: unknown): Promise<unknown> } };
+  const regs: { name: string; cb: (event: any) => Promise<void> }[] = [];
+  // Форма ответа 2.0.25, снятая живым прогоном: ПЛОСКИЕ сообщения, у tool-блока
+  // имя в name, а результат — списком state.content, а не строкой output.
+  const flat = [
+    { type: "user", text: "Реши задачу и запиши вывод." },
+    {
+      type: "assistant",
+      model: { id: "ling" },
+      content: [
+        { type: "text", text: "Решено: эпизод пишется из ctx.session.context." },
+        { type: "tool", name: "edit", state: { status: "completed", input: { filePath: "src/a.ts" }, content: [{ type: "text", text: "ok" }] } },
+      ],
+    },
+  ];
+  const cleanup = await mod.default.setup({
+    location: { directory: dir },
+    session: {
+      hook: async (name: string, cb: any) => void regs.push({ name, cb }),
+      context: async () => flat,
+    },
+    tool: { hook: async (name: string, cb: any) => void regs.push({ name, cb }) },
+    event: { subscribe: async () => ({ [Symbol.asyncIterator]: async function* () {} }) },
+  });
+  expect(typeof cleanup).toBe("function");
+
+  const output = { system: [] as { type: string; text?: string }[] };
+  await regs.find((r) => r.name === "compaction")!.cb({ sessionID: "ses_v2", system: output.system });
+
+  // Спасательный пакет уехал ОБЪЕКТОМ {type: "text"} — так устроен system в 2.x.
+  expect(output.system.length).toBe(1);
+  expect(output.system[0]!.type).toBe("text");
+  expect(output.system[0]!.text!.length).toBeGreaterThan(0);
+
+  const rows = episodes();
+  expect(rows.length).toBe(1);
+  const attrs = JSON.parse(rows[0]!.attrs) as Record<string, unknown>;
+  expect(attrs["agent"]).toBe("opencode");
+  expect(attrs["reason"]).toBe("compact");
+  expect(attrs["transcript_format"]).toBe("jsonl");
+  expect(attrs["turns"]).toBe(2);
+  expect(attrs["files"]).toBe(1);
+  expect(attrs["session_id"]).toBe("ses_v2");
+});
+
 test("opencode: два обработчика на одно сжатие не пишут два эпизода", async () => {
   process.env["MYC_BIN"] = mycBin;
   const { hooks } = await loadPlugin();

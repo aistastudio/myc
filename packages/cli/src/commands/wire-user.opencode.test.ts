@@ -394,47 +394,129 @@ describe("--scope user --agents opencode: глобальный конфиг", ()
 });
 
 // ---------------------------------------------------------------------------
-// Плагин — так, как его зовёт opencode: импорт модуля в Bun и вызов каждого
-// экспорта с {client, directory, worktree}; cwd процесса — чужой.
+// Плагин — так, как его зовут ОБА издания opencode:
+//   1.x — модуль, где каждый экспорт-функция (и default.object c server()),
+//         зовёт server({client, directory, worktree}) и дополнительно setup()
+//         СВОИМ контекстом, где session.hook нет (прочитано в бинаре 1.18.31,
+//         проверено живым прогоном: server — один раз, setup — один раз);
+//   2.x — default-объект {id, setup}: setup(ctx) регистрирует хуки на ctx
+//         (session.hook / tool.hook / event.subscribe), server() игнорируется.
+// Форма проверяется здесь же: оба издания отвергают файл, который ей не
+// удовлетворяет, и ни одно не читает то, что мы не проверяем.
 // ---------------------------------------------------------------------------
 
 const RUNNER = `
 const [plugin, directory, worktree] = process.argv.slice(2);
 const mod = await import(plugin);
-if (Object.values(mod).some((v) => typeof v !== "function")) throw new Error("a non-function export: opencode refuses the plugin");
+
+// --- Форма, обязательная для 2.x ------------------------------------------
+const def = mod.default;
+if (def === null || typeof def !== "object" || Array.isArray(def)) throw new Error("2.x: default must be an object");
+if (typeof def.id !== "string" || def.id.length === 0) throw new Error("2.x: default.id missing");
+if (typeof def.setup !== "function") throw new Error("2.x: default.setup missing");
+if (typeof def.server !== "function") throw new Error("2.x: default.server missing");
+// 1.x дедуплицирует экспорты ПО ЗНАЧЕНИЮ: именованный экспорт обязан быть той
+// же функцией, что и default.server, иначе хуки регистрируются дважды.
+if (mod.MycPlugin !== def.server) throw new Error("1.x: MycPlugin must be the same function as default.server");
+
 const client = { session: { messages: async () => [{ info: { role: "user", modelID: "m" }, parts: [{ type: "text", text: "hello" }] }] } };
-const out = {};
-for (const fn of Object.values(mod)) {
-  const hooks = await fn({ client, directory, worktree: worktree || undefined, project: {}, $: undefined });
-  out.keys = Object.keys(hooks);
-  const sys = { system: [] };
-  await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, sys);
-  // ВТОРОЙ запрос той же сессии: opencode собирает системный промпт заново
-  // на каждый вызов модели, поэтому prime обязан прийти и сюда.
-  const again = { system: [] };
-  await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, again);
-  // Служебный вызов (генератор заголовка) — контекст ему не нужен.
-  const service = { system: ["You are a title generator. Produce a short title."] };
-  await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, service);
-  out.system = sys.system;
-  out.systemAgain = again.system;
-  out.systemService = service.system;
-  await hooks["tool.execute.after"]?.({ tool: "edit", args: { filePath: directory + "/a.ts" } });
-  const ctx = { context: [] };
-  await hooks["experimental.session.compacting"]?.({ sessionID: "s1" }, ctx);
-  out.context = ctx.context;
-}
+const flat = [
+  { type: "user", text: "hello", files: [], agents: [] },
+  {
+    type: "assistant",
+    model: { id: "m" },
+    content: [
+      { type: "text", text: "done" },
+      { type: "tool", name: "edit", state: { status: "completed", input: { filePath: "src/a.ts" }, content: [{ type: "text", text: "ok" }] } },
+    ],
+  },
+];
+const out = { id: def.id };
+
+// --- 1.x: server() → объект хуков ------------------------------------------
+const hooks = await def.server({ client, directory, worktree: worktree || undefined, project: {}, $: undefined });
+out.keys = Object.keys(hooks);
+const sys = { system: [] };
+await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, sys);
+// ВТОРОЙ запрос той же сессии: opencode собирает системный промпт заново
+// на каждый вызов модели, поэтому prime обязан прийти и сюда.
+const again = { system: [] };
+await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, again);
+// Служебный вызов (генератор заголовка) — контекст ему не нужен.
+const service = { system: ["You are a title generator. Produce a short title."] };
+await hooks["experimental.chat.system.transform"]?.({ sessionID: "s1" }, service);
+out.system = sys.system;
+out.systemAgain = again.system;
+out.systemService = service.system;
+await hooks["tool.execute.after"]?.({ tool: "edit", args: { filePath: directory + "/a.ts" } });
+const v1ctx = { context: [] };
+await hooks["experimental.session.compacting"]?.({ sessionID: "s1" }, v1ctx);
+out.context = v1ctx.context;
+
+// --- 1.x: setup() СВОИМ контекстом — ни одной регистрации, ни одного отказа --
+const v1setup = await def.setup({ options: {}, command: {}, skill: {} });
+out.v1setup = v1setup === undefined ? "undefined" : typeof v1setup;
+
+// --- 2.x: setup(ctx) → регистрация хуков -----------------------------------
+const regs = [];
+const v2ctx = {
+  location: { directory, project: { directory } },
+  session: {
+    hook: async (name, cb) => { regs.push({ name, cb }); },
+    context: async () => flat,
+  },
+  tool: { hook: async (name, cb) => { regs.push({ name, cb }); } },
+  event: {
+    subscribe: async () => ({ [Symbol.asyncIterator]: async function* () {} }),
+  },
+};
+const take = (name) => regs.find((r) => r.name === name)?.cb;
+const cleanup = await def.setup(v2ctx);
+out.v2regs = regs.map((r) => r.name);
+out.v2cleanup = typeof cleanup;
+
+const req = (text) => ({ sessionID: "s2", system: [{ type: "text", text }] });
+const first = req("base");
+await take("context")?.(first);
+const second = req("base");
+await take("context")?.(second);
+const title = req("You are a title generator. Produce a short title.");
+await take("context")?.(title);
+out.v2system = first.system;
+out.v2systemAgain = second.system;
+out.v2systemService = title.system;
+await take("execute.after")?.({ tool: "edit", status: "completed", input: { filePath: directory + "/a.ts" } });
+await take("execute.after")?.({ tool: "edit", status: "error", input: { filePath: directory + "/never.ts" } });
+const comp = { sessionID: "s2", system: [] };
+await take("compaction")?.(comp);
+out.v2compaction = comp.system;
+if (typeof cleanup === "function") cleanup();
+
 console.log(JSON.stringify(out));
 `;
 
 interface PluginRun {
+  /** id default-объекта: 2.x его требует, у слоёв он свой. */
+  readonly id: string;
   readonly keys: string[];
-  readonly system: string[];
   /** Системный промпт ВТОРОГО запроса той же сессии. */
   readonly systemAgain: string[];
   /** Системный промпт служебного вызова (генератор заголовка). */
   readonly systemService: string[];
+  readonly system: string[];
   readonly context: string[];
+  /** Что вернул setup на контексте 1.x: обязано быть undefined. */
+  readonly v1setup: string;
+  /** Зарегистрировано на контексте 2.x: имена хуков в порядке регистрации. */
+  readonly v2regs: string[];
+  /** Система запроса 2.x до/после prime и у служебного вызова. */
+  readonly v2system: { type: string; text?: string }[];
+  readonly v2systemAgain: { type: string; text?: string }[];
+  readonly v2systemService: { type: string; text?: string }[];
+  /** Спасательный пакет сжатия в системе запроса 2.x. */
+  readonly v2compaction: { type: string; text?: string }[];
+  /** typeof того, что вернул setup 2.x: function = cleanup есть. */
+  readonly v2cleanup: string;
 }
 
 function runPlugin(plugin: string, directory: string, worktree = ""): PluginRun {
@@ -473,6 +555,7 @@ describe("плагин пользовательского слоя opencode: к�
       system: [],
       systemAgain: [],
       context: [],
+      v2regs: [],
     });
     expect(mycCalls()).toEqual([]);
   });
@@ -506,12 +589,29 @@ describe("плагин пользовательского слоя opencode: к�
     // таким, каким пришёл.
     expect(out.systemService).toEqual(["You are a title generator. Produce a short title."]);
     expect(out.context).toEqual(["PACKET-FROM-STUB\n"]);
+    // 2.x: default — объект со своим id, хуки регистрируются на ctx, система —
+    // массив ОБЪЕКТОВ {type, text}. prime кладётся в каждый запрос (s2 — своя
+    // сессия, у s1 текст уже закеширован), служебному вызову — не кладётся,
+    // пакет сжатия уезжает в ту же систему.
+    expect(out.id).toBe("myc.user");
+    expect(out.v1setup).toBe("undefined");
+    expect(out.v2cleanup).toBe("function");
+    expect(out.v2regs).toEqual(["context", "compaction", "execute.after"]);
+    expect(out.v2system.map((p) => p.text)).toEqual(["base", "PRIME-FROM-STUB\n"]);
+    expect(out.v2systemAgain.map((p) => p.text)).toEqual(["base", "PRIME-FROM-STUB\n"]);
+    expect(out.v2systemService.map((p) => p.text)).toEqual(["You are a title generator. Produce a short title."]);
+    expect(out.v2compaction.map((p) => p.text)).toEqual(["PACKET-FROM-STUB\n"]);
     const calls = mycCalls();
-    // Сам `myc prime` при этом запускается ОДИН раз: текст кешируется на
-    // сессию, иначе он шёл бы на каждый запрос к модели. Все вызовы — из
-    // каталога инстанса.
-    expect(calls.filter((c) => c.includes(" prime "))).toEqual([`${sub} prime --budget 2000 --format agent --session s1`]);
+    // Сам `myc prime` при этом запускается ОДИН раз на сессию: текст кешируется,
+    // иначе он шёл бы на каждый запрос к модели. Все вызовы — из каталога
+    // инстанса.
+    expect(calls.filter((c) => c.includes(" prime "))).toEqual([
+      `${sub} prime --budget 2000 --format agent --session s1`,
+      `${sub} prime --budget 2000 --format agent --session s2`,
+    ]);
     expect(calls).toContain(`${sub} anchor touch ${sub}/a.ts`);
+    // Отказавшийся тулз (status: error) якорь не трогает.
+    expect(calls.some((c) => c.includes("never.ts"))).toBe(false);
     expect(calls.some((c) => c.startsWith(`${sub} absorb-session --reason compact --transcript - `))).toBe(true);
     expect(calls.find((c) => c.startsWith("stdin: "))).toContain('"text":"hello"');
   });
@@ -540,6 +640,7 @@ describe("плагин пользовательского слоя opencode: к�
         system: [],
         systemAgain: [],
         context: [],
+        v2regs: [],
       });
     }
     expect(mycCalls()).toEqual([]);
@@ -562,9 +663,14 @@ describe("плагин пользовательского слоя opencode: к�
     rmSync(mycLog);
     const project = runPlugin(projectPlugin, proj, proj);
     const projectCalls = mycCalls();
-    expect(user).toEqual(project);
     expect(userCalls).toEqual(projectCalls);
     expect(userCalls.length).toBeGreaterThanOrEqual(3);
+    // 2.x требует у каждого плагина свой id, поэтому слои различаются ровно им:
+    // всё остальное — вызовы, аргументы, stdin — паритет до байта.
+    const { id: userId, ...userRest } = user;
+    const { id: projectId, ...projectRest } = project;
+    expect([userId, projectId]).toEqual(["myc.user", "myc"]);
+    expect(userRest).toEqual(projectRest);
   });
 });
 

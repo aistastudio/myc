@@ -647,11 +647,125 @@ process.exit(0);
  * Поэтому `session.compacted` (событие стабильное, оно и тикало те 11 раз)
  * остаётся страховкой и пишет эпизод, если основной не отработал. Двойной
  * записи нет: страховка смотрит на отметку `handled`.
+ *
+ * ДВА ИЗДАНИЯ ОДНИМ ФАЙЛОМ (`api: "dual"`, только opencode; mimo остаётся
+ * на "v1", его грузит свой бинарь). opencode 2.0.25 отказался от именованных
+ * экспортов: `PluginModule.LoadError: Plugin must export a default definition
+ * with an id and an effect or setup function` — плагин на v2 не грузился ВООБЩЕ
+ * (лог `~/.local/share/opencode/log/opencode.log`, ref err_0115e516 и ещё три).
+ * Прочитано в бинарях и проверено живыми прогонами обоих:
+ *   - 2.0.25: default — объект `{id, setup}`; функция-дефолт не проходит
+ *     (`Expected object at ["default"]`), именованные экспорты не читаются,
+ *     `server()` игнорируется. Внутри setup хуки регистрируются через
+ *     `ctx.session.hook("context"|"compaction")`, `ctx.tool.hook
+ *     ("execute.after")`, страховка — через `ctx.event.subscribe()`;
+ *   - 1.18.31: зовёт `default.server()` (именованный экспорт — та же функция,
+ *     дедупликация по значению даёт РОВНО один вызов) и дополнительно
+ *     `setup()` СВОИМ контекстом, где `session.hook` нет, — ранний выход.
  */
-function opencodeFamilyPlugin(opts: HelperOptions, agent: string, relPath: string): string {
+function opencodeFamilyPlugin(opts: HelperOptions, agent: string, relPath: string, api: "v1" | "dual" = "v1"): string {
   const sessionStart = opts.events.includes("session-start");
   const preCompact = opts.events.includes("pre-compact");
   const postEdit = opts.events.includes("post-edit");
+  const opener =
+    api === "dual"
+      ? "const __mycServer = async ({ client, directory }: { client: any; directory?: string }) => {"
+      : "export const MycPlugin = async ({ client, directory }: { client: any; directory?: string }) => {";
+  /**
+   * opencode 2.x: default.setup(ctx). Один файл обслуживает ОБА издания, и это
+   * не пожелание, а устройство загрузчика (прочитано в бинарях и проверено
+   * живым прогоном обоих):
+   *   - 2.0.25 требует default — ОБЪЕКТ с id и setup (`SchemaError(Missing key
+   *     at ["default"])`, `Expected object at ["default"]` у функции-дефолта);
+   *     именованные экспорты не смотрит вовсе, server() игнорирует;
+   *   - 1.18.31 зовёт и server() (свои хуки, ровно один раз — именованный
+   *     экспорт и default.server ОДНА И ТА ЖЕ функция, дедупликация по
+   *     значению), и setup() СВОИМ контекстом, где session.hook нет, — ранний
+   *     выход в setup это и делает.
+   */
+  const setup2 =
+    api === "dual"
+      ? `
+/**
+ * opencode 2.x. ctx здесь — клиент (ctx.session/ctx.tool/ctx.event), хуки
+ * регистрируются, а не возвращаются. На 1.x сюда приходит его собственный
+ * контекст без session.hook: выход без единой регистрации.
+ */
+const __mycSetup = async (ctx: any): Promise<(() => void) | void> => {
+  try {
+    if (typeof ctx?.session?.hook !== "function") return;
+    const where = ctx?.location?.directory;
+    if (typeof where === "string" && where.length > 0) DIR = where;
+    ${sessionStart ? `// prime: opencode 2.x пересобирает систему на КАЖДЫЙ запрос, поэтому
+    // кладём каждый раз, а текст кешируем на сессию — как в 1.x.
+    await ctx.session.hook("context", async (event: any) => {
+      try {
+        const id = event?.sessionID;
+        if (typeof id !== "string" || id.length === 0) return;
+        const head = typeof event?.system?.[0] === "string" ? event.system[0] : (event?.system?.[0]?.text ?? "");
+        if (SERVICE_PROMPT.test(head)) return;
+        let text = primed.get(id);
+        if (text === undefined) {
+          text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+          primed.set(id, text);
+        }
+        if (text.trim().length > 0 && Array.isArray(event.system)) event.system.push({ type: "text", text });
+      } catch {}
+    });` : ""}
+    ${preCompact ? `// Единственная дверь в контекст при сжатии: opencode приклеивает
+    // систему этого запроса к промпту суммаризации.
+    await ctx.session.hook("compaction", async (event: any) => {
+      try {
+        const id = event?.sessionID;
+        if (typeof id !== "string" || id.length === 0) return;
+        const packet = await absorb(await transcriptV2(ctx, id), id);
+        handled.set(id, Date.now());
+        if (packet.trim().length > 0 && Array.isArray(event.system)) event.system.push({ type: "text", text: packet });
+      } catch {}
+    });` : ""}
+    ${postEdit ? `await ctx.tool.hook("execute.after", async (event: any) => {
+      try {
+        if (typeof event?.status === "string" && event.status !== "completed") return;
+        const file = event?.input?.filePath ?? event?.input?.path;
+        if (!["write", "edit", "patch"].includes(event?.tool) || typeof file !== "string") return;
+        if (file.length === 0) return;
+        await run(["anchor", "touch", file], 1000, "post-edit");
+      } catch {}
+    });` : ""}
+    ${preCompact ? `// Страховка тем же способом, что в 1.x: событие стабильное, стенограмма
+    // после сжатия ещё целиком. Поток живёт до выгрузки плагина, чистка — в
+    // cleanup, который opencode зовёт при выгрузке.
+    const ctrl = new AbortController();
+    const stream = ctx?.event?.subscribe?.({ signal: ctrl.signal });
+    if (stream != null && typeof stream[Symbol.asyncIterator] === "function") {
+      void (async () => {
+        for await (const ev of stream as AsyncIterable<any>) {
+          try {
+            if (ev?.type !== "session.compacted") continue;
+            const id = ev?.data?.sessionID ?? ev?.properties?.sessionID;
+            if (typeof id !== "string" || id.length === 0) continue;
+            const at = handled.get(id);
+            if (at !== undefined && Date.now() - at < HANDLED_MS) continue;
+            await absorb(await transcriptV2(ctx, id), id);
+          } catch {}
+        }
+      })().catch(() => {});
+    }
+    return () => {
+      try {
+        ctrl.abort();
+      } catch {}
+    };` : ""}
+  } catch {}
+};
+`
+      : "";
+  const tail =
+    api === "dual"
+      ? `export default { id: "myc", setup: __mycSetup, server: __mycServer };
+export const MycPlugin = __mycServer;
+`
+      : "";
   return `// ${relPath} — ${GENERATED}.
 //
 // Правило то же, что у helper'ов Claude Code, Codex и Kimi: myc НИКОГДА не
@@ -697,21 +811,44 @@ const run = async (args: string[], ms: number, ev: string, stdin?: string): Prom
 };
 
 /**
+ * Результат тулзы в строку. Форма 2.x: \`state.content\` — список блоков, как у
+ * MCP; в \`state.output\` лежит строка у собранных 1.x-тулз, ошибки — в
+ * \`state.error\`. Пустая строка — блока \`tool_result\` не бывает.
+ */
+const toolResultText = (state: any): string => {
+  if (typeof state?.output === "string") return state.output;
+  if (Array.isArray(state?.content)) {
+    const parts = state.content
+      .filter((p: any) => p != null && p.type === "text" && typeof p.text === "string")
+      .map((p: any) => p.text as string);
+    if (parts.length > 0) return parts.join("\\n");
+  }
+  if (typeof state?.error === "string") return state.error;
+  if (state?.error != null && typeof state.error.message === "string") return state.error.message;
+  return "";
+};
+
+/**
  * Стенограмма сессии в JSONL, который разбирает \`myc absorb-session\`.
  * Один узел сообщения — одна строка; блоки \`text\`/\`tool_use\`/\`tool_result\`
  * названы так же, как у Claude Code, потому что их и ждёт parseTranscript.
+ *
+ * Две формы opencode читаются здесь, и это не осторожность, а факт чтения
+ * обоих бинарей: 1.18.31 отдаёт \`client.session.messages\` → \`[{info, parts}]\`,
+ * 2.0.25 — \`ctx.session.context\` → ПЛОСКИЕ сообщения \`{type, text|content}\`,
+ * где у tool-блока имя в \`name\`, а результат в \`state.content\`.
  */
-const transcript = async (client: any, sessionID: string): Promise<string> => {
-  try {
-    const res: any = await client.session.messages({
-      path: { id: sessionID },
-      query: { directory: DIR },
-    });
-    const list: any[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-    const lines: string[] = [];
-    for (const m of list) {
+const transcriptFrom = (list: any, sessionID: string): string => {
+  const rows: any[] = Array.isArray(list) ? list : Array.isArray(list?.data) ? list.data : [];
+  const lines: string[] = [];
+  for (const m of rows) {
+    const content: any[] = [];
+    let role = "system";
+    let model: string | undefined;
+    if (m?.info !== undefined || Array.isArray(m?.parts)) {
       const info: any = m?.info ?? {};
-      const content: any[] = [];
+      role = info.role ?? "system";
+      model = info.modelID;
       for (const part of m?.parts ?? []) {
         if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
           content.push({ type: "text", text: part.text });
@@ -723,21 +860,57 @@ const transcript = async (client: any, sessionID: string): Promise<string> => {
           }
         }
       }
-      if (content.length === 0) continue;
-      lines.push(
-        JSON.stringify({
-          type: info.role ?? "system",
-          sessionId: sessionID,
-          cwd: DIR,
-          message: { role: info.role ?? "system", model: info.modelID, content },
-        }),
-      );
+    } else {
+      role = m?.type === "assistant" ? "assistant" : m?.type === "user" ? "user" : "system";
+      model = m?.model?.id;
+      if (typeof m?.text === "string" && m.text.length > 0) content.push({ type: "text", text: m.text });
+      for (const item of m?.content ?? []) {
+        if (item?.type === "text" && typeof item.text === "string" && item.text.length > 0) {
+          content.push({ type: "text", text: item.text });
+        } else if (item?.type === "tool") {
+          const state: any = item.state ?? {};
+          content.push({ type: "tool_use", name: item.name ?? item.tool ?? "tool", input: state.input ?? {} });
+          const out = toolResultText(state);
+          if (out.length > 0) content.push({ type: "tool_result", content: out });
+        }
+      }
     }
-    return lines.length === 0 ? "" : lines.join("\\n") + "\\n";
+    if (content.length === 0) continue;
+    lines.push(
+      JSON.stringify({
+        type: role,
+        sessionId: sessionID,
+        cwd: DIR,
+        message: { role, model, content },
+      }),
+    );
+  }
+  return lines.length === 0 ? "" : lines.join("\\n") + "\\n";
+};
+
+/** Стенограмма 1.x: \`client.session.messages\` с \`{path, query}\` (замер: 4 мс). */
+const transcript = async (client: any, sessionID: string): Promise<string> => {
+  try {
+    const res: any = await client.session.messages({
+      path: { id: sessionID },
+      query: { directory: DIR },
+    });
+    return transcriptFrom(res, sessionID);
   } catch {
     return "";
   }
 };
+
+${api === "dual" ? `/** Стенограмма 2.x: \`ctx.session.context\` — та же API-модель, что у клиента. */
+const transcriptV2 = async (ctx: any, sessionID: string): Promise<string> => {
+  try {
+    const res: any = await ctx.session.context({ sessionID });
+    return transcriptFrom(res, sessionID);
+  } catch {
+    return "";
+  }
+};
+` : ""}
 
 /**
  * Эпизод сжатия. \`--transcript -\` со стенограммой на stdin: без неё
@@ -745,7 +918,7 @@ const transcript = async (client: any, sessionID: string): Promise<string> => {
  * \`myc doctor --hooks\` показывает как расхождение. Поэтому даже при неудачном
  * запросе вызов ДЕЛАЕТСЯ: пустой статус видно, тишину — нет.
  */
-const absorb = async (client: any, sessionID: string): Promise<string> =>
+const absorb = async (jsonl: string, sessionID: string): Promise<string> =>
   run(
     [
       "absorb-session",
@@ -764,7 +937,7 @@ const absorb = async (client: any, sessionID: string): Promise<string> =>
     ],
     7500,
     "pre-compact",
-    await transcript(client, sessionID),
+    jsonl,
   );
 
 /** Сжатия, уже записанные основным хуком: страховка их не переписывает. */
@@ -780,7 +953,7 @@ const primed = new Map<string, string>();
  */
 const SERVICE_PROMPT = /^\s*you are a (title|summary)/i;
 
-export const MycPlugin = async ({ client, directory }: { client: any; directory?: string }) => {
+${opener}
   if (typeof directory === "string" && directory.length > 0) DIR = directory;
   return {
     // Единственная дверь в контекст при сжатии (см. шапку шаблона).
@@ -790,7 +963,7 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
     ): Promise<void> => {
       if (!${preCompact ? "true" : "false"}) return;
       try {
-        const packet = await absorb(client, input.sessionID);
+        const packet = await absorb(await transcript(client, input.sessionID), input.sessionID);
         handled.set(input.sessionID, Date.now());
         if (packet.trim().length > 0) output.context.push(packet);
       } catch {}
@@ -805,7 +978,7 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
           if (typeof id !== "string" || id.length === 0) return;
           const at = handled.get(id);
           if (at !== undefined && Date.now() - at < HANDLED_MS) return;
-          await absorb(client, id);
+          await absorb(await transcript(client, id), id);
         }
       } catch {}
     },
@@ -854,11 +1027,11 @@ export const MycPlugin = async ({ client, directory }: { client: any; directory?
     },
   };
 };
-`;
+${setup2}${tail}`;
 }
 
 export function opencodePlugin(opts: HelperOptions): string {
-  return opencodeFamilyPlugin(opts, "opencode", ".opencode/plugin/myc.ts");
+  return opencodeFamilyPlugin(opts, "opencode", ".opencode/plugin/myc.ts", "dual");
 }
 
 /**
@@ -1006,6 +1179,79 @@ export function opencodeUserPlugin(opts: OpencodeUserPluginOptions): string {
       } catch {}
     },`);
   }
+  /**
+   * Те же четыре решения, но на API opencode 2.x: хуки не возвращаются, а
+   * регистрируются на ctx. Форма default-экспорта и оба живых прогона — в
+   * шапке шаблона проектного плагина (opencodeFamilyPlugin), тело здесь то же.
+   */
+  const setupHooks: string[] = [];
+  if (opts.events.includes("session-start")) {
+    setupHooks.push(`    // prime in place of the session.start opencode does not have: 2.x rebuilds
+    // the system of EVERY request, so it is added every request and the text
+    // itself is computed once per session.
+    await ctx.session.hook("context", async (event: any) => {
+      try {
+        const id = event?.sessionID;
+        if (typeof id !== "string" || id.length === 0) return;
+        const head = typeof event?.system?.[0] === "string" ? event.system[0] : (event?.system?.[0]?.text ?? "");
+        if (SERVICE_PROMPT.test(head)) return;
+        let text = primed.get(id);
+        if (text === undefined) {
+          text = await run(["prime", "--budget", "2000", "--format", "agent", "--session", id], 2500, "session-start");
+          primed.set(id, text);
+        }
+        if (text.trim().length > 0 && Array.isArray(event.system)) event.system.push({ type: "text", text });
+      } catch {}
+    });`);
+  }
+  if (opts.events.includes("pre-compact")) {
+    setupHooks.push(`    // The only door into the context at compaction: opencode appends the
+    // system of this request to the summarising prompt.
+    await ctx.session.hook("compaction", async (event: any) => {
+      try {
+        const id = event?.sessionID;
+        if (typeof id !== "string" || id.length === 0) return;
+        const packet = await absorb(id);
+        handled.set(id, Date.now());
+        if (packet.trim().length > 0 && Array.isArray(event.system)) event.system.push({ type: "text", text: packet });
+      } catch {}
+    });
+    // The fallback, same as in 1.x: the event is stable and the transcript is
+    // still whole right after compaction. The stream lives until unload.
+    (() => {
+      const ctrl = new AbortController();
+      const stream = ctx?.event?.subscribe?.({ signal: ctrl.signal });
+      if (stream != null && typeof stream[Symbol.asyncIterator] === "function") {
+        void (async () => {
+          for await (const ev of stream as AsyncIterable<any>) {
+            try {
+              if (ev?.type !== "session.compacted") continue;
+              const sid = ev?.data?.sessionID ?? ev?.properties?.sessionID;
+              if (typeof sid !== "string" || sid.length === 0) continue;
+              const at = handled.get(sid);
+              if (at !== undefined && Date.now() - at < HANDLED_MS) continue;
+              await absorb(sid);
+            } catch {}
+          }
+        })().catch(() => {});
+      }
+      cleanups.push(() => {
+        try {
+          ctrl.abort();
+        } catch {}
+      });
+    })();`);
+  }
+  if (opts.events.includes("post-edit")) {
+    setupHooks.push(`    await ctx.tool.hook("execute.after", async (event: any) => {
+      try {
+        if (typeof event?.status === "string" && event.status !== "completed") return;
+        const file = event?.input?.filePath ?? event?.input?.path;
+        if (!["write", "edit", "patch"].includes(event?.tool) || typeof file !== "string" || file.length === 0) return;
+        await run(["anchor", "touch", file], 1000, "post-edit");
+      } catch {}
+    });`);
+  }
   return `// ${opts.selfPath} — generated by \`myc wire --scope user --agents opencode\`; edits will be overwritten.
 //
 // The rule of every myc hook: myc NEVER breaks the agent's session. Any error,
@@ -1096,10 +1342,82 @@ const primed = new Map<string, string>();
  */
 const SERVICE_PROMPT = /^\s*you are a (title|summary)/i;
 
+// The transcript as JSONL for \`myc absorb-session\`: one line per message,
+// text/tool_use/tool_result blocks named as Claude Code names them.
+// BOTH editions of opencode are read here — not caution but the fact of
+// reading both binaries: 1.18.31 answers client.session.messages with
+// [{info, parts}], 2.0.25 answers ctx.session.context with FLAT messages
+// {type, text|content} whose tool block carries its name in \`name\` and its
+// result in \`state.content\`.
+const toolResultText = (state: any): string => {
+  if (typeof state?.output === "string") return state.output;
+  if (Array.isArray(state?.content)) {
+    const parts = state.content
+      .filter((p: any) => p != null && p.type === "text" && typeof p.text === "string")
+      .map((p: any) => p.text as string);
+    if (parts.length > 0) return parts.join("\\n");
+  }
+  if (typeof state?.error === "string") return state.error;
+  if (state?.error != null && typeof state.error.message === "string") return state.error.message;
+  return "";
+};
+
+const transcriptFrom = (DIR: string, list: any, sessionID: string): string => {
+  const rows: any[] = Array.isArray(list) ? list : Array.isArray(list?.data) ? list.data : [];
+  const lines: string[] = [];
+  for (const m of rows) {
+    const content: any[] = [];
+    let role = "system";
+    let model: string | undefined;
+    if (m?.info !== undefined || Array.isArray(m?.parts)) {
+      const info: any = m?.info ?? {};
+      role = info.role ?? "system";
+      model = info.modelID;
+      for (const part of m?.parts ?? []) {
+        if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
+          content.push({ type: "text", text: part.text });
+        } else if (part?.type === "tool") {
+          const state: any = part.state ?? {};
+          content.push({ type: "tool_use", name: part.tool ?? "tool", input: state.input ?? {} });
+          if (typeof state.output === "string" && state.output.length > 0) {
+            content.push({ type: "tool_result", content: state.output });
+          }
+        }
+      }
+    } else {
+      role = m?.type === "assistant" ? "assistant" : m?.type === "user" ? "user" : "system";
+      model = m?.model?.id;
+      if (typeof m?.text === "string" && m.text.length > 0) content.push({ type: "text", text: m.text });
+      for (const item of m?.content ?? []) {
+        if (item?.type === "text" && typeof item.text === "string" && item.text.length > 0) {
+          content.push({ type: "text", text: item.text });
+        } else if (item?.type === "tool") {
+          const state: any = item.state ?? {};
+          content.push({ type: "tool_use", name: item.name ?? item.tool ?? "tool", input: state.input ?? {} });
+          const out = toolResultText(state);
+          if (out.length > 0) content.push({ type: "tool_result", content: out });
+        }
+      }
+    }
+    if (content.length === 0) continue;
+    lines.push(
+      JSON.stringify({
+        type: role,
+        sessionId: sessionID,
+        cwd: DIR,
+        message: { role, model, content },
+      }),
+    );
+  }
+  return lines.length === 0 ? "" : lines.join("\\n") + "\\n";
+};
+
 // One set of hooks per opencode instance. A server process may serve several
 // directories and imports this module once, so the project directory lives in
-// this closure, not in a module variable.
-function __mycHooks(client: any, DIR: string) {
+// this closure, not in a module variable. \`v2\` selects the transcript door:
+// 1.x — client.session.messages, 2.x — ctx.session.context (the same ctx that
+// is passed in as the client).
+function __mycHooks(api: any, DIR: string, v2: boolean) {
   // One myc call: its own deadline, its own kill, no rejection let through.
   // \`ev\` is the EVENT name: by MYC_HOOK myc marks which hook fired, and
   // \`myc doctor --hooks\` tells session start from compaction by it.
@@ -1125,41 +1443,15 @@ function __mycHooks(client: any, DIR: string) {
     }
   };
 
-  // The session transcript as JSONL for \`myc absorb-session\`: one line per
-  // message, text/tool_use/tool_result blocks named as Claude Code names them.
   const transcript = async (sessionID: string): Promise<string> => {
     try {
-      const res: any = await client.session.messages({
-        path: { id: sessionID },
-        query: { directory: DIR },
-      });
-      const list: any[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-      const lines: string[] = [];
-      for (const m of list) {
-        const info: any = m?.info ?? {};
-        const content: any[] = [];
-        for (const part of m?.parts ?? []) {
-          if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
-            content.push({ type: "text", text: part.text });
-          } else if (part?.type === "tool") {
-            const state: any = part.state ?? {};
-            content.push({ type: "tool_use", name: part.tool ?? "tool", input: state.input ?? {} });
-            if (typeof state.output === "string" && state.output.length > 0) {
-              content.push({ type: "tool_result", content: state.output });
-            }
-          }
-        }
-        if (content.length === 0) continue;
-        lines.push(
-          JSON.stringify({
-            type: info.role ?? "system",
-            sessionId: sessionID,
-            cwd: DIR,
-            message: { role: info.role ?? "system", model: info.modelID, content },
-          }),
-        );
-      }
-      return lines.length === 0 ? "" : lines.join("\\n") + "\\n";
+      const res: any = v2
+        ? await api.session.context({ sessionID })
+        : await api.session.messages({
+            path: { id: sessionID },
+            query: { directory: DIR },
+          });
+      return transcriptFrom(DIR, res, sessionID);
     } catch {
       return "";
     }
@@ -1176,20 +1468,62 @@ function __mycHooks(client: any, DIR: string) {
       await transcript(sessionID),
     );
 
-  return {
+  const hooks = {
 ${hooks.join("\n")}
   };
+  return { hooks, run, absorb };
 }
 
-export const MycPlugin = async ({ client, directory, worktree }: { client: any; directory?: string; worktree?: string }) => {
+const __mycServer = async ({ client, directory, worktree }: { client: any; directory?: string; worktree?: string }) => {
   const dir = typeof directory === "string" && directory.length > 0 ? directory : process.cwd();
   let go = false;
   try {
     go = __mycWorkspace(dir) !== "" && !__mycOpencodeWired(dir, worktree);
   } catch {}
   if (!go) return {};
-  return __mycHooks(client, dir);
+  return __mycHooks(client, dir, false).hooks;
 };
+
+/**
+ * opencode 2.x: default.setup(ctx) is the whole plugin. ctx is the client
+ * itself (ctx.session / ctx.tool / ctx.event), hooks are REGISTERED instead of
+ * returned. On 1.x this same setup is called with ITS context, where
+ * session.hook does not exist — the early return above is exactly that case,
+ * verified on a live 1.18.31 run: it calls both entries, server once and
+ * setup once.
+ *
+ * The guard is the same walk-up, decided once per location and starting no
+ * process. On 2.x there is no worktree in the input, so the wiring walk is not
+ * bounded: finding an ancestor's wiring silences this layer, which is the safe
+ * direction (silence instead of prime twice).
+ */
+const __mycSetup = async (ctx: any): Promise<(() => void) | void> => {
+  try {
+    if (typeof ctx?.session?.hook !== "function") return;
+    const where = ctx?.location?.directory;
+    const dir = typeof where === "string" && where.length > 0 ? where : process.cwd();
+    let go = false;
+    try {
+      go = __mycWorkspace(dir) !== "" && !__mycOpencodeWired(dir, "");
+    } catch {}
+    if (!go) return;
+    const { run, absorb } = __mycHooks(ctx, dir, true);
+    const cleanups: (() => void)[] = [];
+${setupHooks.join("\n")}
+    if (cleanups.length > 0) {
+      return () => {
+        for (const stop of cleanups) {
+          try {
+            stop();
+          } catch {}
+        }
+      };
+    }
+  } catch {}
+};
+
+export default { id: "myc.user", setup: __mycSetup, server: __mycServer };
+export const MycPlugin = __mycServer;
 `;
 }
 
