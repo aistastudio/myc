@@ -23,6 +23,7 @@ import {
 import {
   claimText,
   closeText,
+  createText,
   depText,
   readyClaimText,
   rememberText,
@@ -442,15 +443,25 @@ const HUMAN_ONLY_OPS: Readonly<Record<string, string>> = {
 };
 
 async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
-  const id = reqStr(args, "id");
+  // СНАЧАЛА намерение, ПОТОМ адресат (memory-4v9gcdg3569k): приход с чужой
+  // формой — op без id, обёртка operation={action:"create"} — обязан называть
+  // настоящую проблему («нет такой операции»), а не «missing parameter id».
+  // С последним агент перебирает формы вызова и решает, что обёртка сломана,
+  // хотя id здесь просто ещё не при чём.
   const op = reqStr(args, "op");
   const humanOnly = HUMAN_ONLY_OPS[op];
   if (humanOnly !== undefined) {
     throw new ToolError("precond.human_only", `op '${op}' is not available to agents: ${humanOnly}`);
   }
   if (!(UPDATE_OPS as readonly string[]).includes(op)) {
-    throw new ToolError("usage.invalid", `invalid op '${op}'; allowed: ${UPDATE_OPS.join(", ")}`);
+    throw new ToolError(
+      "usage.invalid",
+      `invalid op '${op}'; allowed: ${UPDATE_OPS.join(", ")}`,
+      "myc_update only changes the state of an EXISTING node: to create one use myc_create, " +
+        "to record a conclusion or fact use myc_remember",
+    );
   }
+  const id = reqStr(args, "id");
   const lease = optInt(args, "lease_minutes", 30, 5, 480);
 
   switch (op) {
@@ -657,6 +668,37 @@ async function toolUpdate(deps: DispatchDeps, args: Args): Promise<CallToolResul
     }
   }
   throw new ToolError("usage.invalid", `op '${op}' is not supported`);
+}
+
+/**
+ * myc_create → `myc create` (ИМЯ = КОМАНДА, как у инструментов кода).
+ * Появился потому, что создания через MCP не было вовсе: агент, которому
+ * нужно завести задачу, выдумывал вызов myc_update с op="create"
+ * (memory-4v9gcdg3569k), тратил вызовы и уходил в CLI. Проверки kind и
+ * priority ведёт команда — у диспетчера они выглядят как у code-тулов.
+ */
+async function toolCreate(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
+  const title = reqStr(args, "title");
+  const argv = ["create", title, "--kind", optStr(args, "kind") ?? "task"];
+  const priority = optStr(args, "priority");
+  if (priority !== undefined) argv.push("--priority", priority);
+  const parent = optStr(args, "parent");
+  if (parent !== undefined) argv.push("--parent", parent);
+  const assignee = optStr(args, "assign");
+  if (assignee !== undefined) argv.push("--assign", assignee);
+  const body = optStr(args, "body");
+  if (body !== undefined) argv.push("--body", body);
+  const depsList = strList(args, "dep");
+  if (depsList.length > 0) argv.push("--dep", depsList.join(","));
+  const tags = strList(args, "tag");
+  if (tags.length > 0) argv.push("--tag", tags.join(","));
+  const env = await runJson(deps.runCli, argv);
+  if (!env.ok) return envelopeFailure(env);
+  const d = env.data as unknown as Parameters<typeof createText>[0];
+  return textResult(`${warnBlock(env.warn ?? [])}${createText(d)}`, {
+    ...d,
+    meta: metaOf(env),
+  });
 }
 
 async function toolRecall(deps: DispatchDeps, args: Args): Promise<CallToolResult> {
@@ -971,6 +1013,7 @@ const HANDLERS: Readonly<Record<string, ToolHandler>> = {
   myc_prime: toolPrime,
   myc_ready: toolReady,
   myc_update: toolUpdate,
+  myc_create: toolCreate,
   myc_recall: toolRecall,
   myc_remember: toolRemember,
   myc_show: toolShow,

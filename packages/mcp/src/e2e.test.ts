@@ -153,9 +153,9 @@ describe("myc mcp: stdio end-to-end", () => {
         expect(instructions).toContain("MYC BOOTSTRAP");
         await mcp.notify("notifications/initialized");
 
-        // 2. tools/list: профиль agent целиком — 7 работы и 6 кода
+        // 2. tools/list: профиль agent целиком — 8 работы и 6 кода
         const list = await mcp.request("tools/list");
-        expect((list.result!["tools"] as unknown[]).length).toBe(13);
+        expect((list.result!["tools"] as unknown[]).length).toBe(14);
 
         // 3. myc_prime — тот же пакет, что у хука старта сессии (`myc prime`):
         //    очередь готового с обеими задачами, а не второй раз bootstrap,

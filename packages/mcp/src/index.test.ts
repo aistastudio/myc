@@ -12,11 +12,12 @@ import {
 import { createDispatcher, UnknownToolError } from "./dispatch.ts";
 
 describe("профиль agent: состав и бюджет описаний", () => {
-  test("7 инструментов работы, состав по §4.2", () => {
+  test("8 инструментов работы, состав по §4.2", () => {
     expect(WORK_TOOLS.map((t) => t.name)).toEqual([
       "myc_prime",
       "myc_ready",
       "myc_update",
+      "myc_create",
       "myc_recall",
       "myc_remember",
       "myc_show",
@@ -34,7 +35,7 @@ describe("профиль agent: состав и бюджет описаний", 
       "myc_code_map",
     ]);
     expect(AGENT_TOOLS.map((t) => t.name)).toEqual([...WORK_TOOLS, ...CODE_TOOLS].map((t) => t.name));
-    expect(new Set(AGENT_TOOLS.map((t) => t.name)).size).toBe(13);
+    expect(new Set(AGENT_TOOLS.map((t) => t.name)).size).toBe(14);
   });
 
   // mcp.profile.agent.description_tokens <= 1100: ломает сборку при превышении
@@ -63,6 +64,15 @@ describe("профиль agent: состав и бюджет описаний", 
     for (const t of CODE_TOOLS) expect(t.needsVector).toBeUndefined();
   });
 
+  test("myc_create в описании зовёт соседей: выбор инструмента до попытки", () => {
+    // Тот же принцип, что у code-тулов: описание — инструкция выбора.
+    // Инцидент memory-4v9gcdg3569k начался с того, что агент не знал, чем
+    // создавать узел через MCP.
+    const by = new Map(WORK_TOOLS.map((t) => [t.name, t.description]));
+    expect(by.get("myc_create")).toContain("myc_remember");
+    expect(by.get("myc_create")).toContain("myc_update");
+  });
+
   test("оценщик консервативен: пустая строка — 0, 3 символа — 1", () => {
     expect(estimateTokens("")).toBe(0);
     expect(estimateTokens("abc")).toBe(1);
@@ -72,7 +82,7 @@ describe("профиль agent: состав и бюджет описаний", 
 
   test("leader/full пока не реализованы (myc-zdk)", () => {
     expect(() => toolsForProfile("leader")).toThrow(/myc-zdk/);
-    expect(toolsForProfile("agent")).toHaveLength(13);
+    expect(toolsForProfile("agent")).toHaveLength(14);
   });
 
   test("у каждого объявленного инструмента есть обработчик", async () => {

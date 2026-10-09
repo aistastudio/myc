@@ -329,7 +329,7 @@ window.MYC_DATA = {
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 5.11,
-    "unpacked_mb": 15.82,
+    "unpacked_mb": 15.8,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,13 +339,13 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.4.5",
-    "date": "2026-10-06"
+    "version": "0.4.6",
+    "date": "2026-10-09"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
-    "as_of": "2026-10-07",
-    "source": "myc 0.4.5 (schema 1) · 14 epics of this repository's workspace",
+    "as_of": "2026-10-09",
+    "source": "myc 0.4.4 (schema 1) · 14 epics of this repository's workspace",
     "rows": [
       {
         "id": "memory-5xravkn0anzk",
@@ -452,22 +452,22 @@ window.MYC_DATA = {
         "title_en": "agent harness: TUI, supervisor, launcher, orchestration",
         "title_ru": "харнесс агента: TUI, супервизор, launcher, оркестрация",
         "status": "open",
-        "done": 141,
-        "total": 146,
+        "done": 153,
+        "total": 158,
         "cancelled": 0,
         "in_progress": 0,
         "open": [
-          {
-            "id": "memory-aww5rfvj9vef",
-            "status": "open",
-            "priority": 1,
-            "title": "Волна 1: оркестрация — fanout, audit, квоты v1, route/failover, leader, PTY, orca-мост, decide (jev)"
-          },
           {
             "id": "memory-v94y1cnsbr9y",
             "status": "open",
             "priority": 1,
             "title": "Языковой адаптер: промпт и вывод на нативный язык модели"
+          },
+          {
+            "id": "memory-vc4nnpa9q24d",
+            "status": "open",
+            "priority": 1,
+            "title": "TUI: полноценный интерфейс работы над задачей (как opencode и похожие)"
           },
           {
             "id": "memory-e80dabtdyp9a",
@@ -558,7 +558,7 @@ window.MYC_DATA = {
         "title_en": "team: myc serve, ACL, network sync, Postgres",
         "title_ru": "команда: myc serve, ACL, сетевая синхронизация, Postgres",
         "status": "open",
-        "done": 11,
+        "done": 12,
         "total": 16,
         "cancelled": 0,
         "in_progress": 0,
@@ -580,12 +580,6 @@ window.MYC_DATA = {
             "status": "open",
             "priority": 2,
             "title": "SSE-дельты с Last-Event-ID по oplog.seq"
-          },
-          {
-            "id": "memory-s8zk9v8h5rp0",
-            "status": "open",
-            "priority": 2,
-            "title": "MCP-профили leader и full"
           },
           {
             "id": "memory-zzz7w3c8dc6x",
@@ -1499,11 +1493,6 @@ window.MYC_DATA = {
             "ru": "Живые обновления по SSE с продолжением по <code>Last-Event-ID</code> = номер операции оплога, чтобы переподключение ничего не теряло и не повторяло."
           },
           {
-            "id": "memory-s8zk9v8h5rp0",
-            "en": "MCP profiles for a leader agent and a full one, narrowed by the role of the token when working through the server.",
-            "ru": "MCP-профили для ведущего агента и полный, суженные ролью токена при работе через сервер."
-          },
-          {
             "id": "memory-czm24d25q295",
             "en": "Acceptance: two people and four agents work a week through one shared server — no data conflicts, no way around the ACL.",
             "ru": "Приёмка: два человека и четыре агента неделю работают через общий сервер — без конфликтов данных и без обхода ACL."
@@ -1655,17 +1644,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4207,
-    "fail": 1,
-    "skip": 27,
+    "pass": 4220,
+    "fail": 7,
+    "skip": 16,
     "files": 277,
-    "assertions": 38672,
-    "seconds": 416.31,
-    "sources": "e668085c1b001443",
-    "date": "2026-10-06",
-    "myc": "0.4.5",
-    "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca"
+    "assertions": 38179,
+    "seconds": 480.53,
+    "sources": "8bd48bca4db48fd7",
+    "date": "2026-10-09",
+    "myc": "0.4.6",
+    "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca; ещё 6 — семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts), падают и на чистом main до дифа 0.4.6 — memory-j4dkmcs2k7y1"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-07T13:26:09.944Z", assertions: 77 };
-window.MYC_DATA.release = "0.4.5";
+window.MYC_DATA.verified = { at: "2026-10-09T19:33:38.610Z", assertions: 77 };
+window.MYC_DATA.release = "0.4.6";

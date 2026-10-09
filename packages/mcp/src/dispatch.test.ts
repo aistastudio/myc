@@ -272,6 +272,68 @@ describe("dispatch: грамматика и формат ответа", () => {
 });
 
 // ---------------------------------------------------------------------------
+// myc_create → `myc create`: тот же паритет argv, что у code-тулов
+// ---------------------------------------------------------------------------
+
+describe("myc_create: argv — та же команда, что набрал бы человек", () => {
+  const ok = (_argv: readonly string[], json: boolean): CliOutcome =>
+    json
+      ? { code: 0, stdout: okEnvelope({ id: "myc-new", kind: "task", type: "task", title: "дело", status: "open", priority: 1, blocked_by: [], took_ms: 1 }) }
+      : { code: 0, stdout: "myc-new  task  P1  open  free\n1 ms\n" };
+
+  test("минимум: title позиционным, kind по умолчанию task — одним --json-прогоном", async () => {
+    const { d, fake } = dispatchWith(ok);
+    const r = await d("myc_create", { title: "GigaAM STT: реестр провайдеров" });
+    expect(fake.calls).toEqual([["create", "GigaAM STT: реестр провайдеров", "--kind", "task", "--json"]]);
+    expect(text(r)).toBe("myc-new  task  P1  open  free\n1 ms\n");
+    const sc = r.structuredContent as { id: string; kind: string; meta: { degraded: string[] } };
+    expect(sc.id).toBe("myc-new");
+    expect(sc.meta.degraded).toEqual([]);
+  });
+
+  test("kind/priority/parent/assign/body/dep/tag — теми же флагами CLI", async () => {
+    const { d, fake } = dispatchWith(ok);
+    await d("myc_create", {
+      title: "дело",
+      kind: "bug",
+      priority: "P0",
+      parent: "myc-1",
+      assign: "claude-1",
+      body: "шаги воспроизведения",
+      dep: ["myc-2", "myc-3"],
+      tag: ["stt", "gigaam"],
+    });
+    expect(fake.calls[0]).toEqual([
+      "create", "дело",
+      "--kind", "bug",
+      "--priority", "P0",
+      "--parent", "myc-1",
+      "--assign", "claude-1",
+      "--body", "шаги воспроизведения",
+      "--dep", "myc-2,myc-3",
+      "--tag", "stt,gigaam",
+      "--json",
+    ]);
+  });
+
+  test("без title — usage.missing до движка", async () => {
+    const { d, fake } = dispatchWith(ok);
+    const r = await d("myc_create", { kind: "task" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("usage.missing");
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  test("отказ CLI доезжает с кодом и hint (неизвестный --kind ведёт команда)", async () => {
+    const { d } = dispatchWith(() => ({ code: 2, stdout: errEnvelope("usage.invalid", "unknown --kind 'wtf'", "allowed: task, bug") }));
+    const r = await d("myc_create", { title: "дело", kind: "wtf" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("myc: usage.invalid");
+    expect(text(r)).toContain("unknown --kind 'wtf'");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Паритет поверхностей: намеренно человеческие операции
 // ---------------------------------------------------------------------------
 
@@ -298,6 +360,35 @@ describe("myc_update: операции, не выданные агенту", () 
     const r = await d("myc_update", { id: "x", op: "выдумка" });
     expect(r.isError).toBe(true);
     expect(text(r)).toContain("usage.invalid");
+  });
+
+  test("op=create отвечает «нет такой операции» ДО требования id и зовёт выход (memory-4v9gcdg3569k)", async () => {
+    // Агент вызвал myc_update с op="create" и без id: раньше первым падал
+    // reqStr("id") — «missing parameter id», — агент перебирал формы вызова
+    // и решил, что обёртка сломана. Настоящий промах — операция: её нет,
+    // и отказ обязан показать законный путь (myc_create / myc_remember).
+    // МУТАЦИЯ: вернуть `const id = reqStr(args, "id")` наверх toolUpdate —
+    // этот тест обязан упасть.
+    const { d, fake } = dispatchWith(() => ({ code: 0, stdout: okEnvelope({}) }));
+    const r = await d("myc_update", { op: "create", parent_id: null, summary: "дело" });
+    expect(r.isError).toBe(true);
+    const t = text(r);
+    expect(t).toContain("myc: usage.invalid");
+    expect(t).toContain("invalid op 'create'");
+    expect(t).toContain("myc_create");
+    expect(t).toContain("myc_remember");
+    // Ни одной команды CLI не выполнено — отказ до движка.
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  test("совсем чужая форма (обёртка operation) — missing parameter 'op', не 'id'", async () => {
+    // Точная форма из инцидента: operation={action:"create",…}.
+    const { d, fake } = dispatchWith(() => ({ code: 0, stdout: okEnvelope({}) }));
+    const r = await d("myc_update", { operation: { action: "create", parent_id: null, summary: "дело" } });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("missing parameter 'op'");
+    expect(text(r)).not.toContain("'id'");
+    expect(fake.calls).toHaveLength(0);
   });
 
   test("схема инструмента предупреждает об отсутствии cancel заранее", async () => {

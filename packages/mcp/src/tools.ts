@@ -1,6 +1,8 @@
 /**
- * Профиль agent — 13 инструментов: 7 работы с памятью и задачами
+ * Профиль agent — 14 инструментов: 8 работы с памятью и задачами
  * (WORK_TOOLS, docs/design/03 §4.2) и 6 кода (CODE_TOOLS, memory-5h06ty5sz38c).
+ * myc_create вошёл в 0.4.6: создания через MCP не было, и агент, которому
+ * нужно завести задачу, выдумывал вызов myc_update (memory-4v9gcdg3569k).
  * Гранулярность по намерению, не по CRUD (D8): один вызов = одно намерение.
  * Описания сжаты под бюджет (tokens.ts, проверяется тестом) — каждое слово
  * здесь оплачивается в каждой сессии агента.
@@ -114,6 +116,33 @@ export const WORK_TOOLS: readonly McpToolDef[] = [
           },
           additionalProperties: false,
         },
+        ws: WS,
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "myc_create",
+    description:
+      "Create a node: task, bug, epic, memory, decision — same as CLI `myc create`. " +
+      "For work items and structured nodes; to record a conclusion or fact " +
+      "prefer myc_remember, to change an existing node use myc_update.",
+    inputSchema: {
+      type: "object",
+      required: ["title"],
+      properties: {
+        title: { type: "string", minLength: 1 },
+        kind: {
+          type: "string",
+          enum: ["task", "bug", "epic", "memory", "decision", "document", "skill", "message"],
+          default: "task",
+        },
+        priority: { type: "string", enum: ["P0", "P1", "P2", "P3"], description: "tasks only" },
+        parent: { type: "string", description: "parent node id — a child edge is added" },
+        dep: { type: "array", items: { type: "string" }, description: "ids that block the new node" },
+        assign: { type: "string" },
+        body: { type: "string" },
+        tag: { type: "array", items: { type: "string" } },
         ws: WS,
       },
       additionalProperties: false,

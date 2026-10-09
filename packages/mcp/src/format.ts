@@ -110,6 +110,25 @@ export function closeText(d: {
   return `${lines.join("\n")}\n`;
 }
 
+/** create: renderCreateHuman (tasks.ts). Якорь, repo и body из stdin здесь
+ * не появляются: поверхность MCP не выдаёт --anchor/--repo (якорь исполнителю
+ * ставит хук), а body едет флагом, не stdin. */
+export function createText(d: {
+  id: string;
+  kind: string;
+  type: string;
+  status: string;
+  priority: number;
+  blocked_by: string[];
+  took_ms: number;
+}): string {
+  const head = [d.id, d.type];
+  if (d.kind === "task") head.push(`P${d.priority}`);
+  head.push(d.status);
+  head.push(d.blocked_by.length > 0 ? `blocked-by ${d.blocked_by.join(", ")}` : "free");
+  return `${head.join("  ")}\n${d.took_ms} ms\n`;
+}
+
 /** update <id>: renderUpdateHuman (tasks.ts). */
 export function updateText(d: {
   id: string;

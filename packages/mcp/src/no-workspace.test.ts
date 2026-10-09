@@ -3,7 +3,7 @@
  *
  * Сервер из `claude mcp add --scope user` стартует в КАЖДОЙ сессии на машине.
  * Вне воркспейса он обязан отдать ноль инструментов и ни строки instructions —
- * иначе 13 инструментов с ws.not_initialized и правила myc попадали бы в
+ * иначе 14 инструментов с ws.not_initialized и правила myc попадали бы в
  * системный промпт каждого проекта человека. И обязан найти проект там, где
  * его называет Claude Code: сервер пользовательского слоя запускается с cwd =
  * `~/.claude`, а проект приходит в CLAUDE_PROJECT_DIR (code.claude.com/docs/en/mcp).
@@ -131,7 +131,7 @@ describe("myc mcp вне воркспейса", () => {
     }
   }, 30_000);
 
-  test("в воркспейсе — весь профиль: 13 инструментов и правила в instructions", async () => {
+  test("в воркспейсе — весь профиль: 14 инструментов и правила в instructions", async () => {
     const ws = join(root, "proj");
     mkdirSync(ws, { recursive: true });
     cli("-C", ws, "init");
@@ -139,7 +139,7 @@ describe("myc mcp вне воркспейса", () => {
     try {
       const init = await s.initialize();
       expect(String(init.result!["instructions"])).toContain("MYC BOOTSTRAP");
-      expect(((await s.request("tools/list")).result!["tools"] as unknown[]).length).toBe(13);
+      expect(((await s.request("tools/list")).result!["tools"] as unknown[]).length).toBe(14);
     } finally {
       await s.close();
     }
@@ -166,7 +166,7 @@ describe("myc mcp вне воркспейса", () => {
     try {
       const init = await s.initialize();
       expect(String(init.result!["instructions"])).toContain("ws=cherry");
-      expect(((await s.request("tools/list")).result!["tools"] as unknown[]).length).toBe(13);
+      expect(((await s.request("tools/list")).result!["tools"] as unknown[]).length).toBe(14);
       const prime = await s.request("tools/call", { name: "myc_prime", arguments: {} });
       expect(prime.result!["isError"]).toBeUndefined();
       // Прямой стор (myc_link, заметки) открывается в найденном воркспейсе, а

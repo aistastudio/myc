@@ -32,11 +32,11 @@ describe("MCP stdio: протокол", () => {
     expect(r.result.instructions).toContain("правила теста");
   });
 
-  test("tools/list: все 13 инструментов профиля agent", async () => {
+  test("tools/list: все 14 инструментов профиля agent", async () => {
     const s = makeServer(okDispatch);
     const out = await s.handleLine(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }));
     const r = JSON.parse(out!);
-    expect(r.result.tools).toHaveLength(13);
+    expect(r.result.tools).toHaveLength(14);
     expect(r.result.tools.map((t: { name: string }) => t.name)).toContain("myc_ready");
     expect(r.result.tools.map((t: { name: string }) => t.name)).toContain("myc_callers");
   });

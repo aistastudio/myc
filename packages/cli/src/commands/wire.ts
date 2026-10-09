@@ -2404,7 +2404,7 @@ export function resolveUserMycBin(env: NodeJS.ProcessEnv, exists: (p: string) =>
  * Годится ли myc для MCP пользовательского слоя: вне воркспейса он обязан
  * отдать ноль инструментов и не отдать instructions. Сервер этого слоя
  * стартует в КАЖДОЙ сессии на машине; сборка до memory-bh5pbp4nyjwk отдавала
- * там 13 инструментов, каждый отвечал ws.not_initialized, а instructions
+ * там 14 инструментов, каждый отвечал ws.not_initialized, а instructions
  * «myc — this project's memory…» ехали в системный промпт всех проектов.
  * Проверяется запуском в пустом каталоге — церемония человека, не горячий путь.
  */
