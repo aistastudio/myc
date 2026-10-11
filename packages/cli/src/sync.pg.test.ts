@@ -201,6 +201,19 @@ describe("обмен с сервером", () => {
     expect(again.env.data.rounds).toBe(1);
   });
 
+  test("воркспейс по умолчанию — слаг конфига: sync без пути в адресе", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+    const mine = await call(["task", "без явного воркспейса"]);
+    expect([mine.code, mine.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    // Адрес БЕЗ пути и без MYC_WS: воркспейс подставился из
+    // .myc/workspace.toml того каталога, что открыт через -C. Второго ввода
+    // слага руками больше нет — и рассинтон двух копий (aista/qmatic) тоже.
+    const done = await call(["sync"], { server: srv!.url, token: owner });
+    expect([done.code, done.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    expect(done.env.data.pushed).toBeGreaterThan(0);
+    expect(await serverTitles()).toContain("без явного воркспейса");
+  });
+
   test("правка одного поля приезжает и не тащит за собой весь узел", async () => {
     if (skip !== null) return void console.log(`[skip] ${skip}`);
     const listed = await call(["list", "--kind", "task"]);

@@ -6,6 +6,13 @@
  * по сети: у каждого эндпоинта известная цена, её можно нормировать и
  * залогировать, а у «универсального /query» — нельзя.
  *
+ * ВОРКСПЕЙС — ИЗ КОНФИГА, НЕ ИЗ ОКРУЖЕНИЯ. `--server` нужен только для
+ * адреса: имя воркспейса по умолчанию читается из `.myc/workspace.toml`
+ * (см. localWorkspaceSlug) — того же файла, что несёт slug в id узлов.
+ * Вторая копия слага в MYC_SERVER/MYC_WS была источником рассинтонов
+ * (aista/qmatic), и её больше нет; явные способы (--ws, путь адреса,
+ * MYC_WS) остаются сильнее и нужны для чужого воркспейса.
+ *
  * ЧЕГО ЗДЕСЬ НЕТ И НЕ БУДЕТ. Подделки локального хранилища: `StoreHandle`
  * несёт драйвер, каталоги воркспейса и рабочее дерево, и удалённый двойник
  * этого вранья стоил бы дороже честной ветки в командах. Команда либо умеет
@@ -17,6 +24,8 @@
  * видны в `ps`, в истории оболочки и в журналах хуков, и секрету там не место.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ExitCode } from "./exit.ts";
 import type { CommandContext, CommandFailure, CommandResult } from "./registry.ts";
 
@@ -24,7 +33,7 @@ import type { CommandContext, CommandFailure, CommandResult } from "./registry.t
 export interface RemoteTarget {
   readonly url: string;
   readonly token: string;
-  /** Воркспейс в пути `/v1/ws/:ws/…`; по умолчанию слаг из адреса или флага. */
+  /** Воркспейс в пути `/v1/ws/:ws/…`; по умолчанию — слаг локального воркспейса. */
   readonly ws: string;
 }
 
@@ -36,6 +45,37 @@ export interface RemoteEnv {
 
 function trimSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+/**
+ * СЛАГ ИЗ КОНФИГА, А НЕ ВТОРОЙ ВВОД РУКАМИ. Единственный источник личности
+ * воркспейса — `.myc/workspace.toml`: slug входит в id каждого узла, и имя
+ * воркспейса на сервере обязано с ним совпадать (§4 deploy). Держать вторую
+ * копию слага в MYC_SERVER/MYC_WS — чистый рассинтон: он же породил и
+ * «would push 0» из-за aista/qmatic, и необходимость .envrc в каждом
+ * проекте. Поэтому воркспейс по умолчанию ЧИТАЕТСЯ отсюда, а явные
+ * способы (--ws, путь адреса, MYC_WS) остаются сильнее.
+ *
+ * Ищем `.myc/workspace.toml` в каталоге и родителях — той же тропой, что
+ * поиск воркспейса при открытии (worktree тоже несёт коммитнутый конфиг).
+ * Нет строки slug — возвращаем undefined и ведём себя как раньше: читать
+ * myc_meta без базы здесь нельзя, а угадывать — тем более.
+ */
+export function localWorkspaceSlug(dir: string = process.cwd()): string | undefined {
+  let at = dir;
+  for (;;) {
+    try {
+      const m = /^slug\s*=\s*"([a-z][a-z0-9]{1,7})"/m.exec(
+        readFileSync(join(at, ".myc", "workspace.toml"), "utf8"),
+      );
+      if (m !== null) return m[1];
+    } catch {
+      // файла нет или не читается — поднимаемся выше
+    }
+    const parent = dirname(at);
+    if (parent === at) return undefined;
+    at = parent;
+  }
 }
 
 /**
@@ -111,16 +151,26 @@ export function remoteTarget(
     };
   }
   const explicitWs = typeof ctx.flags["ws"] === "string" ? String(ctx.flags["ws"]) : undefined;
-  const ws = explicitWs ?? (parsed.ws !== "" ? parsed.ws : (env.MYC_WS ?? ""));
+  // Порядок: --ws → путь адреса → MYC_WS → СЛАГ ЛОКАЛЬНОГО КОНФИГА. Явные
+  // способы сильнее: глядя на чужой воркспейс из своего каталога, человек
+  // обязан назвать его сам. Пустой MYC_WS равен невыставленному.
+  const envWs = env.MYC_WS?.trim() || undefined;
+  const ws =
+    explicitWs ??
+    (parsed.ws !== "" ? parsed.ws : envWs) ??
+    localWorkspaceSlug(ctx.globals.directory ?? process.cwd()) ??
+    "";
   if (ws === "") {
     return {
       kind: "bad",
       failure: {
         ok: false,
         code: "usage.ws",
-        msg: "the workspace is not set: put it in the address or pass --ws",
+        msg:
+          "the workspace is not set: it defaults to the slug of the local workspace " +
+          "(.myc/workspace.toml), and this directory has none",
         exit: ExitCode.USAGE,
-        hint: "example: --server https://myc.example/cherry",
+        hint: "run inside a workspace, or pass --ws / set MYC_WS / put the workspace in the server address",
       },
     };
   }

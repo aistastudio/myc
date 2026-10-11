@@ -138,10 +138,16 @@ lists. `myc sync` refuses that outright rather than merging.
 # once per machine, in the project directory
 myc init --slug acme          # or: the slug already in .myc/workspace.toml
 
-export MYC_SERVER=https://myc.example.com/acme   # workspace in the path
+export MYC_SERVER=https://myc.example.com          # workspace = the local slug
 export MYC_TOKEN=myc_…                            # never on the command line
 myc sync
 ```
+
+By default the workspace is the slug from `.myc/workspace.toml` — the same
+file that builds node ids — so the "slug must match the server workspace"
+rule holds by construction. The explicit forms (`--ws`, `MYC_WS`, a path in
+the address) remain and are how you enter a foreign workspace from your
+directory.
 
 **The name a person signs work with must be the name their token was issued
 to.** `myc init` takes it from git — the same identity that signs their

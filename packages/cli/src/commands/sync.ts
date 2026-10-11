@@ -87,7 +87,10 @@ export function createSyncCommand(deps: StoreDeps = realStoreDeps): Command {
       "The client always initiates: the server is another site, not the source of truth, and the " +
       "network is never in the hot path — prime, ready and show read the local database. " +
       "Needs --server (or MYC_SERVER) and MYC_TOKEN with the 'sync' scope: a replica is complete " +
-      "by construction, so taking one means seeing everything in the workspace. Merging is CRDT " +
+      "by construction, so taking one means seeing everything in the workspace. The workspace " +
+      "itself is the local slug by default (.myc/workspace.toml) — the same file that builds node " +
+      "ids — so the usual call is just MYC_SERVER=https://host myc sync; --ws/MYC_WS or an " +
+      "address path override it for a foreign workspace. Merging is CRDT " +
       "(per-field LWW, add-wins edges, G-counters) and idempotent by op_id, so an interrupted " +
       "exchange is resumed by running it again.",
     handler: async (ctx) => {
