@@ -288,9 +288,13 @@ export const Q = defineQueries({
     sql: `SELECT ${NODE_SELECT} FROM nodes WHERE id = ?1 AND deleted_at IS NULL`,
     params: ["id"],
   },
+  // Голова узла для CAS-путей. `status`/`priority`/`attrs` едут с ней, чтобы
+  // сервер мог ответить на claim тем же, что печатает локальный CLI
+  // (prev_status, type, priority): колонки уже в строке, отдельный SELECT
+  // на каждый захват был бы растратой.
   node_head: {
     name: "node_head",
-    sql: "SELECT kind, scope, title, body FROM nodes WHERE id = ?1",
+    sql: "SELECT kind, scope, title, body, status, priority, attrs FROM nodes WHERE id = ?1",
     params: ["id"],
   },
   node_refresh_derived: {

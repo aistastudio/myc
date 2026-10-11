@@ -250,6 +250,26 @@ export const syncQueries = defineQueries({
  */
 const peerSqlCache = new Map<number, QueryDef>();
 
+/**
+ * Операции, которые РЕПЛИЦИРУЮТСЯ — белый список для отбора к пиру.
+ *
+ * В оплоге живут и ЖУРНАЛЬНЫЕ строки: `op='claim'` пишет journalClaim
+ * (аренда — см. §9.4: «аренда (claim/renew/release) локальна, не
+ * реплицируется»), `purge` допускает CHECK схемы. У журнальных строк нет
+ * проекции в Op — rowToOp падает на них НАМЕРЕННО, потому что протокол
+ * обмена их не знает. Если бы отбор их не исключал, обмен ломался на
+ * ЛЮБОМ воркспейсе, где хоть раз брали задачу: сборка пакета падала на
+ * первой же claim-строке (memory-6js4sp142hvt, воспроизведено на qmatic:
+ * 56 claim-строк из 2036 — синхронизация невозможна вовсе).
+ *
+ * Список белый, а не чёрный (`op NOT IN ('claim')`): новый журнальный вид
+ * обязан попасть сюда осознанно — иначе обмен на нём встанет. Опасность
+ * обратная (утечка непроецируемой строки к пиру) дороже пропущенного вида.
+ * Те же четыре вида знает parseOp на приёмной стороне — списки обязаны
+ * совпадать, и тест sync.test.ts их сверяет.
+ */
+export const REPLICABLE_OPS = "('set','inc','edge_add','edge_del')";
+
 export function opsForPeerQuery(siteCount: number): QueryDef {
   const cached = peerSqlCache.get(siteCount);
   if (cached !== undefined) return cached;
@@ -277,7 +297,7 @@ export function opsForPeerQuery(siteCount: number): QueryDef {
       name,
       sql: `SELECT ${OPLOG_COLUMNS}
             FROM oplog
-           WHERE scope = ?1${where}
+           WHERE scope = ?1 AND op IN ${REPLICABLE_OPS}${where}
            ORDER BY oplog.hlc, oplog.site_id
            LIMIT ?${limit}`,
       params,

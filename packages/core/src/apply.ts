@@ -608,6 +608,11 @@ export interface NodeHeadRow {
   readonly scope: string;
   readonly title: string;
   readonly body: string | null;
+  /** Статус ДО CAS-правки: сервер печатает `prev_status` в ответе claim. */
+  readonly status: string;
+  readonly priority: number | string;
+  /** attrs узла строкой (jsonb драйвер отдаёт текстом ради паритета). */
+  readonly attrs: string | null;
 }
 
 export interface IdentityDuplicate {

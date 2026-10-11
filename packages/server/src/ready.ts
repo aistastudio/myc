@@ -41,6 +41,13 @@ export interface ReadyRow {
   readonly created_at: number;
   readonly score: number;
   readonly unblocks: number;
+  /**
+   * Подтип задачи из `attrs.type` (task/bug/epic) и оценка — их печатает
+   * каждая строка выдачи, и без них клиент вынужден был придумывать колонку.
+   * Запрос очереди `attrs` уже выбирает — цена ответа не растёт.
+   */
+  readonly type: string;
+  readonly estimate_min?: number;
 }
 
 export interface ReadyAnswer {
@@ -99,6 +106,17 @@ export async function readyQueue(
     for (const row of rows) {
       const id = String(row["id"]);
       const unblocks = await tx.one<{ n: number | string }>(readyQueries.ready_unblocks_one, [id]);
+      // attrs драйвер отдаёт текстом (паритет с SQLite); битый JSON не должен
+      // валить очередь — подтип уходит в умолчание.
+      let attrs: Record<string, unknown> = {};
+      try {
+        const raw = row["attrs"];
+        attrs = typeof raw === "string" && raw.length > 0 ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      } catch {
+        attrs = {};
+      }
+      const type = typeof attrs["type"] === "string" ? (attrs["type"] as string) : "task";
+      const est = typeof attrs["estimate_min"] === "number" ? (attrs["estimate_min"] as number) : undefined;
       items.push({
         id,
         priority: num(row["priority"]),
@@ -109,6 +127,8 @@ export async function readyQueue(
         created_at: num(row["created_at"]),
         score: num(row["score"]),
         unblocks: num(unblocks?.n),
+        type,
+        ...(est !== undefined ? { estimate_min: est } : {}),
       });
     }
     // `total_ready` считает оконная функция того же запроса: сколько готовых
@@ -129,10 +149,25 @@ export async function readyQueue(
  */
 export interface PrimeAnswer {
   readonly digest: DigestPayload;
-  readonly in_progress: readonly ReadyRow[];
+  readonly in_progress: readonly InProgressRow[];
   readonly ready: readonly ReadyRow[];
   readonly total_ready: number;
   readonly nodes: number;
+}
+
+/**
+ * Строка «в работе» для prime: ровно то, что печатает эта секция CLI —
+ * держатель и срок аренды. Раньше сюда подставлялась ReadyRow, и срок
+ * прятался в `updated_at`, а держатель выбрасывался вовсе: карточка
+ * печатала «unassigned» для чужой работы и теряла срок.
+ */
+export interface InProgressRow {
+  readonly id: string;
+  readonly title: string;
+  readonly priority: number;
+  readonly assignee: string;
+  readonly lease_holder: string;
+  readonly lease_expires: number;
 }
 
 export async function primeDigest(
@@ -153,14 +188,11 @@ export async function primeDigest(
       digest,
       in_progress: running.map((r) => ({
         id: String(r["id"]),
-        priority: num(r["priority"]),
-        status: "in_progress",
-        assignee: String(r["assignee"] ?? ""),
         title: String(r["title"] ?? ""),
-        updated_at: num(r["lease_expires"]),
-        created_at: 0,
-        score: 0,
-        unblocks: 0,
+        priority: num(r["priority"]),
+        assignee: String(r["assignee"] ?? ""),
+        lease_holder: String(r["lease_holder"] ?? ""),
+        lease_expires: num(r["lease_expires"]),
       })),
       ready: queue.items,
       total_ready: queue.total,

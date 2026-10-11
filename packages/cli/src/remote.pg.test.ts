@@ -95,6 +95,40 @@ const call = async (argv: readonly string[], extra: Record<string, string> = {})
   }
 };
 
+/**
+ * Тот же вызов, но в ЧЕЛОВЕЧЕСКОМ режиме — stdout как его видит человек.
+ *
+ * `--json` уходит по другой ветке каркаса (index.ts ветвит его ДО renderHuman),
+ * поэтому годами удалённый режим проверялся только формой конверта, а рендер
+ * — никогда. На живом сервере `myc list`/`show`/`prime` при этом падали:
+ * удалённая ветка отдавала форму сервера, а рендер ждал локальную. Сторож
+ * класса — каждый вызов обязан вернуть строку и не бросить.
+ */
+const callHuman = async (argv: readonly string[], extra: Record<string, string> = {}) => {
+  const vars: Record<string, string> = {
+    MYC_SERVER: `${srv!.url}/${WS}`,
+    MYC_TOKEN: token,
+    MYC_ACTOR: "anna",
+    ...extra,
+  };
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(vars)) {
+    saved.set(k, process.env[k]);
+    if (v === "") delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    const out = await run(argv, { registry: registry() });
+    const stdout = typeof out.stdout === "string" ? out.stdout : [...out.stdout].join("");
+    return { code: out.code, out: stdout, err: out.stderr ?? "" };
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+};
+
 beforeAll(async () => {
   if (URL_ENV === undefined) return;
   dir = mkdtempSync(join(tmpdir(), "myc-remote-"));
@@ -133,7 +167,14 @@ describe("CLI через сервер команды", () => {
 
     const listed = await call(["list", "--kind", "task"]);
     expect(listed.code).toBe(ExitCode.OK);
-    expect((listed.env.data as Array<{ id: string }>).map((n) => n.id)).toContain(id);
+    // Удалённый список отдаёт ЛОКАЛЬНУЮ форму ListData, а не голый массив
+    // строк сервера: рендер и JSON обязаны читать один и тот же объект.
+    const rows = (listed.env.data as { rows: Array<{ id: string; type: string; tags: string[] }> }).rows;
+    expect(rows.map((n) => n.id)).toContain(id);
+    // type и теги едут из attrs строки: без них выдача печатала бы пустой
+    // колонку подтипа и теряла теги.
+    expect(rows.find((n) => n.id === id)?.type).toBe("task");
+    expect(Array.isArray(rows.find((n) => n.id === id)?.tags)).toBe(true);
 
     const shown = await call(["show", id]);
     expect(shown.code).toBe(ExitCode.OK);
@@ -145,14 +186,57 @@ describe("CLI через сервер команды", () => {
 
     const edited = await call(["update", id, "--title", "поправлено", "--priority", "P0"]);
     expect([edited.code, edited.env.error ?? null]).toEqual([ExitCode.OK, null]);
-    expect(edited.env.data.title).toBe("поправлено");
-    expect(edited.env.data.priority).toBe(0);
+    // Удалённое обновление отдаёт ЛОКАЛЬНУЮ форму UpdateData: `changed` из
+    // meta ответа сервера, поля узла — из data. Заголовок проверяется через
+    // show, а не через форму ответа: у рендера обновления поля title нет.
+    expect((edited.env.data.changed as string[])).toContain("title");
+    expect((await call(["show", id])).env.data.title).toBe("поправлено");
 
     // И, главное: ЛОКАЛЬНОЙ базы всё это не коснулось — её попросту нет.
     const straight = await pg!.withTenant("acme", async (tx) =>
       tx.raw<{ n: string }>("SELECT count(*) AS n FROM nodes WHERE id = $1", [id]),
     );
     expect(Number(straight[0]!.n)).toBe(1);
+  });
+
+  test("человеческий режим: ни одна команда не падает на своём рендере", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+
+    // `--json` уходит по другой ветке каркаса и минует renderHuman, поэтому
+    // годами удалённый режим проверялся только формой конверта, а рендер —
+    // никогда. На живом сервере list/show/prime при этом ПАДАЛИ: удалённая
+    // ветка отдавала форму сервера, а рендер ждал локальную
+    // (memory-fzq0wvd7kgv9). Сторож класса: каждая команда обязана вернуть
+    // строку и не бросить.
+    const id = (await call(["task", "человеческий режим"])).env.data.id as string;
+
+    const listed = await callHuman(["list", "--kind", "task"]);
+    expect(listed.err).not.toContain("TypeError");
+    expect(listed.out).toContain(id);
+
+    const shown = await callHuman(["show", id]);
+    expect(shown.err).not.toContain("TypeError");
+    expect(shown.out).toContain(id);
+
+    const counted = await callHuman(["list", "--kind", "task", "--count"]);
+    expect(counted.err).not.toContain("TypeError");
+    expect(counted.out.trim()).toMatch(/^\d+$/);
+
+    const primed = await callHuman(["prime"]);
+    expect(primed.err).not.toContain("TypeError");
+    expect(primed.out.length).toBeGreaterThan(0);
+
+    const queued = await callHuman(["ready", "-n", "5"]);
+    expect(queued.err).not.toContain("TypeError");
+    expect(queued.out.length).toBeGreaterThan(0);
+
+    const claimed = await callHuman(["claim", id, "--lease", "10m"]);
+    expect(claimed.err).not.toContain("TypeError");
+    expect(claimed.out).toContain(id);
+
+    const edited = await callHuman(["update", id, "--title", "поправлено человеком"]);
+    expect(edited.err).not.toContain("TypeError");
+    expect(edited.out).toContain(id);
   });
 
   test("очередь считает сервер — тем же порядком, что и CLI локально", async () => {
@@ -168,8 +252,8 @@ describe("CLI через сервер команды", () => {
     const ids = (queue.env.data.items as Array<{ id: string; score: number }>).map((i) => i.id);
     expect(ids.indexOf(top)).toBeLessThan(ids.indexOf(mid));
     expect(ids.indexOf(mid)).toBeLessThan(ids.indexOf(low));
-    // Число готовых — не длина выдачи (И2).
-    expect(queue.env.data.total).toBeGreaterThanOrEqual(ids.length);
+    // Число готовых — не длина выдачи (И2); поле локальной формы — `ready`.
+    expect(queue.env.data.ready).toBeGreaterThanOrEqual(ids.length);
     expect(queue.env.meta.remote).toBe(WS);
 
     // Взятая задача из очереди уходит: её статус больше не open.
@@ -183,10 +267,11 @@ describe("CLI через сервер команды", () => {
     const primed = await call(["prime"]);
     expect([primed.code, primed.env.error ?? null]).toEqual([ExitCode.OK, null]);
     expect(primed.env.meta.remote).toBe(WS);
-    // Числа про общую базу, а не про пустую локальную.
-    expect(primed.env.data.nodes).toBeGreaterThan(0);
+    // Числа про общую базу, а не про пустую локальную. Форма ответа —
+    // локальная PrimeData (node_count/ready_total), а не форма сервера.
+    expect(primed.env.data.node_count).toBeGreaterThan(0);
     expect(Array.isArray(primed.env.data.ready)).toBe(true);
-    expect(primed.env.data.total_ready).toBeGreaterThanOrEqual(primed.env.data.ready.length);
+    expect(primed.env.data.ready_total).toBeGreaterThanOrEqual(primed.env.data.ready.length);
     // Секции знания приходят всегда — пустыми, если знания нет: клиент не
     // должен гадать, отсутствует ли поле или отсутствует память.
     expect(Array.isArray(primed.env.data.core)).toBe(true);

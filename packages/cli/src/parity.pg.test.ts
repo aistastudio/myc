@@ -412,7 +412,7 @@ function canonNumber(text: string): string {
 /** Типы обёрток стираются, данные — нет (см. докстроку файла). */
 function normalize(rows: readonly unknown[]): unknown[] {
   return rows.map((row) => {
-    const out: Record<string, string | null> = {};
+    const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
       out[k.toLowerCase()] =
         v === null || v === undefined
@@ -421,10 +421,31 @@ function normalize(rows: readonly unknown[]): unknown[] {
             ? v ? "1" : "0"
             : v instanceof Uint8Array
               ? `bytes:${v.length}`
-              : canonNumber(String(v));
+              : // JSON-строка (attrs) разбирается: Postgres jsonb держит ключи
+                // отсортированными, SQLite — в порядке записи, и сравнение
+                // строк ловило бы РАЗНИЦУ ПОРЯДКА, а не данных. Объекты
+                // toEqual сравнивает по содержимому, независимо от порядка.
+                canonJsonValue(v);
     }
     return out;
   });
+}
+
+/** Строку-JSON разобрать в объект (с той же нормализацией значений), иную — канонизировать как раньше. */
+function canonJsonValue(v: unknown): unknown {
+  if (typeof v !== "string" || !v.startsWith("{")) return canonNumber(String(v));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v) as unknown;
+  } catch {
+    return canonNumber(v);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return canonNumber(v);
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+    out[key] = typeof val === "string" ? canonNumber(val) : val;
+  }
+  return out;
 }
 
 let lite: SqliteDriver | undefined;

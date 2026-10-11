@@ -470,23 +470,75 @@ export function createPrimeCommand(deps: PrimeDeps = realPrimeDeps): Command {
         const d = answer.data as {
           digest: { core: DigestItem[]; decisions: DigestItem[]; reach: { hidden: number; unknown: number }; pending: number; lost: number };
           ready: Array<{ id: string; priority: number; title: string; unblocks: number }>;
-          in_progress: Array<{ id: string; title: string; assignee: string }>;
+          in_progress: Array<{ id: string; title: string; assignee: string; lease_holder?: string; lease_expires?: number; priority?: number }>;
           total_ready: number;
           nodes: number;
         };
+        const repo = flagStr(ctx, "repo") ?? "";
+        const nodeCount = d.nodes;
+        const data: PrimeData = {
+          ws: client.ws,
+          node_count: nodeCount,
+          // Индекс — локальная проекция, у сервера её нет вовсе; «ok» здесь
+          // значит «у сервера своя, целостная база», а не «пересчитан здесь».
+          idx_ok: true,
+          now: Date.now(),
+          empty: nodeCount === 0,
+          // `.beads/` — каталог РЯДОМ с локальным воркспейсом; у сервера его
+          // нет по построению, и проверять нечего.
+          beads: false,
+          role,
+          ready_total: d.total_ready,
+          // `type` сервер не отдаёт, а рендер READY его печатает; пустая
+          // строка прячет колонку и НЕ выдаёт чужой подтип за свой.
+          ready: d.ready.map((it) => ({
+            id: it.id,
+            priority: it.priority,
+            type: "",
+            title: it.title,
+            unblocks: it.unblocks,
+          })),
+          // Счётчиков blocked/in_progress у /prime нет (те запросы сегодня
+          // sqlite-диалекта), и 0 при непустой очереди был бы враньём —
+          // как и молчание. `-1` — «сервер не посчитал»: заголовок IN PROGRESS
+          // печатает «length of N» только при N > length, то есть при -1
+          // ограничивается длиной выдачи и ничего не выдумывает.
+          blocked: -1,
+          in_progress_total: -1,
+          in_progress: d.in_progress.map((it) => ({
+            id: it.id,
+            title: it.title,
+            priority: it.priority ?? 2,
+            assignee: it.assignee,
+            lease_holder: it.lease_holder ?? "",
+            lease_expires: it.lease_expires ?? 0,
+          })),
+          core: d.digest.core,
+          decisions: d.digest.decisions,
+          session,
+          reach_hidden: d.digest.reach.hidden,
+          reach_unknown: d.digest.reach.unknown,
+          repo,
+          repo_undetermined: false,
+          repo_reason: "",
+          repo_unknown: 0,
+          repo_foreign: 0,
+          mem_repo_unknown: 0,
+          mem_repo_foreign: 0,
+          pending_review: d.digest.pending,
+          anchor_lost_hidden: d.digest.lost,
+          degraded: [],
+          format,
+          budget,
+          chars: 0,
+          truncated: false,
+          cut: [],
+          cache: "miss",
+          took_ms: Math.round(performance.now() - t0),
+        };
         return {
           ok: true,
-          data: {
-            core: d.digest.core,
-            decisions: d.digest.decisions,
-            ready: d.ready,
-            in_progress: d.in_progress,
-            total_ready: d.total_ready,
-            nodes: d.nodes,
-            reach: d.digest.reach,
-            pending: d.digest.pending,
-            lost: d.digest.lost,
-          },
+          data,
           meta: { ...answer.meta, remote: client.ws, budget },
         };
       });

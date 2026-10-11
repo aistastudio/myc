@@ -277,25 +277,69 @@ function buildCreateCommand(
         }
       }
 
-      // Сервер команды: узел заводит он же, теми же правилами. Якорь и
-      // оценка сюда пока не едут — якорь привязан к рабочему дереву, которого
-      // у сервера нет, и молча его потерять нельзя.
+      // Сервер команды: узел заводит он же, теми же правилами. Всё, чему
+      // нужен локальный контекст (якорь, перевешивание на эпик, ответ),
+      // отвечает отказом — тихо не применить часть просьбы нельзя, и create
+      // держится того же правила, что и update.
       const remote = await remoteRun(ctx, async (client) => {
-        if (anchor !== undefined) {
+        const local = [
+          anchor !== undefined ? "--anchor" : "",
+          flagStr(ctx, "parent") !== undefined ? "--parent" : "",
+          splitList(flagStr(ctx, "dep")).length > 0 ? "--dep" : "",
+          flagStr(ctx, "reply-to") !== undefined ? "--reply-to" : "",
+          flagStr(ctx, "as") !== undefined ? "--as" : "",
+        ].filter((x) => x !== "");
+        if (local.length > 0) {
           return failure(
             "precond.no_remote",
-            "--anchor is local: the server has no working tree to bind it to",
+            `the server does not accept ${local.join(", ")} yet`,
             ExitCode.PRECOND,
           );
         }
+        const tagList = splitList(flagStr(ctx, "tag"));
+        const repoFlag = flagStr(ctx, "repo");
         const answer = await client.createNode({
           kind: spec.kind,
           title,
           ...(body === undefined ? {} : { body }),
           ...(priority === undefined ? {} : { priority }),
-          ...(spec.type === undefined ? {} : { attrs: { type: spec.type } }),
+          ...(flagStr(ctx, "assign") !== undefined ? { assignee: flagStr(ctx, "assign")! } : {}),
+          ...(flagStr(ctx, "acl") !== undefined ? { acl: flagStr(ctx, "acl")! } : {}),
+          ...((spec.type !== undefined || tagList.length > 0 || estimateMin !== undefined || repoFlag !== undefined) ? {
+              attrs: {
+                ...(spec.type === undefined ? {} : { type: spec.type }),
+                ...(tagList.length > 0 ? { tags: tagList } : {}),
+                ...(estimateMin === undefined ? {} : { estimate_min: estimateMin }),
+                ...(repoFlag === undefined ? {} : { [REPO_KEY]: repoFlag.trim() }),
+              },
+            } : {}),
         });
-        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+        // СЕРВЕР ОТДАЁТ ФОРМУ СЕРВЕРА, а рендеру нужна локальная CreateData.
+        // Раньше сюда уходил `answer.data` как есть, и `myc bug` с MYC_SERVER
+        // падал на рендере ПОСЛЕ создания узла (memory-fzq0wvd7kgv9): узел
+        // был создан, человек видел крах и пересоздавал — дубли. Всё, чего
+        // сервер не знает (deps, якорь, охват), остаётся пустым, но ясно.
+        const node = answer.data as Record<string, unknown>;
+        const attrs = (node["attrs"] ?? {}) as Record<string, unknown>;
+        const type = typeof attrs["type"] === "string" ? attrs["type"] : spec.kind;
+        const data: CreateData = {
+          id: String(node["id"] ?? ""),
+          kind: String(node["kind"] ?? spec.kind),
+          type,
+          title: String(node["title"] ?? title),
+          status: String(node["status"] ?? "open"),
+          priority: Number(node["priority"] ?? priority ?? 2),
+          blocked_by: [],
+          anchors: [],
+          // Охват: задан ли он флагом — известен; нет — сервер его не выводит
+          // (S59 живёт в рабочем дереве), и `null` называет это прямо.
+          ...(repoFlag === undefined
+            ? { repo: null, repo_reason: "the server does not determine repository scope" }
+            : { repo: repoFlag.trim(), repo_reason: "" }),
+          ...(bRaw === "-" ? { body_stdin_chars: body!.length } : {}),
+          took_ms: tookMs(t0),
+        };
+        return { ok: true, data, meta: { ...answer.meta, remote: client.ws } };
       });
       if (remote !== undefined) return remote;
 
@@ -816,7 +860,24 @@ export function createUpdateCommand(deps: StoreDeps = realStoreDeps): Command {
         const assign = flagStr(ctx, "assign");
         if (assign !== undefined) patch["assignee"] = assign;
         const answer = await client.patchNode(idInput, patch);
-        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+        // Сервер отдаёт форму сервера; рендеру нужна локальная UpdateData.
+        // Раньше сюда уходил `answer.data` как есть и `myc update` с
+        // MYC_SERVER падал на рендере после успешной правки (тот же класс,
+        // что memory-fzq0wvd7kgv9). `changed` живёт в meta ответа, поля узла
+        // — в data; недостающее добираем из того, что мы сами просили.
+        const node = answer.data as Record<string, unknown>;
+        const attrs = (node["attrs"] ?? {}) as Record<string, unknown>;
+        const changed = answer.meta["changed"];
+        const data: UpdateData = {
+          id: String(node["id"] ?? idInput),
+          kind: String(node["kind"] ?? ""),
+          type: typeof attrs["type"] === "string" ? attrs["type"] : String(node["kind"] ?? ""),
+          status: String(node["status"] ?? ""),
+          priority: Number(node["priority"] ?? priority ?? 2),
+          changed: Array.isArray(changed) ? changed.map(String) : Object.keys(patch),
+          took_ms: tookMs(t0),
+        };
+        return { ok: true, data, meta: { ...answer.meta, remote: client.ws } };
       });
       if (remote !== undefined) return remote;
 
@@ -1216,7 +1277,32 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
           );
         }
         const answer = await client.claim(idInput, ttl === undefined ? undefined : Math.round(ttl / 60_000));
-        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+        // Сервер отдаёт форму сервера; рендеру нужна локальная ClaimData.
+        // Раньше сюда уходил `answer.data` как есть и `myc claim` с
+        // MYC_SERVER падал на рендере после успешного захвата (тот же класс,
+        // что memory-fzq0wvd7kgv9). Сервер возвращает prev_status/type/
+        // priority (см. ClaimAnswer); срок и его причину добираем из того,
+        // что мы сами просили.
+        const node = answer.data as Record<string, unknown>;
+        const leaseExpires = Number(node["expiresAt"] ?? 0);
+        // Фактический срок — разница между серверным сроком и сейчас: она
+        // верна и для явного --lease, и для серверного дефолта (15 мин —
+        // другое число, чем локальное умолчание, и подставлять своё значило
+        // бы соврать в строке «lease … until»).
+        const data: ClaimData = {
+          id: String(node["id"] ?? idInput),
+          holder: String(node["holder"] ?? ""),
+          epoch: Number(node["epoch"] ?? 0),
+          lease_expires: leaseExpires,
+          lease_ttl_ms: Math.max(0, leaseExpires - Date.now()),
+          lease_source: ttl === undefined ? "default" : "flag",
+          status: "in_progress",
+          prev_status: String(node["prev_status"] ?? "open"),
+          type: String(node["type"] ?? "task"),
+          priority: Number(node["priority"] ?? 2),
+          took_ms: tookMs(t0),
+        };
+        return { ok: true, data, meta: { ...answer.meta, remote: client.ws } };
       });
       if (remote !== undefined) return remote;
 

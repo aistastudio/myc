@@ -830,7 +830,60 @@ export function createShowCommand(deps: StoreDeps = realStoreDeps): Command {
           return failure("precond.no_remote", "batch show is not supported on a server yet", ExitCode.PRECOND);
         }
         const answer = await client.getNode(idArg.trim());
-        return { ok: true, data: answer.data, meta: { ...answer.meta, remote: client.ws } };
+        // Сервер отдаёт форму сервера (строка узла + рёбра со статусами
+        // соседей); рендеру нужен локальный NodeView с обязательными
+        // массивами. Раньше сюда уходил `answer.data` как есть и `myc show`
+        // с MYC_SERVER падал на рендере (тот же класс, что
+        // memory-fzq0wvd7kgv9). Всё, чего этот ответ не несёт (якоря,
+        // нить, дети, цепочка версий), остаётся пустым, но ясно; deps и
+        // links собираются из рёбер, аренда — из lease_* колонок.
+        const n = answer.data as Record<string, unknown>;
+        const attrs = (n["attrs"] ?? {}) as Record<string, unknown>;
+        const self = String(n["id"] ?? idArg.trim());
+        const rawEdges = Array.isArray(n["edges"]) ? (n["edges"] as Record<string, unknown>[]) : [];
+        const depOf = (e: Record<string, unknown>, forSrc: boolean): DepRef => ({
+          id: String(forSrc ? e["src"] : e["dst"]),
+          status: String((forSrc ? e["src_status"] : e["dst_status"]) ?? "open"),
+          closed_at: (forSrc ? e["src_closed_at"] : e["dst_closed_at"]) === null
+            ? null
+            : Number(forSrc ? e["src_closed_at"] : e["dst_closed_at"]),
+        });
+        const blocked_by = rawEdges
+          .filter((e) => String(e["type"]) === "blocks" && String(e["dst"]) === self)
+          .map((e) => depOf(e, true));
+        const blocks = rawEdges
+          .filter((e) => String(e["type"]) === "blocks" && String(e["src"]) === self)
+          .map((e) => depOf(e, false));
+        const links = rawEdges
+          .filter((e) => String(e["type"]) !== "blocks")
+          .map((e) => ({ type: String(e["type"]), id: String(e["src"]) === self ? String(e["dst"]) : String(e["src"]) }));
+        const leaseHolder = n["lease_holder"] === null ? "" : String(n["lease_holder"] ?? "");
+        const type = typeof attrs["type"] === "string" ? attrs["type"] : String(n["kind"] ?? "");
+        const tags = Array.isArray(attrs["tags"]) ? (attrs["tags"] as unknown[]).map(String) : [];
+        const estimateMin = typeof attrs["estimate_min"] === "number" ? attrs["estimate_min"] : undefined;
+        const view: NodeView = {
+          id: self,
+          kind: String(n["kind"] ?? ""),
+          type,
+          title: String(n["title"] ?? ""),
+          body: n["body"] === null ? null : String(n["body"] ?? ""),
+          status: String(n["status"] ?? ""),
+          priority: Number(n["priority"] ?? 2),
+          assignee: String(n["assignee"] ?? ""),
+          acl: String(n["acl"] ?? "team"),
+          created_at: Number(n["created_at"] ?? 0),
+          updated_at: Number(n["updated_at"] ?? 0),
+          blocked_by,
+          blocks,
+          links,
+          anchors: [],
+          tags,
+          contradicts: [],
+          current: true,
+          ...(estimateMin === undefined ? {} : { estimate_min: estimateMin }),
+          ...(leaseHolder === "" ? {} : { lease: { holder: leaseHolder, expires: Number(n["lease_expires"] ?? 0) } }),
+        };
+        return { ok: true, data: view, meta: { ...answer.meta, remote: client.ws } };
       });
       if (remote !== undefined) return remote;
 

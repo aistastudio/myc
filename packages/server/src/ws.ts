@@ -37,10 +37,14 @@ export const wsQueries = defineQueries({
   // Список узлов воркспейса. Фильтры необязательные: пустая строка значит
   // «любой» — так один текст обслуживает все сочетания, и план у него один
   // (иначе реестр распухает на каждую ось фильтрации).
+  // СПИСОК УЗЛОВ. `attrs` едет с каждой строкой: колонка `type` выдачи
+  // (task/bug/epic) и теги живут в attrs, и без них клиент печатал бы
+  // чужой подтип как свой или вовсе пустую колонку. attrs — горячие поля
+  // плюс холодные атрибуты, оба малы; тело узла сюда не входит.
   ws_nodes_list: {
     name: "ws_nodes_list",
     sql: `SELECT id, kind, layer, scope, title, excerpt, status, priority,
-                 assignee, created_at, updated_at
+                 assignee, created_at, updated_at, attrs
             FROM nodes
            WHERE scope = ?1
              AND deleted_at IS NULL
@@ -66,18 +70,27 @@ export const wsQueries = defineQueries({
   },
   // Узел по id — ОБЯЗАТЕЛЬНО с фильтром воркспейса: без него сосед по
   // арендатору читал бы чужой проект, зная один лишь идентификатор.
+  // `lease_*` едут с карточкой: у in_progress задачи она печатает срок
+  // аренды, а без колонок клиент узнал бы о ней только отдельным запросом
+  // (remote show его не делает).
   ws_node_get: {
     name: "ws_node_get",
     sql: `SELECT id, kind, layer, scope, title, body, excerpt, status, priority,
-                 assignee, actor, acl, attrs, created_at, updated_at, closed_at
+                 assignee, actor, acl, attrs, created_at, updated_at, closed_at,
+                 lease_holder, lease_expires
             FROM nodes
            WHERE scope = ?1 AND id = ?2 AND deleted_at IS NULL${ACL("nodes", 3)}`,
     params: ["scope", "id", "owner", "team", "agent"],
   },
-  // Рёбра узла в обе стороны — чем он блокирует и чем блокируется.
+  // Рёбра узла в обе стороны — чем он блокирует и чем блокируется. Статусы
+  // соседей едут с ребром: карточка узла печатает «blocked-by X (open)», и
+  // без колонок клиенту пришлось бы делать N запросов за статусом каждого
+  // соседа — ровно тот N+1, от которого этот ответ и существует.
   ws_node_edges: {
     name: "ws_node_edges",
-    sql: `SELECT e.src AS src, e.type AS type, e.dst AS dst
+    sql: `SELECT e.src AS src, e.type AS type, e.dst AS dst,
+                 s.status AS src_status, s.closed_at AS src_closed_at,
+                 d.status AS dst_status, d.closed_at AS dst_closed_at
             FROM edges e
             JOIN nodes s ON s.id = e.src
             JOIN nodes d ON d.id = e.dst

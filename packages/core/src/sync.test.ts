@@ -114,6 +114,17 @@ describe("запрос под размер вектора вод", () => {
     expect(q.sql).toContain("site_id NOT IN (?2, ?4)");
     expect(opsForPeerQuery(0).sql).not.toContain("NOT IN");
   });
+
+  test("отбор пропускает только реплицируемые виды: журнал пиру не едет", () => {
+    // Журнальные строки (claim аренды, purge) не проецируются в Op — rowToOp
+    // падает на них намеренно (§9.4: аренда локальна). Белый список в отборе
+    // — то, что не даёт обмену упасть на первом же claim (memory-6js4sp142hvt).
+    // Список обязан совпадать с parseOp: parseOp принимает ровно эти четыре.
+    for (const n of [0, 1, 3]) {
+      const q = opsForPeerQuery(n);
+      expect(q.sql).toContain("op IN ('set','inc','edge_add','edge_del')");
+    }
+  });
 });
 
 describe("выборка для пира на живой базе", () => {
@@ -156,6 +167,14 @@ describe("выборка для пира на живой базе", () => {
     add("b", 1, 150, "ws", "чужая");
     // Операция ДРУГОГО воркспейса: в пакет попадать не должна.
     add("c", 1, 120, "other", "не отсюда");
+    // Журнальная строка аренды (journalClaim, §9.4): в воркспейсе она есть,
+    // пиру не едет — rowToOp на ней падает намеренно. Часы ВЫШЕ всех
+    // реплицируемых, чтобы вода сайта её перекрывала: так проверяется, что
+    // отбор пропускает её и при пустых водах, и под водой сайта.
+    db.query(
+      `INSERT INTO oplog (op_id, site_id, hlc, ts_ms, actor, op, entity, entity_id, field, value, scope, origin)
+       VALUES ('a:3', 'a', ?, 300, '', 'claim', 'node', 'n-1', 'lease', ?, 'ws', 1)`,
+    ).run(Number(packHlc({ ts: 300, ctr: 0 })), JSON.stringify({ action: "claim", holder: "anna", epoch: 1, expires: 900 }));
     return driverOf(db);
   }
 
@@ -198,7 +217,10 @@ describe("выборка для пира на живой базе", () => {
     const d = seeded();
     const w = runSync(localWatermarks("ws"), d);
     expect(Object.keys(w).sort()).toEqual(["a", "b"]);
-    expect(w["a"]).toBe(packHlc({ ts: 200, ctr: 0 }).toString());
+    // Воду сайта a держит журнальная claim-строка (hlc 300). Это безвредно:
+    // вода отражает «что сайт видел», а пропуск реплицируемых строк ниже
+    // не бывает — заявленная вода всегда покрывает и реплицируемый максимум.
+    expect(w["a"]).toBe(packHlc({ ts: 300, ctr: 0 }).toString());
   });
 
   test("строка оплога в операцию: seq берётся из op_id, а не из колонки", () => {

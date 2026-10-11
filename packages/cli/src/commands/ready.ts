@@ -318,10 +318,16 @@ function scoreCandidates(
 interface ReadyData {
   items: ReadyItem[];
   ready: number;
-  blocked: number;
+  /**
+   * Счётчики, которые сервер команды НЕ считает: у эндпоинта очереди есть
+   * строки и `total`, а `blocked`/`in_progress`/`repo_*` живут в локальном
+   * подсчёте. `undefined` — «не измерено», и подвал молчит; выдумать ноль
+   * значило бы сказать «заблокированных нет», когда никто не считал.
+   */
+  blocked?: number;
   /** Скрыто наследованием: свой блокер пуст, открытый висит на предке. */
-  blocked_by_ancestor: number;
-  in_progress: number;
+  blocked_by_ancestor?: number;
+  in_progress?: number;
   top_blocker?: { id: string; priority: number; title: string; assignee: string; blocks: number };
   claimed?: {
     id: string;
@@ -337,13 +343,13 @@ interface ReadyData {
   /** Целевой репозиторий очереди; пусто — фильтра нет (S59). */
   repo: string;
   /** `true` — охват вывести не удалось, фильтра нет и об этом надо сказать. */
-  repo_undetermined: boolean;
+  repo_undetermined?: boolean;
   /** Почему не удалось. Пусто — удалось. */
-  repo_reason: string;
+  repo_reason?: string;
   /** Готовых задач без записанного охвата репозитория. */
-  repo_unknown: number;
+  repo_unknown?: number;
   /** Готовых задач, скрытых фильтром как чужой репозиторий. */
-  repo_foreign: number;
+  repo_foreign?: number;
   took_ms: number;
 }
 
@@ -400,9 +406,9 @@ function renderItems(items: readonly ReadyItem[], why: boolean): string[] {
 function repoFooter(d: ReadyData): string[] {
   const out: string[] = [];
   if (d.repo.length > 0) out.push(`repo ${d.repo}`);
-  if (d.repo_undetermined) out.push(`repo reach undetermined: ${d.repo_reason}`);
-  if (d.repo_foreign > 0) out.push(`${d.repo_foreign} from other repos hidden`);
-  if (d.repo_unknown > 0) out.push(`${d.repo_unknown} without repo reach`);
+  if (d.repo_undetermined === true) out.push(`repo reach undetermined: ${d.repo_reason ?? ""}`);
+  if ((d.repo_foreign ?? 0) > 0) out.push(`${d.repo_foreign} from other repos hidden`);
+  if ((d.repo_unknown ?? 0) > 0) out.push(`${d.repo_unknown} without repo reach`);
   return out;
 }
 
@@ -424,16 +430,8 @@ function renderReadyHuman(raw: unknown): string {
   }
 
   lines.push(...renderItems(d.items, false));
-  lines.push(
-    [
-      `${d.ready} ready`,
-      blockedFooter(d),
-      `${d.in_progress} in_progress`,
-      `${d.took_ms} ms`,
-      ...repoFooter(d),
-    ].join(" · "),
-  );
-  if (d.ready === 0 && d.blocked > 0 && d.top_blocker !== undefined) {
+  lines.push([...queueFooter(d), `${d.took_ms} ms`, ...repoFooter(d)].join(" · "));
+  if (d.ready === 0 && (d.blocked ?? 0) > 0 && d.top_blocker !== undefined) {
     const b = d.top_blocker;
     lines.push("all open tasks are blocked. top blocker:");
     const who = b.assignee.length > 0 ? `@${b.assignee}` : "free";
@@ -449,26 +447,28 @@ function renderReadyHuman(raw: unknown): string {
  * видно без запроса. Поэтому `blocked` и «через предка» стоят рядом:
  * `144 ready · 62 blocked (51 через предка)`.
  */
-function blockedFooter(d: ReadyData): string {
-  const anc = d.blocked_by_ancestor;
+function blockedFooter(d: ReadyData): string | undefined {
+  if (d.blocked === undefined) return undefined;
+  const anc = d.blocked_by_ancestor ?? 0;
   return anc > 0
     ? `${d.blocked + anc} blocked (${anc} via ancestor)`
     : `${d.blocked} blocked`;
+}
+
+/** Подвал: счётчики печатаются только когда измерены (`undefined` — молчим). */
+function queueFooter(d: ReadyData): string[] {
+  const out = [`${d.ready} ready`];
+  const blocked = blockedFooter(d);
+  if (blocked !== undefined) out.push(blocked);
+  if (d.in_progress !== undefined) out.push(`${d.in_progress} in_progress`);
+  return out;
 }
 
 function renderReadyWhyHuman(raw: unknown): string {
   const d = raw as ReadyData;
   if (d.claimed !== undefined) return renderReadyHuman(raw);
   const lines = renderItems(d.items, true);
-  lines.push(
-    [
-      `${d.ready} ready`,
-      blockedFooter(d),
-      `${d.in_progress} in_progress`,
-      `${d.took_ms} ms`,
-      ...repoFooter(d),
-    ].join(" · "),
-  );
+  lines.push([...queueFooter(d), `${d.took_ms} ms`, ...repoFooter(d)].join(" · "));
   return `${lines.join("\n")}\n`;
 }
 
@@ -669,9 +669,19 @@ export function createReadyCommand(deps: StoreDeps = realStoreDeps): Command {
           n: typeof ctx.flags["n"] === "number" ? ctx.flags["n"] : undefined,
           repo: flagStr(ctx, "repo"),
         });
+        const total = Number(answer.meta["total"] ?? 0);
+        const items = answer.data as ReadyItem[];
+        // Счётчики подвала (blocked/in_progress/repo_*) сервер не считает —
+        // они остаются `undefined`, и подвал молчит вместо ложного нуля.
+        const data: ReadyData = {
+          items,
+          ready: total,
+          repo: flagStr(ctx, "repo") ?? "",
+          took_ms: Math.round((performance.now() - t0) * 100) / 100,
+        };
         return {
           ok: true,
-          data: { items: answer.data, total: answer.meta["total"] ?? 0 },
+          data,
           meta: { ...answer.meta, remote: client.ws },
         };
       });

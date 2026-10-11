@@ -441,6 +441,19 @@ export const CLAIM_TTL_MS = LEASE_TTL_MS;
 const CLAIM_TTL_MAX_MS = 8 * 60 * 60 * 1000;
 
 /**
+ * Ответ на захват — квитанция ядра плюс то, что печатает вторую строку
+ * карточки CLI (`P1 bug open→in_progress`). Поля едут отсюда, а не
+ * дотягиваются клиентом отдельным запросом: сервер уже прочитал голову
+ * узла для CAS, и цена ответа не растёт.
+ */
+export interface ClaimAnswer extends ClaimReceipt {
+  /** Статус ДО захвата — печатается как `prev_status→in_progress`. */
+  readonly prev_status: string;
+  readonly type: string;
+  readonly priority: number;
+}
+
+/**
  * Взять задачу в работу. Кто успел — решает CAS в ядре, а не сервер: два
  * агента, пришедшие в одну миллисекунду, получат разные ответы, и второй
  * узнает об этом кодом, а не пустотой.
@@ -456,7 +469,7 @@ export async function claimTask(
   id: string,
   holder: string,
   ttlMs: number,
-): Promise<WriteResult<ClaimReceipt>> {
+): Promise<WriteResult<ClaimAnswer>> {
   if (!Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > CLAIM_TTL_MAX_MS) {
     return {
       ok: false,
@@ -481,6 +494,25 @@ export async function claimTask(
         error: { code: "conflict.claimed", msg: `task ${id} is already taken or not open` },
       };
     }
-    return { ok: true as const, data: receipt };
+    // attrs — текст из jsonb (драйвер отдаёт текстом ради паритета с SQLite);
+    // битый JSON не должен валить захват — подтип уходит пустым.
+    let attrs: Record<string, unknown> = {};
+    try {
+      attrs = typeof head.attrs === "string" && head.attrs.length > 0
+        ? (JSON.parse(head.attrs) as Record<string, unknown>)
+        : {};
+    } catch {
+      attrs = {};
+    }
+    const type = typeof attrs["type"] === "string" ? (attrs["type"] as string) : head.kind;
+    return {
+      ok: true as const,
+      data: {
+        ...receipt,
+        prev_status: head.status,
+        type,
+        priority: Number(head.priority),
+      },
+    };
   });
 }

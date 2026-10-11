@@ -233,14 +233,55 @@ export function createListCommand(deps: StoreDeps = realStoreDeps): Command {
           limit: typeof ctx.flags["n"] === "number" ? ctx.flags["n"] : undefined,
           offset: typeof ctx.flags["offset"] === "number" ? ctx.flags["offset"] : undefined,
         });
-        const rows = answer.data as unknown[];
+        const raw = answer.data as Record<string, unknown>[];
         if (ctx.flags["count"] === true) {
-          return { ok: true, data: { count: answer.meta["total"] ?? rows.length }, meta: { remote: client.ws } };
+          // Рендеру --count нужно ГОЛОЕ ЧИСЛО, а не объект: локальная ветка
+          // отдаёт число, и удалённая обязана отдать то же.
+          return {
+            ok: true,
+            data: Number(answer.meta["total"] ?? raw.length),
+            meta: { remote: client.ws },
+          };
         }
+        // Сервер отдаёт строки своей формы; рендеру нужен ListData с
+        // обязательными rows/type/tags. Раньше сюда уходил голый массив и
+        // `myc list` с MYC_SERVER падал на рендере (тот же класс, что
+        // memory-fzq0wvd7kgv9). `type` и теги — из attrs строки; битый attrs
+        // не должен валить выдачу.
+        const rows: ListRow[] = raw.map((n) => {
+          const attrs = (n["attrs"] ?? {}) as Record<string, unknown>;
+          let tags: string[] = [];
+          try {
+            tags = Array.isArray(attrs["tags"]) ? (attrs["tags"] as unknown[]).map(String) : [];
+          } catch {
+            tags = [];
+          }
+          const kind = String(n["kind"] ?? "");
+          return {
+            id: String(n["id"] ?? ""),
+            priority: Number(n["priority"] ?? 2),
+            kind,
+            type: typeof attrs["type"] === "string" ? (attrs["type"] as string) : kind,
+            status: String(n["status"] ?? ""),
+            assignee: String(n["assignee"] ?? ""),
+            title: String(n["title"] ?? ""),
+            updated_at: Number(n["updated_at"] ?? 0),
+            created_at: Number(n["created_at"] ?? 0),
+            tags,
+          };
+        });
+        const total = Number(answer.meta["total"] ?? rows.length);
+        const data: ListData = {
+          rows,
+          shown: rows.length,
+          total,
+          truncated: rows.length < total,
+          took_ms: Math.round((performance.now() - t0) * 100) / 100,
+        };
         return {
           ok: true,
-          data: rows,
-          meta: { ...answer.meta, remote: client.ws, took_ms: Math.round((performance.now() - t0) * 100) / 100 },
+          data,
+          meta: { ...answer.meta, remote: client.ws, took_ms: data.took_ms },
         };
       });
       if (remote !== undefined) return remote;
