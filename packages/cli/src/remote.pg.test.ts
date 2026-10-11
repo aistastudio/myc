@@ -313,13 +313,23 @@ describe("CLI через сервер команды", () => {
     expect((await call(["show", id])).env.data.title).toBe("частичное");
   });
 
-  test("команда без удалённого режима ОТКАЗЫВАЕТ, а не уходит в локальную базу", async () => {
+  test("команда без удалённого режима: явный --server отказывает, фон — работает с WARN", async () => {
     if (skip !== null) return void console.log(`[skip] ${skip}`);
-    const out = await call(["локальная"]);
-    expect(out.code).toBe(ExitCode.PRECOND);
-    expect(out.env.error.code).toBe("precond.no_remote");
-    // Подсказка перечисляет те команды, что умеют, — из реестра, а не списком.
-    expect(out.env.error.hint).toContain("claim");
+    // ЯВНЫЙ флаг — намерение вызова: просили сервер, команда его не умеет —
+    // отказ, а не молчаливая подмена.
+    const explicit = await call(["--server", `${srv!.url}/${WS}`, "локальная"]);
+    expect(explicit.code).toBe(ExitCode.PRECOND);
+    expect(explicit.env.error.code).toBe("precond.no_remote");
+    // Подсказка перечисляет команды из реестра (реестр ленивый — на этом
+    // пути он материализуется целиком, и список честный, а не пустой).
+    expect(explicit.env.error.hint).toContain("claim");
+
+    // ФОН (MYC_SERVER в профиле — рекомендованная раскладка deploy §4)
+    // намерения не выражает: команда работает локально, но называет это
+    // вслух. «Возможность работать без сервера» обязана сохраняться.
+    const ambient = await call(["локальная"]);
+    expect(ambient.code).toBe(ExitCode.OK);
+    expect((ambient.env.warn as Array<{ code: string }>).some((w) => w.code === "server.local_only")).toBe(true);
   });
 
   test("сервер без токена и негодный адрес отвечают по-разному", async () => {

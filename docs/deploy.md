@@ -232,11 +232,12 @@ every container start is how databases are lost.
 
 **Only part of the CLI speaks to a server.** Working remotely today:
 `create`/`task`/`bug`/`epic`/`msg`, `update`, `claim`, `list`, `ready`,
-`show`, `prime` and `sync`. Everything else — `close`, `remember`, `recall`,
-`comment`, `link`, `dep`, `attempt`, `search`, `code` — refuses with
-`precond.no_remote` rather than quietly using the local database, because
-seeing someone else's tasks and taking them for the team's is worse than an
-error.
+`show`, `prime` and `sync`. Every other command is local. With `MYC_SERVER`
+in the environment it still runs locally, but names that in a single WARN
+line ("this run used the LOCAL database") — there is no quiet substitution,
+and `init`/`remember`/`close` stay usable. An explicit `--server` flag for
+such a command is still a `precond.no_remote` refusal: a server was asked
+for, and there is none.
 
 So the shape that works is: everyone keeps a local workspace and exchanges
 through the server. Pointing `MYC_SERVER` at the server and working "in" it
@@ -254,7 +255,8 @@ import of an existing workspace.
 | `401 denied.no_token` | no `MYC_TOKEN`, or the proxy is stripping `Authorization` |
 | `denied.scope: this token has no 'sync' scope` | the token is a `member`; mint one with `--role owner` or `--scopes …,sync` |
 | `usage.ws_mismatch` | the local slug and the server workspace differ — the message names both |
-| `precond.no_remote` | that command has no remote mode; run it locally |
+| `precond.no_remote` | an explicit `--server` for a command with no remote mode; run it without the flag (with `MYC_SERVER` set it runs locally with a WARN) |
+| WARN `server.local_only` | `MYC_SERVER` is set but the command has no server mode: it ran locally — check that this is what you meant |
 | health says `ok`, every other route `503 db.query` | the container is alive but cannot reach Postgres. Liveness knows nothing about the database on purpose — ask `/v1/readyz`, which answers `503 db.unavailable` in exactly this case |
 | `/v1/readyz` answers `401`, and with a token `notfound.route` | there is no readiness route: `/v1/health` is liveness and knows nothing about the database on purpose. Point the orchestrator's probe at it and watch the database separately (memory-e66rf6qv5qfk) |
 

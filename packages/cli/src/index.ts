@@ -155,6 +155,42 @@ function remoteCapable(registry: Registry): string[] {
     .sort();
 }
 
+/**
+ * Команды инфраструктуры: их локальность не спутать с общими данными, и
+ * рядом с MYC_SERVER они НЕ шумят WARN'ом. init зовутся при заведении новой
+ * репы (там профильный MYC_SERVER и запретил работать), statusline — из
+ * промпта на каждое моргание, остальные — про сам инструмент, а не про
+ * воркспейс. Остальные локальные команды при MYC_SERVER работают локально,
+ * но называют это вслух (И2).
+ *
+ * Это НЕ решение про автоматический синк. Обмен остаётся ручной командой
+ * `myc sync`; путь к автомату лежит отдельно — переключатель вида
+ * `sync = "auto"` в workspace.toml плюс фоновый job (design 01 §9.5),
+ * который этот переключатель читает. Решение о включении синка тогда
+ * станет настройкой воркспейса, а не правкой каркаса.
+ */
+const LOCAL_BY_NATURE = new Set([
+  "bootstrap",
+  "callers",
+  "doctor",
+  "embedd",
+  "init",
+  "merge-driver",
+  "mcp",
+  "models",
+  "queue",
+  "release",
+  "report",
+  "run",
+  "serve",
+  "skeleton",
+  "statusline",
+  "unwire",
+  "version",
+  "viz",
+  "wire",
+]);
+
 function failureResult(failure: CommandFailure, globals: Globals, cmd: string): RunResult {
   const diags = new Diagnostics();
   if (globals.json || globals.ndjson) {
@@ -289,27 +325,47 @@ export async function run(
     );
   }
 
-  // СЕРВЕР ЗАДАН — КОМАНДА ОБЯЗАНА ЕГО УМЕТЬ. Молча уйти в локальную базу
-  // нельзя: это не «запасной путь», а подмена данных под руками у человека.
-  const serverAsked =
-    typeof flags["server"] === "string"
-      ? String(flags["server"]).trim() !== ""
-      : ((options.env?.MYC_SERVER ?? process.env.MYC_SERVER) ?? "").trim() !== "";
-  if (serverAsked && command.remote !== true) {
-    return failureResult(
-      {
-        ok: false,
-        code: "precond.no_remote",
-        msg: `command '${cmd}' works only with a local database: it cannot talk to a server yet`,
-        exit: ExitCode.PRECOND,
-        hint: "commands that can: " + remoteCapable(registry).join(", "),
-      },
-      globals,
-      cmd,
-    );
-  }
-
+  // СЕРВЕР СПРОШЕН ЯВНО ИЛИ ПРОСТО ВИСИТ В ОКРУЖЕНИИ — это разные вещи.
+  //
+  // ЯВНЫЙ --server — намерение этого вызова: просили сервер, команда его не
+  // умеет — отказ, а не молчаливая подмена запроса локальной базой.
+  //
+  // ФОН (MYC_SERVER в профиле) намерения per-invocation не выражает, а
+  // глобальный экспорт — РЕКОМЕНДОВАННАЯ раскладка (deploy §4). Отказывать
+  // в нём значило бы запретить init/remember/close вовсе: «возможность
+  // работать без сервера» обязана сохраняться. Такая команда работает
+  // локально, но НАЗЫВАЕТ это вслух (И2): строка WARN на stderr, в --json —
+  // в warn[] конверта. Команды инфраструктуры инструмента (init, statusline)
+  // не предупреждают: их локальность не спутать с общими данными, а statusline
+  // зовётся из промпта и печатать строку на каждое моргание нельзя.
+  const serverFlag = typeof flags["server"] === "string" && String(flags["server"]).trim() !== "";
+  const serverEnv = ((options.env?.MYC_SERVER ?? process.env.MYC_SERVER) ?? "").trim() !== "";
   const diagnostics = new Diagnostics();
+  if (command.remote !== true) {
+    if (serverFlag) {
+      // Реестр ленивый: sibling-команды — заглушки без флага remote, и
+      // подсказка из них вышла пустой («commands that can: »). Отказ —
+      // редкий путь, здесь дешевле материализовать всё и назвать честно.
+      await registry.materializeAll();
+      return failureResult(
+        {
+          ok: false,
+          code: "precond.no_remote",
+          msg: `command '${cmd}' works only with a local database: it cannot talk to a server yet`,
+          exit: ExitCode.PRECOND,
+          hint: "commands that can: " + remoteCapable(registry).join(", "),
+        },
+        globals,
+        cmd,
+      );
+    }
+    if (serverEnv && !LOCAL_BY_NATURE.has(cmd)) {
+      diagnostics.add(
+        "server.local_only",
+        `'${cmd}' has no server mode: MYC_SERVER is set, so this run used the LOCAL database`,
+      );
+    }
+  }
   const ctx: CommandContext = {
     args: positionals,
     flags,
