@@ -57,8 +57,8 @@ Install Bun: https://bun.sh
 Installation is one command:
 
 ```bash
-bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.80 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.4.6 (schema 1)
+bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.82 MB unpacked, 16 files; no models pulled
+myc --version                     # myc 0.5.0 (schema 1)
 ```
 
 It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside
@@ -466,10 +466,12 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 4220 pass / 7 fail / 16 skip
-(`bun test`, 2026-10-09; one fail is the orca status-line classifier test
+is treated as absent. The full suite: 4246 pass / 8 fail / 16 skip
+(`bun test`, 2026-10-12; one fail is the orca status-line classifier test
 against the installed Orca.app chunks, six are the federation R3 family that
-fails on clean main before this release's diff too — memory-j4dkmcs2k7y1).
+fails on clean main too — memory-j4dkmcs2k7y1 — and one is the web search
+parity test that flakes under the suite's full parallel load, passing in
+isolation and in CI).
 
 ## What myc does
 

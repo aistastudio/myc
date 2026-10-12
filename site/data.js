@@ -329,7 +329,7 @@ window.MYC_DATA = {
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 5.11,
-    "unpacked_mb": 15.8,
+    "unpacked_mb": 15.82,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,8 +339,8 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.4.6",
-    "date": "2026-10-09"
+    "version": "0.5.0",
+    "date": "2026-10-12"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
@@ -1644,17 +1644,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4220,
-    "fail": 7,
+    "pass": 4246,
+    "fail": 8,
     "skip": 16,
-    "files": 277,
-    "assertions": 38179,
-    "seconds": 480.53,
-    "sources": "8bd48bca4db48fd7",
-    "date": "2026-10-09",
-    "myc": "0.4.6",
-    "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca; ещё 6 — семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts), падают и на чистом main до дифа 0.4.6 — memory-j4dkmcs2k7y1"
+    "files": 278,
+    "assertions": 38310,
+    "seconds": 469.06,
+    "sources": "9958b49fa0cd48b9",
+    "date": "2026-10-12",
+    "myc": "0.5.0",
+    "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca; ещё 6 — семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts), падают и на чистом main — memory-j4dkmcs2k7y1; восьмое — паритет GET /api/search с myc recall в packages/web: флакает под полной параллельной нагрузкой прогона (проходит изолированно и в CI; на чистом 0.4.9 stash-прогоном 2026-10-12 падали оба теста паритета и oplog-merge — до дифа этой ветки)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-09T19:33:38.610Z", assertions: 77 };
-window.MYC_DATA.release = "0.4.6";
+window.MYC_DATA.verified = { at: "2026-10-12T17:11:23.932Z", assertions: 77 };
+window.MYC_DATA.release = "0.5.0";
