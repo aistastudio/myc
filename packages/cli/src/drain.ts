@@ -67,12 +67,14 @@
  * MYC_DRAIN_FAKE_LOG, чтобы многопроцессный тест считал выполнения по
  * процессам (у код-индекса вместо воркера — строка о нём, а работа остаётся
  * в очереди под арендой); MYC_DRAIN_FAKE_DELAY_MS — пауза на работу (замер
- * бюджета); MYC_CODE_INDEX_PERIOD_MS — порог возраста код-индекса.
+ * бюджета); MYC_CODE_INDEX_PERIOD_MS — порог возраста код-индекса;
+ * MYC_SYNC_BG — выключатель фонового обмена (§9.5, режим всё равно требует
+ * `sync = "auto"` в конфиге или MYC_SYNC), MYC_SYNC — личный override режима.
  */
 
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   DEFAULT_ABSORB_THRESHOLDS,
@@ -101,6 +103,19 @@ import {
   runWalCheckpointJob,
 } from "@myc/store-sqlite";
 import type { Globals } from "./registry.ts";
+import {
+  localWorkspaceConfig,
+  syncModeFrom,
+  type SyncMode,
+} from "./remote.ts";
+import {
+  SYNC_BG_LAST_AT_KEY,
+  SYNC_BG_PERIOD_MS,
+  SYNC_JOB_ENTITY,
+  SYNC_JOB_KIND,
+  SYNC_JOB_LEASE_MS,
+  syncPreconditionReason,
+} from "./sync-bg.ts";
 import { absorbOne, type Session } from "./commands/absorb.ts";
 // Ключ отметки — оттуда же, откуда команда, которая её обновляет: две копии
 // строки `code_indexed_at` разъехались бы молча, и период перестал бы
@@ -315,7 +330,7 @@ function spawnDetachedCommand(
     const viaBun = fromSource && /^bun/.test(basename(process.execPath));
     const argv = [
       process.execPath,
-      ...(fromSource ? [...(viaBun ? ["--no-env-file", "--config=/dev/null"] : []), entry] : []),
+      ...(fromSource ? [...(viaBun ? ["--no-env-file", `--config=${devNull}`] : []), entry] : []),
       ...args,
     ];
     let stderr: number | "ignore" = "ignore";
@@ -495,6 +510,147 @@ function drainAbsorbSession(h: StoreHandle, now: number): Session {
 // Дренаж
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Фоновая синхронизация — §9.5: включаемый режим, период и события
+// ---------------------------------------------------------------------------
+
+/**
+ * Шаг гасится тестами и оператором (BACKGROUND_SWITCHES): фон — не
+ * безусловность. Режим (`sync = "auto"` в конфиге репозитория или MYC_SYNC)
+ * решает дренаж, цель — конфиг репозитория или профильный MYC_SERVER (§9.5).
+ */
+export function syncBackgroundEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.MYC_SYNC_BG !== "0";
+}
+
+/** Что сделал шаг синхронизации за этот вызов. `null` — не запускался. */
+export interface SyncStepReport {
+  readonly mode: SyncMode;
+  readonly source: "env" | "config" | "default";
+  /** Что позвало: строка очереди (`jobs`) или наступивший период (`period`). */
+  readonly triggered: "jobs" | "period" | null;
+  /** Поднят ли отсоединённый обмен. */
+  readonly spawned: boolean;
+  /** Строка `sync` поставлена ЭТИМ вызовом (false — уже стояла: дедупликация). */
+  readonly queued: boolean;
+  readonly job: number | null;
+  /** Почему не поднят: нет цели/токена, период не прошёл, сосед захватил. Пусто — поднят. */
+  readonly reason: string;
+}
+
+export interface SyncStepOptions {
+  readonly dbPath: string;
+  readonly holder: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly now: number;
+  /** Подмена спавна (тесты): получает базу и захваченную работу. */
+  readonly spawn: (dbPath: string, job: ClaimedJob) => void;
+}
+
+/**
+ * ОДИН ПРОГОН ШАГА НА ВЫЗОВ. СЕТЕВОГО ЗАПРОСА ЗДЕСЬ НИКОГДА НЕТ (§9.5):
+ * задача шага — решить «пора ли» и поднять отсоединённый `myc sync`, как
+ * embed поднимает `myc reindex`. Поводов два — строка очереди (событие
+ * close/claim с задержкой 2 с, см. sync-bg.ts) и период 60 с от последнего
+ * обмена (`sync_state`) или последнего ПЛАНИРОВАНИЯ (`myc_meta`): маркер
+ * планирования, а не успеха, иначе недоступный сервер превращал бы каждый
+ * вызов CLI в новый спавн.
+ */
+export function runSyncStep(driver: CliDriver, opts: SyncStepOptions): SyncStepReport {
+  // Для нестандартного пути базы (тесты, бенчи) корень не выдумываем:
+  // конфиг ищется той же тропой вверх от каталога базы.
+  const ws = workspaceDirOfDb(opts.dbPath) ?? dirname(opts.dbPath);
+  const { mode, source } = syncModeFrom(opts.env, localWorkspaceConfig(ws));
+  const report: SyncStepReport = {
+    mode,
+    source,
+    triggered: null,
+    spawned: false,
+    queued: false,
+    job: null,
+    reason: "",
+  };
+  if (mode !== "auto") return report;
+  const blocked = syncPreconditionReason(ws, opts.env);
+  if (blocked !== null) return { ...report, reason: blocked };
+  try {
+    const db = driver.database;
+    // Повод №1 — строка очереди: событиеclose/claim или период, один путь захвата.
+    const claimed = jobs.claim(db, [SYNC_JOB_KIND], opts.holder, {
+      now: opts.now,
+      leaseMs: SYNC_JOB_LEASE_MS,
+    });
+    const mine = claimed[0];
+    if (mine !== undefined) {
+      driver.run(Q.meta_set, [SYNC_BG_LAST_AT_KEY, String(opts.now)]);
+      opts.spawn(opts.dbPath, { id: mine.id, holder: opts.holder });
+      return { ...report, triggered: "jobs", spawned: true, job: mine.id };
+    }
+    // Повод №2 — период §9.5.
+    const scheduledAt = Number(
+      driver.one<{ value: string }>(Q.meta_get, [SYNC_BG_LAST_AT_KEY])?.value ?? 0,
+    );
+    const syncedAt = Number(
+      db.query<{ t: number | null }, []>("SELECT max(last_sync_at) AS t FROM sync_state").get()?.t ?? 0,
+    );
+    const last = Math.max(
+      Number.isFinite(scheduledAt) ? scheduledAt : 0,
+      Number.isFinite(syncedAt) ? syncedAt : 0,
+    );
+    if (opts.now - last < SYNC_BG_PERIOD_MS) {
+      return { ...report, reason: "not due: the period after the last exchange has not passed" };
+    }
+    const put = jobs.enqueue(db, SYNC_JOB_KIND, { entityId: SYNC_JOB_ENTITY, now: opts.now });
+    const taken = jobs.claim(db, [SYNC_JOB_KIND], opts.holder, {
+      now: opts.now,
+      leaseMs: SYNC_JOB_LEASE_MS,
+    })[0];
+    if (taken === undefined) {
+      // Сосед между постановкой и захватом — он и поднимет обмен.
+      return {
+        ...report,
+        queued: put.inserted,
+        job: put.row.id,
+        reason: "a neighbor claimed the exchange first",
+      };
+    }
+    driver.run(Q.meta_set, [SYNC_BG_LAST_AT_KEY, String(opts.now)]);
+    opts.spawn(opts.dbPath, { id: taken.id, holder: opts.holder });
+    return { ...report, triggered: "period", spawned: true, queued: put.inserted, job: taken.id };
+  } catch (e) {
+    return { ...report, reason: `sync step failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** Журнал отсоединённого обмена — тот же приём, что codeRefreshLogPath. */
+export function syncLogPath(dbPath: string): string {
+  const id = createHash("sha256").update(resolve(dbPath)).digest("hex").slice(0, 16);
+  return join(tmpdir(), `myc-sync-${id}.log`);
+}
+
+/**
+ * Обмен отсоединённым процессом: полный обмен с сетью стоит секунды, а бюджет
+ * дренажа — 50 мс (И1). Воркер получает УЖЕ ЗАХВАЧЕННУЮ работу
+ * (`--job`/`--holder`), стоит в корне воркспейса и в конце сам снимает или
+ * проваливает строку — тот же контракт, что у `myc code index`.
+ */
+export function spawnSyncWorker(dbPath: string, job: ClaimedJob): void {
+  const ws = workspaceDirOfDb(dbPath);
+  spawnDetachedCommand(
+    [
+      ...(ws !== undefined ? ["-C", ws] : []),
+      "sync",
+      "--db",
+      dbPath,
+      "--job",
+      String(job.id),
+      "--holder",
+      job.holder,
+    ],
+    { ...(ws !== undefined ? { cwd: ws } : {}), stderrPath: syncLogPath(dbPath) },
+  );
+}
+
 export interface DrainOptions {
   readonly dbPath: string;
   /** По умолчанию MYC_DRAIN_BUDGET_MS или DEFAULT_DRAIN_BUDGET_MS. */
@@ -506,6 +662,8 @@ export interface DrainOptions {
   readonly spawnWorker?: (dbPath: string) => void;
   /** Подмена спавна воркера код-индекса (тесты): получает базу и захваченную работу. */
   readonly spawnCodeIndex?: (dbPath: string, job: ClaimedJob) => void;
+  /** Подмена спавна фонового обмена (тесты): получает базу и захваченную работу. */
+  readonly spawnSync?: (dbPath: string, job: ClaimedJob) => void;
   readonly now?: () => number;
 }
 
@@ -564,6 +722,7 @@ export interface DrainReport {
   readonly embedWorkerSpawned: boolean;
   readonly anchor: AnchorStepReport | null;
   readonly codeIndex: CodeIndexStepReport | null;
+  readonly sync: SyncStepReport | null;
   readonly skipped: "no_db" | null;
   /** Первые ошибки fail — наблюдаемость без WARN в чужом выводе. */
   readonly errors: readonly string[];
@@ -819,6 +978,7 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
     embedWorkerSpawned: false,
     anchor: null as AnchorStepReport | null,
     codeIndex: null as CodeIndexStepReport | null,
+    sync: null as SyncStepReport | null,
     skipped: null as DrainReport["skipped"],
     errors: [] as string[],
   };
@@ -899,6 +1059,24 @@ export async function drainQueueTail(opts: DrainOptions): Promise<DrainReport> {
         });
       } catch (e) {
         report.errors.push(`code_index: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    // Синхронизация (§9.5) — только решение «пора ли» и отсоединённый спавн:
+    // сетевого запроса в этом процессе нет ни в одном режиме (сеть никогда не
+    // в горячем пути). Шаг дешёвый, когда повода нет: конфиг репозитория плюс
+    // один-два поиска по ключу.
+    if (syncBackgroundEnabled(env)) {
+      try {
+        report.sync = runSyncStep(driver, {
+          dbPath: opts.dbPath,
+          holder,
+          env,
+          now: now(),
+          spawn: opts.spawnSync ?? spawnSyncWorker,
+        });
+      } catch (e) {
+        report.errors.push(`sync: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 

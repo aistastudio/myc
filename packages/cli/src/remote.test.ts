@@ -10,7 +10,15 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExitCode } from "./exit.ts";
-import { localWorkspaceSlug, parseServer, remoteTarget } from "./remote.ts";
+import {
+  ambientServer,
+  localTokenFile,
+  localWorkspaceConfig,
+  localWorkspaceSlug,
+  parseServer,
+  remoteTarget,
+  syncModeFrom,
+} from "./remote.ts";
 import type { CommandContext } from "./registry.ts";
 
 function ctx(
@@ -208,5 +216,102 @@ describe("воркспейс по умолчанию — слаг локальн
     expect(localWorkspaceSlug(workspaceDir(""))).toBeUndefined();
     // Нет конфига — undefined, а не последний увиденный.
     expect(localWorkspaceSlug(emptyDir())).toBeUndefined();
+  });
+});
+
+describe("конфиг воркспейса: sync, server, токен — своё на репозиторию", () => {
+  /** Воркспейс с произвольными строками конфига. */
+  function wsWith(lines: readonly string[]): string {
+    const root = mkdtempSync(join(tmpdir(), "myc-remote-cfg-"));
+    mkdirSync(join(root, ".myc"));
+    writeFileSync(join(root, ".myc", "workspace.toml"), `${lines.join("\n")}\n`);
+    return root;
+  }
+
+  test("server и sync читаются из конфига; неразобранная строка sync называется", () => {
+    const dir = wsWith([
+      'slug = "cherry"',
+      'sync = "auto"',
+      'server = "https://myc.company-a.example/tenant"',
+    ]);
+    expect(localWorkspaceConfig(dir)).toEqual({
+      slug: "cherry",
+      sync: "auto",
+      server: "https://myc.company-a.example/tenant",
+    });
+    // Неразобранное значение не включает режим и остаётся видимым (И2).
+    const bad = wsWith(['slug = "cherry"', 'sync = "sometimes"']);
+    expect(localWorkspaceConfig(bad)).toEqual({ slug: "cherry", syncInvalid: "sometimes" });
+  });
+
+  test("MYC_SYNC обгоняет конфиг; режим по умолчанию — manual", () => {
+    expect(syncModeFrom({ MYC_SYNC: "manual" }, { sync: "auto" })).toEqual({
+      mode: "manual",
+      source: "env",
+      invalid: undefined,
+    });
+    expect(syncModeFrom({}, { sync: "auto" })).toEqual({
+      mode: "auto",
+      source: "config",
+      invalid: undefined,
+    });
+    expect(syncModeFrom({}, {})).toEqual({ mode: "manual", source: "default", invalid: undefined });
+    expect(syncModeFrom({ MYC_SYNC: "yesterday" }, {})).toEqual({
+      mode: "manual",
+      source: "default",
+      invalid: "yesterday",
+    });
+  });
+
+  test("конфиг репозитория обгоняет профиль: у каждой репы свой сервер и токен", () => {
+    const root = wsWith(['slug = "cherry"', 'server = "https://a.example/cherry"']);
+    writeFileSync(join(root, ".myc", "token"), "myc_tokenfile\n");
+    // Профиль указывает на другой сервер другой компании — конфиг выигрывает:
+    // профиль не знает, в чьей репозитории сидит человек.
+    const env = { MYC_SERVER: "https://b.example/other", MYC_TOKEN: "myc_profile" };
+    const t = remoteTarget(ctx({}, root), env);
+    if (t.kind !== "remote") throw new Error(`expected remote, got ${JSON.stringify(t)}`);
+    expect(t.target.url).toBe("https://a.example");
+    expect(t.target.ws).toBe("cherry");
+    expect(t.target.source).toBe("config");
+    // Токен репозитория тоже важнее профильного.
+    expect(t.target.token).toBe("myc_tokenfile");
+    expect(t.target.tokenSource).toBe("file");
+  });
+
+  test("--server обгоняет конфиг: явный запрос одного вызова сильнее", () => {
+    const root = wsWith(['slug = "cherry"', 'server = "https://a.example/cherry"']);
+    const t = remoteTarget(ctx({ server: "https://flag.example/ws2" }, root), {
+      MYC_TOKEN: "myc_x",
+    });
+    if (t.kind !== "remote") throw new Error(`expected remote, got ${JSON.stringify(t)}`);
+    expect(t.target.url).toBe("https://flag.example");
+    expect(t.target.source).toBe("flag");
+  });
+
+  test("без конфига работает как раньше: профильное окружение", () => {
+    const t = remoteTarget(ctx({}, emptyDir()), {
+      MYC_SERVER: "https://p.example/ws",
+      MYC_TOKEN: "myc_p",
+    });
+    if (t.kind !== "remote") throw new Error(`expected remote, got ${JSON.stringify(t)}`);
+    expect(t.target.source).toBe("env");
+    expect(t.target.tokenSource).toBe("env");
+  });
+
+  test("localTokenFile ищет файл той же тропой вверх, что конфиг", () => {
+    const root = wsWith(['slug = "cherry"']);
+    writeFileSync(join(root, ".myc", "token"), " myc_infile \n");
+    const deep = join(root, "sub", "deep");
+    mkdirSync(deep, { recursive: true });
+    expect(localTokenFile(deep)).toBe("myc_infile");
+    expect(localTokenFile(emptyDir())).toBeUndefined();
+  });
+
+  test("ambientServer: конфиг обгоняет профиль — для фоновых проверок", () => {
+    const root = wsWith(['slug = "cherry"', 'server = "https://a.example"']);
+    expect(ambientServer({ MYC_SERVER: "https://b.example" }, root)).toBe("https://a.example");
+    expect(ambientServer({ MYC_SERVER: "https://b.example" }, emptyDir())).toBe("https://b.example");
+    expect(ambientServer({}, emptyDir())).toBeUndefined();
   });
 });

@@ -38,7 +38,10 @@ export function isRepoDir(dir: string): boolean {
  */
 export function workspaceDirOfDb(dbPath: string): string | undefined {
   const mycDir = dirname(resolve(dbPath));
-  if (mycDir.split("/").pop() !== ".myc") return undefined;
+  // basename, а не split("/"): на Windows разделитель обратный, и деление по
+  // "/" сводило поиск корня к undefined молча — дренаж и воркеры теряли бы
+  // воркспейс целиком.
+  if (basename(mycDir) !== ".myc") return undefined;
   return dirname(mycDir);
 }
 

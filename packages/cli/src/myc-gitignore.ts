@@ -33,6 +33,11 @@ export const MYC_GITIGNORE_LINES = [
   "wire.json",
   "bootstrap.cache.json",
   "anchor-dirty.log",
+  // Токен доступа к серверу ЭТОЙ репозитории (мультисерверный режим): один
+  // файл на репу, свой на каждый сервер компании. В отличие от
+  // workspace.toml это секрет, а не личность: коммититься он не обязан и
+  // не должен — читает его remoteTarget рядом с конфигом.
+  "token",
 ] as const;
 
 function mycGitignoreContent(): string {

@@ -228,6 +228,39 @@ database and refuses a populated one, because applying DDL over live data is a
 migration, with its own order, checks and rollback, and doing it silently on
 every container start is how databases are lost.
 
+## Multi-server repositories and background sync (0.5)
+
+Every repository keeps its own server and its own token, so repositories of
+different companies never mix — the address and the token come from the
+REPOSITORY, not from the profile:
+
+```toml
+# .myc/workspace.toml (committed)
+slug = "qmatic"
+server = "https://myc.company-a.com/tenant"   # this repository's target
+sync = "auto"                                  # exchange in background; default manual
+```
+
+```
+.myc/token        # THIS repository's token; in .myc/.gitignore, never committed
+```
+
+Resolution order for the target: `--server` → `server` in the config →
+profile `MYC_SERVER`. For the token: `.myc/token` → profile `MYC_TOKEN`. The
+config beats the profile on purpose: the profile does not know which
+repository you are sitting in. An explicit `--server` still wins over
+everything — for a one-off look at a foreign server.
+
+With `sync = "auto"` the exchange happens on its own: every 60s once due, and
+2s after local `close`/`claim` — in the background, as a detached process,
+never in a command's hot path. `myc sync` prints the mode, where the server
+and the token came from, the age of the last exchange and when the next one
+is due. `MYC_SYNC=auto` enables the mode on one machine without changing the
+config; `MYC_SYNC_BG=0` turns the mechanism off entirely (for tests and
+cautious machines). Synchronization stays client-initiated: the network sits
+between your database and the server only when you asked for it — explicitly
+or by enabling the mode.
+
 ## What does not work yet
 
 **Only part of the CLI speaks to a server.** Working remotely today:

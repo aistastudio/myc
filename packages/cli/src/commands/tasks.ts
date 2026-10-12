@@ -16,6 +16,7 @@ import type { JsonValue, NodeKind, NodeRecord } from "@myc/core";
 import { CAVEATS, VERDICTS, type AttemptRecord, type Caveat, type ClassifyResult } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
 import { remoteRun } from "../remote.ts";
+import { scheduleBackgroundSync } from "../sync-bg.ts";
 import type { Command, CommandContext, CommandFailure, CommandResult } from "../registry.ts";
 import type { FlagSpec } from "../flags.ts";
 import {
@@ -1414,6 +1415,8 @@ export function createClaimCommand(deps: StoreDeps = realStoreDeps): Command {
               : {}),
             took_ms: tookMs(t0),
           };
+          // Важное событие (§9.5): при sync="auto" фон поднимает обмен через 2 с.
+          scheduleBackgroundSync(h);
           return { ok: true, data, meta: { took_ms: data.took_ms } };
         }
 
@@ -2089,6 +2092,8 @@ export function createCloseCommand(
           ...(attribution !== undefined ? { attribution } : {}),
           took_ms: tookMs(t0),
         };
+        // Важное событие (§9.5): при sync="auto" фон поднимает обмен через 2 с.
+        scheduleBackgroundSync(h);
         return { ok: true, data, meta: { took_ms: data.took_ms } };
       } finally {
         h.close();

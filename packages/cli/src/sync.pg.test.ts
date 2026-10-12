@@ -16,7 +16,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -28,11 +28,12 @@ import { aclParams } from "@myc/core";
 import { startHttpServer, type MycHttpServer } from "@myc/server";
 import { ExitCode } from "./exit.ts";
 import { run } from "./index.ts";
+import { drainQueueTail } from "./drain.ts";
 import { Registry } from "./registry.ts";
 import { createInitCommand } from "./commands/init.ts";
 import { createRememberCommand } from "./commands/remember.ts";
 import { createSyncCommand } from "./commands/sync.ts";
-import { createTaskCommand, createUpdateCommand } from "./commands/tasks.ts";
+import { createCloseCommand, createTaskCommand, createUpdateCommand } from "./commands/tasks.ts";
 import { createListCommand } from "./commands/list.ts";
 
 const URL_ENV = process.env.MYC_PG_URL;
@@ -54,6 +55,7 @@ function registry(): Registry {
   r.register(createSyncCommand());
   r.register(createTaskCommand());
   r.register(createUpdateCommand());
+  r.register(createCloseCommand());
   r.register(createListCommand());
   return r;
 }
@@ -381,4 +383,89 @@ describe("обмен с сервером", () => {
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ ok: true, db: "postgres" });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Фоновая синхронизация (§9.5): сквозной прогон события до сервера
+// ---------------------------------------------------------------------------
+
+describe("фоновая синхронизация: сквозной прогон", () => {
+  const skip = URL_ENV === undefined ? "нет MYC_PG_URL — Postgres не поднят" : null;
+
+  test("close ставит событие, drain поднимает воркера, сервер видит закрытие", async () => {
+    if (skip !== null) return void console.log(`[skip] ${skip}`);
+
+    // Режим и цель — ИЗ КОНФИГА РЕПОЗИТОРИЯ (мультисерверный режим): профиль
+    // в этом тесте пуст вовсе, токен — .myc/token. Так работает репа чужой
+    // компании, чей сервер не должен смешиваться с профильным.
+    const toml = join(local, ".myc", "workspace.toml");
+    writeFileSync(
+      toml,
+      `${readFileSync(toml, "utf8")}sync = "auto"\nserver = "${srv!.url}/${WS}"\n`,
+    );
+    writeFileSync(join(local, ".myc", "token"), `${owner}\n`);
+
+    const created = await call(["task", "фоновая синхронизация e2e"]);
+    expect([created.code, created.env.error ?? null]).toEqual([ExitCode.OK, null]);
+    const id = created.env.data.id as string;
+    const closed = await call(["close", id, "--reason", "e2e"]);
+    expect([closed.code, closed.env.error ?? null]).toEqual([ExitCode.OK, null]);
+
+    // Событие: строка jobs(kind='sync') с задержкой 2 с — в локальной базе.
+    const dbPath = join(local, ".myc", "myc.db");
+    const probe = new Database(dbPath, { readonly: true });
+    const rows = probe
+      .query("SELECT id, run_after FROM jobs WHERE kind = 'sync'")
+      .all() as { id: number; run_after: number }[];
+    probe.close();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.run_after).toBeGreaterThan(Date.now());
+
+    // Дренаж с НАСТОЯЩИМ воркером: тот же вызов CLI, что исполнил бы
+    // отсоединённый ребёнок, — обмен идёт командой целиком, и строку снимает
+    // этот вызов под своим холдером.
+    const children: ReturnType<typeof call>[] = [];
+    const drained = await drainQueueTail({
+      dbPath,
+      env: {},
+      now: () => Date.now() + 5_000, // событие созрело (+2 с) — дренаж его видит
+      spawnSync: (_p, job) => {
+        children.push(call(["sync", "--job", String(job.id), "--holder", job.holder]));
+      },
+    });
+    expect(drained.sync?.triggered).toBe("jobs");
+    expect(drained.sync?.spawned).toBe(true);
+    const childResults = await Promise.all(children);
+    expect(childResults).toHaveLength(1);
+    expect([childResults[0]!.code, childResults[0]!.env.error ?? null]).toEqual([ExitCode.OK, null]);
+
+    // Сервер видит закрытую задачу — обмен дошёл своим чередом.
+    expect(await serverTitles()).toContain("фоновая синхронизация e2e");
+    // Строка воркера снята процессом, который её исполнил.
+    const check = new Database(dbPath, { readonly: true });
+    const left = check
+      .query("SELECT count(*) AS n FROM jobs WHERE kind = 'sync'")
+      .get() as { n: number };
+    const marker = check
+      .query("SELECT value FROM myc_meta WHERE key = 'sync_bg_last_at'")
+      .get() as { value: string } | undefined;
+    const lastSync = check
+      .query("SELECT max(last_sync_at) AS t FROM sync_state")
+      .get() as { t: number | null };
+    check.close();
+    expect(left.n).toBe(0);
+    // Отметка планирования и сам обмен состоялись.
+    expect(Number(marker?.value ?? 0)).toBeGreaterThan(0);
+    expect(lastSync.t ?? 0).toBeGreaterThan(0);
+
+    // Повторный дренаж в пределах периода НЕ спавнит: последний обмен свеж.
+    const again: unknown[] = [];
+    const second = await drainQueueTail({
+      dbPath,
+      env: {},
+      spawnSync: (_p, job) => void again.push(job),
+    });
+    expect(second.sync?.spawned).toBe(false);
+    expect(again).toHaveLength(0);
+  }, 30_000);
 });

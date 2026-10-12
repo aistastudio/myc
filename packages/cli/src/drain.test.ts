@@ -23,7 +23,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -386,4 +386,162 @@ describe("приёмка S8 end-to-end", () => {
     expect(r2.code, r2.stderr).toBe(0);
     expect(r2.stdout).toContain(nodeId);
   }, 90_000);
+});
+
+// ---------------------------------------------------------------------------
+// Фоновая синхронизация (§9.5)
+// ---------------------------------------------------------------------------
+
+/** Воркспейс для шага синхронизации: <root>/.myc/myc.db + <root>/.myc/workspace.toml. */
+async function syncWorkspace(lines: readonly string[] = []): Promise<string> {
+  const root = scratch();
+  mkdirSync(join(root, ".myc"), { recursive: true });
+  await makeDb(join(root, ".myc", "myc.db"));
+  writeFileSync(join(root, ".myc", "workspace.toml"), `${lines.join("\n")}\n`);
+  return root;
+}
+
+function metaValue(dbPath: string, key: string): string | undefined {
+  const driver = openSqlite(dbPath);
+  try {
+    const row = driver.database
+      .query(`SELECT value FROM myc_meta WHERE key = ?1`)
+      .get(key) as { value: string } | undefined;
+    return row?.value;
+  } finally {
+    driver.close();
+  }
+}
+
+function seedSyncEvent(dbPath: string, runAfter: number): number {
+  const driver = openSqlite(dbPath);
+  try {
+    return jobs.enqueue(driver.database, "sync", { entityId: "background", runAfter }).id;
+  } finally {
+    driver.close();
+  }
+}
+
+const BG_ENV = { MYC_SERVER: "https://srv.example/ws", MYC_TOKEN: "myc_t" };
+
+describe("фоновая синхронизация: шаг дренажа решает «пора ли»", () => {
+  test("режим manual (ключ не записан): шаг не планирует и не спавнит (мутация-врата режима)", async () => {
+    const root = await syncWorkspace(['slug = "ws"']);
+    const dbPath = join(root, ".myc", "myc.db");
+    const spawned: number[] = [];
+    const r = await drainQueueTail({
+      dbPath,
+      env: { ...BG_ENV },
+      spawnSync: (_p, job) => void spawned.push(job.id),
+    });
+
+    expect(r.sync?.mode).toBe("manual");
+    expect(r.sync?.spawned).toBe(false);
+    expect(spawned).toEqual([]);
+    expect(countRows(dbPath, `SELECT count(*) AS n FROM jobs WHERE kind = 'sync'`)).toBe(0);
+  });
+
+  test("auto + период: строка, спавн с работой, маркер; повторный вызов не спавнит (антишторм)", async () => {
+    const root = await syncWorkspace(['slug = "ws"', 'sync = "auto"']);
+    const dbPath = join(root, ".myc", "myc.db");
+    const spawned: { id: number; holder: string }[] = [];
+    const drain = (now?: () => number) =>
+      drainQueueTail({
+        dbPath,
+        env: { ...BG_ENV },
+        spawnSync: (_p, job) => void spawned.push(job),
+        ...(now === undefined ? {} : { now }),
+      });
+
+    const r = await drain();
+    expect(r.sync?.mode).toBe("auto");
+    expect(r.sync?.triggered).toBe("period");
+    expect(r.sync?.spawned).toBe(true);
+    expect(r.sync?.queued).toBe(true);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.holder).toContain("drain-");
+    // Маркер ПЛАНИРОВАНИЯ стоит — второй вызов в пределах периода молчит.
+    expect(Number(metaValue(dbPath, "sync_bg_last_at"))).toBeGreaterThan(0);
+    // Воркер доделал работу и снял строку: без воркера строка держала бы
+    // дедупликацией, а период обязан удержать САМ — иначе завершённый обмен
+    // рождал бы новый при каждом вызове.
+    {
+      const driver = openSqlite(dbPath);
+      try {
+        jobs.complete(driver.database, spawned[0]!.id, spawned[0]!.holder);
+      } finally {
+        driver.close();
+      }
+    }
+    const r2 = await drain();
+    expect(r2.sync?.spawned).toBe(false);
+    expect(r2.sync?.reason).toContain("not due");
+    expect(spawned).toHaveLength(1);
+  });
+
+  test("событие close/claim: несозревшая строка ждёт срока, созревшая спавнит (задержка 2 с)", async () => {
+    const root = await syncWorkspace(['slug = "ws"', 'sync = "auto"']);
+    const dbPath = join(root, ".myc", "myc.db");
+    const eventId = seedSyncEvent(dbPath, Date.now() + 2_000);
+    const spawned: number[] = [];
+    const drain = (offsetMs: number) =>
+      drainQueueTail({
+        dbPath,
+        env: { ...BG_ENV },
+        spawnSync: (_p, job) => void spawned.push(job.id),
+        now: () => Date.now() + offsetMs,
+      });
+
+    // Строка ещё не созрела: обмен не поднят.
+    const r1 = await drain(0);
+    expect(r1.sync?.spawned).toBe(false);
+    expect(spawned).toEqual([]);
+    // Прошло 3 с: строка захвачена и обмен поднят под ней.
+    const r2 = await drain(3_000);
+    expect(r2.sync?.triggered).toBe("jobs");
+    expect(r2.sync?.job).toBe(eventId);
+    expect(spawned).toEqual([eventId]);
+  });
+
+  test("MYC_SYNC включает режим без правки конфига; MYC_SYNC_BG=0 гасит шаг", async () => {
+    const root = await syncWorkspace(['slug = "ws"']);
+    const dbPath = join(root, ".myc", "myc.db");
+    const spawned: number[] = [];
+    const r = await drainQueueTail({
+      dbPath,
+      env: { ...BG_ENV, MYC_SYNC: "auto" },
+      spawnSync: (_p, job) => void spawned.push(job.id),
+    });
+    expect(r.sync?.mode).toBe("auto");
+    expect(r.sync?.source).toBe("env");
+    expect(spawned).toHaveLength(1);
+
+    const off = await drainQueueTail({
+      dbPath,
+      env: { ...BG_ENV, MYC_SYNC_BG: "0" },
+      spawnSync: (_p, job) => void spawned.push(job.id),
+    });
+    expect(off.sync).toBeNull();
+    expect(spawned).toHaveLength(1);
+  });
+
+  test("auto без цели или токена: шаг называет причину и не спавнит (мутация-врата предусловий)", async () => {
+    const root = await syncWorkspace(['slug = "ws"', 'sync = "auto"']);
+    const dbPath = join(root, ".myc", "myc.db");
+    const spawned: number[] = [];
+    const noServer = await drainQueueTail({
+      dbPath,
+      env: { MYC_TOKEN: "myc_t" },
+      spawnSync: (_p, job) => void spawned.push(job.id),
+    });
+    expect(noServer.sync?.reason).toContain("no server");
+
+    const noToken = await drainQueueTail({
+      dbPath,
+      env: { MYC_SERVER: "https://srv.example/ws" },
+      spawnSync: (_p, job) => void spawned.push(job.id),
+    });
+    expect(noToken.sync?.reason).toContain("no token");
+    expect(spawned).toEqual([]);
+  });
 });

@@ -35,6 +35,10 @@ export interface RemoteTarget {
   readonly token: string;
   /** Воркспейс в пути `/v1/ws/:ws/…`; по умолчанию — слаг локального воркспейса. */
   readonly ws: string;
+  /** Откуда адрес: флаг --server, конфиг репозитория (.myc/workspace.toml) или профильное окружение. */
+  readonly source: "flag" | "config" | "env";
+  /** Откуда токен: .myc/token репозитория или профильный MYC_TOKEN. */
+  readonly tokenSource: "file" | "env" | null;
 }
 
 export interface RemoteEnv {
@@ -47,28 +51,124 @@ function trimSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
+/** Режим обмена воркспейса (§9.5): `manual` — только явный `myc sync`. */
+export type SyncMode = "manual" | "auto";
+
+/** Что разобрано в `.myc/workspace.toml`. */
+export interface WorkspaceConfig {
+  readonly slug?: string;
+  readonly sync?: SyncMode;
+  /** Строка sync, которую разобрать не удалось: её называют, а не проглатывают. */
+  readonly syncInvalid?: string;
+  /** Сервер этого воркспейса (полный адрес, возможно с путём воркспейса). */
+  readonly server?: string;
+}
+
 /**
- * СЛАГ ИЗ КОНФИГА, А НЕ ВТОРОЙ ВВОД РУКАМИ. Единственный источник личности
- * воркспейса — `.myc/workspace.toml`: slug входит в id каждого узла, и имя
- * воркспейса на сервере обязано с ним совпадать (§4 deploy). Держать вторую
- * копию слага в MYC_SERVER/MYC_WS — чистый рассинтон: он же породил и
- * «would push 0» из-за aista/qmatic, и необходимость .envrc в каждом
- * проекте. Поэтому воркспейс по умолчанию ЧИТАЕТСЯ отсюда, а явные
- * способы (--ws, путь адреса, MYC_WS) остаются сильнее.
+ * СЛАГ И РЕЖИМ ОБМЕНА ИЗ КОНФИГА, А НЕ ВТОРОЙ ВВОД РУКАМИ. Единственный
+ * источник личности воркспейса — `.myc/workspace.toml`: slug входит в id
+ * каждого узла, и имя воркспейса на сервере обязано с ним совпадать (§4
+ * deploy). Держать вторую копию слага в MYC_SERVER/MYC_WS — чистый
+ * рассинтон: он же породил и «would push 0» из-за aista/qmatic, и
+ * необходимость .envrc в каждом проекте. Поэтому воркспейс по умолчанию
+ * ЧИТАЕТСЯ отсюда, а явные способы (--ws, путь адреса, MYC_WS) остаются
+ * сильнее.
+ *
+ * Тот же файл несёт `sync = "auto"` — переключатель фонового обмена (§9.5):
+ * он коммитится и живёт рядом с личностью воркспейса, потому что режим
+ * обмена — свойство воркспейса, а не отдельной машины. MYC_SYNC —
+ * личный override поверх него.
  *
  * Ищем `.myc/workspace.toml` в каталоге и родителях — той же тропой, что
  * поиск воркспейса при открытии (worktree тоже несёт коммитнутый конфиг).
  * Нет строки slug — возвращаем undefined и ведём себя как раньше: читать
- * myc_meta без базы здесь нельзя, а угадывать — тем более.
+ * myc_meta без базы здесь нельзя, а угадывать — тем более. `sync` берётся
+ * из БЛИЖАЙШЕЙ читаемой копии файла, slug — как раньше, из первой, где он
+ * есть.
  */
+export function localWorkspaceConfig(dir: string = process.cwd()): WorkspaceConfig {
+  let at = dir;
+  let sync: SyncMode | undefined;
+  let syncInvalid: string | undefined;
+  let server: string | undefined;
+  for (;;) {
+    try {
+      const text = readFileSync(join(at, ".myc", "workspace.toml"), "utf8");
+      if (sync === undefined) {
+        const raw = /^sync\s*=\s*"([a-z]+)"/m.exec(text)?.[1];
+        if (raw === "auto" || raw === "manual") sync = raw;
+        else if (raw !== undefined) syncInvalid = raw;
+      }
+      if (server === undefined) {
+        const raw = /^server\s*=\s*"([^"\n]+)"/m.exec(text)?.[1]?.trim();
+        if (raw !== undefined && raw !== "") server = raw;
+      }
+      const slug = /^slug\s*=\s*"([a-z][a-z0-9]{1,7})"/m.exec(text)?.[1];
+      if (slug !== undefined) {
+        return {
+          slug,
+          ...(sync !== undefined ? { sync } : {}),
+          ...(syncInvalid !== undefined ? { syncInvalid } : {}),
+          ...(server !== undefined ? { server } : {}),
+        };
+      }
+    } catch {
+      // файла нет или не читается — поднимаемся выше
+    }
+    const parent = dirname(at);
+    if (parent === at) {
+      return {
+        ...(sync !== undefined ? { sync } : {}),
+        ...(syncInvalid !== undefined ? { syncInvalid } : {}),
+        ...(server !== undefined ? { server } : {}),
+      };
+    }
+    at = parent;
+  }
+}
+
 export function localWorkspaceSlug(dir: string = process.cwd()): string | undefined {
+  return localWorkspaceConfig(dir).slug;
+}
+
+/**
+ * РЕЖИМ ОБМЕНА: MYC_SYNC (личный override) поверх `sync` из конфига, дальше
+ * умолчание `manual`. Неразобранная строка — режим manual плюс имя того, что
+ * не разобралось: тишина тут означала бы «фон включён/выключен, и никто не
+ * знает почему».
+ */
+export function syncModeFrom(
+  env: Readonly<Record<string, string | undefined>>,
+  config: WorkspaceConfig,
+): {
+  readonly mode: SyncMode;
+  readonly source: "env" | "config" | "default";
+  readonly invalid: string | undefined;
+} {
+  const raw = env.MYC_SYNC?.trim();
+  if (raw === "auto" || raw === "manual") return { mode: raw, source: "env", invalid: undefined };
+  if (config.sync !== undefined) {
+    return { mode: config.sync, source: "config", invalid: config.syncInvalid };
+  }
+  const invalid = raw !== undefined && raw !== "" ? raw : config.syncInvalid;
+  return { mode: "manual", source: "default", invalid };
+}
+
+/**
+ * ТОКЕН РЕПОЗИТОРИЯ: `.myc/token` — свой на каждый сервер. Репозитории
+ * разных компаний ходят на разные серверы с разными токенами, и держать их
+ * все в профильном MYC_TOKEN значит каждый раз выбирать, чьим токеном
+ * писать не туда. Файл лежит в `.myc` и в .gitignore (MYC_GITIGNORE_LINES):
+ * токен — не личность воркспейса, коммититься он не обязан и не должен.
+ * Ищется той же тропой вверх, что конфиг (worktree несёт конфиг основного
+ * дерева).
+ */
+export function localTokenFile(dir: string = process.cwd()): string | undefined {
   let at = dir;
   for (;;) {
     try {
-      const m = /^slug\s*=\s*"([a-z][a-z0-9]{1,7})"/m.exec(
-        readFileSync(join(at, ".myc", "workspace.toml"), "utf8"),
-      );
-      if (m !== null) return m[1];
+      const token = readFileSync(join(at, ".myc", "token"), "utf8").trim();
+      if (token !== "") return token;
     } catch {
       // файла нет или не читается — поднимаемся выше
     }
@@ -76,6 +176,22 @@ export function localWorkspaceSlug(dir: string = process.cwd()): string | undefi
     if (parent === at) return undefined;
     at = parent;
   }
+}
+
+/**
+ * СЫРАЯ ЦЕЛЬ ОБМЕНА ДЛЯ ФОНОВЫХ ПРОВЕРОК «ЕСТЬ ЛИ КУДА»: конфиг репозитория
+ * обгоняет профильный MYC_SERVER — та же логика, что в remoteTarget. Полной
+ * проверки (формат адреса, токен) здесь нет: это предварительный фильтр
+ * дренажа, полный разбор — у remoteTarget при самом обмене.
+ */
+export function ambientServer(
+  env: Readonly<Record<string, string | undefined>>,
+  dir?: string,
+): string | undefined {
+  const cfgServer = localWorkspaceConfig(dir ?? process.cwd()).server;
+  if (cfgServer !== undefined) return cfgServer;
+  const fromEnv = env.MYC_SERVER?.trim();
+  return fromEnv !== undefined && fromEnv !== "" ? fromEnv : undefined;
 }
 
 /**
@@ -102,12 +218,34 @@ export function parseServer(raw: string): { url: string; ws: string } | undefine
 export function remoteTarget(
   ctx: CommandContext,
   env: RemoteEnv = process.env as RemoteEnv,
+  opts: { readonly configSuffices?: boolean } = {},
 ): { readonly kind: "none" } | { readonly kind: "remote"; readonly target: RemoteTarget } | {
   readonly kind: "bad";
   readonly failure: CommandFailure;
 } {
-  const raw = typeof ctx.flags["server"] === "string" ? String(ctx.flags["server"]) : env.MYC_SERVER;
-  if (raw === undefined || raw.trim() === "") return { kind: "none" };
+  const flagRaw0 = typeof ctx.flags["server"] === "string" ? String(ctx.flags["server"]) : undefined;
+  const flagRaw = flagRaw0?.trim() ?? "";
+  const dir = ctx.globals.directory ?? process.cwd();
+  // ПОРЯДОК ЦЕЛИ: --server (явный запрос одного вызова) → server КОНФИГА
+  // РЕПОЗИТОРИЯ → профильный MYC_SERVER. Конфиг обгоняет профиль НАМЕРЕННО:
+  // профиль глобален и не знает, в чьей репозитории сидит человек, а конфиг
+  // закоммичен репозиторием и говорит, чей это сервер. В репозиториях разных
+  // компаний это неудобство, а защита — чужие данные не уедут не туда молча.
+  const cfgServer = localWorkspaceConfig(dir).server;
+  const envRaw = (env.MYC_SERVER ?? "").trim();
+  // НО РЕЖИМ ОТ КОНФИГА НЕ ВКЛЮЧАЕТСЯ: удалённый режим требует явного спроса
+  // (флаг или профиль), иначе `server` в репозитории перевёл бы каждую
+  // remote-команду в сетевой режим — сеть в горячем пути вопреки §9.5.
+  // Исключение — команды, которые сами просят сервер (sync, `configSuffices`):
+  // у них конфиг и есть ответ «куда».
+  const asked = flagRaw !== "" || envRaw !== "";
+  if (!asked && !(opts.configSuffices === true && cfgServer !== undefined)) {
+    return { kind: "none" };
+  }
+  const source: RemoteTarget["source"] =
+    flagRaw !== "" ? "flag" : cfgServer !== undefined ? "config" : "env";
+  const raw = flagRaw !== "" ? flagRaw : (cfgServer ?? envRaw);
+  if (raw === "") return { kind: "none" };
   const parsed = parseServer(raw.trim());
   if (parsed === undefined) {
     return {
@@ -115,13 +253,19 @@ export function remoteTarget(
       failure: {
         ok: false,
         code: "usage.server",
-        msg: `'${raw}' is not an http(s) address of a myc server`,
+        msg:
+          `'${raw}' is not an http(s) server address` +
+          (source === "config" ? " (it comes from `server` in .myc/workspace.toml)" : ""),
         exit: ExitCode.USAGE,
         hint: "example: --server https://myc.example/cherry",
       },
     };
   }
-  const token = env.MYC_TOKEN ?? "";
+  // ТОКЕН: `.myc/token` репозитория обгоняет профильный MYC_TOKEN — та же
+  // логика, что у адреса: принадлежность репозитория важнее фонового
+  // окружения. Профильный токен остаётся для реп без файла.
+  const fileToken = localTokenFile(dir);
+  const token = fileToken ?? env.MYC_TOKEN ?? "";
   // ФОРМА ТОКЕНА ПРОВЕРЯЕТСЯ ЗДЕСЬ, до сети. Значение с пробелом, переводом
   // строки или не-ASCII в заголовок не кладётся вовсе: `fetch` бросает, и без
   // этой проверки человек читал бы «сервер не ответил» и чинил бы сеть вместо
@@ -144,9 +288,11 @@ export function remoteTarget(
       failure: {
         ok: false,
         code: "precond.no_token",
-        msg: "the server needs an access token, and MYC_TOKEN is empty",
+        msg: "the server needs an access token, and neither .myc/token nor MYC_TOKEN has one",
         exit: ExitCode.PRECOND,
-        hint: "ask the server owner for one: myc serve --pg <url> --add-token <tenant>:<name>",
+        hint:
+          "ask the server owner for one: myc serve --pg <url> --add-token <tenant>:<name> — " +
+          "put it in MYC_TOKEN or in .myc/token of this repository (gitignored)",
       },
     };
   }
@@ -174,7 +320,7 @@ export function remoteTarget(
       },
     };
   }
-  return { kind: "remote", target: { url: parsed.url, token, ws } };
+  return { kind: "remote", target: { url: parsed.url, token, ws, source, tokenSource: fileToken !== undefined ? "file" : "env" } };
 }
 
 /** Конверт сервера — тот же, что у CLI (§2.3). */
@@ -374,10 +520,11 @@ export class RemoteClient {
 export async function remoteRun(
   ctx: CommandContext,
   fn: (client: RemoteClient) => Promise<CommandResult>,
+  opts: { readonly configSuffices?: boolean } = {},
   env: RemoteEnv = process.env as RemoteEnv,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CommandResult | undefined> {
-  const target = remoteTarget(ctx, env);
+  const target = remoteTarget(ctx, env, opts);
   if (target.kind === "none") return undefined;
   if (target.kind === "bad") return target.failure;
   try {

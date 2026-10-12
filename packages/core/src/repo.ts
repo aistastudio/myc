@@ -155,7 +155,18 @@ export function repoReasonText(d: RepoDerivation): string {
 }
 
 function segments(path: string): string[] {
-  return path.split("/").filter((s) => s.length > 0 && s !== ".");
+  // Оба разделителя: на Windows путь приходит с обратным слэшем, и деление
+  // по одному "/" сводило охват первого сегмента к «общему» молча — репа
+  // под корнем переставала считаться репозиторием.
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((s) => s.length > 0 && s !== ".");
+}
+
+/** Корень-путь: POSIX или буква диска — на определении воркспейса это держится. */
+function absolutePath(path: string): boolean {
+  return path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path);
 }
 
 /**
