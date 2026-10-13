@@ -61,9 +61,12 @@ bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.82 MB unpacked, 16 fi
 myc --version                     # myc 0.5.0 (schema 1)
 ```
 
-It runs on macOS and Linux. On Windows, use WSL and install Bun and myc inside
-it: the `myc` launcher does not start in cmd or PowerShell, and an npm install
-on Windows says so.
+It runs on macOS and Linux. On Windows, use WSL and install Bun and myc
+inside it. The launcher refuses cmd and PowerShell by design; on native
+Windows neither installer shim reaches that refusal (bun reads the
+multi-argument shebang as a missing interpreter, npm hands bun a config
+path Windows cannot open), so the error you see comes from the installer,
+not from myc — and myc's own answer is: use WSL.
 
 The embedding model is **not** downloaded during install. Semantic search is
 opt-in and explicit: `myc models fetch` (129 MB, ~7 s). Until then search is

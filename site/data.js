@@ -1656,5 +1656,5 @@ window.MYC_DATA = {
     "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca; ещё 6 — семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts), падают и на чистом main — memory-j4dkmcs2k7y1; восьмое — паритет GET /api/search с myc recall в packages/web: флакает под полной параллельной нагрузкой прогона (проходит изолированно и в CI; на чистом 0.4.9 stash-прогоном 2026-10-12 падали оба теста паритета и oplog-merge — до дифа этой ветки)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-12T17:11:23.932Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-10-13T11:41:19.919Z", assertions: 77 };
 window.MYC_DATA.release = "0.5.0";
