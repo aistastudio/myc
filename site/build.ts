@@ -483,14 +483,16 @@ if (m.tests.myc !== undefined && m.tests.myc !== release) {
       }
     }),
   );
-  // <code> и <pre><code> в разметке страницы; пояснения (# …) отрезаются.
-  const html = readFileSync(join(siteDir, "index.html"), "utf8");
-  const decode = (s: string) =>
-    s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
-  for (const c of html.matchAll(/<code(\s[^>]*)?>([\s\S]*?)<\/code>/g)) {
-    if ((c[1] ?? "").includes("data-future")) continue;
-    const inner = decode(c[2]!.replace(/<span class="c">[\s\S]*?<\/span>/g, "").replace(/<[^>]+>/g, ""));
-    for (const line of inner.split("\n")) addLine(line.replace(/\s+#.*$/, ""), "index.html", false);
+  // <code> и <pre><code> в разметке страниц; пояснения (# …) отрезаются.
+  for (const page of ["index.html", "server.html"]) {
+    const html = readFileSync(join(siteDir, page), "utf8");
+    const decode = (s: string) =>
+      s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+    for (const c of html.matchAll(/<code(\s[^>]*)?>([\s\S]*?)<\/code>/g)) {
+      if ((c[1] ?? "").includes("data-future")) continue;
+      const inner = decode(c[2]!.replace(/<span class="c">[\s\S]*?<\/span>/g, "").replace(/<[^>]+>/g, ""));
+      for (const line of inner.split("\n")) addLine(line.replace(/\s+#.*$/, ""), page, false);
+    }
   }
   // Оба README советуют те же команды, что страница, и ещё свои (import-beads,
   // run, doctor --hooks): блоки ```…``` построчно и `…` в тексте — перенос

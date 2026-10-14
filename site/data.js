@@ -1363,6 +1363,12 @@ window.MYC_DATA = {
             "cmd": "myc doctor --background",
             "en": "<code>doctor</code> warns when the anchor sweep or the code index has not run for two of its periods while work went on; a build checks that the new binary runs the background work before it replaces the old one.",
             "ru": "<code>doctor</code> предупреждает, когда прогон якорей или индекс кода не шли два своих периода, а работа в воркспейсе шла; сборка проверяет, что новый бинарь делает фоновую работу, прежде чем заменить старый."
+          },
+          {
+            "since": "0.5.0",
+            "cmd": "myc sync --dry-run",
+            "en": "Switchable background exchange: <code>sync = \"auto\"</code> in .myc/workspace.toml (or MYC_SYNC=auto on one machine) — the queue drain raises a detached exchange when it is due: every 60 s, and 2 s after a local close/claim. The network never sits in a command's hot path, and a dry run counts both directions without changing anything.",
+            "ru": "Включаемый обмен в фоне: <code>sync = \"auto\"</code> в .myc/workspace.toml (или MYC_SYNC=auto на одной машине) — дренаж очереди поднимает отсоединённый обмен, когда пора: раз в 60 с и через 2 с после локального close/claim. Сеть не входит в горячий путь ни одной команды, а dry-run считает оба направления, ничего не меняя."
           }
         ]
       },
@@ -1394,6 +1400,18 @@ window.MYC_DATA = {
             "cmd": "myc ready",
             "en": "Part of the CLI works against a server through MYC_SERVER and MYC_TOKEN — creating nodes, update, claim, list, ready, show, prime and sync. Every other command refuses out loud instead of quietly using the local database.",
             "ru": "Часть CLI работает против сервера через MYC_SERVER и MYC_TOKEN — создание узлов, update, claim, list, ready, show, prime и sync. Остальные команды отказывают вслух, а не уходят молча в локальную базу."
+          },
+          {
+            "since": "0.5.0",
+            "cmd": "myc sync",
+            "en": "One repository — one server: <code>server</code> in .myc/workspace.toml and a gitignored .myc/token. The repository's config beats the profile (the target resolves --server → config → MYC_SERVER, the token: .myc/token → MYC_TOKEN), so repositories of different companies never reach for the wrong server.",
+            "ru": "Одна репозитория — один сервер: <code>server</code> в .myc/workspace.toml и gitignore-нутый .myc/token. Конфиг репозитории обгоняет профиль: цель разрешается как --server → конфиг → MYC_SERVER, токен — .myc/token → MYC_TOKEN, поэтому репозитории разных компаний никогда не едут не на тот сервер."
+          },
+          {
+            "since": "0.4.9",
+            "cmd": "myc close <id>",
+            "en": "Honesty about the profile: with a server in MYC_SERVER, a command that has no server mode still runs on the local database and names that in one WARN line; an explicit <code>--server</code> for such a command is a refusal (<code>precond.no_remote</code>), not a quiet substitution.",
+            "ru": "Честность про профиль: при сервере в MYC_SERVER команда без серверного режима всё равно работает с локальной базой и называет это одной строкой WARN; явный <code>--server</code> для такой команды — отказ (<code>precond.no_remote</code>), а не тихая подмена."
           }
         ]
       }
@@ -1656,5 +1674,5 @@ window.MYC_DATA = {
     "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca; ещё 6 — семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts), падают и на чистом main — memory-j4dkmcs2k7y1; восьмое — паритет GET /api/search с myc recall в packages/web: флакает под полной параллельной нагрузкой прогона (проходит изолированно и в CI; на чистом 0.4.9 stash-прогоном 2026-10-12 падали оба теста паритета и oplog-merge — до дифа этой ветки)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-13T11:41:19.919Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-10-14T09:35:19.618Z", assertions: 77 };
 window.MYC_DATA.release = "0.5.0";

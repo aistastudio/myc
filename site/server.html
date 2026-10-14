@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myc — server</title>
+<meta name="description" content="Run the myc team server and connect people and agents to it: one binary, one Postgres, per-repository servers.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232a78d6'/%3E%3Ctext x='16' y='23' font-family='ui-monospace,monospace' font-size='19' font-weight='700' fill='white' text-anchor='middle'%3Em%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script>
+  // До первой отрисовки: язык и тема из сохранённого выбора, иначе из браузера.
+  (function () {
+    var p = new URLSearchParams(location.search);
+    var lang = p.get("lang") || localStorage.getItem("myc-lang") ||
+      ((navigator.language || "en").toLowerCase().startsWith("ru") ? "ru" : "en");
+    if (lang !== "ru" && lang !== "en") lang = "en";
+    document.documentElement.setAttribute("data-lang", lang);
+    document.documentElement.setAttribute("lang", lang);
+    var theme = localStorage.getItem("myc-theme");
+    if (theme === "dark" || theme === "light") document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+</head>
+<body>
+<a class="skip" href="#main"><span lang="en">Skip to content</span><span lang="ru">К содержанию</span></a>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="index.html#top">myc</a>
+    <nav class="sections" aria-label="Sections">
+      <a href="index.html"><span lang="en">Main</span><span lang="ru">Главная</span></a>
+      <a href="#what"><span lang="en">What it is</span><span lang="ru">Что это</span></a>
+      <a href="#run"><span lang="en">Run</span><span lang="ru">Запуск</span></a>
+      <a href="#tls"><span lang="en">TLS</span><span lang="ru">TLS</span></a>
+      <a href="#tokens"><span lang="en">Tokens</span><span lang="ru">Токены</span></a>
+      <a href="#clients"><span lang="en">Clients</span><span lang="ru">Клиенты</span></a>
+      <a href="#agents"><span lang="en">Agents</span><span lang="ru">Агенты</span></a>
+      <a href="#multi"><span lang="en">Per-repo servers</span><span lang="ru">Серверы по репам</span></a>
+      <a href="#ops"><span lang="en">Backup</span><span lang="ru">Операции</span></a>
+      <a href="#limits"><span lang="en">Limits</span><span lang="ru">Ограничения</span></a>
+      <a href="#fails"><span lang="en">Refusals</span><span lang="ru">Отказы</span></a>
+    </nav>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Language / Язык">
+        <button type="button" data-lang-btn="en" aria-pressed="false">EN</button>
+        <button type="button" data-lang-btn="ru" aria-pressed="false">RU</button>
+      </div>
+      <button type="button" class="icon-btn" id="theme-btn" aria-label="Theme">◐</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<div id="top"></div>
+
+<!-- ── герой ─────────────────────────────────────────────────────────────── -->
+<div class="hero">
+  <div class="wrap">
+    <h1><span lang="en">Team server</span><span lang="ru">Командный сервер</span></h1>
+    <p class="lede" lang="en">One binary and one Postgres. The server is <strong>the place where replicas meet</strong>: everyone keeps a local workspace, work happens at local speed, and <code>myc sync</code> is the deliberate step that exchanges what changed.</p>
+    <p class="lede" lang="ru">Один бинарь и один Postgres. Сервер — <strong>то место, где встречаются реплики</strong>: у каждого локальный воркспейс, работа идёт на местной скорости, а <code>myc sync</code> — тот осознанный шаг, который обменивает изменения.</p>
+    <p class="lede dim" style="margin-top:1rem" lang="en">The client always initiates. The network never sits in the hot path of a command: <code>prime</code>, <code>ready</code> and <code>show</code> read the local database and never wait for an exchange.</p>
+    <p class="lede dim" style="margin-top:1rem" lang="ru">Инициатор всегда клиент. Сеть не входит в горячий путь ни одной команды: <code>prime</code>, <code>ready</code> и <code>show</code> читают локальную базу и никогда не ждут обмена.</p>
+    <div class="cta">
+      <a class="btn primary" href="#run"><span lang="en">Run a server</span><span lang="ru">Поднять сервер</span></a>
+      <a class="btn" href="#multi"><span lang="en">Several servers, several repos</span><span lang="ru">Несколько серверов, несколько реп</span></a>
+    </div>
+  </div>
+</div>
+
+<!-- ── что это ───────────────────────────────────────────────────────────── -->
+<section id="what">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">01</span>
+      <h2 lang="en">What the server is — and what it is not</h2>
+      <h2 lang="ru">Что такое сервер — и чего он не делает</h2>
+      <p lang="en">Three properties decide everything else on this page.</p>
+      <p lang="ru">Три свойства, из которых следует всё остальное на этой странице.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3 lang="en">A meeting point, not a cloud</h3>
+        <h3 lang="ru">Место встречи, а не облако</h3>
+        <p class="sub" lang="en">Every machine keeps its own database; the server's copy is another site, not the source of truth for your laptop. Losing the server costs a server, not the knowledge — for every workspace that was actually synced.</p>
+        <p class="sub" lang="ru">У каждой машины своя база; копия на сервере — такой же сайт, а не истина для вашего ноутбука. Потерянный сервер стоит сервера, а не знания — для каждого воркспейса, который действительно синхронизировали.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">The client initiates — always</h3>
+        <h3 lang="ru">Инициатор — всегда клиент</h3>
+        <p class="sub" lang="en">Exchange is pull-push over HTTP with the client driving every round (design §9.5). No daemon, no open ports on your machine, no connection held open; an interrupted exchange resumes by running it again — it is idempotent by operation id.</p>
+        <p class="sub" lang="ru">Обмен — pull-push по HTTP, каждую петлю ведёт клиент (дизайн §9.5). Ни демона, ни открытых портов на вашей машине, ни висящего соединения; оборванный обмен продолжается повторным запуском — он идемпотентен по id операции.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Tenants are isolated by the database</h3>
+        <h3 lang="ru">Арендаторов изолирует сама база</h3>
+        <p class="sub" lang="en">Rows of different tenants are separated by PostgreSQL row-level security, not by application checks. Tokens are issued per tenant; only sha256 hashes are stored — a copy of the database gives no access.</p>
+        <p class="sub" lang="ru">Строки разных арендаторов разведены политиками RLS самого PostgreSQL, а не проверками приложения. Токены выпускаются под арендатором, хранятся только их sha256 — копия базы не даёт доступа.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── запуск ────────────────────────────────────────────────────────────── -->
+<section id="run">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">02</span>
+      <h2 lang="en">Run the server</h2>
+      <h2 lang="ru">Запуск сервера</h2>
+      <p lang="en">What you need: a host with Docker and a domain name pointing at it; PostgreSQL 17 with pgvector ≥ 0.7 (the schema needs <code>halfvec</code> and HNSW — the sample compose raises it for you); a reverse proxy for TLS, because the server speaks plain HTTP on purpose and holds no certificate.</p>
+      <p lang="ru">Что нужно: хост с Docker и доменное имя, указывающее на него; PostgreSQL 17 с pgvector ≥ 0.7 (схеме нужны <code>halfvec</code> и HNSW — образец compose поднимет его сам); обратный прокси для TLS, потому что сервер намеренно говорит по обычному HTTP и сертификат не держит.</p>
+    </div>
+
+    <div class="card">
+      <h3 lang="en">1. Clone and adjust the sample</h3>
+      <h3 lang="ru">1. Клонируем и правим образец</h3>
+<pre class="block" lang="en"><code>git clone https://github.com/aistastudio/myc && cd myc
+cp deploy/compose.yml deploy/compose.prod.yml</code></pre>
+<pre class="block" lang="ru"><code>git clone https://github.com/aistastudio/myc && cd myc
+cp deploy/compose.yml deploy/compose.prod.yml</code></pre>
+      <p class="sub" lang="en">Three things in <code>deploy/compose.prod.yml</code> must change before the first start — this is what separates the sample from an installation:</p>
+      <p class="sub" lang="ru">Три вещи в <code>deploy/compose.prod.yml</code> меняются до первого старта — именно они отличают образец от установки:</p>
+      <ol class="sub" style="padding-left:1.2rem" lang="en">
+        <li><strong>The password</strong> — in three places: <code>POSTGRES_PASSWORD</code>, inside <code>MYC_PG_URL</code>, and in <code>deploy/initdb/10-app-role.sql</code>. Take it from the orchestrator's secret, not from a file.</li>
+        <li><strong>The published port</strong> — keep it on <code>127.0.0.1</code> so only the proxy can reach it.</li>
+        <li><strong><code>MYC_BOOTSTRAP_TENANT</code> and <code>MYC_BOOTSTRAP_TOKEN</code></strong> — leave them for the first start and remove both lines after. They exist so that <code>up -d</code> hands you a server you can log into; the first secret is printed to the <strong>container log</strong>, which is not where it should live permanently.</li>
+      </ol>
+      <ol class="sub" style="padding-left:1.2rem" lang="ru">
+        <li><strong>Пароль</strong> — в трёх местах: <code>POSTGRES_PASSWORD</code>, пароль внутри <code>MYC_PG_URL</code> и <code>deploy/initdb/10-app-role.sql</code>. Берите его из секрета оркестратора, а не из файла.</li>
+        <li><strong>Опубликованный порт</strong> — оставьте на <code>127.0.0.1</code>, чтобы до него доставал только прокси.</li>
+        <li><strong><code>MYC_BOOTSTRAP_TENANT</code> и <code>MYC_BOOTSTRAP_TOKEN</code></strong> — оставьте на первый старт и уберите обе строки после. Они существуют, чтобы <code>up -d</code> давал сервер, в который можно войти; первый секрет они печатают <strong>в журнал контейнера</strong>, а это не то место, где ему жить постоянно.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3 lang="en">2. First start</h3>
+      <h3 lang="ru">2. Первый старт</h3>
+<pre class="block"><code>docker compose -f deploy/compose.prod.yml up -d
+docker compose -f deploy/compose.prod.yml logs server | grep -A2 'bootstrap token'</code></pre>
+      <p class="sub" lang="en">On an empty volume Postgres applies the schema itself: first the login role (<code>10-app-role.sql</code>), then <code>db/schema.postgres.sql</code> — tables, triggers and RLS policies. The application role is deliberately not allowed to do that, so the superuser applies it and the server afterwards lives as <code>myc_app</code>. Write down the secret from the log: it is shown once, only its sha256 is stored.</p>
+      <p class="sub" lang="ru">На пустом томе Postgres накатывает схему сам: сперва роль со входом (<code>10-app-role.sql</code>), затем <code>db/schema.postgres.sql</code> — таблицы, триггеры и политики RLS. Права накатывать её у прикладной роли намеренно нет, поэтому её накатывает суперпользователь, а сервер дальше живёт ролью <code>myc_app</code>. Секрет из журнала запишите: он показывается один раз, в базе хранится только его sha256.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── tls и пробы ───────────────────────────────────────────────────────── -->
+<section id="tls">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">03</span>
+      <h2 lang="en">TLS in front, and two probes</h2>
+      <h2 lang="ru">TLS спереди и две пробы</h2>
+      <p lang="en">Whether the session cookie gets the <code>Secure</code> flag is decided by <code>X-Forwarded-Proto</code>, so the proxy must set it. Caddy does it in two lines; nginx — by hand.</p>
+      <p lang="ru">Признак <code>Secure</code> у куки сессии ставится по <code>X-Forwarded-Proto</code>, поэтому прокси обязан его ставить. Caddy делает это в две строки, nginx — руками.</p>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Caddy</h3>
+<pre class="block"><code>myc.example.com {
+	reverse_proxy 127.0.0.1:8080
+}</code></pre>
+      </div>
+      <div class="card">
+        <h3>nginx</h3>
+<pre class="block"><code>location / {
+	proxy_pass http://127.0.0.1:8080;
+	proxy_set_header X-Forwarded-Proto $scheme;
+	proxy_set_header Host $host;
+}</code></pre>
+      </div>
+    </div>
+    <div class="grid-2" style="margin-top:1.25rem">
+      <div class="card">
+        <h3 lang="en">Probe 1 — liveness</h3>
+        <h3 lang="ru">Проба 1 — живость</h3>
+<pre class="block"><code>curl https://myc.example.com/v1/health</code></pre>
+        <p class="sub" lang="en">Is the process up. It deliberately never touches the database, so someone else's Postgres outage does not get your container restarted. Needs no token.</p>
+        <p class="sub" lang="ru">Процесс поднят. Базу он намеренно не трогает, поэтому чужой простой Postgres не приводит к перезапуску вашего контейнера. Токена не требует.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Probe 2 — readiness</h3>
+        <h3 lang="ru">Проба 2 — готовность</h3>
+<pre class="block"><code>curl -s -o /dev/null -w '%{http_code}\n' https://myc.example.com/v1/readyz</code></pre>
+        <p class="sub" lang="en"><code>200</code> while the database answers, <code>503 db.unavailable</code> while it does not. This is what the orchestrator's traffic decision should hang on. Needs no token either; everything else answers <code>401</code> until a token arrives.</p>
+        <p class="sub" lang="ru"><code>200</code>, пока база отвечает, <code>503 db.unavailable</code>, пока нет. Именно на неё вешайте решение оркестратора о трафике. Токена тоже не требует; всё остальное отвечает <code>401</code>, пока токена нет.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── арендаторы и токены ───────────────────────────────────────────────── -->
+<section id="tokens">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">04</span>
+      <h2 lang="en">Tenants and tokens</h2>
+      <h2 lang="ru">Арендаторы и токены</h2>
+      <p lang="en">A <strong>tenant</strong> is an organization; tokens are issued under it, and rows of different tenants are isolated by RLS. Most teams need exactly one. One token per person and per agent — never a shared one: then revoking costs one row and nobody else's access.</p>
+      <p lang="ru"><strong>Арендатор</strong> — это организация; токены выпускаются под ним, строки разных арендаторов изолированы RLS. Большинству команд нужен ровно один. По токену на человека и на агента — общий не заводите: тогда отзыв стоит одной строки и никому больше не стоит доступа.</p>
+    </div>
+
+    <div class="card">
+<pre class="block"><code>alias myc-srv='docker compose -f deploy/compose.prod.yml exec -T server myc serve'
+
+myc-srv --add-tenant acme:Acme
+myc-srv --add-token acme:anna --role owner
+myc-srv --add-token acme:boris --role member
+myc-srv --add-token acme:reviewer-bot --role agent
+myc-srv --tokens          # who holds what and when each was last used
+myc-srv --revoke-token tok_…</code></pre>
+      <p class="sub" lang="en"><strong>Roles and rights.</strong> Roles: <code>owner</code>, <code>maintainer</code>, <code>member</code>, <code>agent</code>, <code>viewer</code>; rights: <code>read</code>, <code>write</code>, <code>claim</code>, <code>sync</code>, <code>admin</code>. A role is a default set of rights; <code>--scopes read,sync</code> narrows it explicitly. <code>--token-ws</code> binds a token to a single workspace.</p>
+      <p class="sub" lang="ru"><strong>Роли и права.</strong> Роли: <code>owner</code>, <code>maintainer</code>, <code>member</code>, <code>agent</code>, <code>viewer</code>; права: <code>read</code>, <code>write</code>, <code>claim</code>, <code>sync</code>, <code>admin</code>. Роль — набор прав по умолчанию, а <code>--scopes read,sync</code> сужает его явно. <code>--token-ws</code> привязывает токен к одному воркспейсу.</p>
+      <p class="sub" lang="en"><strong>Why <code>sync</code> is not given out lightly.</strong> The exchange carries the <strong>oplog</strong>, which the visibility predicate does not filter: a replica is complete by construction, otherwise it does not converge. So the right to take a replica is the right to see everything in the workspace, including other people's private notes. Give <code>sync</code> to those who already have that access — everyone else reads through the API under ACL with <code>member</code>.</p>
+      <p class="sub" lang="ru"><strong>Почему <code>sync</code> не раздаётся просто так.</strong> Обмен везёт <strong>оплог</strong>, который предикат видимости не фильтрует: реплика полна по построению, иначе она не сходится. Значит право забрать реплику — это право видеть в воркспейсе всё, включая чужие приватные заметки. Давайте <code>sync</code> тем, у кого такой доступ и так есть, остальным — <code>member</code>, который читает через API под ACL.</p>
+      <p class="sub" lang="en">The <strong>admin page</strong> is <code>https://myc.example.com/v1/admin</code>: it asks the browser for a token in a form and keeps it in an HttpOnly cookie with <code>SameSite=Strict</code>. It requires the <code>admin</code> right.</p>
+      <p class="sub" lang="ru"><strong>Админка</strong> — <code>https://myc.example.com/v1/admin</code>: спрашивает у браузера токен формой и держит его в HttpOnly-куке с <code>SameSite=Strict</code>. Нужно право <code>admin</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── машина подключается ───────────────────────────────────────────────── -->
+<section id="clients">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">05</span>
+      <h2 lang="en">A machine joins</h2>
+      <h2 lang="ru">Подключение машины</h2>
+      <p lang="en">The workspace name on the server and the <strong>slug</strong> on the machine must match: the slug is part of every node's id, so exchanging workspace <code>cherry</code> with workspace <code>web</code> would move nodes where neither side expects them. <code>myc sync</code> refuses that instead of merging it.</p>
+      <p lang="ru">Имя воркспейса на сервере и <strong>слаг</strong> на машине обязаны совпасть: слаг входит в id каждого узла, поэтому обмен воркспейса <code>cherry</code> с воркспейсом <code>web</code> переселил бы узлы туда, где их не ждёт ни одна из сторон. <code>myc sync</code> такое отвергает, а не сливает.</p>
+    </div>
+
+    <div class="card">
+<pre class="block" lang="en"><code>myc init --slug acme          <span class="c"># or: the slug is already in .myc/workspace.toml</span>
+
+export MYC_SERVER=https://myc.example.com   <span class="c"># workspace comes from the local slug</span>
+export MYC_TOKEN=myc_…                      <span class="c"># never on the command line</span>
+myc sync</code></pre>
+<pre class="block" lang="ru"><code>myc init --slug acme          <span class="c"># или: слаг уже лежит в .myc/workspace.toml</span>
+
+export MYC_SERVER=https://myc.example.com   <span class="c"># воркспейс — из слага .myc/workspace.toml</span>
+export MYC_TOKEN=myc_…                      <span class="c"># не в командной строке</span>
+myc sync</code></pre>
+      <p class="sub" lang="en">The workspace by default is the slug from <code>.myc/workspace.toml</code> — the same file that builds node ids, so the requirement matches by construction. Explicit ways (<code>--ws</code>, <code>MYC_WS</code>, a path in the address) stay for looking into a foreign workspace from your own directory.</p>
+      <p class="sub" lang="ru">Воркспейс по умолчанию — слаг из <code>.myc/workspace.toml</code>: тот же файл, что строит id узлов, поэтому требование «слаг совпадает с воркспейсом сервера» соблюдается само. Явные способы (<code>--ws</code>, <code>MYC_WS</code>, путь в адресе) остаются — ими заходят в чужой воркспейс из своего каталога.</p>
+    </div>
+
+    <div class="grid-2" style="margin-top:1.25rem">
+      <div class="card">
+        <h3 lang="en">The name you sign with</h3>
+        <h3 lang="ru">Имя, которым вы подписываете работу</h3>
+        <p class="sub" lang="en">It must match the person the token was issued to. <code>myc init</code> takes it from git — the same signature that goes into your commits — writes it into the workspace and prints it. Issue the token for exactly that name (<code>--add-token acme:"Anna Ivanova"</code>), or set <code>MYC_ACTOR</code> to what the token says. A private node belongs to its author <em>by name</em>: on mismatch the note still reaches you locally, but on the server it belongs to a name nobody holds a token for — visible to no one. Nothing leaks, but nothing is found either.</p>
+        <p class="sub" lang="ru">Имя обязано совпасть с тем, на кого выпущен токен. <code>myc init</code> берёт его из git — той же подписи, что в ваших коммитах, — записывает в воркспейс и печатает. Выпустите токен ровно на это имя (<code>--add-token acme:"Анна Иванова"</code>) или задайте <code>MYC_ACTOR</code> тем, что написано в токене. Приватный узел принадлежит автору <em>по имени</em>: при расхождении заметка доезжает и локально, но на сервере принадлежит имени, на которое токена ни у кого нет, — и не видна никому. Ничего не утекает, но и не находится.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Why the token lives in the environment</h3>
+        <h3 lang="ru">Почему токен живёт в окружении</h3>
+        <p class="sub" lang="en">Arguments are visible in <code>ps</code>, in shell history and in hook logs. Put both exports into your shell profile or into a project <code>.envrc</code> that never gets committed. The local cycle stays the usual one — <code>myc prime</code>, <code>myc ready --claim</code>, <code>myc recall</code>, <code>myc remember</code>, <code>myc close</code> — all against the local database, at local speed; <code>myc sync</code> is when you choose to hand yours over and take others'.</p>
+        <p class="sub" lang="ru">Аргументы видны в <code>ps</code>, в истории оболочки и в журналах хуков. Положите оба экспорта в профиль оболочки или в <code>.envrc</code> проекта, который не коммитится. Локальный цикл остаётся обычным — <code>myc prime</code>, <code>myc ready --claim</code>, <code>myc recall</code>, <code>myc remember</code>, <code>myc close</code> — всё по локальной базе, на местной скорости; <code>myc sync</code> — когда вы решили отдать своё и забрать чужое.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">Verifying: what myc sync tells you</h3>
+      <h3 lang="ru">Проверка: что говорит myc sync</h3>
+      <p class="sub" lang="en">The first call sends nothing: the client does not yet know the server's watermarks, and sending blindly would push a thousand operations the server already has at every launch. The answer carries the watermarks; the next round sends exactly what is missing. The status line then reports where the target and the token came from and when the background exchange is due:</p>
+      <p class="sub" lang="ru">Первый вызов ничего не шлёт: у клиента ещё нет вод сервера, и отправка «на всякий случай» гнала бы по сети тысячи операций, которые сервер и так знает, при каждом запуске. Ответ приносит воды — дальше отправляется ровно недостающее. Строка состояния называет, откуда взялись цель и токен и когда пора следующий обмен:</p>
+<pre class="block"><code>push 12 op · pull 3 op · 2 rounds · 84 ms
+  applied 3, duplicate 0, stale 0
+  mode auto · server config · token .myc/token · last sync 43s ago · background in 17s</code></pre>
+      <p class="sub" lang="en">Counts by direction, rounds spent, and what the pull did with each operation: <code>applied</code>, <code>duplicate</code> (already known), <code>stale</code> (lost the field clock), <code>deferred</code> (an operation arrived before its node — parked in <code>oplog_pending</code>, named so that "accepted 9, visible 7" never hides).</p>
+      <p class="sub" lang="ru">Числа по направлениям, потраченные круги и что пул сделал с каждой операцией: <code>applied</code>, <code>duplicate</code> (уже известна), <code>stale</code> (проиграла полевые часы), <code>deferred</code> (операция приехала раньше своего узла — лежит в <code>oplog_pending</code>, и это называется, чтобы «приняли 9, видно 7» не прятало проблему).</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── агенты ────────────────────────────────────────────────────────────── -->
+<section id="agents">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">06</span>
+      <h2 lang="en">Agents join</h2>
+      <h2 lang="ru">Подключение агентов</h2>
+      <p lang="en">Agents do not talk to the server — they talk to the local workspace, and the exchange stays a human-scale step. One command wires hooks, the MCP server and the skill for six agents:</p>
+      <p lang="ru">Агенты не разговаривают с сервером — они разговаривают с локальным воркспейсом, а обмен остаётся шагом человеческого масштаба. Одна команда ставит хуки, MCP-сервер и скилл для шести агентов:</p>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Everything at once</h3>
+        <h3 lang="ru">Всё сразу</h3>
+<pre class="block" lang="en"><code>myc wire --agents claude,codex,opencode,kimi,mcode,mimo
+myc wire --dry-run           <span class="c"># print every file and change, write nothing</span></code></pre>
+<pre class="block" lang="ru"><code>myc wire --agents claude,codex,opencode,kimi,mcode,mimo
+myc wire --dry-run           <span class="c"># показать каждый файл и изменение, ничего не писать</span></code></pre>
+        <p class="sub" lang="en">Opt-ins: <code>--status-line</code> (myc's line under Claude Code's prompt), <code>--queue-hook</code> (heavy Bash commands through <code>myc run</code>), <code>--agents-md</code> (the myc block into AGENTS.md). <code>--scope user</code> wires the user layer instead of the project — for agents in git worktrees and nested repos where the project layer has no myc.</p>
+        <p class="sub" lang="ru">По желанию: <code>--status-line</code> (строка myc под приглашением Claude Code), <code>--queue-hook</code> (тяжёлые Bash-команды через <code>myc run</code>), <code>--agents-md</code> (блок myc в AGENTS.md). <code>--scope user</code> ставит пользовательский слой вместо проектного — для агентов в git worktree и вложенных репозиториях, где в проектном слое myc нет.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Or the MCP server by hand</h3>
+        <h3 lang="ru">Или MCP-сервер вручную</h3>
+        <p class="sub" lang="en">For a host that reads its own config, point it at <code>myc mcp</code> over stdio: the agent profile of tools, working rules and the bootstrap block delivered in <code>initialize.instructions</code>. The server resolves its workspace at start from <code>-C</code>, then <code>CLAUDE_PROJECT_DIR</code>, then the current directory — and outside a workspace it honestly serves <strong>zero tools</strong> rather than tools that answer "not initialized".</p>
+        <p class="sub" lang="ru">Для хоста, который читает свой конфиг, укажите <code>myc mcp</code> по stdio: профиль инструментов agent, правила работы и бутстрап-блок в <code>initialize.instructions</code>. Сервер определяет свой воркспейс при старте из <code>-C</code>, затем <code>CLAUDE_PROJECT_DIR</code>, затем текущего каталога — а вне воркспейса честно отдаёт <strong>ноль инструментов</strong> вместо инструментов, которые отвечают «не инициализировано».</p>
+<pre class="block"><code>myc mcp</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── одна репа — один сервер ────────────────────────────────────────────── -->
+<section id="multi">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">07</span>
+      <h2 lang="en">One repository — one server (0.5)</h2>
+      <h2 lang="ru">Одна репозитория — один сервер (0.5)</h2>
+      <p lang="en">Repositories of different companies must not mix. The address and the token are read from the <strong>repository</strong>, not from the profile — because the profile does not know which repository you are sitting in.</p>
+      <p lang="ru">Репозитории разных компаний не должны смешиваться. Адрес и токен читаются из <strong>репозитории</strong>, а не из профиля — потому что профиль не знает, в чьей репозитории вы сидите.</p>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Committed: the target</h3>
+        <h3 lang="ru">В коммит: цель</h3>
+<pre class="block"><code># .myc/workspace.toml
+slug = "qmatic"
+server = "https://myc.company-a.com/tenant"
+sync = "auto"</code></pre>
+        <p class="sub" lang="en"><code>server</code> is the address of <em>this</em> repository's server (with the workspace path, if you keep it in the URL). <code>sync = "auto"</code> turns on the background exchange described below; the default is <code>manual</code>.</p>
+        <p class="sub" lang="ru"><code>server</code> — адрес сервера <em>этой</em> репозитории (с путём воркспейса, если держите его в URL). <code>sync = "auto"</code> включает фоновый обмен ниже; по умолчанию — <code>manual</code>.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Gitignored: the token</h3>
+        <h3 lang="ru">В gitignore: токен</h3>
+<pre class="block"><code>.myc/token</code></pre>
+        <p class="sub" lang="en">One token per repository, in <code>.myc/token</code>; the file is listed in <code>.myc/.gitignore</code> — a token is a secret, not the workspace's identity, so it must not be committed. A clone arrives with the config and without the token: whoever has the server's access drops their own file in.</p>
+        <p class="sub" lang="ru">Один токен на репозиторию — в <code>.myc/token</code>; файл перечислен в <code>.myc/.gitignore</code>: токен — секрет, а не личность воркспейса, коммититься он не обязан. Клон приезжает с конфигом, но без токена: кто имеет доступ к серверу, кладёт свой файл.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">Resolution order — the repository beats the profile</h3>
+      <h3 lang="ru">Порядок разрешения — репозитория обгоняет профиль</h3>
+      <div class="tablewrap">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th><span lang="en">Target (URL)</span><span lang="ru">Цель (URL)</span></th>
+              <th><span lang="en">Token</span><span lang="ru">Токен</span></th>
+              <th><span lang="en">Meaning</span><span lang="ru">Смысл</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>--server</code></td>
+              <td><code>.myc/token</code></td>
+              <td><span lang="en">The flag wins: a deliberate one-off look at a foreign server.</span><span lang="ru">Флаг сильнее всего: осмотр чужого сервера в этот раз.</span></td>
+            </tr>
+            <tr>
+              <td><code>server</code> in <code>.myc/workspace.toml</code></td>
+              <td><code>MYC_TOKEN</code></td>
+              <td><span lang="en">Then the repository's config: committed, per-repository, shared with everyone who clones it.</span><span lang="ru">Дальше конфиг репозитории: коммитится, свой на каждую репу, общий для всех, кто её клонирует.</span></td>
+            </tr>
+            <tr>
+              <td><code>MYC_SERVER</code></td>
+              <td>—</td>
+              <td><span lang="en">The profile last: a fallback for repositories without a config.</span><span lang="ru">Профиль последним: запасной путь для реп без конфига.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" lang="en">The config beating the profile is deliberate: the profile is global and does not know which repository you are in — in repositories of different companies that is not an inconvenience but protection against sending data to the wrong server. Two rules around it: the config <em>never</em> switches ordinary commands into remote mode (that still takes an explicit ask — flag or profile; otherwise <code>server</code> in a repository would put every <code>list</code> on the network), and a local command under an explicit <code>--server</code> refuses by name (<code>precond.no_remote</code>) instead of quietly substituting the local database.</p>
+      <p class="sub" lang="ru">Конфиг обгоняет профиль намеренно: профиль глобален и не знает, в чьей репозитории вы сидите, — в репозиториях разных компаний это неудобство, а защита от отправки данных не на тот сервер. Два правила вокруг: конфиг <em>никогда</em> не переводит обычные команды в удалённый режим (для этого всё равно нужен явный спрос — флаг или профиль, иначе <code>server</code> в репозитории гнал бы в сеть каждый <code>list</code>), а явный <code>--server</code> у локальной команды отвечает отказом по имени (<code>precond.no_remote</code>), а не подменяет локальную базу молча.</p>
+    </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <h3 lang="en">Background exchange when sync is on</h3>
+      <h3 lang="ru">Фоновый обмен, когда sync включён</h3>
+      <p class="sub" lang="en">With <code>sync = "auto"</code> the exchange happens on its own: every 60 seconds once due, and 2 seconds after a local <code>close</code>/<code>claim</code> — in the background, as a detached process, never inside a command's hot path. Failed background attempts are visible in the queue's <code>last_error</code>, and the last one is named by the status line of the next manual <code>myc sync</code>. The exchange remains client-initiated: the network sits between your database and the server only when you asked for it — explicitly, or by turning the mode on.</p>
+      <p class="sub" lang="ru">С <code>sync = "auto"</code> обмен случается сам: раз в 60 с, когда пора, и через 2 с после локального <code>close</code>/<code>claim</code> — фоном, отсоединённым процессом, никогда не в горячем пути команды. Упавшие фоновые попытки видны в <code>last_error</code> очереди, а последнюю называет строка состояния следующего явного <code>myc sync</code>. Обмен остаётся инициативой клиента: сеть стоит между вашей базой и сервером только когда вы об этом попросили — явно или включённым режимом.</p>
+      <div class="tablewrap">
+        <table class="compare">
+          <thead>
+            <tr><th><span lang="en">Knob</span><span lang="ru">Переключатель</span></th><th><span lang="en">What it does</span><span lang="ru">Что делает</span></th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>sync = "auto" | "manual"</code> in <code>.myc/workspace.toml</code></td><td><span lang="en">The mode itself; committed with the repository, so the whole team agrees once.</span><span lang="ru">Сам режим; коммитится с репозиторией — вся команда договаривается один раз.</span></td></tr>
+            <tr><td><code>MYC_SYNC=auto</code></td><td><span lang="en">Turns the mode on for one machine without touching the config.</span><span lang="ru">Включает режим на одной машине, не трогая конфиг.</span></td></tr>
+            <tr><td><code>MYC_SYNC_BG=0</code></td><td><span lang="en">Disables the mechanism entirely — for tests and cautious machines.</span><span lang="ru">Гасит механизм целиком — для тестов и осторожных машин.</span></td></tr>
+            <tr><td><code>myc sync --dry-run</code></td><td><span lang="en">Counts both directions without changing anything — what the automation would do.</span><span lang="ru">Считает оба направления, ничего не меняя — что сделал бы автомат.</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" lang="en">A repository without a server or a token does not fail in the background — the step names why it stood still («no server to exchange with», «no token») in the status line of <code>myc sync</code>, and with <code>sync = "manual"</code> nothing is scheduled at all.</p>
+      <p class="sub" lang="ru">Репозитория без сервера или токена не падает в фоне: шаг называет, почему он стоит («no server to exchange with», «no token»), в строке состояния <code>myc sync</code>, а при <code>sync = "manual"</code> не планируется ничего.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── операции ──────────────────────────────────────────────────────────── -->
+<section id="ops">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">08</span>
+      <h2 lang="en">Backup and update</h2>
+      <h2 lang="ru">Резервное копирование и обновление</h2>
+      <p lang="en">The Postgres volume is the server's only state: the binary has none, and the admin page and tokens live in the same database.</p>
+      <p lang="ru">Том Postgres — единственное состояние сервера: бинарь его не имеет, а админка и токены лежат в той же базе.</p>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3 lang="en">Backup</h3>
+        <h3 lang="ru">Бэкап</h3>
+<pre class="block"><code>docker compose -f deploy/compose.prod.yml exec -T db \
+  pg_dump -U postgres -Fc myc > myc-$(date +%F).dump</code></pre>
+        <p class="sub" lang="en">Every machine additionally holds a full replica of its workspace — but only for workspaces somebody actually synced. Make the copies anyway.</p>
+        <p class="sub" lang="ru">У каждой машины к тому же лежит полная реплика воркспейса — но только для тех воркспейсов, кто-то действительно синхронизировал. Копии всё равно делайте.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Update</h3>
+        <h3 lang="ru">Обновление</h3>
+        <p class="sub" lang="en">The image builds from the repository, so an update is a rebuild — and if the release moved the schema, bring the database up explicitly with <code>--migrate</code> <strong>as the superuser</strong>: RLS hides other tenants' rows from the application role, and under it a data migration would change nothing — silently — while still writing a new schema number. The command refuses that.</p>
+        <p class="sub" lang="ru">Образ собирается из репозитория, поэтому обновление — пересборка, а если релиз сдвинул схему — доведите базу явно через <code>--migrate</code> <strong>от суперпользователя</strong>: политики RLS прячат от прикладной роли чужие строки, и под ней миграция данных не изменила бы ничего — молча — но номер схемы записала бы. Команда такое отвергает.</p>
+<pre class="block"><code>git pull
+docker compose -f deploy/compose.prod.yml build server
+docker compose -f deploy/compose.prod.yml up -d server
+curl -s https://myc.example.com/v1/health   # "ver" must change</code></pre>
+        <p class="sub" lang="en">The server checks the binary's version against the schema at start and refuses a database that is behind — naming both numbers. A database it simply cannot reach is different and does not stop the start: a container may come up before its database, which is what <code>/v1/readyz</code> exists for. <code>--apply-schema</code> writes the schema into an <strong>empty</strong> database and refuses a populated one — applying DDL over live data is a migration, with its own order, checks and rollback.</p>
+        <p class="sub" lang="ru">Сервер при старте сверяет версию бинаря со схемой и на отставшей базе работать отказывается, называя оба номера. База, до которой он просто не достучался, — другое и старт не останавливает: контейнер вправе подняться раньше базы, на то и заведён <code>/v1/readyz</code>. <code>--apply-schema</code> пишет схему в <strong>пустую</strong> базу и отказывается от населённой: накат DDL поверх живых данных — это миграция, у неё свой порядок, свои проверки и свой откат.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── ограничения ───────────────────────────────────────────────────────── -->
+<section id="limits">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">09</span>
+      <h2 lang="en">What does not work yet</h2>
+      <h2 lang="ru">Чего пока нет</h2>
+    </div>
+    <div class="card">
+      <p class="sub" lang="en"><strong>Only part of the CLI speaks to a server.</strong> Working remotely today: <code>create</code>/<code>task</code>/<code>bug</code>/<code>epic</code>/<code>msg</code>, <code>update</code>, <code>claim</code>, <code>list</code>, <code>ready</code>, <code>show</code>, <code>prime</code> and <code>sync</code>. Every other command is local: with a server in <code>MYC_SERVER</code> it still runs locally and names that in one WARN line («this run used the LOCAL database») — no quiet substitution — and <code>init</code>/<code>remember</code>/<code>close</code> keep working. An explicit <code>--server</code> for such a command is a refusal (<code>precond.no_remote</code>).</p>
+      <p class="sub" lang="ru"><strong>С сервером разговаривает лишь часть CLI.</strong> Удалённо сегодня работают <code>create</code>/<code>task</code>/<code>bug</code>/<code>epic</code>/<code>msg</code>, <code>update</code>, <code>claim</code>, <code>list</code>, <code>ready</code>, <code>show</code>, <code>prime</code> и <code>sync</code>. Остальные команды локальны: с сервером в <code>MYC_SERVER</code> они всё равно работают локально и называют это одной строкой WARN («this run used the LOCAL database») — молчаливой подмены нет, — а <code>init</code>/<code>remember</code>/<code>close</code> при этом остаются рабочими. Явный <code>--server</code> для такой команды — отказ (<code>precond.no_remote</code>).</p>
+      <p class="sub" lang="en">So the working shape is: everyone keeps a local workspace and exchanges through the server. Pointing <code>MYC_SERVER</code> at the server and working «in» it is not the mode to plan around. Also not there yet: hybrid search on Postgres (the server's own <code>recall</code> has no lexical or vector branch), SSE deltas for the web interface, and a bulk SQLite→Postgres import of an existing workspace.</p>
+      <p class="sub" lang="ru">Поэтому работающая форма такая: у каждого локальный воркспейс, а обмен идёт через сервер. Указать <code>MYC_SERVER</code> и работать «в нём» — не тот режим, вокруг которого стоит строить процесс. Ещё нет: гибридного поиска на Postgres (у серверного <code>recall</code> нет ни лексической, ни векторной ветки), SSE-дельт для веб-интерфейса и массового ввоза существующего воркспейса из SQLite в Postgres.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── отказы ────────────────────────────────────────────────────────────── -->
+<section id="fails">
+  <div class="wrap">
+    <div class="sec-head narrow">
+      <span class="sec-index">10</span>
+      <h2 lang="en">When something refuses</h2>
+      <h2 lang="ru">Когда что-то отказывает</h2>
+    </div>
+    <div class="card">
+      <div class="tablewrap">
+        <table class="compare" lang="en">
+          <thead><tr><th>What you see</th><th>What it means</th></tr></thead>
+          <tbody>
+            <tr><td><code>401 denied.no_token</code></td><td>No MYC_TOKEN, or the proxy strips the <code>Authorization</code> header.</td></tr>
+            <tr><td><code>denied.scope: this token has no 'sync' scope</code></td><td>The token was issued as <code>member</code>; reissue with <code>--role owner</code> or <code>--scopes …,sync</code>.</td></tr>
+            <tr><td><code>usage.ws_mismatch</code></td><td>The local slug and the server's workspace differ — the message names both.</td></tr>
+            <tr><td><code>precond.no_remote</code></td><td>An explicit <code>--server</code> for a command with no remote mode; run it without the flag (with MYC_SERVER set it runs locally with a WARN).</td></tr>
+            <tr><td>WARN <code>server.local_only</code></td><td>MYC_SERVER is set but the command has no server mode: it ran locally — check that this is what you meant.</td></tr>
+            <tr><td><code>/v1/health</code> says ok, other routes say <code>503 db.query</code></td><td>The container is alive but cannot reach Postgres. Liveness deliberately knows nothing about the database — ask <code>/v1/readyz</code>, which answers <code>503 db.unavailable</code> exactly for this.</td></tr>
+            <tr><td><code>/v1/readyz</code> answers 401, with a token — <code>notfound.route</code></td><td>There is no readiness route at all: <code>/v1/health</code> is liveness and knows nothing about the database. Hang the orchestrator's probe on readiness and watch the database separately.</td></tr>
+          </tbody>
+        </table>
+        <table class="compare" lang="ru">
+          <thead><tr><th>Что видно</th><th>Что это значит</th></tr></thead>
+          <tbody>
+            <tr><td><code>401 denied.no_token</code></td><td>Нет MYC_TOKEN, либо прокси срезает заголовок <code>Authorization</code>.</td></tr>
+            <tr><td><code>denied.scope: this token has no 'sync' scope</code></td><td>Токен выпущен как <code>member</code>; выпустите с <code>--role owner</code> или <code>--scopes …,sync</code>.</td></tr>
+            <tr><td><code>usage.ws_mismatch</code></td><td>Локальный слаг и воркспейс сервера разные — в сообщении названы оба.</td></tr>
+            <tr><td><code>precond.no_remote</code></td><td>Явный <code>--server</code> для команды без удалённого режима; выполните её без флага (с MYC_SERVER в окружении она работает локально с WARN).</td></tr>
+            <tr><td>WARN <code>server.local_only</code></td><td>MYC_SERVER задан, но у команды нет серверного режима: выполнено локально — проверьте, что это то, что нужно.</td></tr>
+            <tr><td><code>/v1/health</code> отвечает ok, остальные маршруты — <code>503 db.query</code></td><td>Контейнер жив, но до Postgres не достаёт. Живость намеренно ничего не знает о базе — спрашивайте <code>/v1/readyz</code>, он отвечает <code>503 db.unavailable</code> именно на этот случай.</td></tr>
+            <tr><td><code>/v1/readyz</code> отвечает 401, с токеном — <code>notfound.route</code></td><td>Маршрута готовности нет вовсе: <code>/v1/health</code> — живость, и о базе он ничего не знает. Пробу оркестратора вешайте на готовность, а за базой следите отдельно.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin-top:1rem" lang="en">The full deployment guide lives in the repository: <code>docs/deploy.ru.md</code> (Russian) and <code>docs/deploy.md</code> (English).</p>
+      <p class="sub" style="margin-top:1rem" lang="ru">Полное руководство по развёртыванию лежит в репозитории: <code>docs/deploy.ru.md</code> (русский) и <code>docs/deploy.md</code> (английский).</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><a href="index.html"><span lang="en">← back to the main page</span><span lang="ru">← обратно на главную</span></a></p>
+    <p class="muted" lang="en">Source of this guide: docs/deploy.ru.md / docs/deploy.md in the repository. The build of this site fails if a command on this page does not exist in the CLI help it ships with.</p>
+    <p class="muted" lang="ru">Источник этого руководства: docs/deploy.ru.md / docs/deploy.md в репозитории. Сборка сайта падает, если команда на этой странице отсутствует в справке CLI, с которым она уходит.</p>
+  </div>
+</footer>
+
+<script>
+  // Язык, тема и кнопки copy — тот же контракт, что на главной странице.
+  (function () {
+    var root = document.documentElement;
+    function setLang(lang) {
+      if (lang !== "ru" && lang !== "en") lang = "en";
+      root.setAttribute("data-lang", lang);
+      root.setAttribute("lang", lang);
+      try { localStorage.setItem("myc-lang", lang); } catch (e) {}
+      var url = new URL(location.href);
+      url.searchParams.set("lang", lang);
+      history.replaceState(null, "", url);
+      document.querySelectorAll("[data-lang-btn]").forEach(function (b) {
+        b.setAttribute("aria-pressed", String(b.getAttribute("data-lang-btn") === lang));
+      });
+    }
+    document.querySelectorAll("[data-lang-btn]").forEach(function (b) {
+      b.addEventListener("click", function () { setLang(b.getAttribute("data-lang-btn")); });
+    });
+    var themeBtn = document.getElementById("theme-btn");
+    if (themeBtn) themeBtn.addEventListener("click", function () {
+      var cur = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", cur);
+      try { localStorage.setItem("myc-theme", cur); } catch (e) {}
+    });
+    setLang(root.getAttribute("data-lang") || "en");
+    document.addEventListener("click", function (e) {
+      var b = e.target.closest && e.target.closest(".copy");
+      if (!b || !b.parentElement) return;
+      var code = b.parentElement.querySelector("code");
+      if (!code) return;
+      var text = code.innerText.replace(/ /g, " ");
+      function done() { b.textContent = "✓"; b.setAttribute("data-done", "1");
+        setTimeout(function () { b.removeAttribute("data-done"); b.textContent = "copy"; }, 1400); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); done(); } catch (err) {}
+        document.body.removeChild(ta);
+      }
+    });
+  })();
+</script>
+</body>
+</html>
