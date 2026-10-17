@@ -302,6 +302,14 @@ describe("схема", () => {
       { version: 8, name: "harness_codex" },
       { version: 9, name: "swarm_attempt_scope" },
       { version: 10, name: "harness_mcode_mimo" },
+      //011–015 заняты веткой ade-wave0 (см. migrations/index.ts); телеметрия
+      // пришла под номерами016–021 (P0 «Таблицы swarm…», спека04 §2.2).
+      { version: 16, name: "swarm_signal" },
+      { version: 17, name: "swarm_signal_attempt" },
+      { version: 18, name: "swarm_signal_time" },
+      { version: 19, name: "swarm_route_decision" },
+      { version: 20, name: "swarm_route_task" },
+      { version: 21, name: "swarm_arm" },
     ]);
   });
 

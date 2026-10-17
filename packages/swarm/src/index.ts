@@ -1,6 +1,8 @@
-// TODO(myc-6j9): implement swarm_signal / swarm_route_decision tables and
-// Thompson-sampling priors for model routing. Атрибуция исполнения (W11) —
-// ./attribution.ts, вопрос к ней — ./compare.ts.
+// Таблицы телеметрии (миграции016–021: swarm_signal, swarm_route_decision,
+// swarm_arm) построены (P0 «Таблицы swarm…», спека 04 §2.2). Осталось:
+// TODO(myc-6j9): Thompson-sampling обновление приоров и сама логика
+// роутинга (задачи M5: myc route, честная оценка). Атрибуция исполнения
+// (W11) — ./attribution.ts, вопрос к ней — ./compare.ts.
 export type RoutingArm = {
   readonly modelId: string;
   readonly effort: string;
