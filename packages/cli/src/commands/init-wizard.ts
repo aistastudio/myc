@@ -23,6 +23,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DEFAULT_MODEL_ID, MODELS } from "@myc/embed";
+import { HARNESSES } from "@myc/swarm";
 import { ExitCode } from "../exit.ts";
 import { defaultRegistry, type CommandContext, type CommandResult } from "../registry.ts";
 import { flagBool } from "./store.ts";
@@ -71,7 +72,9 @@ export function wizardEnabled(ctx: CommandContext): boolean {
 }
 
 const SLUG_RE = /^[a-z][a-z0-9]{1,7}$/;
-const KNOWN_AGENTS = ["claude", "codex", "opencode", "kimi", "mcode", "mimo"];
+// Имена харнессов — ТОЛЬКО из канонического списка (сторож harness.wiring):
+// перечисление вторым местом — ровно тот дефект, который он ловит.
+const KNOWN_AGENTS: readonly string[] = HARNESSES;
 const CODE_INTEL_MODES = ["builtin", "auto", "graft", "off"] as const;
 
 async function askSlugPlan(i: WizardInput): Promise<string | undefined> {

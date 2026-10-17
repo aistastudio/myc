@@ -269,17 +269,28 @@ async function main(): Promise<void> {
     mcpName: "io.github.aistastudio/myc",
     version,
     description:
-      "Local, fast task-and-memory layer for coding agents: task queue, oplog of decisions, hybrid search. Requires Bun.",
+      "Local, fast task-and-memory layer for coding agents: task queue, oplog of decisions, hybrid search. " +
+      "Ships native binaries (no Bun needed on your machine); the launcher needs Node ≥ 18.",
     type: "module",
     bin: { myc: "bin/myc.js" },
     scripts: { postinstall: "node bin/preflight.js" },
-    engines: { bun: ">=1.3.0" },
+    // Лаунчер (bin/myc.js) — голый JS на node: шимы npm и bun понимают его
+    // на всех платформах, а сам myc приезжает нативным бинарём ниже.
+    engines: { node: ">=18" },
     // Единственная рантайм-зависимость: расширение vec0 для векторного
     // индекса (162 КБ на платформу, ставится по os/cpu). Всё остальное —
     // включая JS-часть onnxruntime-web — вшито в бандл.
     dependencies: { "sqlite-vec": "0.1.9" },
-    // Node в списке нет СОЗНАТЕЛЬНО: myc работает только на Bun (bun:sqlite),
-    // и bin/myc.js отказывает под Node с объяснением.
+    // Нативные бинари — платформенными пакетами (scripts/build-binary.ts):
+    // npm и bun ставят ровно тот, что под os/cpu. Пропустили optional
+    // (--omit=optional, кривое зеркало) — лаунчик честно падает на фолбэк
+    // бандл-under-bun или называет причину, а postinstall предупреждает.
+    optionalDependencies: Object.fromEntries(
+      ["win-x64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-aarch64"].map((id) => [
+        `@aistastudio/myc-${id}`,
+        version,
+      ]),
+    ),
     // Ссылки на репозиторий: без них страница пакета в npm не связана с
     // исходниками, и «откуда это взялось» приходится искать поиском.
     repository: { type: "git", url: "git+https://github.com/aistastudio/myc.git" },

@@ -10,9 +10,11 @@
  *      не содержит кириллицы (разбор компилятором TypeScript как JS;
  *      комментарии не в счёт — они не печатаются);
  *   2. поведенческий — тот текст, который человек видит на самом деле:
- *      bin/myc.js «под Node» (preload стирает process.versions.bun) с Bun в
- *      PATH и без него и на Windows, bin/preflight.js без Bun. Где в PATH есть
- *      настоящий node, myc.js запускается и им: файл обязан разбираться Node.
+ *      bin/myc.js, когда запускать нечего (ни нативного бинаря, ни бандла) —
+ *      на POSIX и на Windows, и bin/preflight.js, когда нативный бинарь не
+ *      приехал. Где в PATH есть настоящий node, myc.js запускается и им:
+ *      файл обязан разбираться Node — с 0.6.0 он написан на голом JS без
+ *      единого bun-импорта (лаунчер, а не владелец рантайма).
  *
  * Сторож доказывает, что видит: детектор проверен на синтетическом исходнике
  * (строка, шаблон, regex — видны; комментарий — нет), а корпус ограничен снизу
@@ -96,20 +98,16 @@ describe("bin/*.js: статический сторож", () => {
   });
 });
 
-describe("bin/*.js: что видит человек без Bun", () => {
+describe("bin/*.js: что видит человек, когда запускать нечего", () => {
   let tmp: string;
   let emptyBin: string;
-  let fakeNode: string;
   let fakeWin: string;
 
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), "myc-launcher-en-"));
     emptyBin = join(tmp, "empty-bin");
     mkdirSync(emptyBin);
-    fakeNode = join(tmp, "fake-node.js");
     fakeWin = join(tmp, "fake-win.js");
-    // Под Bun process.versions.bun — строка; стёртая, она делает запуск «Node».
-    writeFileSync(fakeNode, 'Object.defineProperty(process.versions, "bun", { value: undefined, configurable: true });\n');
     writeFileSync(fakeWin, 'Object.defineProperty(process, "platform", { value: "win32" });\n');
   });
 
@@ -131,41 +129,38 @@ describe("bin/*.js: что видит человек без Bun", () => {
     expect(err).not.toMatch(CYRILLIC);
   }
 
-  test("myc.js под Node без Bun в PATH: код 1, по-английски, совет поставить Bun", async () => {
-    const run = await launch([process.execPath, "--preload", fakeNode, MYC_JS, "--version"], emptyBin);
+  test("myc.js: ни бинаря, ни бандла — код 1, по-английски, с причиной и что делать", async () => {
+    const run = await launch([process.execPath, MYC_JS, "--version"], emptyBin);
     expect(run.code).toBe(1);
     english(run.err);
-    expect(run.err).toContain("myc requires Bun — it cannot run on Node.");
-    expect(run.err).toContain("Install Bun (>= 1.3.0) and try again:");
-    expect(run.err).toContain("curl -fsSL https://bun.sh/install | bash");
-    // Совета ставить Bun под Windows нет: myc там только в WSL.
+    expect(run.err).toContain("found nothing to run");
+    expect(run.err).toContain("npm install -g @aistastudio/myc --force");
+    // Совета ставить Bun под Windows нет вовсе: myc там через нативный пакет или WSL.
     expect(run.err).not.toContain("powershell");
   });
 
-  test("myc.js под Node с Bun в PATH: код 1, по-английски, запуск через bun", async () => {
-    const run = await launch([process.execPath, "--preload", fakeNode, MYC_JS], withBun());
+  test("myc.js с Bun в PATH, но без бандла — тот же отказ, и совет про Bun внутри", async () => {
+    const run = await launch([process.execPath, MYC_JS], withBun());
     expect(run.code).toBe(1);
     english(run.err);
-    expect(run.err).toContain("Bun is installed — run myc through it:");
-    expect(run.err).toContain("bun x myc <command>");
+    expect(run.err).toContain("found nothing to run");
+    expect(run.err).toContain("bun.sh/install");
   });
 
-  test("myc.js под Node на Windows: только WSL, как в рамке preflight.js", async () => {
-    const run = await launch([process.execPath, "--preload", fakeNode, "--preload", fakeWin, MYC_JS], withBun());
+  test("myc.js на Windows — только нативный пакет и WSL", async () => {
+    const run = await launch([process.execPath, "--preload", fakeWin, MYC_JS], withBun());
     expect(run.code).toBe(1);
     english(run.err);
-    expect(run.err).toContain("myc runs on macOS and Linux; on Windows use WSL.");
     expect(run.err).toContain("wsl --install");
-    // С Bun в PATH на Windows совет «запускайте через bun» был бы ложным.
+    // Старого совета «запускайте через bun» больше нет: бандл на Windows не путь.
     expect(run.err).not.toContain("bun x myc");
   });
 
-  test("preflight.js без Bun: рамка по-английски, установку не роняет", async () => {
-    const run = await launch([process.execPath, "--preload", fakeNode, PREFLIGHT], emptyBin);
+  test("preflight.js: рамка по-английски, установку не роняет", async () => {
+    const run = await launch([process.execPath, PREFLIGHT], emptyBin);
     expect(run.code).toBe(0);
     english(run.err);
-    expect(run.err).toContain("@aistastudio/myc is installed, but it will not start yet");
-    expect(run.err).toContain("Bun was not found on this system.");
+    expect(run.err).toContain("npm install -g @aistastudio/myc --force");
   });
 
   const node = Bun.which("node");
@@ -173,7 +168,6 @@ describe("bin/*.js: что видит человек без Bun", () => {
     const run = await launch([node!, MYC_JS, "--version"], emptyBin);
     expect(run.code).toBe(1);
     english(run.err);
-    expect(run.err).toMatch(/This is Node \d+\.\d+\.\d+, and myc runs only on Bun/);
-    expect(run.err).toContain("myc requires Bun — it cannot run on Node.");
+    expect(run.err).toContain("found nothing to run");
   });
 });

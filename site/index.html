@@ -98,13 +98,13 @@
 
     <div class="grid-2">
       <div class="card">
-        <h3 lang="en">Requires Bun — this is not fine print</h3>
-        <h3 lang="ru">Требуется Bun — и это не мелкий шрифт</h3>
-        <p class="sub" lang="en">The runtime is bound to <code>bun:sqlite</code>: SQLite and <code>sqlite-vec</code> ship inside Bun, with no native bindings on the Node side. It will not start on plain Node.js or Deno. Bun ≥ 1.3.0, pinned in <code>engines.bun</code>.</p>
-        <p class="sub" lang="ru">Рантайм привязан к <code>bun:sqlite</code>: SQLite и <code>sqlite-vec</code> едут внутри Bun, нативных биндингов на стороне Node нет. На чистом Node.js или Deno он не стартует. Bun ≥ 1.3.0, зафиксирован в <code>engines.bun</code>.</p>
+        <h3 lang="en">Native binaries — and Bun as the fallback</h3>
+        <h3 lang="ru">Нативные бинари — и Bun как фолбэк</h3>
+        <p class="sub" lang="en">The engine is still Bun (<code>bun:sqlite</code>, SQLite and <code>sqlite-vec</code> inside) — but since 0.6.0 you no longer install it: <code>npm install -g @aistastudio/myc</code> brings a native binary (Windows x64, macOS, Linux) and the launcher needs only Node ≥ 18. Both paths are protected against loading the launching project's <code>.env</code> and <code>bunfig.toml</code>: the binary is built with autoload disabled, the bundle gets protective flags.</p>
+        <p class="sub" lang="ru">Движок по-прежнему Bun (<code>bun:sqlite</code>, SQLite и <code>sqlite-vec</code> внутри) — но с 0.6.0 ставить его не нужно: <code>npm install -g @aistastudio/myc</code> привозит нативный бинарь (Windows x64, macOS, Linux), лаунчеру хватает Node ≥ 18. Обе половины защищены от подхвата <code>.env</code> и <code>bunfig.toml</code> запускаемого проекта: бинарь собирается с отключённой автозагрузкой, бандл получает protective-флаги.</p>
         <div class="cmd"><span class="prompt">$</span><code>curl -fsSL https://bun.sh/install | bash</code><button class="copy" type="button">copy</button></div>
-        <p class="sub" style="margin-top:1rem" lang="en"><strong>macOS and Linux.</strong> On Windows, use WSL and install Bun and myc inside it: neither installer shim reaches the launcher's refusal (bun misreads the multi-argument shebang), so the error you would see comes from the installer, not from myc.</p>
-        <p class="sub" style="margin-top:1rem" lang="ru"><strong>macOS и Linux.</strong> На Windows — через WSL, Bun и myc ставятся внутри неё: до отказа лаунчера не доходит ни один шим установщика (bun читает многословный shebang неверно), поэтому ошибка, которую вы увидите, приходит от установщика, а не от myc.</p>
+        <p class="sub" style="margin-top:1rem" lang="en"><strong>Windows.</strong> npm installs the native x64 binary (Node ≥ 18 for the launcher) — experimental until confirmed on a live machine; WSL stays the fully supported path.</p>
+        <p class="sub" style="margin-top:1rem" lang="ru"><strong>Windows.</strong> npm ставит нативный x64-бинарь (Node ≥ 18 для лаунчера) — экспериментально до подтверждения на живой машине; полностью поддерживаемый путь — WSL.</p>
       </div>
 
       <div class="card">

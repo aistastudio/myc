@@ -24,11 +24,23 @@ against the site's `site/measurements.json`, and every `myc` command and flag
 on the site and in both READMEs against this build's `--help`; a mismatch fails
 the build.
 
-## Requires Bun — this is not fine print
+## Native binaries — and Bun as the fallback
 
-The runtime is bound to `bun:sqlite` (no native bindings on the Node side).
-**It will not start on plain Node.js or Deno.** Bun ≥ 1.3.0 is required and
-pinned in `package.json` → `engines.bun`.
+The engine inside myc is still Bun (`bun:sqlite`, no native bindings on the
+Node side) — but since 0.6.0 you no longer install Bun to run it:
+`npm install -g @aistastudio/myc` brings a native binary for your platform
+(Windows x64, macOS arm64/x64, Linux x64/arm64), and the launcher needs only
+Node ≥ 18. On Windows the binary is **experimental until confirmed on a live
+machine**; WSL stays the fully supported path there.
+
+**What Bun is still for.** The package also carries the whole myc as one JS
+bundle: wherever the platform binary did not install, the launcher falls back
+to running the bundle under Bun. The protection that matters travels with
+both paths: the native binary is built with autoload disabled
+(`--no-compile-autoload-dotenv`/`--no-compile-autoload-bunfig`), and the
+bundle gets `--no-env-file`/`--config` in argv — myc never loads the
+launching project's `.env` or `bunfig.toml` (in the cherry incident `myc run`
+forwarded 20 `EXPO_PUBLIC_*` from a worktree's `.env` into tests).
 
 **SQLite ≥ 3.50.4.** The floor has two reasons. Below 3.44.0, FTS5 cannot be
 written from triggers under `trusted_schema = OFF`, so every write fails. And on
@@ -57,16 +69,14 @@ Install Bun: https://bun.sh
 Installation is one command:
 
 ```bash
-bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.82 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.5.0 (schema 1)
+bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.83 MB unpacked, 16 files; no models pulled
+myc --version                     # myc 0.6.0 (schema 1)
 ```
 
-It runs on macOS and Linux. On Windows, use WSL and install Bun and myc
-inside it. The launcher refuses cmd and PowerShell by design; on native
-Windows neither installer shim reaches that refusal (bun reads the
-multi-argument shebang as a missing interpreter, npm hands bun a config
-path Windows cannot open), so the error you see comes from the installer,
-not from myc — and myc's own answer is: use WSL.
+**Windows.** `npm install -g @aistastudio/myc` installs the native x64
+binary (the launcher needs Node ≥ 18) — experimental until confirmed on a
+live machine. WSL stays the fully supported path: inside WSL everything
+works as on Linux.
 
 The embedding model is **not** downloaded during install. Semantic search is
 opt-in and explicit: `myc models fetch` (129 MB, ~7 s). Until then search is
@@ -469,12 +479,10 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 4246 pass / 8 fail / 16 skip
-(`bun test`, 2026-10-12; one fail is the orca status-line classifier test
+is treated as absent. The full suite: 4268 pass / 7 fail / 16 skip
+(`bun test`, 2026-10-17; one fail is the orca status-line classifier test
 against the installed Orca.app chunks, six are the federation R3 family that
-fails on clean main too — memory-j4dkmcs2k7y1 — and one is the web search
-parity test that flakes under the suite's full parallel load, passing in
-isolation and in CI).
+fails on clean main too — memory-j4dkmcs2k7y1).
 
 ## What myc does
 

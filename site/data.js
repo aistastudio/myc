@@ -329,7 +329,7 @@ window.MYC_DATA = {
   "package": {
     "command": "bun run pack:npm",
     "compressed_mb": 5.11,
-    "unpacked_mb": 15.82,
+    "unpacked_mb": 15.83,
     "files": 16,
     "install_command": "bun install -g @aistastudio/myc",
     "model": {
@@ -339,8 +339,8 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.5.0",
-    "date": "2026-10-12"
+    "version": "0.6.0",
+    "date": "2026-10-17"
   },
   "roadmap": {
     "command": "bun run site/roadmap.ts",
@@ -1414,6 +1414,19 @@ window.MYC_DATA = {
             "ru": "Честность про профиль: при сервере в MYC_SERVER команда без серверного режима всё равно работает с локальной базой и называет это одной строкой WARN; явный <code>--server</code> для такой команды — отказ (<code>precond.no_remote</code>), а не тихая подмена."
           }
         ]
+      },
+      {
+        "key": "platforms",
+        "title_en": "Platforms and runtime",
+        "title_ru": "Платформы и рантайм",
+        "items": [
+          {
+            "since": "0.6.0",
+            "cmd": "myc --version",
+            "en": "Native binaries for Windows x64, macOS (arm64/x64) and Linux (x64/arm64) ship as npm optional dependencies: no Bun on the machine, the launcher needs Node ≥ 18. Both launch paths are protected against the launching project's <code>.env</code> and <code>bunfig.toml</code>: the binary is built with autoload disabled, the JS bundle gets protective flags.",
+            "ru": "Нативные бинари для Windows x64, macOS (arm64/x64) и Linux (x64/arm64) едут optional-зависимостями npm: на машине не нужен Bun, лаунчеру хватает Node ≥ 18. Оба способа запуска защищены от <code>.env</code> и <code>bunfig.toml</code> запускаемого проекта: бинарь собирается с отключённой автозагрузкой, JS-бандл получает protective-флаги."
+          }
+        ]
       }
     ]
   },
@@ -1662,17 +1675,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4246,
-    "fail": 8,
+    "pass": 4268,
+    "fail": 7,
     "skip": 16,
-    "files": 278,
-    "assertions": 38310,
-    "seconds": 469.06,
-    "sources": "9958b49fa0cd48b9",
-    "date": "2026-10-12",
-    "myc": "0.5.0",
-    "failing_test": "классификатор orca > перенос совпадает с установленным кодом orca; ещё 6 — семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts), падают и на чистом main — memory-j4dkmcs2k7y1; восьмое — паритет GET /api/search с myc recall в packages/web: флакает под полной параллельной нагрузкой прогона (проходит изолированно и в CI; на чистом 0.4.9 stash-прогоном 2026-10-12 падали оба теста паритета и oplog-merge — до дифа этой ветки)"
+    "files": 279,
+    "assertions": 38361,
+    "seconds": 446.99,
+    "sources": "553f6d8909749586",
+    "date": "2026-10-17",
+    "myc": "0.6.0",
+    "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; плюс классификатор orca > перенос совпадает с установленным кодом orca (окружение, существовал до ветки)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-14T09:35:19.618Z", assertions: 77 };
-window.MYC_DATA.release = "0.5.0";
+window.MYC_DATA.verified = { at: "2026-10-17T11:17:48.216Z", assertions: 77 };
+window.MYC_DATA.release = "0.6.0";

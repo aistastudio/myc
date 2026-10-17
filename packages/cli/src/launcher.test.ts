@@ -7,22 +7,29 @@
  * `myc run -- bun test` отдал тесту 20 переменных EXPO_PUBLIC_* из .env
  * worktree, которых в оболочке агента не было.
  *
- * Здесь проверяется ЗАПУСК, а не код: исполняемый файл запускает ядро по
- * shebang, как после `bun add -g` (симлинк в ~/.bun/bin) и `npm i -g`. Пакет
- * раскладывается так же, как в scripts/pack-npm.ts — bin/myc.js рядом с
- * dist/myc.js, собранным `bun build --target=bun --minify`; бинарь собирается
- * РЕЦЕПТОМ scripts/build.ts (BUILD_ARGS), только в свой каталог, чтобы не
- * трогать dist/myc, которым пользуется хук очереди. Каталог «проекта» лежит
- * вне дерева репозитория, в нём .env, .env.local и bunfig.toml с preload,
- * который пишет файл-метку.
+ * С 0.6.0 защита живёт в ДВУХ местах, и здесь проверяются ОБА:
+ *   - бинарь собирается флагами `--no-compile-autoload-dotenv/--no-compile-autoload-bunfig`
+ *     (BUILD_ARGS, scripts/build.ts): bun внутри него не читает .env/bunfig
+ *     своего cwd вовсе — этим защищён и нативный путь, и `myc --compile`;
+ *   - npm-лаунчик bin/myc.js на голом node: node .env чужого проекта не
+ *     грузит, а бандл-фолбэк под Bun получает protective-флаги в argv
+ *     (--no-env-file, --config=os.devNull) — как прежний shebang
+ *     `env -S`, который на Windows не исполним ни одним шимом.
  *
- * Установленный myc не нужен (урок e6252ea): запускаются только собранные
- * здесь файлы, а `bun` для shebang берётся из process.execPath раннера.
+ * Здесь проверяется ЗАПУСК, а не код: исполняемый файл запускает ядро так,
+ * как после установки. Пакет раскладывается как в scripts/pack-npm.ts —
+ * bin/myc.js рядом с dist/myc.js, собранным `bun build`; бинарь собирается
+ * РЕЦЕПТОМ scripts/build.ts (BUILD_ARGS), только в свой каталог. Каталог
+ * «проекта» лежит вне дерева репозитория, в нём .env, .env.local и bunfig.toml
+ * с preload, который пишет файл-метку.
  *
- * Мутации — не только на приёмке, но и здесь же, отдельными тестами: копия
- * bin/myc.js без одного из флагов и бинарь по рецепту без двух флагов обязаны
- * пропустить .env / preload. Иначе зелёный результат не отличал бы защиту от
- * каталога, в котором защищать нечего.
+ * Установленный myc не нужен: запускаются только собранные здесь файлы, а
+ * `bun` для shebang берётся из process.execPath раннера.
+ *
+ * МУТАЦИИ — не только на приёмке, но и здесь же: лаунчик без protective-флагов,
+ * лаунчик без --config, и бинарь, собранный БЕЗ --no-compile-autoload-*, — каждый
+ * из них обязан пропустить .env или preload. Иначе зелёный результат не
+ * отличал бы защиту от каталога, в котором защищать нечего.
  *
  * ЦЕНА. Две сборки бинаря по ~0.3 с и одна бандла ~0.1 с, дюжина запусков.
  */
@@ -57,14 +64,14 @@ interface Run {
   readonly err: string;
 }
 
-async function launch(cmd: readonly string[]): Promise<Run> {
+async function launch(cmd: readonly string[], extraEnv: Record<string, string> = {}): Promise<Run> {
   const proc = Bun.spawn([...cmd], {
     cwd: project,
     env: cliTestEnv({
-      // shebang ищет bun в PATH: первым — тот, что гоняет тесты.
       PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
       MYC_HOME: home,
       MYC_CALLER_PROBE: "from-caller",
+      ...extraEnv,
     }),
     stdin: "ignore",
     stdout: "pipe",
@@ -79,15 +86,17 @@ async function launch(cmd: readonly string[]): Promise<Run> {
 }
 
 /** `myc run` команды, которая печатает, что из .env и от вызывающего до неё дошло. */
-function runProbe(exe: string): Promise<Run> {
+function runProbe(exe: string, extraEnv: Record<string, string> = {}): Promise<Run> {
   const script = `printf '%s|%s|%s' "\${${PROBE}:-nothing}" "\${${PROBE_LOCAL}:-nothing}" "\${MYC_CALLER_PROBE:-nothing}"`;
-  return launch([exe, "run", "--", "sh", "-c", script]);
+  return launch([exe, "run", "--", "sh", "-c", script], extraEnv);
 }
 
-/** Копия bin/myc.js рядом с настоящей (тот же ../dist/myc.js) с другим shebang. */
-function binWithShebang(name: string, shebang: string): string {
+/** Копия лаунчера рядом с настоящей с подменённым фрагментом — для мутаций. */
+function mutatedLauncher(name: string, from: string, to: string): string {
   const path = join(dirname(pkgBin), name);
-  writeFileSync(path, readFileSync(BIN, "utf8").replace(SHEBANG, shebang));
+  const text = readFileSync(BIN, "utf8");
+  if (!text.includes(from)) throw new Error(`в лаунчере нет текста мутации: ${from}`);
+  writeFileSync(path, text.replace(from, to));
   chmodSync(path, 0o755);
   return path;
 }
@@ -98,13 +107,12 @@ async function build(args: readonly string[]): Promise<void> {
   if (code !== 0) throw new Error(`${args.slice(0, 3).join(" ")} … провалилась (код ${code}): ${err}`);
 }
 
-/** BUILD_ARGS с выходом в outfile вместо dist/myc; drop — флаги, которые мутация выбрасывает. */
+/** BUILD_ARGS с выходом в outfile; drop — флаги, которые мутация выбрасывает. */
 function recipe(outfile: string, drop: readonly string[] = []): string[] {
   const args = BUILD_ARGS.filter((a) => !drop.includes(a));
   const at = args.indexOf("--outfile");
   if (at < 0) throw new Error("в BUILD_ARGS нет --outfile");
   args[at + 1] = outfile;
-  // Тот bun, что гоняет тесты, а не первый в PATH.
   if (args[0] === "bun") args[0] = process.execPath;
   return args;
 }
@@ -155,12 +163,15 @@ afterAll(() => {
   if (tmp !== undefined) rmSync(tmp, { recursive: true, force: true });
 });
 
-describe("флаги запуска", () => {
-  test("shebang bin/myc.js: bun без .env и без ./bunfig.toml, флаги раздельно через env -S", () => {
-    expect(SHEBANG.startsWith("#!/usr/bin/env -S bun ")).toBe(true);
-    const flags = SHEBANG.split(/\s+/).slice(3);
-    expect(flags).toContain("--no-env-file");
-    expect(flags).toContain("--config=/dev/null");
+describe("лаунчик и рецепт: где живёт защита", () => {
+  test("shebang bin/myc.js — env node: разбирают все шимы, включая Windows", () => {
+    expect(SHEBANG).toBe("#!/usr/bin/env node");
+  });
+
+  test("бандл-фолбэк лаунчера сохраняет protective-флаги — наследие shebang", () => {
+    const text = readFileSync(BIN, "utf8");
+    expect(text).toContain("--no-env-file");
+    expect(text).toContain("--config=");
   });
 
   test("рецепт бинаря отключает автозагрузку .env и bunfig.toml", () => {
@@ -169,12 +180,11 @@ describe("флаги запуска", () => {
   });
 });
 
-describe("npm-пакет: bin/myc.js запускает ядро по shebang", () => {
+describe("npm-пакет: лаунчер запускает ядро, чужой каталог не читается", () => {
   test("myc run: команда получает окружение вызывающего и ничего из .env", async () => {
     const run = await runProbe(pkgBin);
     expect(run.code).toBe(0);
     expect(run.out).toBe("nothing|nothing|from-caller");
-    // Второй рубеж молчит — значит .env не попал и в сам процесс myc.
     expect(run.err).not.toContain("run.dotenv");
     expect(preloadRan()).toBe(false);
   });
@@ -186,8 +196,12 @@ describe("npm-пакет: bin/myc.js запускает ядро по shebang", 
     expect(preloadRan()).toBe(false);
   });
 
-  test("мутация: shebang без --no-env-file — Bun грузит .env в процесс myc", async () => {
-    const mutant = binWithShebang("mutant-dotenv.js", "#!/usr/bin/env -S bun --config=/dev/null");
+  test("мутация: бандл-фолбэк без --no-env-file — Bun грузит .env, и это НАЗВАНО", async () => {
+    const mutant = mutatedLauncher(
+      "mutant-dotenv.js",
+      'return ["--no-env-file", `--config=${devNull}`];',
+      "return [`--config=${devNull}`];",
+    );
     const run = await runProbe(mutant);
     expect(run.code).toBe(0);
     // .env в процессе myc, и второй рубеж это видит и называет...
@@ -197,8 +211,12 @@ describe("npm-пакет: bin/myc.js запускает ядро по shebang", 
     expect(run.out).toBe("nothing|nothing|from-caller");
   });
 
-  test("мутация: shebang без --config=/dev/null — preload проекта исполняется в myc", async () => {
-    const mutant = binWithShebang("mutant-bunfig.js", "#!/usr/bin/env -S bun --no-env-file");
+  test("мутация: бандл-фолбэк без --config — preload проекта исполняется в myc", async () => {
+    const mutant = mutatedLauncher(
+      "mutant-bunfig.js",
+      'return ["--no-env-file", `--config=${devNull}`];',
+      'return ["--no-env-file"];',
+    );
     const run = await launch([mutant, "--version"]);
     expect(run.code).toBe(0);
     expect(preloadRan()).toBe(true);
@@ -206,36 +224,97 @@ describe("npm-пакет: bin/myc.js запускает ядро по shebang", 
 });
 
 describe("собранный бинарь: рецепт scripts/build.ts", () => {
-  test("myc run: команда получает окружение вызывающего и ничего из .env", async () => {
-    const run = await runProbe(binary);
+  test("MYC_BINARY: myc run получает окружение вызывающего и ничего из .env", async () => {
+    const run = await runProbe(pkgBin, { MYC_BINARY: binary });
     expect(run.code).toBe(0);
     expect(run.out).toBe("nothing|nothing|from-caller");
     expect(run.err).not.toContain("WARN");
     expect(preloadRan()).toBe(false);
   });
 
-  test("myc --version: preload из ./bunfig.toml не исполняется", async () => {
-    const run = await launch([binary, "--version"]);
+  test("MYC_BINARY: preload из ./bunfig.toml не исполняется", async () => {
+    const run = await launch([pkgBin, "--version"], { MYC_BINARY: binary });
     expect(run.code).toBe(0);
     expect(run.out).toStartWith("myc ");
     expect(preloadRan()).toBe(false);
   });
 
-  test("мутация: рецепт без двух флагов — бинарь отдаёт .env команде и исполняет preload", async () => {
-    const run = await runProbe(mutantBinary);
+  test("мутация: бинарь без двух флагов — отдаёт .env команде и исполняет preload", async () => {
+    // Это и есть доказательство, что --no-compile-autoload-* — не украшение:
+    // собранный БЕЗ них бинарь воспроизводит инцидент из cherry.
+    const run = await runProbe(pkgBin, { MYC_BINARY: mutantBinary });
     expect(run.code).toBe(0);
     expect(run.out).toBe("from-dotenv|from-dotenv-local|from-caller");
     expect(preloadRan()).toBe(true);
   });
+
+  test("код выхода бинаря доходит до вызвавшего без искажений", async () => {
+    const run = await launch([pkgBin, "run", "--", "sh", "-c", "exit 7"], { MYC_BINARY: binary });
+    expect(run.code).toBe(7);
+  });
+});
+
+describe("bin/*.js: что видит человек, когда запускать нечего", () => {
+  async function bareNode(argv: readonly string[], env: Record<string, string> = {}): Promise<Run> {
+    const emptyBin = join(tmp, "empty-bin");
+    mkdirSync(emptyBin, { recursive: true });
+    const proc = Bun.spawn([process.execPath, ...argv], {
+      cwd: tmp,
+      // PATH без bun: проверяем отказ, а не фолбэк.
+      env: cliTestEnv({ PATH: emptyBin, ...env }),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { code, out, err };
+  }
+
+  test("ни бинаря, ни бандла: код 1, по-английски, с причиной и что делать", async () => {
+    // Каталог без пакета рядом: лаунчер лежит в repo packages/cli/bin, где
+    // нет ни dist/myc.js, ни @aistastudio/myc-*.
+    const run = await bareNode([BIN, "--version"]);
+    expect(run.code).toBe(1);
+    expect(run.err).toContain("found nothing to run");
+    expect(run.err).toContain("npm install -g @aistastudio/myc --force");
+  });
+
+  test("на Windows отказывает про WSL — той же рамкой, что preflight", async () => {
+    const fake = join(tmp, "fake-win.js");
+    writeFileSync(fake, 'Object.defineProperty(process, "platform", { value: "win32" });\n');
+    const run = await bareNode(["--preload", fake, BIN, "--version"]);
+    expect(run.code).toBe(1);
+    expect(run.err).toContain("wsl --install");
+  });
+
+  test("настоящий node разбирает лаунчер и печатает английский отказ", async () => {
+    const run = await bareNode([BIN, "--version"]);
+    expect(run.out + run.err).toContain("myc");
+    expect(run.err).not.toMatch(/[а-яё]/i);
+  });
 });
 
 describe("preflight (postinstall)", () => {
-  async function preflight(platform: string | null): Promise<Run> {
-    const fake = join(tmp, "fake-platform.js");
+  async function preflight(platform: string | null, withPackage: boolean): Promise<Run> {
+    const dir = join(tmp, `preflight-${platform ?? "native"}-${withPackage}`);
+    mkdirSync(join(dir, "bin"), { recursive: true });
+    writeFileSync(join(dir, "bin", "preflight.js"), readFileSync(PREFLIGHT));
+    if (withPackage) {
+      // Фейковый платформенный пакет рядом — резолвер лаунчера его находит.
+      const pkgRoot = join(dir, "node_modules", "@aistastudio", "myc-darwin-arm64");
+      mkdirSync(join(pkgRoot, "bin"), { recursive: true });
+      writeFileSync(join(pkgRoot, "package.json"), '{"name":"@aistastudio/myc-darwin-arm64"}');
+      writeFileSync(join(pkgRoot, "bin", "myc"), "");
+    }
+    const fake = join(dir, "fake-platform.js");
     writeFileSync(fake, `Object.defineProperty(process, "platform", { value: ${JSON.stringify(platform)} });\n`);
     const proc = Bun.spawn(
-      [process.execPath, ...(platform === null ? [] : ["--preload", fake]), PREFLIGHT],
-      { cwd: tmp, env: cliTestEnv(), stdout: "pipe", stderr: "pipe" },
+      [process.execPath, ...(platform === null ? [] : ["--preload", fake]), join(dir, "bin", "preflight.js")],
+      { cwd: dir, env: cliTestEnv(), stdout: "pipe", stderr: "pipe" },
     );
     const [out, err, code] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -245,17 +324,15 @@ describe("preflight (postinstall)", () => {
     return { code, out, err };
   }
 
-  test("на Windows говорит, что myc там только через WSL, и установку не роняет", async () => {
-    // Shebang с `env -S` и /dev/null Windows не исполнит ни шимом bun, ни
-    // cmd-shim npm — сказать можно только на установке.
-    const run = await preflight("win32");
+  test("на Windows без нативного бинаря: говорит про WSL и установку не роняет", async () => {
+    const run = await preflight("win32", false);
     expect(run.code).toBe(0);
-    expect(run.err).toContain("Windows is not supported");
-    expect(run.err).toContain("myc runs on macOS and Linux; on Windows use WSL.");
+    expect(run.err).toContain("did not install");
+    expect(run.err).toContain("wsl --install");
   });
 
-  test("на POSIX под Bun молчит", async () => {
-    const run = await preflight(null);
+  test("бинарь на месте — молчит", async () => {
+    const run = await preflight(null, true);
     expect(run.code).toBe(0);
     expect(run.err).toBe("");
   });
