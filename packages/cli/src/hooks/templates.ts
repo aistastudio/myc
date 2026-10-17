@@ -1915,11 +1915,39 @@ export function agentsBlock(): string {
   return `${AGENTS_START}
 ## myc — project memory and tasks
 
-\`myc_*\` tools (MCP) or the \`myc\` CLI. Order: \`myc prime\` → \`myc ready --claim\`
-→ \`myc recall\` before a decision → \`myc remember\` after a finding → \`myc close --reason\`.
-Code, before reading whole files: \`myc code map\`, \`myc code search\`, \`myc code grep\`,
-\`myc skeleton <file>\`, \`myc callers <name>\`.
-Heavy commands (the full test suite, a build): \`myc run -- <cmd>\`, one machine-wide queue.
+\`myc_*\` tools (MCP) or the \`myc\` CLI.
+
+**Loop:** \`myc prime\` → \`myc ready --claim\` → \`myc recall\` before a decision →
+\`myc remember\` after a finding → \`myc close --reason\`, with \`myc attempt\` around
+the work itself.
+
+**One line per capability** — details live in \`myc --help\`:
+
+- **Tasks:** \`myc task\`, \`myc bug\`, \`myc epic\` with \`--parent\`/\`--dep\`; \`myc link\`
+  and \`myc dep\` for relations; \`myc claim\` takes a lease, and \`myc ready\` shows
+  blockers with the reason they block.
+- **Memory:** \`myc remember "why X, not Y"\`, \`myc recall "…"\` (hybrid BM25 + vectors),
+  \`myc absorb\` and \`myc review\` for session episodes; layers L0–L3, \`--global\`
+  targets the personal \`~/.myc\`.
+- **Code, before reading whole files:** \`myc code map\`, \`myc code search\`,
+  \`myc code grep\`, \`myc callers <name>\`, \`myc skeleton <file>\` — anchors tie
+  lines of code to knowledge.
+- **Exchange:** \`myc sync\` — the local database stays the source of truth and the
+  server only meets replicas; the address and token live in the repository
+  (\`server\` in .myc/workspace.toml, .myc/token), and \`sync = "auto"\` raises the
+  exchange in the background.
+- **Heavy commands:** \`myc run -- <cmd>\` goes through one machine-wide queue;
+  \`myc queue\` shows its slots.
+- **Integration:** \`myc wire\` installs hooks, the MCP server and the statusline
+  (\`--dry-run\` previews every change; \`--agents-md\` maintains this block).
+- **Diagnostics:** \`myc doctor\` recounts claims, anchors and hooks against the
+  graph; \`myc statusline\` prints the prompt widget.
+- **Through git:** \`myc export\` and \`myc import\` carry the oplog between
+  machines; the merge driver unions operations by id.
+- **Launch rules:** \`myc bootstrap set <key> "<text>"\` records what automatic
+  detection cannot see.
+- **Messages:** \`myc msg\` and \`myc comment\` leave attributed notes in the graph.
+
 Full instructions: \`myc --help\`, \`.claude/skills/myc/SKILL.md\`.
 ${AGENTS_END}`;
 }
