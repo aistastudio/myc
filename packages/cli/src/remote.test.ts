@@ -315,3 +315,48 @@ describe("конфиг воркспейса: sync, server, токен — сво
     expect(ambientServer({}, emptyDir())).toBeUndefined();
   });
 });
+
+describe("окружение вызова (globals.env) обгоняет процесс", () => {
+  // MCP-сервер гонит CLI-команды в своём процессе и передаёт им окружение
+  // ВЫЗОВА с обнулёнными профильными MYC_SERVER/MYC_TOKEN/MYC_WS: профиль
+  // хоста не имеет права уводить инструменты на чужой сервер (инцидент
+  // 2026-10-17, memory-z2gy643ksmkw).
+  const ctxWithEnv = (env: Record<string, string | undefined>): CommandContext => {
+    const base = ctx({}, emptyDir());
+    return { ...base, globals: { ...base.globals, env } };
+  };
+
+  test("процесс отравлен профилем, вызов чист — цель не спрашивается", () => {
+    const saved = process.env.MYC_SERVER;
+    process.env.MYC_SERVER = "https://poison.example.invalid/ws";
+    try {
+      expect(remoteTarget(ctxWithEnv({}), undefined, {}).kind).toBe("none");
+    } finally {
+      if (saved === undefined) delete process.env.MYC_SERVER;
+      else process.env.MYC_SERVER = saved;
+    }
+  });
+
+  test("вызов несёт сервер — он и есть цель", () => {
+    const t = remoteTarget(
+      ctxWithEnv({ MYC_SERVER: "https://x.example/ws", MYC_TOKEN: "myc_x" }),
+      undefined,
+      {},
+    );
+    if (t.kind !== "remote") throw new Error(`expected remote, got ${JSON.stringify(t)}`);
+    expect(t.target.url).toBe("https://x.example");
+    expect(t.target.ws).toBe("ws");
+    expect(t.target.source).toBe("env");
+    expect(t.target.token).toBe("myc_x");
+  });
+
+  test("явный параметр env (тесты, CLI) обгоняет globals.env", () => {
+    const t = remoteTarget(
+      ctxWithEnv({ MYC_SERVER: "https://globals.example/ws" }),
+      { MYC_SERVER: "https://explicit.example/ws", MYC_TOKEN: "myc_e" },
+      {},
+    );
+    if (t.kind !== "remote") throw new Error(`expected remote, got ${JSON.stringify(t)}`);
+    expect(t.target.url).toBe("https://explicit.example");
+  });
+});

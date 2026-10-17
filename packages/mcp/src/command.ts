@@ -40,7 +40,9 @@ const SERVER_RULES =
   "instead of reading whole files: myc_code_map — orientation, myc_code_search and " +
   "myc_code_symbol — find, myc_skeleton — a file's API, myc_callers — blast radius " +
   "of an edit, myc_code_grep — every occurrence. WARN/degraded in an answer is not noise, " +
-  "it means part of the system is down.";
+  "it means part of the system is down. Tools always operate the workspace of THIS server's " +
+  "directory; the team server is reached only by an explicit myc sync from the repository — " +
+  "its address and token live in the repository's config, never in your profile.";
 
 /** "prime/ready/update" — имена без префикса, тот же вид, что был в справке. */
 function toolList(tools: readonly McpToolDef[]): string {
@@ -71,7 +73,18 @@ function makeRunCli(
   if (globals.directory !== undefined) prefix.push("-C", globals.directory);
   if (globals.db !== undefined) prefix.push("--db", globals.db);
   return async (argv) => {
-    const result: RunResult = await run([...prefix, ...argv], registry !== undefined ? { registry } : {});
+    // ПРОФИЛЬ НЕ ДЕЙСТВУЕТ НА ИНСТРУМЕНТЫ (memory-2kvd3z9et5nj): сервер
+    // наследует окружение хоста, и MYC_SERVER в нём уводил remote-capable
+    // команды на СЕРВЕР профиля, пока close/remember оставались локальными —
+    // записи одного агента расходились на два места (инцидент 2026-10-17:
+    // myc_create на сервере, его close — в локальной базе). Инструменты
+    // пишут в репозиторию, которую обслуживает этот сервер; обмен остаётся
+    // явным шагом человека (myc sync), и цель у него — конфиг репозитории.
+    const env = { ...process.env, MYC_SERVER: "", MYC_TOKEN: "", MYC_WS: "" };
+    const result: RunResult = await run(
+      [...prefix, ...argv],
+      { ...(registry !== undefined ? { registry } : {}), env },
+    );
     const stdout =
       typeof result.stdout === "string" ? result.stdout : [...result.stdout].join("");
     return { code: result.code, stdout, stderr: result.stderr };

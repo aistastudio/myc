@@ -217,12 +217,17 @@ export function parseServer(raw: string): { url: string; ws: string } | undefine
  */
 export function remoteTarget(
   ctx: CommandContext,
-  env: RemoteEnv = process.env as RemoteEnv,
+  env?: RemoteEnv,
   opts: { readonly configSuffices?: boolean } = {},
 ): { readonly kind: "none" } | { readonly kind: "remote"; readonly target: RemoteTarget } | {
   readonly kind: "bad";
   readonly failure: CommandFailure;
 } {
+  // Окружение ВЫЗОВА важнее процесса: у CLI это одно и то же, а MCP-сервер
+  // передаёт обрезанное — без профильных MYC_SERVER/MYC_TOKEN/MYC_WS, чтобы
+  // инструменты писали в репозиторию, а не на сервер профиля (memory-z2gy643ksmkw).
+  const eff: RemoteEnv =
+    env ?? (ctx.globals.env as RemoteEnv | undefined) ?? (process.env as RemoteEnv);
   const flagRaw0 = typeof ctx.flags["server"] === "string" ? String(ctx.flags["server"]) : undefined;
   const flagRaw = flagRaw0?.trim() ?? "";
   const dir = ctx.globals.directory ?? process.cwd();
@@ -232,7 +237,7 @@ export function remoteTarget(
   // закоммичен репозиторием и говорит, чей это сервер. В репозиториях разных
   // компаний это неудобство, а защита — чужие данные не уедут не туда молча.
   const cfgServer = localWorkspaceConfig(dir).server;
-  const envRaw = (env.MYC_SERVER ?? "").trim();
+  const envRaw = (eff.MYC_SERVER ?? "").trim();
   // НО РЕЖИМ ОТ КОНФИГА НЕ ВКЛЮЧАЕТСЯ: удалённый режим требует явного спроса
   // (флаг или профиль), иначе `server` в репозитории перевёл бы каждую
   // remote-команду в сетевой режим — сеть в горячем пути вопреки §9.5.
@@ -265,7 +270,7 @@ export function remoteTarget(
   // логика, что у адреса: принадлежность репозитория важнее фонового
   // окружения. Профильный токен остаётся для реп без файла.
   const fileToken = localTokenFile(dir);
-  const token = fileToken ?? env.MYC_TOKEN ?? "";
+  const token = fileToken ?? eff.MYC_TOKEN ?? "";
   // ФОРМА ТОКЕНА ПРОВЕРЯЕТСЯ ЗДЕСЬ, до сети. Значение с пробелом, переводом
   // строки или не-ASCII в заголовок не кладётся вовсе: `fetch` бросает, и без
   // этой проверки человек читал бы «сервер не ответил» и чинил бы сеть вместо
@@ -300,7 +305,7 @@ export function remoteTarget(
   // Порядок: --ws → путь адреса → MYC_WS → СЛАГ ЛОКАЛЬНОГО КОНФИГА. Явные
   // способы сильнее: глядя на чужой воркспейс из своего каталога, человек
   // обязан назвать его сам. Пустой MYC_WS равен невыставленному.
-  const envWs = env.MYC_WS?.trim() || undefined;
+  const envWs = eff.MYC_WS?.trim() || undefined;
   const ws =
     explicitWs ??
     (parsed.ws !== "" ? parsed.ws : envWs) ??
@@ -521,9 +526,11 @@ export async function remoteRun(
   ctx: CommandContext,
   fn: (client: RemoteClient) => Promise<CommandResult>,
   opts: { readonly configSuffices?: boolean } = {},
-  env: RemoteEnv = process.env as RemoteEnv,
+  env?: RemoteEnv,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CommandResult | undefined> {
+  // env по умолчанию не задаётся: remoteTarget сам спустится до ctx.globals.env
+  // и дальше до process.env — единая цепочка для CLI и MCP.
   const target = remoteTarget(ctx, env, opts);
   if (target.kind === "none") return undefined;
   if (target.kind === "bad") return target.failure;

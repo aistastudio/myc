@@ -12,6 +12,14 @@ export type Globals = {
   color: boolean;
   db?: string;
   directory?: string;
+  /**
+   * Окружение ВЫЗОВА, а не процесса. CLI передаёт process.env; MCP-сервер
+   * передаёт своё с ОБРЕЗАННЫМИ профильными MYC_SERVER/MYC_TOKEN/MYC_WS —
+   * иначе инструменты одного агента пишут половину записей на сервер профиля,
+   * половину локально (инцидент 2026-10-17: myc_create на сервере, его
+   * close — в локальной базе).
+   */
+  env?: Record<string, string | undefined>;
 };
 
 /** Что получает обработчик команды. */

@@ -49,12 +49,12 @@ class McpSession {
   #waiters: ((line: string) => void)[] = [];
   #nextId = 0;
 
-  constructor(dir: string) {
+  constructor(dir: string, extraEnv: Record<string, string> = {}) {
     this.#proc = Bun.spawn([process.execPath, CLI, "-C", dir, "mcp"], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: TEST_ENV,
+      env: { ...TEST_ENV, ...extraEnv },
     });
     this.#reader = (this.#proc.stdout as ReadableStream<Uint8Array>).getReader() as {
       read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -387,6 +387,62 @@ describe("myc mcp: stdio end-to-end", () => {
           { path: "src/fuse.ts", start: 1, end: 3, symbol: "fuse", state: "fresh", node_id: anchor },
         ]);
         expect((await cli(dir, "show", task)).out).toContain(`anchors   src/fuse.ts:1-3 (fuse) fresh · ${anchor}`);
+      } finally {
+        await mcp.close();
+      }
+    },
+    60_000,
+  );
+});
+
+
+// ---------------------------------------------------------------------------
+// ПРОФИЛЬ ХОСТА НЕ УВОДИТ ИНСТРУМЕНТЫ (memory-z2gy643ksmkw)
+// ---------------------------------------------------------------------------
+
+describe("myc mcp: отравленный профиль не уводит в чужой сервер", () => {
+  test(
+    "MYC_SERVER/MYC_TOKEN/MYC_WS в окружении процесса: create и prime работают ЛОКАЛЬНО",
+    async () => {
+      // Инцидент 2026-10-17: MCP-процесс унаследовал профиль, myc_create ушёл
+      // на СЕРВЕР профиля, а его close смотрел локально — узел не находился.
+      // Теперь диспетчер обнуляет профильные переменные, и инструменты пишут
+      // ровно туда, где стоит сервер: в репозиторию каталога.
+      expect((await cli(dir, "init")).code).toBe(0);
+      const mcp = new McpSession(dir, {
+        MYC_SERVER: "https://poison.example.invalid/ws",
+        MYC_TOKEN: "myc_poison",
+        MYC_WS: "poison",
+      });
+      try {
+        const init = await mcp.request("initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "e2e", version: "0" },
+        });
+        expect(init.error).toBeUndefined();
+        await mcp.notify("notifications/initialized");
+
+        const created = await mcp.call("myc_create", {
+          title: "задача под отравленным профилем",
+          priority: "P1",
+        });
+        expect(created.result!.isError).toBeUndefined();
+        const id = String(created.result!.structuredContent!["id"]);
+
+        // Проверка снаружи, отдельным процессом и без отравления: узел живёт
+        // в ЛОКАЛЬНОЙ базе этой репозитории — иначе он здесь не найдётся вовсе.
+        const shown = JSON.parse((await cli(dir, "show", id, "--json")).out) as {
+          ok: boolean;
+          data: { title: string };
+        };
+        expect(shown.ok).toBe(true);
+        expect(shown.data.title).toBe("задача под отравленным профилем");
+
+        // prime — тоже локально: пакет называет только что созданный узел.
+        const prime = await mcp.call("myc_prime", { budget: 1200 });
+        expect(prime.result!.isError).toBeUndefined();
+        expect(prime.result!.content![0]!.text).toContain(id);
       } finally {
         await mcp.close();
       }

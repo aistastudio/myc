@@ -262,6 +262,7 @@ export async function run(
       !options.env?.NO_COLOR,
     db: flagString(parsed, "db"),
     directory: flagString(parsed, "directory"),
+    env: options.env ?? process.env,
   };
 
   if (globals.json && globals.ndjson) {
