@@ -339,7 +339,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.6.2",
+    "version": "0.6.3",
     "date": "2026-10-18"
   },
   "roadmap": {
@@ -1675,17 +1675,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4276,
-    "fail": 8,
+    "pass": 4279,
+    "fail": 7,
     "skip": 16,
-    "files": 281,
-    "assertions": 38390,
-    "seconds": 520.42,
-    "sources": "c4b9e05d3fefe5b2",
+    "files": 282,
+    "assertions": 38399,
+    "seconds": 465.66,
+    "sources": "422a4d3898d3c325",
     "date": "2026-10-18",
-    "myc": "0.6.2",
-    "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение); бюджет якоря (anchor.budget.test.ts) — флакает под полной параллельной нагрузкой прогона и проходит поодиночке (11 pass при проверке отдельно,2026-10-18)"
+    "myc": "0.6.3",
+    "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-17T21:30:50.852Z", assertions: 77 };
-window.MYC_DATA.release = "0.6.2";
+window.MYC_DATA.verified = { at: "2026-10-17T22:01:13.817Z", assertions: 77 };
+window.MYC_DATA.release = "0.6.3";
