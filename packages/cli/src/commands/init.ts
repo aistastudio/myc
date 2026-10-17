@@ -77,6 +77,7 @@ import {
 // реализации у неё быть не должно.
 import { findWorktreeLink, type WorktreeLink } from "./wsfind.ts";
 import { ensureMycGitignore } from "../myc-gitignore.ts";
+import { applyWizardPlan, maybeRunWizard, type WizardApplied, type WizardPlan } from "./init-wizard.ts";
 
 // bun:sqlite Database напрямую, без vec0-рантайма CliDriver (store.ts) и без
 // GraphStore: init только создаёт файл, накатывает миграции и пишет пару
@@ -429,6 +430,8 @@ interface InitData {
     degraded: readonly string[];
   };
   idempotent: boolean;
+  /** Что сделал мастер после создания (только при запуске мастера). */
+  wizard?: Pick<WizardApplied, "applied" | "next">;
   /**
    * Конфиг приехал из git, базы не было — `init` поднял только её. Не
    * `idempotent` (что-то создали) и не «создан с нуля» (личность не наша).
@@ -496,6 +499,15 @@ function networkClaim(env: NodeJS.ProcessEnv = process.env): string {
     : "no network used";
 }
 
+/** Строки мастера: что записал и что дальше. Мастер не запускался — тишина. */
+function wizardLines(w: InitData["wizard"]): string[] {
+  if (w === undefined) return [];
+  const out: string[] = [""];
+  for (const a of w.applied) out.push(`  ✓ wizard         ${a}`);
+  for (const n of w.next) out.push(`  → ${n}`);
+  return out;
+}
+
 function renderInitHuman(raw: unknown): string {
   const d = raw as InitData;
   const lines: string[] = [];
@@ -510,6 +522,7 @@ function renderInitHuman(raw: unknown): string {
     if (d.worktree !== undefined) lines.push(worktreeLine(d.worktree, true));
     lines.push(codeIntelLine(d.code_intel));
     lines.push(personalLine(d.personal));
+    lines.push(...wizardLines(d.wizard));
     lines.push(`next: ${d.next}`);
     return `${lines.join("\n")}\n`;
   }
@@ -525,6 +538,7 @@ function renderInitHuman(raw: unknown): string {
     lines.push(`  · graft                ${d.graft ? "found" : "not found"}`);
     lines.push(codeIntelLine(d.code_intel));
     lines.push(personalLine(d.personal));
+    lines.push(...wizardLines(d.wizard));
     lines.push("");
     lines.push("next:");
     lines.push(`  ${d.next}`);
@@ -558,6 +572,7 @@ function renderInitHuman(raw: unknown): string {
   if (!d.git.isGit) {
     lines.push("  ! not a git repo       code anchors will have no blob_hash");
   }
+  lines.push(...wizardLines(d.wizard));
   lines.push("");
   lines.push("next:");
   lines.push(`  ${d.next}`);
@@ -687,6 +702,11 @@ export function createInitCommand(): Command {
     summary: "create a workspace: .myc/ with sqlite db, migrations, site_id, slug",
     flags: [
       { name: "slug", value: "string", description: "workspace slug (default: from directory name)" },
+      {
+        name: "interactive",
+        description:
+          "run the setup wizard even without a terminal — answers come from stdin (for scripts and tests)",
+      },
       { name: "force", description: "wipe an existing .myc/ and recreate it" },
       {
         name: "global",
@@ -702,7 +722,11 @@ export function createInitCommand(): Command {
       },
     ],
     help:
-      "Zero questions, and no network call of its own: the update check is off by default " +
+      "On a TTY, init first opens a short setup wizard — slug, code intelligence, the " +
+      "embedding model, a team server, harnesses for MCP — and downloads or wires only " +
+      "what you pick there. Without a terminal (agents, scripts, --json) it stays the " +
+      "zero-question command it always was, and --interactive runs the wizard for " +
+      "scripts. No network call of its own: the update check is off by default " +
       "(MYC_UPDATE_CHECK=1 turns it on, and even then it runs as a detached process this " +
       "command never waits for). Autodetects the git root and slug from the " +
       "directory name; both are shown, never confirmed. Re-running on an existing " +
@@ -843,13 +867,28 @@ export function createInitCommand(): Command {
       // конфига (база есть, конфига нет); имя каталога — последний источник,
       // и только когда ни одного признака воркспейса ещё нет.
       const rawSlug = ctx.flags["slug"];
-      const requestedSlug =
+      const requestedSlugFlag =
         typeof rawSlug === "string" && /^[a-z][a-z0-9]{1,7}$/.test(rawSlug) ? rawSlug : undefined;
       const priorSlug = readConfigSlug(mycDir) ?? readDbSlug(dbPath);
+      const hadDb = existsSync(dbPath);
+
+      // Мастер (только терминал или --interactive): вопросы ДО вычисления
+      // слага, потому что ответы мастера — и есть входные init. Флаг слага
+      // сильнее вопроса: при заданном --slug вопрос о слаге не задаётся.
+      const tomlPath = join(mycDir, "workspace.toml");
+      const plan: WizardPlan | undefined = await maybeRunWizard(ctx, {
+        priorSlug,
+        hadDb,
+        workspaceDir,
+        defaultSlug: slugify(basename(workspaceDir)),
+        codeIntelMissing:
+          !existsSync(tomlPath) || !/^code_intel\s*=/m.test(readFileSync(tomlPath, "utf8")),
+        graftFound: detectGraft(workspaceDir) !== undefined,
+      });
+
+      const requestedSlug = requestedSlugFlag ?? plan?.slug;
       const slug = requestedSlug ?? priorSlug ?? slugify(basename(workspaceDir));
       const slugChanged = priorSlug !== undefined && slug !== priorSlug;
-
-      const hadDb = existsSync(dbPath);
 
       // Ничего создавать не надо и личность не меняется — печатаем состояние
       // и выходим, как и раньше. Единственное, что здесь всё-таки создаётся, —
@@ -859,6 +898,13 @@ export function createInitCommand(): Command {
       if (hadDb && !force && !slugChanged) {
         ensureMycGitignore(mycDir);
         if (!existsSync(join(mycDir, "workspace.toml"))) writeSlugInToml(mycDir, slug);
+        // Мастер на СУЩЕСТВУЮЩЕМ воркспейсе: модели, сервер, wire — то, что
+        // не требует пересоздания базы.
+        const wiz =
+          plan !== undefined
+            ? await applyWizardPlan(ctx, plan, { mycDir })
+            : undefined;
+        for (const w of wiz?.warnings ?? []) ctx.warn(w.code, w.msg);
         const existing = readExistingWorkspace(workspaceDir);
         const ci = codeIntelOf(workspaceDir);
         warnCodeIntel(ctx, ci);
@@ -870,6 +916,7 @@ export function createInitCommand(): Command {
           code_intel: ciData(ci),
           idempotent: true,
           adopted: false,
+          ...(wiz !== undefined ? { wizard: { applied: wiz.applied, next: wiz.next } } : {}),
           db: { path: dbPath, schemaVersion: existing.schemaVersion, nodeCount: existing.nodeCount },
           personal: readPersonalSummary(),
           ...worktreeData(link),
@@ -946,6 +993,10 @@ export function createInitCommand(): Command {
         ctx.warn("degraded.git", "not a git repository — code anchors will have no blob_hash");
       }
 
+      const wizFinal =
+        plan !== undefined ? await applyWizardPlan(ctx, plan, { mycDir }) : undefined;
+      for (const w of wizFinal?.warnings ?? []) ctx.warn(w.code, w.msg);
+
       const data: InitData = {
         dir: workspaceDir,
         slug,
@@ -954,6 +1005,9 @@ export function createInitCommand(): Command {
         code_intel: ciData(ci),
         idempotent: false,
         adopted,
+        ...(wizFinal !== undefined
+          ? { wizard: { applied: wizFinal.applied, next: wizFinal.next } }
+          : {}),
         ...(slugChanged ? { slug_changed: { from: priorSlug!, to: slug, nodes: nodesBefore } } : {}),
         db: { path: dbPath, schemaVersion },
         ...worktreeData(link),
