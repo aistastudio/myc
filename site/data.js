@@ -339,7 +339,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.6.3",
+    "version": "0.6.5",
     "date": "2026-10-18"
   },
   "roadmap": {
@@ -1675,17 +1675,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4281,
+    "pass": 4297,
     "fail": 7,
     "skip": 16,
-    "files": 282,
-    "assertions": 38403,
-    "seconds": 525.47,
-    "sources": "4c7aa5894645d867",
+    "files": 284,
+    "assertions": 38496,
+    "seconds": 483.51,
+    "sources": "d56b022899c45aaf",
     "date": "2026-10-18",
-    "myc": "0.6.3",
-    "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение)"
+    "myc": "0.6.5",
+    "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение: читает чанки установленной Orca.app; в дневном прогоне2026-10-18 её собственный тест переноса падал, когда чанк managed-home-shell-preflight исчезал при обновлении приложения)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-18T13:48:39.253Z", assertions: 77 };
-window.MYC_DATA.release = "0.6.3";
+window.MYC_DATA.verified = { at: "2026-10-18T15:48:51.089Z", assertions: 77 };
+window.MYC_DATA.release = "0.6.5";
