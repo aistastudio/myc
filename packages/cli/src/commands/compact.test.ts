@@ -12,14 +12,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { run } from "../index.ts";
 import { Registry } from "../registry.ts";
 import { createInitCommand } from "./init.ts";
-import { createCompactCommand, createUncompactCommand, templateSummary } from "./compact.ts";
+import { createPruneCommand } from "./prune.ts";
+import { createCompactCommand, createUncompactCommand, templateSummary, episodeDigest } from "./compact.ts";
 
 const DAY = 86_400_000;
 
@@ -28,6 +29,7 @@ function registry(): Registry {
   r.register(createInitCommand());
   r.register(createCompactCommand());
   r.register(createUncompactCommand());
+  r.register(createPruneCommand());
   return r;
 }
 
@@ -43,7 +45,7 @@ afterEach(() => {
 
 interface Envelope {
   ok: boolean;
-  data?: Record<string, number | boolean>;
+  data?: Record<string, number | boolean | string>;
   error?: { code: string; msg: string };
   code?: string;
 }
@@ -122,6 +124,15 @@ function nodeRow(id: string): { body: string | null; body_cold: number; compacte
     return d
       .query("SELECT body, body_cold, compacted_at FROM nodes WHERE id = ?")
       .get(id) as { body: string | null; body_cold: number; compacted_at: number | null };
+  } finally {
+    d.close();
+  }
+}
+
+function count(sql: string): number {
+  const d = db();
+  try {
+    return (d.query(sql).get() as { n: number } | undefined)?.n ?? -1;
   } finally {
     d.close();
   }
@@ -311,5 +322,201 @@ describe("templateSummary", () => {
     const a = templateSummary({ ...base, body: LONG_BODY });
     const b = templateSummary({ ...base, body: LONG_BODY });
     expect(a).toBe(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Свёртка эпизодов L0 (§6.4(3), retention/4)
+// ---------------------------------------------------------------------------
+
+const TRANSCRIPT = "агент: делаем свёртку.\nпользователь: эпизод должен пережить prune, но не тело.";
+const HEADER_LINE = JSON.stringify({
+  v: 1, id: "ep1", reason: "compact", agent: "opencode",
+  created_at: 1, raw_bytes: TRANSCRIPT.length, secrets_masked: 2,
+});
+const FILE_PLAIN = `${HEADER_LINE}\n${TRANSCRIPT}`;
+
+function seedEpisode(id: string, daysAgo: number, withFile: boolean): void {
+  const d = db();
+  try {
+    const attrs: Record<string, unknown> = {
+      reason: "compact",
+      agent: "opencode",
+      raw_bytes: TRANSCRIPT.length,
+      secrets_masked: 2,
+      ...(withFile
+        ? { episode_path: `episodes/${id}.zst`, episode_bytes: 1, compression: "zstd" }
+        : { episode_path: "", episode_bytes: 1, compression: "zstd", episode_archived: true }),
+    };
+    d.prepare(
+      `INSERT INTO nodes (id, kind, layer, acl, scope, title, body, content_hash, status,
+                          created_at, updated_at, attrs)
+       VALUES (?1, 'session', 0, 'private', 'p', ?2, '', ?3, 'active', ?4, ?4, ?5)`,
+    ).run(id, `episode ${id} · compact · opencode`, `h-${id}`, Date.now() - daysAgo * DAY, JSON.stringify(attrs));
+  } finally {
+    d.close();
+  }
+}
+
+function writeEpisodeFile(id: string): void {
+  const dir = join(dir0(), "episodes");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${id}.zst`), Bun.zstdCompressSync(Buffer.from(FILE_PLAIN, "utf-8")));
+}
+
+function dir0(): string {
+  return join(dir, ".myc");
+}
+
+function episodeFilePath(id: string): string {
+  return join(dir0(), "episodes", `${id}.zst`);
+}
+
+function digestNoteOf(sessionId: string): { id: string; body: string; layer: number } | undefined {
+  const d = db();
+  try {
+    return d
+      .query("SELECT id, body, layer FROM nodes WHERE kind = 'note' AND json_extract(attrs, '$.episode_of') = ?")
+      .get(sessionId) as { id: string; body: string; layer: number } | undefined;
+  } finally {
+    d.close();
+  }
+}
+
+test("свёртка: файл уезжает в bodies_cold, появляется дайджест, узел эпизода цел", async () => {
+  expect((await call(["init", "--slug", "p"])).ok).toBe(true);
+  seedEpisode("ep1", 40, true);
+  writeEpisodeFile("ep1");
+
+  const r = await call(["compact", "--episodes"]);
+  expect(r.ok).toBe(true);
+  expect(r.data!.mode).toBe("episodes");
+  expect(r.data!.compacted).toBe(1);
+
+  // Файла нет; холодная копия несёт исходный текст (zstd, единый algo).
+  expect(existsSync(episodeFilePath("ep1"))).toBe(false);
+  const d = db();
+  const cold = d.query("SELECT algo, raw_len FROM bodies_cold WHERE node_id = 'ep1'").get() as {
+    algo: string;
+    raw_len: number;
+  };
+  d.close();
+  expect(cold.algo).toBe("zstd");
+  expect(cold.raw_len).toBe(Buffer.byteLength(FILE_PLAIN, "utf-8"));
+
+  // Дайджест: note layer=1, attrs.episode_of, ребро derived_from на эпизод.
+  const note = digestNoteOf("ep1");
+  expect(note).toBeDefined();
+  expect(note!.layer).toBe(1);
+  expect(note!.body).toContain("Эпизод ep1");
+  expect(note!.body).toContain("compact");
+  expect(
+    count("SELECT count(*) AS n FROM edges WHERE type = 'derived_from' AND dst = 'ep1'"),
+  ).toBe(1);
+
+  // Узел эпизода цел: тело пустое (оно и было в файле), архивация помечена.
+  const row = nodeRow("ep1");
+  expect(row.body).toBe("");
+  const d2 = db();
+  const archived = d2
+    .query("SELECT json_extract(attrs, '$.episode_archived') AS a, json_extract(attrs, '$.episode_path') AS p FROM nodes WHERE id = 'ep1'")
+    .get() as { a: number; p: string };
+  d2.close();
+  expect(archived.a).toBe(1);
+  expect(archived.p).toBe("");
+});
+
+test("свёрнутый не сворачивается повторно, свежий не трогается, dry-run не меняет", async () => {
+  expect((await call(["init", "--slug", "p"])).ok).toBe(true);
+  seedEpisode("ep-old", 40, true);
+  writeEpisodeFile("ep-old");
+  expect((await call(["compact", "--episodes"])).ok).toBe(true); // свёрнут, файла больше нет
+
+  seedEpisode("ep-fresh", 5, true); // моложе срока — не кандидат
+  writeEpisodeFile("ep-fresh");
+  seedEpisode("ep-old2", 35, true); // кандидат
+  writeEpisodeFile("ep-old2");
+
+  // dry-run считает ровно кандидатов (ep-old без файла — skipped, ep-fresh вне
+  // срока) и ничего не меняет.
+  const dry = await call(["compact", "--episodes", "--dry-run"]);
+  expect(dry.ok).toBe(true);
+  expect(dry.data!.compacted).toBe(1);
+  expect(existsSync(episodeFilePath("ep-old2"))).toBe(true);
+  expect(existsSync(episodeFilePath("ep-fresh"))).toBe(true);
+
+  const again = await call(["compact", "--episodes"]);
+  expect(again.ok).toBe(true);
+  expect(again.data!.compacted).toBe(1); // только ep-old2
+  expect(existsSync(episodeFilePath("ep-old2"))).toBe(false);
+  expect(existsSync(episodeFilePath("ep-fresh"))).toBe(true); // срок не истёк
+  expect(
+    count("SELECT count(*) AS n FROM nodes WHERE kind = 'note' AND json_extract(attrs, '$.episode_of') = 'ep-old'"),
+  ).toBe(1); // дайджест один, не два
+});
+
+test("приёмка: uncompact возвращает текст эпизода байт-в-байт", async () => {
+  expect((await call(["init", "--slug", "p"])).ok).toBe(true);
+  seedEpisode("ep1", 40, true);
+  writeEpisodeFile("ep1");
+  expect((await call(["compact", "--episodes"])).ok).toBe(true);
+
+  const r = await call(["uncompact", "ep1"]);
+  expect(r.ok).toBe(true);
+  const row = nodeRow("ep1");
+  expect(row.body).toBe(FILE_PLAIN); // шапка + транскрипт, байт-в-байт
+  expect(row.body_cold).toBe(0);
+  expect(count("SELECT count(*) AS n FROM bodies_cold WHERE node_id = 'ep1'")).toBe(0);
+});
+
+test("приёмка: свёртка → prune → тело недоступно, узлы целы", async () => {
+  expect((await call(["init", "--slug", "p"])).ok).toBe(true);
+  seedEpisode("ep1", 40, true);
+  writeEpisodeFile("ep1");
+  expect((await call(["compact", "--episodes"])).ok).toBe(true);
+
+  // Возраст холодной копии: за180 суток prune вправе её убрать.
+  const d = db();
+  d.prepare("UPDATE bodies_cold SET archived_at = ? WHERE node_id = 'ep1'").run(Date.now() - 181 * DAY);
+  d.close();
+
+  const pruned = await call(["prune"]);
+  expect(pruned.ok).toBe(true);
+  expect(pruned.data!.bodies_removed).toBe(1);
+
+  // Тела нет: ни файла, ни холодной копии. Uncompact честно отказывает.
+  expect(existsSync(episodeFilePath("ep1"))).toBe(false);
+  expect(count("SELECT count(*) AS n FROM bodies_cold WHERE node_id = 'ep1'")).toBe(0);
+  const un = await call(["uncompact", "ep1"]);
+  expect(un.ok).toBe(false);
+  expect(un.error?.code).toBe("compact.no_cold_copy");
+
+  // УЗЛЫ ЦЕЛЫ: эпизод на месте (тело пустое — оно и не было в узле),
+  // дайджест пережил prune и несёт содержание.
+  expect(count("SELECT count(*) AS n FROM nodes WHERE id = 'ep1'")).toBe(1);
+  const note = digestNoteOf("ep1");
+  expect(note).toBeDefined();
+  expect(note!.body.length).toBeGreaterThan(0);
+});
+
+test("retention.l0_days из конфига меняет срок без правки кода", async () => {
+  expect((await call(["init", "--slug", "p"])).ok).toBe(true);
+  writeFileSync(join(dir, ".myc", "workspace.toml"), 'slug = "p"\n\n[retention]\nl0_days = 1\n');
+  seedEpisode("ep-recent", 5, true); // старше одного дня — попадает под срок
+  writeEpisodeFile("ep-recent");
+
+  const r = await call(["compact", "--episodes"]);
+  expect(r.ok).toBe(true);
+  expect(r.data!.compacted).toBe(1);
+  expect(existsSync(episodeFilePath("ep-recent"))).toBe(false);
+});
+
+describe("episodeDigest", () => {
+  test("шаблон детерминирован и называет факты", () => {
+    const a = episodeDigest("ep1", Date.UTC(2026, 9, 1), { reason: "compact", agent: "opencode", raw_bytes: 100, secrets_masked: 2 });
+    const b = episodeDigest("ep1", Date.UTC(2026, 9, 1), { reason: "compact", agent: "opencode", raw_bytes: 100, secrets_masked: 2 });
+    expect(a).toBe(b);
+    expect(a).toContain("2026-10-01");
+    expect(a).toContain("масок секретов: 2");
   });
 });

@@ -327,6 +327,12 @@ export interface WorkspaceConfig {
    * помогает остальным: правила общие, значит и бюджет общий.
    */
   bootstrapBudget?: number;
+  /**
+   * Срок жизни эпизода L0, сутки (спека §6.4(3):14 по умолчанию, параметр
+   * `retention.l0_days`). Единый источник: им читается свёртка эпизодов;
+   * решение по salience TAU — retention/5.
+   */
+  retention?: { readonly l0_days?: number };
 }
 
 /** Крошечный TOML-подset: секции [name], ключ = "строка" | число. Больше нам не нужно. */
@@ -335,6 +341,7 @@ export function parseWorkspaceToml(text: string): WorkspaceConfig {
   const weights = { ...DEFAULT_READY_WEIGHTS };
   let bootstrapBudget: number | undefined;
   let section = "";
+  let retention: { readonly l0_days?: number } | undefined;
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
     if (line.length === 0 || line.startsWith("#")) continue;
@@ -343,7 +350,9 @@ export function parseWorkspaceToml(text: string): WorkspaceConfig {
       section = sec[1]!.toLowerCase();
       continue;
     }
-    const kv = /^([a-z_]+)\s*=\s*(.+)$/.exec(line);
+    // Цифры в именах ключей разрешены (l0_days): секции, которые их не
+    // ждут, проверяют ключ точным сравнением и на прочие имена не реагируют.
+    const kv = /^([a-z_][a-z_0-9]*)\s*=\s*(.+)$/.exec(line);
     if (!kv) continue;
     const key = kv[1]!;
     const raw = kv[2]!.trim();
@@ -355,12 +364,15 @@ export function parseWorkspaceToml(text: string): WorkspaceConfig {
     } else if (section === "bootstrap" && key === "budget") {
       const n = Number(raw);
       if (Number.isFinite(n) && n > 0) bootstrapBudget = Math.floor(n);
+    } else if (section === "retention" && key === "l0_days") {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 1) retention = { l0_days: Math.floor(n) };
     } else if (section === "" && key === "slug") {
       const s = /^"([a-z][a-z0-9]{1,7})"$/.exec(raw);
       if (s) slug = s[1]!;
     }
   }
-  return { slug, weights, ...(bootstrapBudget !== undefined ? { bootstrapBudget } : {}) };
+  return { slug, weights, ...(bootstrapBudget !== undefined ? { bootstrapBudget } : {}), ...(retention !== undefined ? { retention } : {}) };
 }
 
 // ---------------------------------------------------------------------------
