@@ -17,6 +17,7 @@ import type {
   Hlc,
   IncOp,
   JsonValue,
+  PurgeOp,
   SetOp,
 } from "./oplog.ts";
 import type { EdgeKind, Layer, NodeKind } from "./index.ts";
@@ -957,6 +958,21 @@ export class OpFactory {
       entity_id: edgeKey(src, type, dst),
       field: type,
       value: { tags: [...tags] },
+    };
+  }
+
+  /**
+   * Жёсткое стирание (§6.5, retention/3). Полезной нагрузки у инструкции нет:
+   * всё нужное — в entity_id, value уходит в оплог как JSON `null`.
+   */
+  purge(entityId: string): PurgeOp {
+    return {
+      op: "purge",
+      ...this.next(),
+      site_id: this.siteId,
+      entity_id: entityId,
+      field: "",
+      value: null,
     };
   }
 }

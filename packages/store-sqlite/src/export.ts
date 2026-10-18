@@ -129,6 +129,7 @@ export const REPLICATED_OPS: ReadonlySet<string> = new Set([
   "inc",
   "edge_add",
   "edge_del",
+  "purge",
 ]);
 
 const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";

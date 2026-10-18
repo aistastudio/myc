@@ -820,6 +820,20 @@ export class GraphStore {
     return true;
   }
 
+  /**
+   * Жёсткое стирание (§6.5, retention/3): физический DELETE через проекцию
+   * и op='purge' в оплоге — пиры стёрт у себя. Уже стёртый id возвращает
+   * false: повтор идемпотентен и ничего не порождает.
+   *
+   * Мягкое удаление остаётся `deleteNode` и обратимо (`restoreNode`).
+   */
+  purgeNode(id: string): boolean {
+    const current = this.getNode(id, true);
+    if (current === undefined) return false;
+    this.applyLocal(() => [this.ops.purge(id)], id, current.scope);
+    return true;
+  }
+
   /** Обратная операция: узел снова виден. */
   restoreNode(id: string): boolean {
     const current = this.getNode(id, true);

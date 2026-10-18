@@ -42,6 +42,7 @@ import {
   type IncOp,
   type EdgeAddOp,
   type EdgeDelOp,
+  type PurgeOp,
 } from "./oplog.ts";
 import { readHlc, parseEdgeEntityId, MEMORY_EDGE_SEPARATOR } from "./apply.ts";
 import { GraphError } from "./graph.ts";
@@ -105,6 +106,8 @@ export function rowToOp(row: OplogRow): Op {
       return { ...base, op: "edge_add", value: value as { tag: string; weight?: number } } as EdgeAddOp;
     case "edge_del":
       return { ...base, op: "edge_del", value: value as { tags: string[] } } as EdgeDelOp;
+    case "purge":
+      return { ...base, op: "purge", value } as PurgeOp;
     default:
       throw new GraphError(
         "graph.unknown_field",
@@ -268,7 +271,7 @@ const peerSqlCache = new Map<number, QueryDef>();
  * Те же четыре вида знает parseOp на приёмной стороне — списки обязаны
  * совпадать, и тест sync.test.ts их сверяет.
  */
-export const REPLICABLE_OPS = "('set','inc','edge_add','edge_del')";
+export const REPLICABLE_OPS = "('set','inc','edge_add','edge_del','purge')";
 
 export function opsForPeerQuery(siteCount: number): QueryDef {
   const cached = peerSqlCache.get(siteCount);
@@ -404,7 +407,13 @@ export function parseOp(raw: unknown): Op | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const r = raw as Record<string, unknown>;
   const kind = r["op"];
-  if (kind !== "set" && kind !== "inc" && kind !== "edge_add" && kind !== "edge_del") {
+  if (
+    kind !== "set" &&
+    kind !== "inc" &&
+    kind !== "edge_add" &&
+    kind !== "edge_del" &&
+    kind !== "purge"
+  ) {
     return undefined;
   }
   const opId = r["op_id"];
@@ -449,6 +458,12 @@ export function parseOp(raw: unknown): Op | undefined {
       if (!Array.isArray(tags) || tags.some((t) => typeof t !== "string")) return undefined;
       return { ...base, op: "edge_del", value: { tags: tags as string[] } };
     }
+    case "purge":
+      // Строго, а не «как придётся»: у инструкции стирания нет ни поля, ни
+      // нагрузки. Мутированный set с op='purge' обязан быть отвергнут —
+      // иначе разбор превратился бы в догадку.
+      if (field !== "" || value !== null) return undefined;
+      return { ...base, op: "purge", value: null };
   }
 }
 

@@ -199,7 +199,7 @@ export class HlcClock {
 // Записи оплога
 // ---------------------------------------------------------------------------
 
-export type OpKind = "set" | "inc" | "edge_add" | "edge_del";
+export type OpKind = "set" | "inc" | "edge_add" | "edge_del" | "purge";
 
 /** Скалярное значение поля: то, что уместится в JSON. */
 export type JsonValue =
@@ -248,7 +248,18 @@ export interface EdgeDelOp extends OpBase {
   readonly value: { readonly tags: readonly string[] };
 }
 
-export type Op = SetOp | IncOp | EdgeAddOp | EdgeDelOp;
+/**
+ * Жёсткое стирание (§6.5, retention/3): не поле и не ребро, а инструкция
+ * «этого узла больше нет». Реплицируется как обычная операция, чтобы пиры
+ * стёрли у себя; в state она гасит всё, что про узел накоплено, — иначе
+ * joinStates вернул бы стёртое поле обратно.
+ */
+export interface PurgeOp extends OpBase {
+  readonly op: "purge";
+  readonly value: JsonValue;
+}
+
+export type Op = SetOp | IncOp | EdgeAddOp | EdgeDelOp | PurgeOp;
 
 /** Ключ ребра для entity_id. Разделитель NUL невозможен в ID и в типе ребра. */
 export function edgeKey(src: string, type: string, dst: string): string {
@@ -417,6 +428,18 @@ function applyOp(s: MutableState, op: Op): void {
         tombstones: new Set<string>(),
       }));
       for (const t of op.value.tags) es.tombstones.add(t);
+      return;
+    }
+    case "purge": {
+      // Узла больше нет — гасим ВСЁ, что про него накоплено: поля, счётчики
+      // и рёбра с его участием (оба конца). Иначе joinStates по более старым
+      // часам вернул бы стёртое поле, и purge оказался бы обратимым мержем.
+      s.fields.delete(op.entity_id);
+      s.counters.delete(op.entity_id);
+      for (const key of [...s.edges.keys()]) {
+        const parts = key.split("\u0000");
+        if (parts[0] === op.entity_id || parts[2] === op.entity_id) s.edges.delete(key);
+      }
       return;
     }
   }

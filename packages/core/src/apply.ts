@@ -385,6 +385,33 @@ export function* projectEdgeDel(ctx: ApplyCtx, op: EdgeDelOp): Eff<void> {
 }
 
 /**
+ * Проекция purge (§6.5, retention/3): физическое стирание, после которого не
+ * остаётся НИЧЕГО. Порядок важен:
+ *
+ *   1. вектор снимается ПО ROWID — он уходит вместе со строкой узла; на PG
+ *      отдельного вектора нет (embedding в строке узла), vec_table_exists не
+ *      возвращает строк, и шаг не выполняется;
+ *   2. сам DELETE — рёбра, anchors, bodies_cold, acl уходят каскадом (FK ON),
+ *      FTS-строку снимает триггер trg_fts_ad: отдельная пересборка была бы
+ *      второй правдой;
+ *   3. замыкание, field_clock, counters и отложенные операции — у которых
+ *      нет FK, а дренаж pending'а materializeNode воскресил бы узел заново;
+ *   4. пересчёт open_blockers у тех, кому purge был нужен как blocker —
+ *      жёсткий DELETE ребра триггерами не покрыт by design (DDL, §8.1.11).
+ */
+export function* projectPurge(ctx: ApplyCtx, id: string): Eff<void> {
+  const vec = yield* one<{ name: string }>(Q.vec_table_exists, []);
+  if (vec !== undefined) yield* run(Q.vec_delete_by_id, [id]);
+  const blocked = (yield* one<{ ids: string }>(Q.node_blocks_dsts_json, [id]))?.ids ?? "[]";
+  yield* run(Q.node_delete_hard, [id]);
+  yield* run(Q.parent_closure_purge, [id]);
+  yield* run(Q.field_clock_purge, [id]);
+  yield* run(Q.counters_purge, [id]);
+  yield* run(Q.pending_purge, [id]);
+  yield* run(Q.open_blockers_recompute, [blocked]);
+}
+
+/**
  * Строка узла, приехавшего по репликации. Без `kind` создать её нельзя
  * (NOT NULL + CHECK), и подставлять «какой-нибудь» kind недопустимо: узел с
  * выдуманным видом выглядел бы здоровым.
@@ -1153,6 +1180,24 @@ export function* applyOne(
     return undefined;
   }
 
+  // purge: стирание не ждёт ничего и никогда не паркуется — узла больше и
+  // ждать неоткуда. Запись в оплог обязательна даже для неизвестного id:
+  // вода пира уже подвинулась, повторно строка не приедет, а идемпотентный
+  // повтор обязан быть пустым применением, а не брошенным в pending.
+  if (op.op === "purge") {
+    const head = yield* one<NodeHeadRow>(Q.node_head, [op.entity_id]);
+    const scope = head?.scope ?? scopeHint.get(op.entity_id) ?? "";
+    if (!(yield* journal(ctx, op, "node", op.entity_id, scope, origin))) {
+      tally.duplicate++;
+      yield* unpark(ctx, op.op_id, tally, false);
+      return undefined;
+    }
+    if (head !== undefined) yield* projectPurge(ctx, op.entity_id);
+    tally.applied++;
+    yield* unpark(ctx, op.op_id, tally, true);
+    return undefined;
+  }
+
   // set / inc: проекция невозможна, пока строки узла нет. Такую
   // операцию нельзя и журналировать — дедупликация по op_id закрыла бы
   // повторную попытку навсегда.
@@ -1305,6 +1350,8 @@ export function* applyLocalOps(
       if ((yield* projectSet(op, touch)) === "collided") throw onCollision(op);
     } else if (op.op === "inc") {
       yield* projectInc(op);
+    } else if (op.op === "purge") {
+      yield* projectPurge(ctx, entityId);
     }
   }
   const settled = yield* settleIdentity(ctx, tally, true);

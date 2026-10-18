@@ -170,6 +170,32 @@ test("dry-run считает ровно то, что удалил бы, и ни�
   expect(count("SELECT count(*) AS n FROM bodies_cold")).toBe(0);
 });
 
+test("тумбстоуны purge переживают прун: подтверждённые и старые остаются", async () => {
+  expect((await call(["init", "--slug", "p"])).ok).toBe(true);
+  // Три строки: обычная подтверждённая старая (уйдёт), свежая (останется)
+  // и тумбстоун purge — старый И подтверждённый, то есть из тех, что уходили
+  // бы без исключения §6.5 (retention/3).
+  seedOp(31, 1000);
+  seedOp(1, 2000);
+  const d = db();
+  try {
+    d.prepare(
+      `INSERT INTO oplog (op_id, site_id, hlc, ts_ms, op, entity, entity_id, scope)
+       VALUES ('s1:500', 's1', 500, ?1, 'purge', 'node', 'stертый', 'p')`,
+    ).run(Date.now() - 31 * DAY);
+  } finally {
+    d.close();
+  }
+  seedPeer("p1", 9999); // подтверждение покрывает все seq
+
+  const r = await call(["prune"]);
+  expect(r.ok).toBe(true);
+  expect(r.data!.ops_removed).toBe(1); // только обычная старая
+  expect(count("SELECT count(*) AS n FROM oplog WHERE op = 'purge'")).toBe(1);
+  const human = renderPruneHuman({ ...(r.data as object), took_ms: 0 });
+  expect(human).toContain("purge tombstone(s) kept");
+});
+
 test("свежая база: малая фрагментация — VACUUM не делается", async () => {
   expect((await call(["init", "--slug", "p"])).ok).toBe(true);
   const r = await call(["prune"]);

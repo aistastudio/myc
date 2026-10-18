@@ -297,6 +297,85 @@ export const Q = defineQueries({
     sql: "SELECT kind, scope, title, body, status, priority, attrs FROM nodes WHERE id = ?1",
     params: ["id"],
   },
+
+  // ---- purge (§6.5, retention/3) -----------------------------------------
+  // Пять штук, порядок важен: вектор и замыкание снимаются ДО строки узла
+  // (rowid уходит вместе с ней), счётчики блокеров пересчитываются ПОСЛЕ,
+  // когда рёбер уже нет. FTS не в списке — триггер trg_fts_ad снимает строку
+  // сам, и отдельная пересборка была бы второй правдой.
+  node_blocks_dsts_json: {
+    name: "node_blocks_dsts_json",
+    sql: `SELECT coalesce(json_group_array(dst), '[]') AS ids
+            FROM edges
+           WHERE src = ?1 AND type = 'blocks' AND deleted_at IS NULL`,
+    pg: `SELECT coalesce(json_agg(dst), '[]') AS ids
+           FROM edges
+          WHERE src = $1 AND type = 'blocks' AND deleted_at IS NULL`,
+    params: ["id"],
+  },
+  // Пересчёт по честному — дословно из комментария DDL после trg_st_reopen:
+  // жёсткий DELETE ребра триггерами не покрыт by design.
+  open_blockers_recompute: {
+    name: "open_blockers_recompute",
+    sql: `UPDATE nodes SET open_blockers = (
+            SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.src
+             WHERE e.dst = nodes.id AND e.type = 'blocks' AND e.deleted_at IS NULL
+               AND s.status NOT IN ('closed','cancelled','superseded','retracted'))
+          WHERE id IN (SELECT value FROM json_each(?1))`,
+    // У PG колонка value у json_each — json, и `nodes.id = json` не компилируется
+    // («operator does not exist: text = json»); ::text снимает это дословно.
+    pg: `UPDATE nodes SET open_blockers = (
+            SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.src
+             WHERE e.dst = nodes.id AND e.type = 'blocks' AND e.deleted_at IS NULL
+               AND s.status NOT IN ('closed','cancelled','superseded','retracted'))
+          WHERE id IN (SELECT value::text FROM json_each($1))`,
+    params: ["ids"],
+  },
+  // nodes_vec существует не всегда (vec0 опционален, решение S27), а на PG
+  // вектор лежит в строке узла (embedding) и умирает вместе с ней. Поэтому
+  // проверка по sqlite_master с pg-вариантом, который не возвращает строк:
+  // на PG чистка вектора не нужна вовсе.
+  vec_table_exists: {
+    name: "vec_table_exists",
+    sql: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'nodes_vec'`,
+    pg: `SELECT NULL::text AS name WHERE false`,
+    params: [],
+  },
+  vec_delete_by_id: {
+    name: "vec_delete_by_id",
+    sql: `DELETE FROM nodes_vec WHERE node_rowid IN (SELECT rowid FROM nodes WHERE id = ?1)`,
+    params: ["id"],
+  },
+  node_delete_hard: {
+    name: "node_delete_hard",
+    sql: `DELETE FROM nodes WHERE id = ?1`,
+    params: ["id"],
+  },
+  parent_closure_purge: {
+    name: "parent_closure_purge",
+    sql: `DELETE FROM parent_closure WHERE ancestor = ?1 OR descendant = ?1`,
+    params: ["id"],
+  },
+  // CRDT-таблицы, у которых нет FK на nodes: после purge они обязаны замолчать,
+  // иначе переиспользование id (или просто восстановление из export) упёрлось
+  // бы в чужие часы и G-counter'ы.
+  field_clock_purge: {
+    name: "field_clock_purge",
+    sql: `DELETE FROM field_clock WHERE entity_id = ?1`,
+    params: ["id"],
+  },
+  counters_purge: {
+    name: "counters_purge",
+    sql: `DELETE FROM counters WHERE entity_id = ?1`,
+    params: ["id"],
+  },
+  // Отложенные операции, ждавшие узла: дренировать их нельзя — set
+  // материализует узел заново, и purge обратился бы в паузу.
+  pending_purge: {
+    name: "pending_purge",
+    sql: `DELETE FROM oplog_pending WHERE needs = ?1`,
+    params: ["id"],
+  },
   node_refresh_derived: {
     name: "node_refresh_derived",
     sql: "UPDATE nodes SET excerpt = ?2, content_hash = ?3 WHERE id = ?1",

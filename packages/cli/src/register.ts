@@ -76,6 +76,7 @@ export function registerAll(registry: Registry): void {
   lazy("skeleton", () => import("./commands/skeleton.ts").then((m) => m.createSkeletonCommand()));
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("prune", () => import("./commands/prune.ts").then((m) => m.createPruneCommand()));
+  lazy("purge", () => import("./commands/purge.ts").then((m) => m.createPurgeCommand()));
   lazy("compact", () => import("./commands/compact.ts").then((m) => m.createCompactCommand()));
   lazy("uncompact", () => import("./commands/compact.ts").then((m) => m.createUncompactCommand()));
   lazy("absorb-session", () =>

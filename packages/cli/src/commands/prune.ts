@@ -52,6 +52,10 @@ export function renderPruneHuman(raw: unknown): string {
   if (d.peers === 0) {
     lines.push("  · no peers in sync_state — the oplog is untouched: nothing has confirmed it");
   }
+  const kept = (d as PruneData & { tombstones_kept?: number }).tombstones_kept ?? 0;
+  if (kept > 0) {
+    lines.push(`  · ${kept} purge tombstone(s) kept: exempt from pruning (design01 §6.5)`);
+  }
   lines.push(
     d.vacuumed || d.dry
       ? `  · fragmentation ${d.vacuum_frag_pct}% ${d.vacuumed ? "→ VACUUM done" : "(dry-run: no VACUUM)"}`
@@ -95,19 +99,27 @@ export function createPruneCommand(deps: StoreDeps = realStoreDeps): Command {
           : db.prepare("DELETE FROM bodies_cold WHERE archived_at < ?").run(bodyCutoff).changes;
         // Подтверждение пирами — subquery: при пустом sync_state min() даёт NULL,
         // сравнение с NULL истинно не бывает, и оплог остаётся нетронутым сам собой.
+        // Тумбстоуны purge из пруна ИСКЛЮЧЕНЫ (§6.5, retention/3): новый пир
+        // обязан узнать о стирании, иначе вернул бы узел первым же обменом.
+        // Подтверждённый всеми пир означает «применено всеми, кто был», а не
+        // «применено всеми, кто будет».
         const ops = dry
           ? (db
               .query<{ n: number }, [number]>(
                 `SELECT count(*) AS n FROM oplog
-                  WHERE ts_ms < ? AND seq <= (SELECT min(last_seq_sent) FROM sync_state)`,
+                  WHERE ts_ms < ? AND op != 'purge'
+                    AND seq <= (SELECT min(last_seq_sent) FROM sync_state)`,
               )
               .get(oplogCutoff)?.n ?? 0)
           : db
               .prepare(
                 `DELETE FROM oplog
-                  WHERE ts_ms < ? AND seq <= (SELECT min(last_seq_sent) FROM sync_state)`,
+                  WHERE ts_ms < ? AND op != 'purge'
+                    AND seq <= (SELECT min(last_seq_sent) FROM sync_state)`,
               )
               .run(oplogCutoff).changes;
+        const tombstones =
+          db.query<{ n: number }, []>("SELECT count(*) AS n FROM oplog WHERE op = 'purge'").get()?.n ?? 0;
         const pages = Number(
           db.query<{ c: number }, []>("PRAGMA page_count").get()?.c ?? 0,
         );
@@ -117,13 +129,14 @@ export function createPruneCommand(deps: StoreDeps = realStoreDeps): Command {
         const frag = pages > 0 ? free / pages : 0;
         const vacuumed = !dry && frag > VACUUM_FRAG;
         if (vacuumed) db.exec("VACUUM");
-        const data: PruneData = {
+        const data: PruneData & { readonly tombstones_kept: number } = {
           bodies_removed: bodies,
           ops_removed: ops,
           peers,
           vacuum_frag_pct: Math.round(frag * 1000) / 10,
           vacuumed,
           dry,
+          tombstones_kept: tombstones,
           took_ms: Math.round(performance.now() - t0),
         };
         return { ok: true, data, meta: { took_ms: data.took_ms } };

@@ -47,6 +47,20 @@ describe("разбор чужой операции", () => {
     expect(parseOp(JSON.parse(JSON.stringify(op)))).toEqual(op);
   });
 
+  test("purge проходит ровно той же — это теперь реплицируемый вид", () => {
+    const op: Op = {
+      op_id: "siteA:7",
+      seq: 7,
+      hlc: { ts: 1000, ctr: 1 },
+      site_id: "siteA",
+      entity_id: "n-1",
+      field: "",
+      op: "purge",
+      value: null,
+    };
+    expect(parseOp(JSON.parse(JSON.stringify(op)))).toEqual(op);
+  });
+
   test("op_id обязан совпадать с парой (site_id, seq)", () => {
     // Ключ идемпотентности — единственное, чем дедупликация отличает
     // операции. Подделанная пара означала бы, что повтор не узнают.
@@ -56,7 +70,11 @@ describe("разбор чужой операции", () => {
 
   test("отказ вместо догадки на каждом негодном поле", () => {
     const good = set("siteA", 7, 1000, 1, "n-1");
+    // Мутированный set: у настоящего purge нет ни поля, ни нагрузки —
+    // такие смешанные формы разбор обязан отвергать, а не толковать.
     expect(parseOp({ ...good, op: "purge" })).toBeUndefined();
+    expect(parseOp({ ...good, op: "purge", field: "", value: null, op_id: "siteA:7" })).toBeDefined();
+    expect(parseOp({ ...good, op: "purge", field: "", value: {}, op_id: "siteA:7" })).toBeUndefined();
     expect(parseOp({ ...good, site_id: "" })).toBeUndefined();
     expect(parseOp({ ...good, entity_id: "" })).toBeUndefined();
     expect(parseOp({ ...good, hlc: { ts: -1, ctr: 0 }, op_id: "siteA:7" })).toBeUndefined();
@@ -116,13 +134,16 @@ describe("запрос под размер вектора вод", () => {
   });
 
   test("отбор пропускает только реплицируемые виды: журнал пиру не едет", () => {
-    // Журнальные строки (claim аренды, purge) не проецируются в Op — rowToOp
-    // падает на них намеренно (§9.4: аренда локальна). Белый список в отборе
-    // — то, что не даёт обмену упасть на первом же claim (memory-6js4sp142hvt).
-    // Список обязан совпадать с parseOp: parseOp принимает ровно эти четыре.
+    // Журнальная строка claim аренды не проецируется в Op — rowToOp падает
+    // на ней намеренно (§9.4: аренда локальна). Белый список в отборе — то,
+    // что не даёт обмену упасть на первом же claim (memory-6js4sp142hvt).
+    // purge здесь реплицируется (retention/3): тумбстоун обязан доехать до
+    // пира, иначе стирание остаётся локальным. Список обязан совпадать с
+    // parseOp: parseOp принимает ровно эти пять.
     for (const n of [0, 1, 3]) {
       const q = opsForPeerQuery(n);
-      expect(q.sql).toContain("op IN ('set','inc','edge_add','edge_del')");
+      expect(q.sql).toContain("op IN ('set','inc','edge_add','edge_del','purge')");
+      expect(q.sql).not.toContain("'claim'");
     }
   });
 });
