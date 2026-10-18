@@ -70,7 +70,7 @@ Installation is one command:
 
 ```bash
 bun install -g @aistastudio/myc   # 5.11 MB compressed, 15.83 MB unpacked, 16 files; no models pulled
-myc --version                     # myc 0.6.6 (schema 1)
+myc --version                     # myc 0.6.7 (schema 1)
 ```
 
 **Windows.** `npm install -g @aistastudio/myc` installs the native x64
@@ -479,7 +479,7 @@ last-writer-wins over whole records.
 
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
-is treated as absent. The full suite: 4306 pass / 7 fail / 16 skip
+is treated as absent. The full suite: 4312 pass / 7 fail / 16 skip
 (`bun test`, 2026-10-18; the orca status-line classifier against the
 installed Orca.app chunks, the federation R3 family that fails on clean main
 too — memory-j4dkmcs2k7y1 — and one or two bench and multiprocess flakes

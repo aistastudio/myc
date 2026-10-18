@@ -339,7 +339,7 @@ window.MYC_DATA = {
       "source": "docs/reports/REPORT-npm-package.md",
       "measured_here": false
     },
-    "version": "0.6.6",
+    "version": "0.6.7",
     "date": "2026-10-18"
   },
   "roadmap": {
@@ -1675,17 +1675,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4306,
+    "pass": 4312,
     "fail": 7,
     "skip": 16,
     "files": 286,
-    "assertions": 38560,
-    "seconds": 470.03,
-    "sources": "efddd1ff8571e958",
+    "assertions": 38611,
+    "seconds": 486.73,
+    "sources": "29d3be50dcd78999",
     "date": "2026-10-18",
-    "myc": "0.6.6",
+    "myc": "0.6.7",
     "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение: читает чанки установленной Orca.app; в дневных прогонах2026-10-18 также падал тест managed-home-shell-preflight, когда чанк исчезал при обновлении приложения, и флакали бюджеты записи якоря и digest_cache под полной параллельной нагрузкой — поодиночке они зелёные)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-18T17:11:43.832Z", assertions: 77 };
-window.MYC_DATA.release = "0.6.6";
+window.MYC_DATA.verified = { at: "2026-10-18T18:13:42.274Z", assertions: 77 };
+window.MYC_DATA.release = "0.6.7";
