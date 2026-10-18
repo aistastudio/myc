@@ -76,6 +76,8 @@ export function registerAll(registry: Registry): void {
   lazy("skeleton", () => import("./commands/skeleton.ts").then((m) => m.createSkeletonCommand()));
   lazy("absorb", () => import("./commands/absorb.ts").then((m) => m.createAbsorbCommand()));
   lazy("prune", () => import("./commands/prune.ts").then((m) => m.createPruneCommand()));
+  lazy("compact", () => import("./commands/compact.ts").then((m) => m.createCompactCommand()));
+  lazy("uncompact", () => import("./commands/compact.ts").then((m) => m.createUncompactCommand()));
   lazy("absorb-session", () =>
     import("./hooks/absorb-session.ts").then((m) => m.createAbsorbSessionCommand()));
   // Разбор того, что пишет absorb-session (кандидаты pending_review), —
