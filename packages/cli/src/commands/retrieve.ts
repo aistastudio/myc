@@ -827,13 +827,16 @@ export function modeLabelOf(
   if (sources.has("fts")) parts.push("bm25");
   if (sources.has("graph")) parts.push("graph");
 
+  // rrf — про СЛИЯНИЕ веток. Один источник сливать нечего, и ярлык
+  // «vec rrf(k=60)» при единственной векторной ветке врал спокойствием
+  // (задача score_rel: косметика, которая вводила в заблуждение).
   const bareBase =
     parts.length === 0
       ? ""
-      : sources.has("vector")
-        ? `${parts.join("+")} rrf(k=${rrfK})`
-        : parts.length === 1
-          ? `${parts.join("+")} only`
+      : parts.length === 1
+        ? `${parts.join("+")} only`
+        : sources.has("vector")
+          ? `${parts.join("+")} rrf(k=${rrfK})`
           : parts.join("+");
 
   // Лексика дала ноль, выдача целиком держится на слабом векторе (И2,

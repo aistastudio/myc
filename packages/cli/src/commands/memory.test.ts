@@ -641,6 +641,9 @@ describe("разбор параметров", () => {
       } as never;
     };
     expect(modeLabelOf(mk(["fts"]), 60)).toBe("bm25 only");
+    // Единственная ветка не сливается ни с чем — rrf(k=60) здесь врал
+    // (сторож ярлыка при единственном источнике; задача score_rel).
+    expect(modeLabelOf(mk(["vector"]), 60)).toBe("vec only");
     expect(modeLabelOf(mk(["fts", "graph"]), 60)).toBe("bm25+graph");
     expect(modeLabelOf(mk(["fts", "vector"]), 60)).toBe("vec+bm25 rrf(k=60)");
     expect(modeLabelOf(mk([]), 60)).toBe("empty");
