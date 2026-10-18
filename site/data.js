@@ -1675,17 +1675,17 @@ window.MYC_DATA = {
   },
   "tests": {
     "command": "bun test",
-    "pass": 4279,
+    "pass": 4281,
     "fail": 7,
     "skip": 16,
     "files": 282,
-    "assertions": 38399,
-    "seconds": 465.66,
-    "sources": "422a4d3898d3c325",
+    "assertions": 38403,
+    "seconds": 525.47,
+    "sources": "4c7aa5894645d867",
     "date": "2026-10-18",
     "myc": "0.6.3",
     "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение)"
   }
 };
-window.MYC_DATA.verified = { at: "2026-10-17T22:01:13.817Z", assertions: 77 };
+window.MYC_DATA.verified = { at: "2026-10-18T13:48:39.253Z", assertions: 77 };
 window.MYC_DATA.release = "0.6.3";

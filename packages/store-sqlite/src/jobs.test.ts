@@ -518,6 +518,82 @@ describe("настоящая конкурентность (процессы Bun.
   );
 });
 
+// ---------------------------------------------------------------------------
+// СПРАВЕДЛИВОСТЬ ВЫДАЧИ (memory-vt0rkpv0xwn2)
+//
+// Замер при приёмке myc-cng: захват корректен (дублей нет), но распределение
+// перекошено — один из восьми брал821 задачу из1000, а один не брал ни одной.
+// Причина — удержание write-lock WAL между двумя БЛИЗКИМИ захватами: победитель
+// гонки продолжает выигрывать. Вопрос задачи: исчезает ли перекос на
+// РЕАЛИСТИЧНОЙ нагрузке, где агент работает над задачей СЕКУНДЫ, а не берёт
+// следующую микросекунду спустя. Здесь — оба режима с числами; решение
+// «вмешиваться не нужно» опирается на них.
+// ---------------------------------------------------------------------------
+
+/** Общий каркас замера: N процессов × JOBS работ, распределение — из отчётов. */
+async function measureFairness(
+  jobsCount: number,
+  processes: number,
+  workMs: number,
+): Promise<{ counts: number[]; total: number }> {
+  const { paths, seed } = await setupRace(jobsCount);
+  try {
+    const procs = Array.from({ length: processes }, (_, i) =>
+      spawnWorker(paths, { holder: `w${i}`, leaseMs: 60_000, batch: 1, workMs }),
+    );
+    writeFileSync(paths.go, "go");
+    const reports = await Promise.all(
+      procs.map(async (p, i) => {
+        const out = await new Response(p.stdout).text();
+        const code = await p.exited;
+        if (code !== 0) throw new Error(`воркер w${i} упал с кодом ${code}`);
+        return JSON.parse(out) as { claimed: number };
+      }),
+    );
+    const counts = reports.map((r) => r.claimed);
+    const total = counts.reduce((a, b) => a + b, 0);
+    expect(total).toBe(jobsCount);
+    return { counts, total };
+  } finally {
+    seed.close();
+  }
+}
+
+function fairnessLine(label: string, counts: readonly number[], total: number): string {
+  const max = Math.max(...counts);
+  return (
+    `[fairness] ${label}: ${counts.join(",")} · max=${max} (${Math.round((100 * max) / total)}%)` +
+    ` · нулей=${counts.filter((c) => c === 0).length}`
+  );
+}
+
+describe("справедливость выдачи (memory-vt0rkpv0xwn2)", () => {
+  test(
+    "контроль: нулевая работа — тот режим, где победитель держит write-lock (числа для решения, не сторож)",
+    async () => {
+      // Здесь НЕТ утверждений о балансе: перекос в этом режиме ожидаем, и
+      // именно он мотивировал джиттер в задаче. Тест печатает распределение,
+      // чтобы решение опиралось на график, а не на память.
+      const { counts, total } = await measureFairness(1_000, 8, 0);
+      console.log(fairnessLine("work=0µs", counts, total));
+    },
+    180_000,
+  );
+
+  test("реалистичная нагрузка: без пустых и без доминанты", async () => {
+    // "Секунды" замасштабированы до100мс: полная секунда ×1000 работ ×8 — это
+    // минуты стенда ради того же механизма. Разрыва back-to-back захватов
+    // (вот что держало lock)100мс достаточно с запасом.
+    const { counts, total } = await measureFairness(400, 8, 100);
+    console.log(fairnessLine("work=100ms", counts, total));
+    // СТОРОЖИ ПРИЁМКИ: при задачах, которые длятся не микросекунды,
+    // - ни один процесс не остаётся без работы;
+    // - доля самого успешного ≤35% (идеал12.5%; победитель-перекос брал82%).
+    expect(counts.filter((c) => c === 0).length).toBe(0);
+    expect(Math.max(...counts) / total).toBeLessThanOrEqual(0.35);
+  }, 180_000);
+});
+
 describe("аварийное завершение (SIGKILL посреди аренды)", () => {
   test(
     "убитый посреди работы процесс не теряет и не дублирует задачу",
