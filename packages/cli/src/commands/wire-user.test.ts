@@ -358,13 +358,13 @@ describe("--scope user: ~/.claude/settings.json", () => {
     expect((await myc(r, "wire", "--scope", "user")).code).toBe(0);
     const allow = (JSON.parse(readText(settingsPath())) as Record<string, any>).permissions.allow as string[];
     expect(allow).toEqual(mycPermissions(r));
-    // 48 — с `sync`, `prune`, `compact`, `uncompact`: новая команда получает
+    // 49 — с `sync`, `prune`, `compact`, `uncompact`, `purge`: новая команда получает
     // правило сама, если её нет в ASK_SUBCOMMANDS (wire.ts). Обмену вопрос не
     // нужен: он не переписывает конфиг агента и не выдаёт токены, а пишет в
     // ту же общую базу, что и `task` с `update`, и только по токену, который
     // человек уже выдал. Ретеншн-команды туда же: они не трогают ни конфиг,
     // ни токены, а выжигание оплога и холодных тел и так возраст-гейтами.
-    expect(allow).toHaveLength(48);
+    expect(allow).toHaveLength(49);
     for (const banned of ["Bash(myc:*)", "Bash(myc run:*)", "Bash(myc statusline:*)", "Bash(myc wire:*)", "Bash(myc unwire:*)"]) {
       expect(allow).not.toContain(banned);
     }
