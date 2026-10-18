@@ -1679,7 +1679,7 @@
     "files": 282,
     "assertions": 38401,
     "seconds": 498.08,
-    "sources": "506f3bad4ff29c29",
+    "sources": "592a849edbf22b40",
     "date": "2026-10-18",
     "myc": "0.6.4",
     "failing_test": "семейство federation R3 (packages/cli/src/commands/federation.multirepo.test.ts, packages/retrieval/src/federation.test.ts) падает и на чистом main — memory-j4dkmcs2k7y1; классификатор orca > перенос совпадает с установленным кодом orca (окружение); бюджет якоря и digest_cache между процессами — флаки под полной параллельной нагрузкой прогона, поодиночке проходят (проверено отдельно,2026-10-18)"

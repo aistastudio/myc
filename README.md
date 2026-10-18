@@ -480,9 +480,10 @@ last-writer-wins over whole records.
 **Guards are proved by mutation.** Every refusal and every invariant is
 accompanied by a mutation that removes it; a guard whose removal breaks no test
 is treated as absent. The full suite: 4279 pass / 9 fail / 16 skip
-(`bun test`, 2026-10-18; one fail is the orca status-line classifier test
-against the installed Orca.app chunks, six are the federation R3 family that
-fails on clean main too — memory-j4dkmcs2k7y1.
+(`bun test`, 2026-10-18; the orca status-line classifier against the
+installed Orca.app chunks, the federation R3 family that fails on clean main
+too — memory-j4dkmcs2k7y1 — and one or two bench and multiprocess flakes
+under the suite's full parallel load, which always pass on their own).
 
 ## What myc does
 
